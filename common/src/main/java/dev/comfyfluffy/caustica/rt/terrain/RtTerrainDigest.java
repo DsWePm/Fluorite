@@ -62,7 +62,14 @@ public final class RtTerrainDigest {
 		return CausticaConfig.Rt.Diagnostics.TERRAIN_DIGEST.value();
 	}
 
-	private record Section(int sx, int sy, int sz, int verts, int tris, int lights, long digest) {
+	/**
+	 * {@code builds} counts how many times this section was tessellated with content different from the
+	 * previous time. One means it was built once and never changed — the only sections a cross-run
+	 * comparison can trust. Anything higher is re-meshing under a moving world: flowing fluids, mostly,
+	 * which in a lava-bearing world never stop and make a globally stable digest unreachable rather than
+	 * merely slow to arrive.
+	 */
+	private record Section(int sx, int sy, int sz, int verts, int tris, int lights, long digest, int builds) {
 	}
 
 	/** Called from the worker that packed this section, before it is uploaded. */
@@ -78,11 +85,15 @@ public final class RtTerrainDigest {
 		h = hashInts(h, packed.bucketTris());
 		h = hashInts(h, packed.triBase());
 		h = hashFloats(h, packed.lights());
-		SECTIONS.put(key, new Section(sx, sy, sz,
+		long digest = h;
+		SECTIONS.compute(key, (k, previous) -> new Section(sx, sy, sz,
 				packed.positions().length / 3,
 				packed.indices().length / 3,
 				packed.lights() == null ? 0 : packed.lights().length,
-				h));
+				digest,
+				previous == null || previous.digest() != digest
+						? (previous == null ? 1 : previous.builds() + 1)
+						: previous.builds()));
 		DIRTY.set(true);
 	}
 
@@ -150,17 +161,18 @@ public final class RtTerrainDigest {
 			// Wait for this to be non-zero before using a capture as a baseline. Zero means terrain was
 			// still re-meshing, and an unsettled capture has extra faces that later get culled.
 			out.write("# stableDumps=" + stableDumps + "\n");
-			out.write("# sx sy sz verts tris lights digest\n");
+			out.write("# sx sy sz verts tris lights digest builds\n");
 			for (Section s : sorted) {
-				out.write(String.format("%d %d %d %d %d %d %016x%n",
-						s.sx(), s.sy(), s.sz(), s.verts(), s.tris(), s.lights(), s.digest()));
+				out.write(String.format("%d %d %d %d %d %d %016x %d%n",
+						s.sx(), s.sy(), s.sz(), s.verts(), s.tris(), s.lights(), s.digest(), s.builds()));
 			}
 		} catch (IOException e) {
 			CausticaMod.LOGGER.warn("Could not write the terrain digest to {}", file, e);
 			return;
 		}
-		CausticaMod.LOGGER.info("Terrain digest: {} sections, combined={}, stable for {} dump(s) -> {}",
-				sorted.size(), String.format("%016x", combined), stableDumps, file);
+		long rebuilt = sorted.stream().filter(s2 -> s2.builds() > 1).count();
+		CausticaMod.LOGGER.info("Terrain digest: {} sections ({} re-meshed), combined={}, stable for {} dump(s) -> {}",
+				sorted.size(), rebuilt, String.format("%016x", combined), stableDumps, file);
 	}
 
 	private static long hashFloats(long h, float[] values) {
