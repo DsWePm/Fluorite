@@ -133,6 +133,10 @@ public final class RtDeviceBringup {
     private static volatile int computeQueueFamilyIndex = -1;
     private static volatile int computeQueueIndex = -1;
     private static boolean loggedUnavailable;
+    // queryFeatureSupport runs once per bring-up hook (extensions, then features), so these keep
+    // the capability notes from printing twice.
+    private static boolean loggedOmmSoftware;
+    private static boolean loggedSerInert;
 
     private static final VulkanPNextStruct AS_FEATURES_STRUCT = new VulkanPNextStruct(
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
@@ -437,25 +441,32 @@ public final class RtDeviceBringup {
     }
 
     /**
-     * Whether this device is expected to run opacity micromaps on dedicated hardware.
+     * Does this device genuinely reorder ray-tracing invocations, as opposed to merely advertising the
+     * extension? Caches the reported hint in {@link #serReorderingHint}.
      *
-     * <p>Vulkan has no "is this extension hardware-accelerated" query, and {@code VK_EXT_opacity_micromap}
-     * is advertised well below the NVIDIA generation that actually has the engine for it. Enabling it
-     * there is not a mild pessimisation — the driver's software path turns acceleration-structure builds
-     * into multi-second stalls and Minecraft's own 5s semaphore wait then kills the client. Measured on an
-     * RTX 2080: 22 seconds in-world with OMM on and 9 sections tessellated, versus no crash at all and
-     * full 1023-section residency with it off.
+     * <p>Two decisions hang off this, both cases of "advertised but not accelerated":
      *
-     * <p>The proxy is SER's reordering hint. {@code VK_EXT_ray_tracing_invocation_reorder} reports
-     * {@code REORDER} only on hardware that genuinely reorders, which on NVIDIA is the same Ada-and-later
-     * line that carries the OMM engine; pre-Ada parts advertise the extension but report {@code NONE}.
-     * It is a correlation, not a guarantee, so {@code caustica.rt.omm.force} overrides it for a device
+     * <ul>
+     *   <li><b>The SER raygen variant.</b> {@code trace_ser.slang} deliberately rebuilds the 72-byte
+     *       payload twice so nothing stays live across {@code ReorderThread}. That cost is written into
+     *       the shader source, so it is paid whether or not the driver reorders — on a {@code NONE}
+     *       device the variant is strictly more work for nothing.</li>
+     *   <li><b>Opacity micromaps.</b> Vulkan has no "is this accelerated" query, and
+     *       {@code VK_EXT_opacity_micromap} is advertised well below the NVIDIA generation with the
+     *       engine for it. There the driver's software path turns acceleration-structure builds into
+     *       multi-second stalls and Minecraft's own 5s semaphore wait kills the client. Measured on an
+     *       RTX 2080: 22 seconds in-world with OMM on and 9 sections tessellated, versus no crash in
+     *       over two minutes and full 1023-section residency with it off.</li>
+     * </ul>
+     *
+     * <p>For OMM this is a correlation rather than a guarantee — on NVIDIA the reordering hardware and
+     * the OMM engine arrived together in Ada — so {@code caustica.rt.omm.force} overrides it for a device
      * known to be fine.
      */
-    private static boolean ommHardwareAccelerated(VulkanPhysicalDevice physicalDevice) {
+    private static boolean deviceReorders(VulkanPhysicalDevice physicalDevice) {
         if (!physicalDevice.hasDeviceExtension(VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME)) {
-            // No reorder extension at all: no evidence either way, and every device known to accelerate
-            // OMM also exposes it. Treat as not accelerated.
+            // No reorder extension at all, so no evidence either way. Every device known to accelerate
+            // OMM also exposes it, so treating this as "does not reorder" is the safe read.
             return false;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -496,19 +507,18 @@ public final class RtDeviceBringup {
                 SER_EXT_FEATURE.struct().findOrCreateStructInPNextChain(available, stack);
             }
 
+            // One properties query answers both of the "advertised but not accelerated" questions below.
+            boolean reorders = hasSerExt && deviceReorders(physicalDevice);
+            boolean hasOmmExt = physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
             boolean ommForced = CausticaConfig.Rt.Omm.FORCE.value();
-            boolean ommAccelerated = physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)
-                    && ommHardwareAccelerated(physicalDevice);
-            if (ommRequested() && !ommAccelerated && !ommForced
-                    && physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)) {
+            if (ommRequested() && hasOmmExt && !reorders && !ommForced && !loggedOmmSoftware) {
+                loggedOmmSoftware = true;
                 CausticaMod.LOGGER.info("Opacity micromaps: extension is present but this device reports SER "
                         + "reordering hint NONE, so OMM is very likely software-emulated here. Skipping it — the "
                         + "software path makes AS builds stall for seconds and trips Minecraft's 5s semaphore "
                         + "wait. Override with -Dcaustica.rt.omm.force=true.");
             }
-            boolean queryOmm = ommRequested()
-                    && physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)
-                    && (ommAccelerated || ommForced);
+            boolean queryOmm = ommRequested() && hasOmmExt && (reorders || ommForced);
             if (queryOmm) {
                 OMM_FEATURE.struct().findOrCreateStructInPNextChain(available, stack);
             }
@@ -528,8 +538,19 @@ public final class RtDeviceBringup {
                     missing.add(feature.name());
                 }
             }
-            SerBackend supportedSer = hasSerExt && SER_EXT_FEATURE.get(available) ? SerBackend.EXT
-                    : SerBackend.NONE;
+            // The reordered raygen variant is only worth compiling in when the hardware actually reorders.
+            // trace_ser.slang deliberately rebuilds the 72-byte payload twice so nothing has to stay live
+            // across ReorderThread — a cost paid in the shader source, not by the driver, and therefore
+            // paid whether or not the reorder happens. On a device reporting NONE the variant is strictly
+            // more work for no benefit, so fall back to the ordinary TraceRay raygen.
+            boolean serUseful = hasSerExt && SER_EXT_FEATURE.get(available) && reorders;
+            if (hasSerExt && SER_EXT_FEATURE.get(available) && !reorders && !loggedSerInert) {
+                loggedSerInert = true;
+                CausticaMod.LOGGER.info("Shader execution reordering: supported but this device reports hint "
+                        + "NONE, so ReorderThread would not reorder. Using the ordinary TraceRay raygen instead "
+                        + "of the SER variant, which pays for a doubled payload rebuild it could not recover.");
+            }
+            SerBackend supportedSer = serUseful ? SerBackend.EXT : SerBackend.NONE;
             return new FeatureSupport(missing, supportedSer,
                     queryOmm && OMM_FEATURE.get(available),
                     queryPresentId && PRESENT_ID_FEATURE.get(available),
