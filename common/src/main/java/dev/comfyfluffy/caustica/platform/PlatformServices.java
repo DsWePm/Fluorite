@@ -14,6 +14,9 @@ package dev.comfyfluffy.caustica.platform;
 public interface PlatformServices {
 	PlatformPaths paths();
 
+	/** How geometry gets out of Minecraft's models. The substantial half of this abstraction. */
+	QuadPipeline quads();
+
 	/** Loader name, stamped into the frame-stats CSV header so captures from the two are distinguishable. */
 	String loaderName();
 }

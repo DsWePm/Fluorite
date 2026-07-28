@@ -23,10 +23,10 @@ import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
-import net.fabricmc.fabric.api.client.renderer.v1.Renderer;
-import net.fabricmc.fabric.api.client.renderer.v1.mesh.MutableQuadView;
-import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadEmitter;
-import net.fabricmc.fabric.api.client.renderer.v1.sprite.SpriteFinder;
+import dev.comfyfluffy.caustica.platform.BlockQuadSource;
+import dev.comfyfluffy.caustica.platform.Platform;
+import dev.comfyfluffy.caustica.platform.RtQuadView;
+import dev.comfyfluffy.caustica.platform.SpriteLookup;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.color.block.BlockColors;
 import net.minecraft.client.color.block.BlockTintSource;
@@ -65,13 +65,13 @@ final class RtTerrainMesher {
      */
     static final class WorkerTessState {
         final QuadCapture capture = new QuadCapture();
-        final QuadEmitter blockEmitter = Renderer.get().quadEmitter(capture::putFabric);
+        final BlockQuadSource blockQuads = Platform.get().quads().newBlockQuadSource();
         final RandomSource blockRandom = RandomSource.createThreadLocalInstance(0L);
         final FluidCapture fluidCapture = new FluidCapture();
         final SectionMesh mesh = new SectionMesh();
         final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
-        void reset(BlockColors blockColors, SpriteFinder blockSpriteFinder) {
+        void reset(BlockColors blockColors, SpriteLookup blockSpriteFinder) {
             capture.blockColors = blockColors;
             capture.spriteFinder = blockSpriteFinder;
             capture.discardBlock(); // defensive: a prior job's throw could leave buffered quads
@@ -90,7 +90,7 @@ final class RtTerrainMesher {
      * Returns the mesh (possibly empty — caller checks {@code idx}).
      */
     static CpuSection buildCpuSection(BlockAndTintGetter region, BlockStateModelSet modelSet,
-                                              QuadEmitter blockEmitter, RandomSource blockRandom,
+                                              BlockQuadSource blockQuads, RandomSource blockRandom,
                                               QuadCapture capture,
                                               FluidRenderer fluidRenderer, FluidCapture fluidCapture,
                                               SectionMesh mesh, BlockPos.MutableBlockPos m,
@@ -98,7 +98,7 @@ final class RtTerrainMesher {
                                               int scx, int scy, int scz) {
         capture.materials = materials;
         fluidCapture.materials = materials;
-        tessellate(region, modelSet, blockEmitter, blockRandom, capture,
+        tessellate(region, modelSet, blockQuads, blockRandom, capture,
                 fluidRenderer, fluidCapture, mesh, m, scx, scy, scz);
         if (mesh.isEmpty()) {
             return new CpuSection(null, null);
@@ -182,7 +182,7 @@ final class RtTerrainMesher {
     }
 
     private static void tessellate(BlockAndTintGetter region, BlockStateModelSet modelSet,
-                                   QuadEmitter blockEmitter, RandomSource blockRandom, QuadCapture capture,
+                                   BlockQuadSource blockQuads, RandomSource blockRandom, QuadCapture capture,
                                    FluidRenderer fluidRenderer, FluidCapture fluidCapture,
                                    SectionMesh mesh, BlockPos.MutableBlockPos m, int scx, int scy, int scz) {
         int sox = scx << 4, soy = scy << 4, soz = scz << 4;
@@ -224,7 +224,7 @@ final class RtTerrainMesher {
                     capture.originY = ly + (float) offset.y;
                     capture.originZ = lz + (float) offset.z;
                     blockRandom.setSeed(state.getSeed(m));
-                    model.emitQuads(blockEmitter, region, m, state, blockRandom, capture.cullTest);
+                    blockQuads.emit(model, region, m, state, blockRandom, capture.cullTest, capture::put);
                     capture.flushBlock(); // resolve coplanar ties (grass overlay / cross faces), then emit
                 }
             }
@@ -395,7 +395,7 @@ final class RtTerrainMesher {
     private static final class QuadCapture {
         SectionMesh cur; // set before each block model emission
         RtMaterialRegistry.Snapshot materials;
-        SpriteFinder spriteFinder;
+        SpriteLookup spriteFinder;
 
         // Per-block context for biome tint, set before each model emission. We resolve it straight from
         // BlockColors and combine it with the Fabric quad's authored color before raster lighting, so the
@@ -422,8 +422,8 @@ final class RtTerrainMesher {
         private int pendingCount;
         private int[] gidScratch = new int[0];
 
-        /** Capture a final Fabric Renderer API quad before raster AO/directional lighting is applied. */
-        private void putFabric(MutableQuadView quad) {
+        /** Capture a quad before raster AO/directional lighting is applied. */
+        private void put(RtQuadView quad) {
             PendingQuad q = acquire();
             for (int i = 0; i < 4; i++) {
                 q.x[i] = quad.x(i) + originX;
@@ -474,7 +474,7 @@ final class RtTerrainMesher {
             q.materialId = materials.resolve(sprite, state, q.translucent);
         }
 
-        /** Fabric's cull predicate returns true when the nominal face should be discarded. */
+        /** The cull predicate returns true when the nominal face should be discarded. */
         private boolean isCulled(Direction direction) {
             if (direction == null) {
                 return false;

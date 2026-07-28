@@ -26,7 +26,8 @@ import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
-import net.fabricmc.fabric.api.client.renderer.v1.sprite.SpriteFinder;
+import dev.comfyfluffy.caustica.platform.Platform;
+import dev.comfyfluffy.caustica.platform.SpriteLookup;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.color.block.BlockColors;
 import net.minecraft.client.color.block.BlockTintSource;
@@ -886,7 +887,8 @@ public final class RtTerrain {
         Minecraft mc = Minecraft.getInstance();
         return new DispatchContext(ctx, level,
                 mc.getModelManager().getBlockStateModelSet(), mc.getModelManager().getFluidStateModelSet(),
-                mc.getBlockColors(), mc.getAtlasManager().getAtlasOrThrow(AtlasIds.BLOCKS).spriteFinder());
+                mc.getBlockColors(), Platform.get().quads()
+                        .spriteLookup(mc.getAtlasManager().getAtlasOrThrow(AtlasIds.BLOCKS)));
     }
 
     /**
@@ -1090,7 +1092,7 @@ public final class RtTerrain {
                     WorkerTessState ws = WORKER_TESS.get(); // thread-confined; reset per task, arrays amortized
                     ws.reset(dispatch.blockColors(), dispatch.blockSpriteFinder());
                     FluidRenderer fluidRenderer = new FluidRenderer(dispatch.fluidModelSet());
-                    CpuSection cpu = buildCpuSection(region, dispatch.modelSet(), ws.blockEmitter, ws.blockRandom,
+                    CpuSection cpu = buildCpuSection(region, dispatch.modelSet(), ws.blockQuads, ws.blockRandom,
                             ws.capture,
                             fluidRenderer, ws.fluidCapture, ws.mesh, ws.pos, materialSnapshot, sx, sy, sz);
                     if (!isTaskCurrent(task)) {
@@ -1414,7 +1416,7 @@ public final class RtTerrain {
     /** Per-tick render-thread snapshot dependencies shared by reextract + missing dispatch. */
     private record DispatchContext(RtContext ctx, ClientLevel level, BlockStateModelSet modelSet,
                                    FluidStateModelSet fluidModelSet, BlockColors blockColors,
-                                   SpriteFinder blockSpriteFinder) {
+                                   SpriteLookup blockSpriteFinder) {
     }
 
     private record DirtyEvent(long groupId, LongArrayList keys) {

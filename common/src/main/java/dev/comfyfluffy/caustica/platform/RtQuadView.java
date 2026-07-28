@@ -2,7 +2,6 @@ package dev.comfyfluffy.caustica.platform;
 
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
-import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.resources.Identifier;
 
 import org.jetbrains.annotations.Nullable;
@@ -48,10 +47,7 @@ public interface RtQuadView {
 	/** Whether the quad was authored as full-bright. False on sources that cannot express it. */
 	boolean emissive();
 
-	/** The atlas sprite this quad samples. */
-	TextureAtlasSprite sprite();
-
-	/** Entity path only: the atlas this quad's sprite belongs to. */
+	/** Which atlas this quad samples, so the caller can pick the right {@link SpriteLookup}. */
 	Identifier atlasId();
 
 	/** Entity path only: the item render type carrying this quad, when there is one. */

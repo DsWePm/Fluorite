@@ -1,5 +1,6 @@
 package dev.comfyfluffy.caustica.rt.terrain;
 
+import dev.comfyfluffy.caustica.platform.Platform;
 import dev.comfyfluffy.caustica.rt.RtFrameStats;
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -38,7 +39,9 @@ import net.minecraft.world.level.biome.Biome;
  * {@code SectionCopy} containers were already shared within a pass. Cache mutation stays on the render
  * thread.
  */
-final class RtSectionSnapshots {
+// Public only so the loader modules can subclass Region — see QuadPipeline.newRegion. Nothing
+// outside this package should use anything else here.
+public final class RtSectionSnapshots {
     // Bounds worst-case cache memory to ~16 MB (palette copies run ~2-4 KB). Dispatch is column-coherent
     // nearest-first, so the live working set (in-flight neighbourhoods) is far smaller than this.
     private static final int MAX_ENTRIES = 4096;
@@ -57,7 +60,7 @@ final class RtSectionSnapshots {
                 }
             }
         }
-        return new Region(level, scx - 1, scy - 1, scz - 1, sections);
+        return Platform.get().quads().newRegion(level, scx - 1, scy - 1, scz - 1, sections);
     }
 
     /** Drop a stale entry (edited section, or its column unloaded / left the window). Render thread. */
@@ -107,8 +110,8 @@ final class RtSectionSnapshots {
      * mesher never queries block entities (they render through {@code RtEntities}), which is what lets
      * the snapshot skip {@code SectionCopy}'s per-copy clone of the whole chunk's block-entity map.
      */
-    static final class Region implements BlockAndTintGetter {
-        private final ClientLevel level;
+    public static class Region implements BlockAndTintGetter {
+        protected final ClientLevel level;
         private final int minSectionX;
         private final int minSectionY;
         private final int minSectionZ;
@@ -117,7 +120,7 @@ final class RtSectionSnapshots {
         private final LevelLightEngine lightEngine;
         private final boolean debug;
 
-        Region(ClientLevel level, int minSectionX, int minSectionY, int minSectionZ, Object[] sections) {
+        public Region(ClientLevel level, int minSectionX, int minSectionY, int minSectionZ, Object[] sections) {
             this.level = level;
             this.minSectionX = minSectionX;
             this.minSectionY = minSectionY;
@@ -182,11 +185,6 @@ final class RtSectionSnapshots {
         @Override
         public boolean hasBiomes() {
             return level.hasBiomes();
-        }
-
-        @Override
-        public Holder<Biome> getBiomeFabric(BlockPos pos) {
-            return level.getBiomeFabric(pos);
         }
 
         @Override

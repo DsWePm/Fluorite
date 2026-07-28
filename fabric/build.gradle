@@ -104,11 +104,11 @@ tasks.named("test", Test) {
 // *vanilla* type leaves only net/minecraft in the constant pool. The real proof is :neoforge:compileJava
 // succeeding once that module compiles common/ (M3), where the Fabric API is simply not on the classpath.
 def commonLoaderLeakAllowlist = [
-		// The Fabric Renderer API geometry path. Emptied when QuadPipeline lands (M2); until then these
-		// three are the only common/ classes permitted to name a loader.
+		// Last one. The entity capture path still implements three SubmitNodeCollector overloads that only
+		// exist as Fabric interface injections, and depends on FRAPI overwriting BlockStateModelWrapper so
+		// that the mesh overload is the live one. Splitting it into a base plus per-loader subclasses
+		// empties this list.
 		"dev/comfyfluffy/caustica/rt/entity/RtEntityCollector",
-		"dev/comfyfluffy/caustica/rt/terrain/RtTerrain",
-		"dev/comfyfluffy/caustica/rt/terrain/RtTerrainMesher",
 ] as Set
 
 def verifyCommonIsLoaderAgnostic = tasks.register("verifyCommonIsLoaderAgnostic") {
