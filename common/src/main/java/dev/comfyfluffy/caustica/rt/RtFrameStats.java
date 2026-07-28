@@ -14,7 +14,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import net.fabricmc.loader.api.FabricLoader;
+import dev.comfyfluffy.caustica.platform.Platform;
 
 /**
  * Opt-in render-frame timing and hitch detection. Gated by {@code -Dcaustica.rt.frameStats}; every method
@@ -277,7 +277,7 @@ public final class RtFrameStats {
                 return;
             }
             csvOpenAttempted = true;
-            Path dir = FabricLoader.getInstance().getGameDir().resolve("rt-frame-stats");
+            Path dir = Platform.paths().gameDir().resolve("rt-frame-stats");
             Path file = dir.resolve(name + ".csv");
             try {
                 Files.createDirectories(dir);

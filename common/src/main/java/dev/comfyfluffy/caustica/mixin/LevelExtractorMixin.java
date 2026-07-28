@@ -1,5 +1,6 @@
 package dev.comfyfluffy.caustica.mixin;
 
+import dev.comfyfluffy.caustica.CausticaLifecycle;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 import net.minecraft.client.renderer.extract.LevelExtractor;
 import net.minecraft.core.BlockPos;
@@ -33,5 +34,16 @@ public class LevelExtractorMixin {
     @Inject(method = "setBlocksDirty(IIIIII)V", at = @At("HEAD"))
     private void caustica$rtBlocksDirty(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, CallbackInfo ci) {
         RtTerrain.markBlocksDirty(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
+    /**
+     * Full render-state invalidation: dimension change via {@code setLevel}, render-distance change, F3+A.
+     * This is the method behind Fabric's {@code InvalidateRenderStateCallback}; hooking it directly means
+     * the shared code needs no event API, and NeoForge — which has no equivalent event — gets the same
+     * behaviour for free.
+     */
+    @Inject(method = "allChanged()V", at = @At("TAIL"))
+    private void caustica$rtAllChanged(CallbackInfo ci) {
+        CausticaLifecycle.onRenderStateInvalidated();
     }
 }

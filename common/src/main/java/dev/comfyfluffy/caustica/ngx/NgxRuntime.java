@@ -7,7 +7,7 @@ import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.mixin.GpuDeviceAccessor;
 
-import net.fabricmc.loader.api.FabricLoader;
+import dev.comfyfluffy.caustica.platform.Platform;
 
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VK10;
@@ -123,7 +123,7 @@ public final class NgxRuntime {
 
         lib = NgxLibrary.load(shim);
 
-        Path dataPath = FabricLoader.getInstance().getGameDir().resolve("caustica-ngx");
+        Path dataPath = Platform.paths().gameDir().resolve("caustica-ngx");
         try {
             Files.createDirectories(dataPath);
         } catch (Exception e) {
@@ -160,7 +160,7 @@ public final class NgxRuntime {
     }
 
     private static Path extractBundledNatives() {
-        Path dir = FabricLoader.getInstance().getGameDir().resolve("caustica-ngx")
+        Path dir = Platform.paths().gameDir().resolve("caustica-ngx")
                 .resolve("natives").resolve(PLATFORM_NATIVES.platformDir());
         try {
             Files.createDirectories(dir);
@@ -199,20 +199,16 @@ public final class NgxRuntime {
 
     private static List<String> bundledFeatureLibraryNames() {
         List<String> names = new ArrayList<>();
-        FabricLoader.getInstance().getModContainer("caustica").ifPresent(container -> {
-            String nativeDir = "caustica/natives/" + PLATFORM_NATIVES.platformDir();
-            for (Path root : container.getRootPaths()) {
-                Path dir = root.resolve(nativeDir);
-                if (!Files.isDirectory(dir)) {
-                    continue;
-                }
-                try (Stream<Path> files = Files.list(dir)) {
-                    files.map(path -> path.getFileName().toString())
-                            .filter(PLATFORM_NATIVES::isFeatureLibrary)
-                            .forEach(names::add);
-                } catch (IOException e) {
-                    CausticaMod.LOGGER.warn("Could not list bundled NGX natives in {}", dir, e);
-                }
+        String nativeDir = "caustica/natives/" + PLATFORM_NATIVES.platformDir();
+        // The directory-exists test lives in the platform implementation now: Fabric picks the first of
+        // the container's root paths that has this entry, NeoForge asks the mod file directly.
+        Platform.paths().findModResource(nativeDir).ifPresent(dir -> {
+            try (Stream<Path> files = Files.list(dir)) {
+                files.map(path -> path.getFileName().toString())
+                        .filter(PLATFORM_NATIVES::isFeatureLibrary)
+                        .forEach(names::add);
+            } catch (IOException e) {
+                CausticaMod.LOGGER.warn("Could not list bundled NGX natives in {}", dir, e);
             }
         });
         return names;

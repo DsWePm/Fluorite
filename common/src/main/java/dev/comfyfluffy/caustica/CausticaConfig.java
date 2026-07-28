@@ -10,7 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.DoubleUnaryOperator;
 import java.util.function.IntUnaryOperator;
 import java.util.function.UnaryOperator;
-import net.fabricmc.loader.api.FabricLoader;
+import dev.comfyfluffy.caustica.platform.Platform;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -112,8 +112,10 @@ public final class CausticaConfig {
 
     private static Path resolveConfigPath() {
         try {
-            return FabricLoader.getInstance().getConfigDir().resolve("caustica.toml");
+            return Platform.paths().configDir().resolve("caustica.toml");
         } catch (Throwable t) {
+            // Reached when no loader is present — the JUnit suite constructs settings that way. Platform
+            // throws rather than returning null precisely so this catch keeps working.
             return Path.of("config", "caustica.toml");
         }
     }

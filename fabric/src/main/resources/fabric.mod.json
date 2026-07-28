@@ -11,10 +11,7 @@
 	"environment": "client",
 	"entrypoints": {
 		"main": [
-			"dev.comfyfluffy.caustica.CausticaMod"
-		],
-		"client": [
-			"dev.comfyfluffy.caustica.client.CausticaClient"
+			"dev.comfyfluffy.caustica.fabric.CausticaFabric"
 		]
 	},
 	"mixins": [

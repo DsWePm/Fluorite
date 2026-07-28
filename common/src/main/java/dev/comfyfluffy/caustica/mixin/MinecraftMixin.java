@@ -3,8 +3,8 @@ package dev.comfyfluffy.caustica.mixin;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
 
+import dev.comfyfluffy.caustica.CausticaLifecycle;
 import dev.comfyfluffy.caustica.rt.RtReflex;
-import dev.comfyfluffy.caustica.rt.RtUiOverlay;
 
 import net.minecraft.client.Minecraft;
 
@@ -28,9 +28,24 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(Minecraft.class)
 public abstract class MinecraftMixin {
+	/**
+	 * Full renderer teardown, at the same point Fabric's {@code CLIENT_STOPPING} fires. {@code shutdown()}
+	 * begins by releasing the UI overlay's TextureTarget, which is what this hook originally existed for on
+	 * its own — it has to happen before the renderer goes down.
+	 */
 	@Inject(method = "close", at = @At("HEAD"))
-	private void caustica$destroyUiOverlayBeforeRendererShutdown(CallbackInfo ci) {
-		RtUiOverlay.destroy();
+	private void caustica$shutdownRenderer(CallbackInfo ci) {
+		CausticaLifecycle.shutdown();
+	}
+
+	/**
+	 * Per game tick. Fabric's {@code START_CLIENT_TICK} fires from exactly here, and NeoForge's
+	 * {@code ClientTickEvent.Pre} would too — hooking the method directly means the shared code needs
+	 * neither event API. Distinct from the {@code runTick} injections below, which are per frame.
+	 */
+	@Inject(method = "tick()V", at = @At("HEAD"))
+	private void caustica$clientTick(CallbackInfo ci) {
+		CausticaLifecycle.onClientTick();
 	}
 
 	@Inject(method = "runTick", at = @At("HEAD"))

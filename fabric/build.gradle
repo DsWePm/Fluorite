@@ -95,6 +95,73 @@ tasks.named("test", Test) {
 	useJUnitPlatform()
 }
 
+// Classes compiled from common/ must not reference a loader. Scanning the compiled bytes rather than
+// grepping imports is deliberate: Fabric's Renderer API is reached partly through interface injection,
+// so a call site can depend on it with no import and no `net.fabricmc` anywhere in the source — see
+// RtSectionSnapshots.getBiomeFabric, which appears in no import grep at all.
+//
+// The scan is necessary but not sufficient, precisely because of that case: an interface injected onto a
+// *vanilla* type leaves only net/minecraft in the constant pool. The real proof is :neoforge:compileJava
+// succeeding once that module compiles common/ (M3), where the Fabric API is simply not on the classpath.
+def commonLoaderLeakAllowlist = [
+		// The Fabric Renderer API geometry path. Emptied when QuadPipeline lands (M2); until then these
+		// three are the only common/ classes permitted to name a loader.
+		"dev/comfyfluffy/caustica/rt/entity/RtEntityCollector",
+		"dev/comfyfluffy/caustica/rt/terrain/RtTerrain",
+		"dev/comfyfluffy/caustica/rt/terrain/RtTerrainMesher",
+] as Set
+
+def verifyCommonIsLoaderAgnostic = tasks.register("verifyCommonIsLoaderAgnostic") {
+	group = "verification"
+	description = "Fails if classes compiled from common/ reference net/fabricmc or net/neoforged."
+
+	def commonJavaRoot = rootProject.file("common/src/main/java")
+	def classesDir = sourceSets.main.output.classesDirs
+	inputs.files(classesDir).withPropertyName("classes")
+	inputs.property("allowlist", commonLoaderLeakAllowlist.toSorted())
+	outputs.upToDateWhen { false }
+
+	doLast {
+		def offenders = [:].withDefault { [] as Set }
+		classesDir.each { root ->
+			if (!root.isDirectory()) {
+				return
+			}
+			fileTree(root).matching { include "**/*.class" }.each { File classFile ->
+				def rel = root.toPath().relativize(classFile.toPath()).toString().replace('\\', '/')
+				def binaryName = rel.substring(0, rel.length() - ".class".length())
+				def topLevel = binaryName.contains('$')
+						? binaryName.substring(0, binaryName.indexOf('$'))
+						: binaryName
+				// Only classes whose source lives in common/ are in scope.
+				if (!new File(commonJavaRoot, topLevel + ".java").isFile()) {
+					return
+				}
+				if (commonLoaderLeakAllowlist.contains(topLevel)) {
+					return
+				}
+				def bytes = classFile.bytes
+				["net/fabricmc/", "net/neoforged/"].each { needle ->
+					if (new String(bytes, "ISO-8859-1").contains(needle)) {
+						offenders[topLevel] << needle
+					}
+				}
+			}
+		}
+		if (!offenders.isEmpty()) {
+			def detail = offenders.collect { name, needles -> " - ${name}: ${needles.join(', ')}" }.join("\n")
+			throw new GradleException("common/ classes reference a mod loader:\n" + detail
+					+ "\nMove the loader-specific part behind dev.comfyfluffy.caustica.platform, or add the "
+					+ "class to commonLoaderLeakAllowlist in fabric/build.gradle with a note saying why.")
+		}
+		logger.lifecycle("common/ is loader-agnostic ({} class(es) allowlisted)", commonLoaderLeakAllowlist.size())
+	}
+}
+
+tasks.named("check").configure {
+	dependsOn(verifyCommonIsLoaderAgnostic)
+}
+
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
 }
