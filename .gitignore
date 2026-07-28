@@ -8,7 +8,9 @@ run/
 run-neoforge/
 out/
 *.log
+*.log.gz
 *.class
 third_party/
 bin/
-/logs
+# Game logs land under whichever module launched the client, not only the root.
+logs/
