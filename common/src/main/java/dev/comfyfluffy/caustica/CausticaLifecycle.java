@@ -14,6 +14,7 @@ import dev.comfyfluffy.caustica.rt.entity.RtEntityTextures;
 import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
+import dev.comfyfluffy.caustica.rt.terrain.RtTerrainDigest;
 import dev.comfyfluffy.caustica.rt.terrain.RtWorkerPool;
 import dev.comfyfluffy.caustica.ngx.NgxRuntime;
 
@@ -70,6 +71,7 @@ public final class CausticaLifecycle {
 				// we're in a world with the block atlas loaded, or once already created.
 				RtComposite.INSTANCE.ensureResourcesReady(ctx);
 				RtTerrain.update(ctx);
+				RtTerrainDigest.tick();
 				// Log DLSS-FG availability once when frame generation is enabled (capability query only).
 				if (RtDlssFg.enabled()) {
 					RtDlssFg.INSTANCE.probeAvailabilityOnce();
@@ -87,9 +89,12 @@ public final class CausticaLifecycle {
 	public static void onRenderStateInvalidated() {
 		RtTerrain.requestFullClear();
 		RtComposite.INSTANCE.resetFailureLatch(); // F3+A doubles as manual RT recovery after a latched failure
+		// Residency is about to be rebuilt from scratch; keeping the old hashes would mix two worlds.
+		RtTerrainDigest.reset();
 	}
 
 	public static void shutdown() {
+		RtTerrainDigest.dumpIfDirty();
 		WorldRenderScaler.INSTANCE.destroy();
 		RtUiOverlay.destroy(); // GUI redirect is not gated by rtInitDone; always release its TextureTarget
 		if (!rtInitDone) {

@@ -754,6 +754,14 @@ public final class CausticaConfig {
             public static final BooleanSetting HEAVY_CRASH_DIAGNOSTICS =
                     bool("caustica.rt.heavyCrashDiagnostics", "diagnostics.heavy-crash-diagnostics", false);
 
+            /** Content-hash every tessellated section to {@code <gameDir>/rt-terrain-digest/<loader>.txt}.
+             * For comparing geometry extraction across builds and across mod loaders: the semantics that
+             * do not survive a change of quad source — per-quad chunk layer above all — fail quietly and
+             * put the wrong triangles in the wrong bucket rather than crashing. Off by default; costs one
+             * hash per section build, and sections are built once and cached. */
+            public static final BooleanSetting TERRAIN_DIGEST =
+                    bool("caustica.rt.terrainDigest", "diagnostics.terrain-digest", false);
+
             private Diagnostics() {
             }
         }

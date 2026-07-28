@@ -30,6 +30,9 @@ final class RtSectionBuilder {
                                    boolean compactBlas,
                                    long key, int sox, int soy, int soz) {
         RtMaterialAbi.requireTriangleParity(packed.material().length, packed.indices().length);
+        // Hash the packed arrays before they are uploaded and the CPU copies go away. No-op unless the
+        // terrain-digest diagnostic is on.
+        RtTerrainDigest.record(key, sox, soy, soz, packed);
         int vertCount = packed.positions().length / 3;
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure
                 .VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
