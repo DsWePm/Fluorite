@@ -103,13 +103,9 @@ tasks.named("test", Test) {
 // The scan is necessary but not sufficient, precisely because of that case: an interface injected onto a
 // *vanilla* type leaves only net/minecraft in the constant pool. The real proof is :neoforge:compileJava
 // succeeding once that module compiles common/ (M3), where the Fabric API is simply not on the classpath.
-def commonLoaderLeakAllowlist = [
-		// Last one. The entity capture path still implements three SubmitNodeCollector overloads that only
-		// exist as Fabric interface injections, and depends on FRAPI overwriting BlockStateModelWrapper so
-		// that the mesh overload is the live one. Splitting it into a base plus per-loader subclasses
-		// empties this list.
-		"dev/comfyfluffy/caustica/rt/entity/RtEntityCollector",
-] as Set
+// Empty, and meant to stay that way. Anything added here needs a note saying why the platform
+// abstraction could not cover it.
+def commonLoaderLeakAllowlist = [] as Set
 
 def verifyCommonIsLoaderAgnostic = tasks.register("verifyCommonIsLoaderAgnostic") {
 	group = "verification"

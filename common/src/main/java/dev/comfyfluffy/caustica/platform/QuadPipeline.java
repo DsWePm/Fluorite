@@ -1,5 +1,6 @@
 package dev.comfyfluffy.caustica.platform;
 
+import dev.comfyfluffy.caustica.rt.entity.RtEntityCollectorBase;
 import dev.comfyfluffy.caustica.rt.terrain.RtSectionSnapshots;
 
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -30,4 +31,16 @@ public interface QuadPipeline {
 	 */
 	RtSectionSnapshots.Region newRegion(ClientLevel level, int minSectionX, int minSectionY,
 			int minSectionZ, Object[] sections);
+
+	/**
+	 * The entity capture collector.
+	 *
+	 * <p>Also a subclass rather than a flag, and for a sharper reason than the region: the <em>live code
+	 * path</em> differs between loaders, not just the API. Fabric overwrites
+	 * {@code BlockStateModelWrapper.update} so block-display models arrive as a mesh through an injected
+	 * submit overload with an empty parts list; without that overwrite the same models arrive through the
+	 * vanilla overload with parts populated. Both paths exist in the base; which one fires is decided by
+	 * the loader, and only the injected overloads need adding.
+	 */
+	RtEntityCollectorBase newEntityCollector();
 }

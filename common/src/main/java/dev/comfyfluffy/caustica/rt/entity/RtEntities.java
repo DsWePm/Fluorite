@@ -33,6 +33,7 @@ import org.joml.Quaternionf;
 import org.lwjgl.system.MemoryUtil;
 
 import dev.comfyfluffy.caustica.rt.RtComposite;
+import dev.comfyfluffy.caustica.platform.Platform;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtFrameStats;
 import dev.comfyfluffy.caustica.rt.RtGpuExecutor;
@@ -180,7 +181,7 @@ public final class RtEntities {
     private static final Motion NO_MOTION = new Motion(0L, 0f, 0f, 0f);
 
     // Reusable capture pipeline (single-threaded on the render thread).
-    private final RtEntityCollector collector = new RtEntityCollector();
+    private final RtEntityCollectorBase collector = Platform.get().quads().newEntityCollector();
     private final RtEntityCapture capture = new RtEntityCapture();
     private final PoseStack entityPoseStack = new PoseStack();
     private final PoseStack blockEntityPoseStack = new PoseStack();

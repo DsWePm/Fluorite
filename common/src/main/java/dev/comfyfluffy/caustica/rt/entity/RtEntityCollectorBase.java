@@ -9,15 +9,11 @@ import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.mixin.ModelPartAccessor;
 import dev.comfyfluffy.caustica.mixin.RenderSetupAccessor;
 import dev.comfyfluffy.caustica.mixin.RenderTypeAccessor;
+import dev.comfyfluffy.caustica.platform.BlockQuadSource;
+import dev.comfyfluffy.caustica.platform.Platform;
+import dev.comfyfluffy.caustica.platform.RtQuadView;
 import dev.comfyfluffy.caustica.rt.RtFrameStats;
 import dev.comfyfluffy.caustica.rt.accel.RtAccel;
-import net.fabricmc.fabric.api.client.renderer.v1.Renderer;
-import net.fabricmc.fabric.api.client.renderer.v1.mesh.Mesh;
-import net.fabricmc.fabric.api.client.renderer.v1.mesh.MeshView;
-import net.fabricmc.fabric.api.client.renderer.v1.mesh.MutableQuadView;
-import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadEmitter;
-import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadView;
-import net.fabricmc.fabric.api.client.rendering.v1.SubmitRenderPhase;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.font.TextRenderable;
@@ -74,7 +70,14 @@ import java.util.function.Predicate;
  * <p>Driven once per entity per frame: {@link #begin} sets the capture, then {@code
  * EntityRenderDispatcher.submit} fans out into {@code submitModel} here. Reused across entities.
  */
-public final class RtEntityCollector implements SubmitNodeCollector {
+/*
+ * Abstract, and not by preference: Fabric injects submitCustom onto SubmitNodeCollector as an ABSTRACT
+ * method with no default, so on that loader this class is genuinely incomplete and only its Fabric
+ * subclass can finish it. That is also the proof that a shim was never an option here — a shim can adapt
+ * an API, but it cannot satisfy an abstract method that does not exist in the shared compilation unit.
+ * The loader subclasses supply their own injected overloads; everything else lives here.
+ */
+public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     private static final Direction[] DIRECTIONS = Direction.values();
     private static final Predicate<Direction> NEVER_CULL = direction -> false;
     // Vanilla leash constants (LeashFeatureRenderer.LEASH_RENDER_STEPS / LEASH_WIDTH).
@@ -83,13 +86,13 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     // Shared all-zero UV quad for untextured geometry (leash/line ribbons on the white slot).
     private static final float[] ZERO_UV = new float[4];
 
-    private RtEntityCapture capture;
-    private boolean profileDynamicEntity;
+    protected RtEntityCapture capture;
+    protected boolean profileDynamicEntity;
     private final RtEntityCapture parityCapture = new RtEntityCapture();
     private final RtCuboidEmitter cuboidEmitter = new RtCuboidEmitter();
     // Lazy FRAPI emitter used for contained and moving block models. Its callback reads the synchronous
     // context fields below; the entity collector itself is render-thread confined.
-    private QuadEmitter blockQuadEmitter;
+    private BlockQuadSource blockQuads;
     private Matrix4f emittedBlockPose;
     private BlockAndTintGetter emittedBlockView;
     private BlockState emittedBlockState;
@@ -134,7 +137,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     /** Release model/resource-pack-owned CPU caches after reload or RT shutdown. */
     public void clearCaches() {
         cuboidEmitter.clear();
-        blockQuadEmitter = null;
+        blockQuads = null;
     }
 
     @Override
@@ -278,7 +281,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     }
 
     /** Capture a list of baked quads (items / block models), each textured from its sprite's atlas. */
-    private void addQuads(Matrix4f pose, List<BakedQuad> quads, int[] tintLayers) {
+    protected void addQuads(Matrix4f pose, List<BakedQuad> quads, int[] tintLayers) {
         int idxStart = capture.idx.size();
         long started = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
         try {
@@ -291,7 +294,12 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         }
     }
 
-    private void countBakedOutput(int idxStart) {
+    /** Index count captured so far — the mark a loader subclass pairs with countBakedOutput. */
+    protected int capturedIndexCount() {
+        return capture.idx.size();
+    }
+
+    protected void countBakedOutput(int idxStart) {
         if (!profileDynamicEntity) {
             return;
         }
@@ -656,8 +664,8 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     /** Synchronously emit one block model into the active entity capture through Fabric Renderer API. */
     private void emitBlockModel(Matrix4f pose, BlockStateModel model, BlockAndTintGetter view, BlockPos pos,
                                 BlockState state, long seed, boolean applyBlockOffset) {
-        if (blockQuadEmitter == null) {
-            blockQuadEmitter = Renderer.get().quadEmitter(this::addEmittedBlockQuad);
+        if (blockQuads == null) {
+            blockQuads = Platform.get().quads().newBlockQuadSource();
         }
         Vec3 offset = applyBlockOffset ? state.getOffset(pos) : Vec3.ZERO;
         emittedBlockPose = pose;
@@ -672,7 +680,8 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         try {
             capture.clearUvRemap();
             emittedBlockRandom.setSeed(seed);
-            model.emitQuads(blockQuadEmitter, view, pos, state, emittedBlockRandom, NEVER_CULL);
+            blockQuads.emit(model, view, pos, state, emittedBlockRandom, NEVER_CULL,
+                    this::addEmittedBlockQuad);
         } finally {
             emittedBlockPose = null;
             emittedBlockView = null;
@@ -695,8 +704,8 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         }
     }
 
-    private void addEmittedBlockQuad(MutableQuadView quad) {
-        addMeshQuad(emittedBlockPose, quad, null, false, emittedBlockView, emittedBlockPos,
+    private void addEmittedBlockQuad(RtQuadView quad) {
+        addQuadView(emittedBlockPose, quad, null, false, emittedBlockView, emittedBlockPos,
                 emittedBlockState, emittedBlockOffsetX, emittedBlockOffsetY, emittedBlockOffsetZ);
     }
 
@@ -717,65 +726,13 @@ public final class RtEntityCollector implements SubmitNodeCollector {
         }
     }
 
-    /**
-     * FRAPI (fabric-renderer-api) reroutes every block-display model — the item-frame frame model
-     * included — through a Fabric mesh: {@code BlockStateModelWrapper.update} is overwritten to emit
-     * into the render state's {@code MutableMesh}, vanilla {@code modelParts} stays empty, and submit
-     * calls this interface-injected overload instead of the vanilla one. Fabric's default forwards
-     * only the (empty) parts list and silently drops the mesh, so without this override such models
-     * capture zero quads in RT.
-     */
-    @Override
-    public void submitBlockModel(PoseStack poseStack, Function<ChunkSectionLayer, RenderType> renderTypeByLayer,
-                                 boolean hasTranslucency, List<BlockStateModelPart> parts, Mesh mesh,
-                                 int[] tintLayers, int lightCoords, int overlayCoords, int outlineColor) {
-        if (capture == null) {
-            return;
-        }
-        if (!parts.isEmpty()) {
-            submitBlockModel(poseStack, renderTypeByLayer.apply(ChunkSectionLayer.SOLID), parts, tintLayers,
-                    lightCoords, overlayCoords, outlineColor);
-        }
-        addMeshQuads(poseStack, mesh, tintLayers, false);
-    }
-
-    /** Fabric item models can carry a mesh besides (or instead of) vanilla baked quads; the injected
-     *  default drops it the same way the block-model overload does. */
-    @Override
-    public void submitItem(PoseStack poseStack, ItemDisplayContext displayContext, int lightCoords,
-                           int overlayCoords, int outlineColor, int[] tintLayers, List<BakedQuad> quads,
-                           MeshView mesh, ItemStackRenderState.FoilType foilType) {
-        if (capture == null) {
-            return;
-        }
-        addQuads(poseStack.last().pose(), quads, tintLayers);
-        addMeshQuads(poseStack, mesh, tintLayers, true);
-    }
-
-    /** Capture a Fabric Renderer API mesh; each quad already carries final atlas UVs. */
-    private void addMeshQuads(PoseStack poseStack, MeshView mesh, int[] tintLayers, boolean itemMesh) {
-        if (mesh == null || mesh.size() == 0) {
-            return;
-        }
-        Matrix4f pose = poseStack.last().pose();
-        int idxStart = capture.idx.size();
-        long started = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
-        try {
-            capture.clearUvRemap();
-            mesh.forEach(quad -> addMeshQuad(pose, quad, tintLayers, itemMesh,
-                    null, null, null, 0f, 0f, 0f));
-        } finally {
-            RtFrameStats.FRAME.endStage("entity.capture.submit.bakedQuads", started);
-            countBakedOutput(idxStart);
-        }
-    }
-
-    private void addMeshQuad(Matrix4f pose, QuadView quad, int[] tintLayers, boolean itemMesh,
+    protected void addQuadView(Matrix4f pose, RtQuadView quad, int[] tintLayers, boolean itemMesh,
                              BlockAndTintGetter view, BlockPos pos, BlockState state,
                              float offsetX, float offsetY, float offsetZ) {
-        TextureAtlasSprite sprite = Minecraft.getInstance().getAtlasManager()
-                .getAtlasOrThrow(quad.atlas().getId()).spriteFinder().find(quad);
-        capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(quad.atlas().getTextureLocation());
+        TextureAtlasSprite sprite = Platform.get().quads()
+                .spriteLookup(Minecraft.getInstance().getAtlasManager().getAtlasOrThrow(quad.atlasId()))
+                .find(quad);
+        capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(quad.atlasTextureLocation());
         // Chunk-layer translucency denotes a block-derived dielectric; a blended item render type denotes
         // ordinary stochastic alpha when the quad did not come from such a layer.
         boolean transmissive = quad.chunkLayer() == ChunkSectionLayer.TRANSLUCENT;
@@ -811,7 +768,7 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     }
 
     /** Collapse Fabric's per-vertex colour into the flat per-primitive tint stored by the RT layout. */
-    private static int averageQuadColor(QuadView quad) {
+    protected static int averageQuadColor(RtQuadView quad) {
         int a = 0, r = 0, g = 0, b = 0;
         for (int i = 0; i < 4; i++) {
             int color = quad.color(i);
@@ -1082,7 +1039,4 @@ public final class RtEntityCollector implements SubmitNodeCollector {
     public void submitGizmoPrimitives(DrawableGizmoPrimitives.Group group, CameraRenderState camera, boolean onTop) {
     }
 
-    @Override
-    public <T extends SubmitNode> void submitCustom(SubmitRenderPhase<T> phase, T node) {
-    }
 }

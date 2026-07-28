@@ -50,6 +50,12 @@ public interface RtQuadView {
 	/** Which atlas this quad samples, so the caller can pick the right {@link SpriteLookup}. */
 	Identifier atlasId();
 
+	/**
+	 * That atlas's texture location — a different identifier from {@link #atlasId()}, and the one the
+	 * entity texture registry keys its bindless slots on.
+	 */
+	Identifier atlasTextureLocation();
+
 	/** Entity path only: the item render type carrying this quad, when there is one. */
 	@Nullable
 	RenderType itemRenderType();

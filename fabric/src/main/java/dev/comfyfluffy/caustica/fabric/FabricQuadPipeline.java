@@ -3,6 +3,7 @@ package dev.comfyfluffy.caustica.fabric;
 import dev.comfyfluffy.caustica.platform.BlockQuadSource;
 import dev.comfyfluffy.caustica.platform.QuadPipeline;
 import dev.comfyfluffy.caustica.platform.SpriteLookup;
+import dev.comfyfluffy.caustica.rt.entity.RtEntityCollectorBase;
 import dev.comfyfluffy.caustica.rt.terrain.RtSectionSnapshots;
 
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -25,5 +26,10 @@ final class FabricQuadPipeline implements QuadPipeline {
 	public RtSectionSnapshots.Region newRegion(ClientLevel level, int minSectionX, int minSectionY,
 			int minSectionZ, Object[] sections) {
 		return new FabricRegion(level, minSectionX, minSectionY, minSectionZ, sections);
+	}
+
+	@Override
+	public RtEntityCollectorBase newEntityCollector() {
+		return new FabricEntityCollector();
 	}
 }

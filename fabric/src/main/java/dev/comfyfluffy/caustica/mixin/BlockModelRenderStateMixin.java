@@ -2,7 +2,7 @@ package dev.comfyfluffy.caustica.mixin;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import dev.comfyfluffy.caustica.rt.entity.ContainedBlockSource;
-import dev.comfyfluffy.caustica.rt.entity.RtEntityCollector;
+import dev.comfyfluffy.caustica.rt.entity.RtEntityCollectorBase;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.block.BlockModelRenderState;
 import net.minecraft.world.level.block.state.BlockState;
@@ -50,7 +50,7 @@ public abstract class BlockModelRenderStateMixin implements ContainedBlockSource
     @Inject(method = "submit", at = @At("HEAD"), cancellable = true)
     private void caustica$captureForRt(PoseStack poseStack, SubmitNodeCollector submitNodeCollector,
                                        int externalLightCoords, int overlayCoords, int outlineColor, CallbackInfo ci) {
-        if (this.caustica$containedState == null || !(submitNodeCollector instanceof RtEntityCollector rt)) {
+        if (this.caustica$containedState == null || !(submitNodeCollector instanceof RtEntityCollectorBase rt)) {
             return;
         }
         // Apply whichever display transform the resolve set (normal vs special path), then re-emit the
