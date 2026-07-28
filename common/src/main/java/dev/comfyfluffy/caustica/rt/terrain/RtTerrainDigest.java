@@ -43,6 +43,17 @@ public final class RtTerrainDigest {
 	private static final Map<Long, Section> SECTIONS = new ConcurrentHashMap<>();
 	private static final AtomicBoolean DIRTY = new AtomicBoolean();
 	private static int ticksSinceDump;
+	/**
+	 * Consecutive dumps with an unchanged combined hash.
+	 *
+	 * <p>Without this the file gives no way to tell a settled capture from one taken mid-stream, and a
+	 * mid-stream capture is actively misleading rather than merely incomplete: a section meshed before its
+	 * neighbours arrive keeps faces that later get culled, so an unsettled baseline carries *more*
+	 * geometry than the truth and every later comparison reads as "lost triangles". Do not trust a dump
+	 * whose stableDumps is 0.
+	 */
+	private static int stableDumps;
+	private static long lastCombined;
 
 	private RtTerrainDigest() {
 	}
@@ -78,6 +89,8 @@ public final class RtTerrainDigest {
 	/** Drop everything, e.g. when terrain residency is fully cleared for a new world. */
 	public static void reset() {
 		SECTIONS.clear();
+		stableDumps = 0;
+		lastCombined = 0L;
 		DIRTY.set(true);
 	}
 
@@ -94,9 +107,14 @@ public final class RtTerrainDigest {
 	}
 
 	public static void dumpIfDirty() {
-		if (!enabled() || !DIRTY.getAndSet(false)) {
+		if (!enabled()) {
 			return;
 		}
+		// Deliberately not gated on the dirty flag. Stability is the whole point of this dump, and terrain
+		// settling is exactly when nothing is dirty any more — an early return here would freeze the file
+		// at stableDumps=0 precisely when it finally became trustworthy. The flag is also not a reliable
+		// change signal: a section re-meshed to identical content sets it. The combined hash is the truth.
+		DIRTY.set(false);
 		// Sort by coordinate so worker completion order cannot change the file.
 		List<Section> sorted = new ArrayList<>(SECTIONS.values());
 		sorted.sort(Comparator.comparingInt(Section::sy)
@@ -106,6 +124,12 @@ public final class RtTerrainDigest {
 		long combined = FNV_OFFSET;
 		for (Section s : sorted) {
 			combined = mix(combined, s.digest());
+		}
+		if (combined == lastCombined) {
+			stableDumps++;
+		} else {
+			stableDumps = 0;
+			lastCombined = combined;
 		}
 
 		Path file;
@@ -123,6 +147,9 @@ public final class RtTerrainDigest {
 			out.write("# caustica terrain digest\n");
 			out.write("# loader=" + Platform.get().loaderName() + " sections=" + sorted.size() + "\n");
 			out.write(String.format("# combined=%016x%n", combined));
+			// Wait for this to be non-zero before using a capture as a baseline. Zero means terrain was
+			// still re-meshing, and an unsettled capture has extra faces that later get culled.
+			out.write("# stableDumps=" + stableDumps + "\n");
 			out.write("# sx sy sz verts tris lights digest\n");
 			for (Section s : sorted) {
 				out.write(String.format("%d %d %d %d %d %d %016x%n",
@@ -132,8 +159,8 @@ public final class RtTerrainDigest {
 			CausticaMod.LOGGER.warn("Could not write the terrain digest to {}", file, e);
 			return;
 		}
-		CausticaMod.LOGGER.info("Terrain digest: {} sections, combined={} -> {}",
-				sorted.size(), String.format("%016x", combined), file);
+		CausticaMod.LOGGER.info("Terrain digest: {} sections, combined={}, stable for {} dump(s) -> {}",
+				sorted.size(), String.format("%016x", combined), stableDumps, file);
 	}
 
 	private static long hashFloats(long h, float[] values) {
