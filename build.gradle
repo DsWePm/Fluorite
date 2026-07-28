@@ -80,8 +80,32 @@ processResources {
 // glslangValidator, slangc, and spirv-val from the Vulkan SDK or PATH.
 def shaderGenRoot = layout.buildDirectory.dir("generated/shaders") // classpath root -> /caustica/rt/*.spv
 
+// Resolution order for each shader tool:
+//   1. -P<name>Path=<file-or-dir>, or the <NAME> environment variable — pins one specific binary.
+//   2. $VULKAN_SDK/Bin/<name>
+//   3. PATH
+//
+// The override exists because the Vulkan SDK's bundled slangc lags the standalone Slang releases, and
+// the world shaders need the four-parameter Ptr<T, Access, AddressSpace, Layout> form. That layout
+// argument is load-bearing (see shaders/world/world_common.slang:5-10 — without it WorldPush.sunDir
+// lands at offset 200 instead of the Java writer's 208 and silently reads garbage), so an older slangc
+// does not merely warn, it fails to parse world_common.slang at all:
+//   error 39999: too many arguments to call (got 4, expected 3)
+// Vulkan SDK 1.4.341.1 ships Slang 2026.1, which is too old; CI pins SDK 1.4.350.0. Point slangcPath at
+// a standalone Slang release (>= 2026.14 verified) when the local SDK's copy is behind.
 def resolveVulkanTool = { String name ->
 	def exe = org.gradle.internal.os.OperatingSystem.current().windows ? ".exe" : ""
+	def override = findProperty("${name}Path") ?: System.getenv(name.toUpperCase(java.util.Locale.ROOT))
+	if (override) {
+		def overrideFile = file(override.toString())
+		if (overrideFile.isDirectory()) {
+			overrideFile = new File(overrideFile, "${name}${exe}")
+		}
+		if (!overrideFile.isFile()) {
+			throw new GradleException("Configured ${name} override '${override}' is not an executable file")
+		}
+		return overrideFile.absolutePath
+	}
 	def sdk = System.getenv("VULKAN_SDK")
 	if (sdk) {
 		def fromSdk = file("${sdk}/Bin/${name}${exe}")
@@ -293,8 +317,14 @@ if (requestedNgxPlatformsRaw.size() == 1 && requestedNgxPlatformsRaw[0].equalsIg
 	selectedNgxNativePlatforms = requestedNgxPlatformsRaw.collect { ngxNativePlatformByName[it] }
 }
 
-def dlssSdkEnv = providers.environmentVariable("DLSS_SDK")
-def dlssSdkRootProvider = dlssSdkEnv.map { file(it) }
+// DLSS SDK location. `-PdlssSdk=<dir>` (or a `dlssSdk` entry in gradle.properties) wins over the
+// DLSS_SDK environment variable. The property form exists because a long-lived Gradle daemon keeps the
+// environment it was started with, so a newly-exported DLSS_SDK stays invisible until the daemon is
+// restarted — which surfaces as this task failing with "DLSS_SDK is not set" right after you set it.
+def dlssSdkProperty = findProperty("dlssSdk")
+def dlssSdkRootProvider = dlssSdkProperty != null
+		? providers.provider { file(dlssSdkProperty.toString()) }
+		: providers.environmentVariable("DLSS_SDK").map { file(it) }
 
 def bundleNgxNatives = tasks.register("bundleNgxNatives") {
 	group = "build"
@@ -319,7 +349,9 @@ def bundleNgxNatives = tasks.register("bundleNgxNatives") {
 		def missing = []
 		def dlssSdkRoot = dlssSdkRootProvider.orNull
 		if (dlssSdkRoot == null) {
-			throw new GradleException("DLSS_SDK environment variable is not set.")
+			throw new GradleException("DLSS SDK location is not configured. Set -PdlssSdk=<dir>, a dlssSdk "
+					+ "entry in gradle.properties, or the DLSS_SDK environment variable. If you just exported "
+					+ "DLSS_SDK, run './gradlew --stop' first — the daemon caches the environment it started with.")
 		}
 		selectedNgxNativePlatforms.each { platform ->
 			def platformShimFiles = fileTree(ngxShimOutDir) {
