@@ -18,7 +18,8 @@
 		]
 	},
 	"mixins": [
-		"caustica.mixins.json"
+		"caustica-common.mixins.json",
+		"caustica-fabric.mixins.json"
 	],
 	"depends": {
 		"fabricloader": ">=0.19.3",

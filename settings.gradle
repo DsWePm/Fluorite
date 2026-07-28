@@ -4,9 +4,19 @@ pluginManagement {
 			name = "Fabric"
 			url = "https://maven.fabricmc.net/"
 		}
+		maven {
+			name = "NeoForged"
+			url = "https://maven.neoforged.net/releases"
+		}
 		mavenCentral()
 		gradlePluginPortal()
 	}
 }
 
 rootProject.name = "caustica"
+
+// `common` is intentionally absent: it is a plain shared source directory, not a Gradle project. Each
+// loader module adds common/src via srcDir so the shared code is compiled against that loader's own
+// Minecraft artifact. See the comment at the top of build.gradle.
+include "fabric"
+include "neoforge"

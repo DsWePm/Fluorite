@@ -1,0 +1,121 @@
+plugins {
+	id "fabric-loom" version "${loom_version}"
+	id "maven-publish"
+}
+
+version = rootProject.mod_version
+group = rootProject.maven_group
+
+base {
+	archivesName = rootProject.archives_base_name
+}
+
+repositories {
+	maven {
+		name = "Fabric"
+		url = "https://maven.fabricmc.net/"
+	}
+	mavenCentral()
+}
+
+// Shared sources live in common/ and are compiled here against Fabric's Minecraft artifact.
+sourceSets {
+	main {
+		java.srcDir rootProject.file("common/src/main/java")
+		resources.srcDir rootProject.file("common/src/main/resources")
+	}
+	test {
+		java.srcDir rootProject.file("common/src/test/java")
+	}
+}
+
+loom {
+	runs {
+		client {
+			client()
+			setConfigName("Fabric Client")
+			ideConfigGenerated = true
+			runDir = "../run"
+			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
+			vmArg "--enable-native-access=ALL-UNNAMED"
+
+			// NVIDIA NGX (DLSS) allocates ~1MB on the stack during init, which overflows Java's default 1MB thread stack.
+			// pass -Xss here directly so the main render thread is resized before the VM parses JAVA_TOOL_OPTIONS.
+			vmArg "-Xss16m"
+
+			// NixOS fix: Gradle forks drop the dev-shell's LD_LIBRARY_PATH.
+			// We manually add the driver path so NGX can successfully dlopen libnvidia-ngx.so.1.
+			if (file("/run/opengl-driver/lib").exists()) {
+				def inherited = System.getenv("LD_LIBRARY_PATH")
+				environmentVariable "LD_LIBRARY_PATH",
+						inherited ? "/run/opengl-driver/lib:${inherited}" : "/run/opengl-driver/lib"
+			}
+		}
+
+		server {
+			server()
+			setConfigName("Fabric Server")
+			ideConfigGenerated = true
+			runDir = "../run"
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${rootProject.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${rootProject.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${rootProject.fabric_api_version}"
+	testImplementation platform("org.junit:junit-bom:5.12.2")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+
+	// Layered TOML config (config/caustica.toml) — NightConfig, the same library NeoForge's
+	// ModConfigSpec is built on. Jar-in-Jar'd here because Fabric ships no copy of its own.
+	include implementation("com.electronwill.night-config:core:3.8.3")
+	include implementation("com.electronwill.night-config:toml:3.8.3")
+}
+
+// Generated artifacts from the root project. Depended on by task path rather than by task object so
+// this module never touches rootProject.tasks during configuration.
+sourceSets.main.java.srcDir(files(rootProject.ext.causticaShaderRecordsDir).builtBy(":generateShaderRecords"))
+// Emit the .spv into the main resources so they land in the jar / on the runClient classpath at the
+// same /caustica/rt/ path the loader (RtPipeline) reads.
+sourceSets.main.resources.srcDir(files(rootProject.ext.causticaShaderSpirvDir).builtBy(":compileShaders"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.causticaNgxNativesDir).builtBy(":bundleNgxNatives"))
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": inputs.properties.version
+	}
+}
+
+tasks.named("test", Test) {
+	useJUnitPlatform()
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+	withSourcesJar()
+}
+
+tasks.named("jar", Jar).configure {
+	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md")) {
+		into "META-INF"
+	}
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			artifactId = rootProject.archives_base_name
+			from components.java
+		}
+	}
+}

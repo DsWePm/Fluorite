@@ -4,8 +4,6 @@
 	"package": "dev.comfyfluffy.caustica.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"BlockModelRenderStateMixin",
-		"BlockModelResolverMixin",
 		"CommandEncoderAccessor",
 		"GameRendererMixin",
 		"GpuDeviceAccessor",

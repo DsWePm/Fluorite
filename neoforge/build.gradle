@@ -1,0 +1,90 @@
+plugins {
+	id "net.neoforged.moddev" version "${moddevgradle_version}"
+	id "maven-publish"
+}
+
+version = rootProject.mod_version
+group = rootProject.maven_group
+
+base {
+	archivesName = "${rootProject.archives_base_name}-neoforge"
+}
+
+repositories {
+	mavenCentral()
+}
+
+neoForge {
+	version = rootProject.neoforge_version
+
+	runs {
+		client {
+			client()
+			gameDirectory = rootProject.file("run-neoforge")
+
+			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
+			jvmArgument "--enable-native-access=ALL-UNNAMED"
+
+			// NVIDIA NGX (DLSS) allocates ~1MB on the stack during init, which overflows Java's default
+			// 1MB thread stack. This must be passed here, not via JAVA_TOOL_OPTIONS: the main render
+			// thread has to be sized before the VM parses that variable. Dropping it does not produce a
+			// readable error — NGX init dies with a StackOverflowError whose trace names nothing useful.
+			jvmArgument "-Xss16m"
+		}
+	}
+
+	mods {
+		caustica {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+// M0 SKELETON. This module deliberately does NOT yet add common/src to its source sets: the shared code
+// still carries Fabric imports and a Fabric Renderer API geometry path, so it cannot compile here until
+// the platform abstraction lands. Wiring it up is M3's job, at which point this file gains the same
+// three srcDir blocks fabric/build.gradle has, and neoforge.mods.toml gains caustica-common.mixins.json.
+//
+// Until then the module exists to keep the NeoForge half of the toolchain honest — ModDevGradle
+// resolves, the NeoForge artifact resolves, neoforge.mods.toml parses, and a @Mod class compiles.
+
+dependencies {
+	// NightConfig is NOT jarJar'd here: NeoForge's own ModConfigSpec is built on it and ships it, which
+	// is exactly why CausticaConfig was written against NightConfig in the first place. Verify the
+	// shipped version stays API-compatible with the 3.8.3 the Fabric module bundles.
+	compileOnly "com.electronwill.night-config:core:3.8.3"
+	compileOnly "com.electronwill.night-config:toml:3.8.3"
+}
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("META-INF/neoforge.mods.toml") {
+		expand "version": inputs.properties.version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+	withSourcesJar()
+}
+
+tasks.named("jar", Jar).configure {
+	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md")) {
+		into "META-INF"
+	}
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			artifactId = "${rootProject.archives_base_name}-neoforge"
+			from components.java
+		}
+	}
+}

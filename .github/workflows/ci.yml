@@ -14,7 +14,9 @@ on:
       - "gradlew.bat"
       - "native/**"
       - "shaders/**"
-      - "src/**"
+      - "common/**"
+      - "fabric/**"
+      - "neoforge/**"
   pull_request:
     paths:
       - ".github/workflows/**"
@@ -26,7 +28,9 @@ on:
       - "gradlew.bat"
       - "native/**"
       - "shaders/**"
-      - "src/**"
+      - "common/**"
+      - "fabric/**"
+      - "neoforge/**"
 
 env:
   DLSS_SDK_REF: v310.7.0

@@ -1,0 +1,13 @@
+{
+	"required": true,
+	"minVersion": "0.8",
+	"package": "dev.comfyfluffy.caustica.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"BlockModelRenderStateMixin",
+		"BlockModelResolverMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

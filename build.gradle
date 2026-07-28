@@ -2,79 +2,14 @@ import javax.inject.Inject
 import org.gradle.process.ExecOperations
 import dev.comfyfluffy.caustica.build.GenerateShaderRecords
 
-plugins {
-	id "fabric-loom" version "${loom_version}"
-	id "maven-publish"
-}
-
-version = project.mod_version
-group = project.maven_group
-
-base {
-	archivesName = project.archives_base_name
-}
-
-repositories {
-	maven {
-		name = "Fabric"
-		url = "https://maven.fabricmc.net/"
-	}
-	mavenCentral()
-}
-
-loom {
-	runs {
-		client {
-			client()
-			setConfigName("Fabric Client")
-			ideConfigGenerated = true
-			runDir = "run"
-			// java.lang.foreign restricted methods (FFM bindings to amd_fidelityfx_vk.dll)
-			vmArg "--enable-native-access=ALL-UNNAMED"
-
-            // NVIDIA NGX (DLSS) allocates ~1MB on the stack during init, which overflows Java's default 1MB thread stack.
-            // pass -Xss here directly so the main render thread is resized before the VM parses JAVA_TOOL_OPTIONS.
-            vmArg "-Xss16m"
-
-            // NixOS fix: Gradle forks drop the dev-shell's LD_LIBRARY_PATH.
-            // We manually add the driver path so NGX can successfully dlopen libnvidia-ngx.so.1.
-            if (file("/run/opengl-driver/lib").exists()) {
-                def inherited = System.getenv("LD_LIBRARY_PATH")
-                environmentVariable "LD_LIBRARY_PATH",
-                        inherited ? "/run/opengl-driver/lib:${inherited}" : "/run/opengl-driver/lib"
-            }
-		}
-
-		server {
-			server()
-			setConfigName("Fabric Server")
-			ideConfigGenerated = true
-			runDir = "run"
-		}
-	}
-}
-
-dependencies {
-	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
-	testImplementation platform("org.junit:junit-bom:5.12.2")
-	testImplementation "org.junit.jupiter:junit-jupiter"
-	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
-
-	// Layered TOML config (config/caustica.toml) — NightConfig, the same library NeoForge's
-	// ModConfigSpec is built on.
-	include implementation("com.electronwill.night-config:core:3.8.3")
-	include implementation("com.electronwill.night-config:toml:3.8.3")
-}
-
-processResources {
-	inputs.property "version", project.version
-
-	filesMatching("fabric.mod.json") {
-		expand "version": inputs.properties.version
-	}
-}
+// Root project. Owns the three build steps that are identical for every mod loader — SPIR-V
+// compilation, the Slang-reflection Java record generator, and the NGX native bundle — and applies no
+// loader plugin of its own. The mod jars are produced by the `fabric` and `neoforge` subprojects, which
+// both compile the shared sources under common/ and consume this project's generated directories.
+//
+// `common/` is deliberately NOT a Gradle subproject: it is a plain source directory that each loader
+// module adds via srcDir, so the shared code compiles against that loader's own Minecraft artifact
+// rather than relying on the two toolchains producing binary-compatible jars.
 
 // Compile GLSL and Slang sources to SPIR-V at build time instead of tracking binaries. Requires
 // glslangValidator, slangc, and spirv-val from the Vulkan SDK or PATH.
@@ -227,16 +162,6 @@ def generateShaderRecords = tasks.register("generateShaderRecords", GenerateShad
 	spirvVal = resolveVulkanTool("spirv-val")
 	outDir = layout.buildDirectory.dir("generated/sources/shaderRecords")
 }
-
-tasks.named("test", Test) {
-	useJUnitPlatform()
-}
-
-sourceSets.main.java.srcDir(files(layout.buildDirectory.dir("generated/sources/shaderRecords")).builtBy(generateShaderRecords))
-
-// Emit the .spv into the main resources so they land in the jar / on the runClient classpath at the
-// same /caustica/rt/ path the loader (RtPipeline/RtBlendPipeline) reads. builtBy wires the dependency.
-sourceSets.main.resources.srcDir(files(shaderGenRoot).builtBy(compileShaders))
 
 def ngxNativeGenRoot = layout.buildDirectory.dir("generated/ngx-natives")
 def requestedTaskNames = gradle.startParameter.taskNames.collect { it.toLowerCase(java.util.Locale.ROOT) }
@@ -393,29 +318,11 @@ def bundleNgxNatives = tasks.register("bundleNgxNatives") {
 	}
 }
 
-sourceSets.main.resources.srcDir(files(ngxNativeGenRoot).builtBy(bundleNgxNatives))
-
-tasks.withType(JavaCompile).configureEach {
-	it.options.release = 25
-}
-
-java {
-	sourceCompatibility = JavaVersion.VERSION_25
-	targetCompatibility = JavaVersion.VERSION_25
-	withSourcesJar()
-}
-
-tasks.named("jar", Jar).configure {
-	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md")) {
-		into "META-INF"
-	}
-}
-
-publishing {
-	publications {
-		create("mavenJava", MavenPublication) {
-			artifactId = project.archives_base_name
-			from components.java
-		}
-	}
+// Directories the loader modules wire into their own source sets. The task objects stay private to this
+// project; subprojects depend on them by task path (":compileShaders" etc.) so they never reach into
+// rootProject.tasks at configuration time.
+ext {
+	causticaShaderSpirvDir = shaderGenRoot
+	causticaShaderRecordsDir = layout.buildDirectory.dir("generated/sources/shaderRecords")
+	causticaNgxNativesDir = ngxNativeGenRoot
 }
