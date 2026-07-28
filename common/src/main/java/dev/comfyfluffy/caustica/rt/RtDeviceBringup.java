@@ -463,6 +463,27 @@ public final class RtDeviceBringup {
      * the OMM engine arrived together in Ada — so {@code caustica.rt.omm.force} overrides it for a device
      * known to be fine.
      */
+    /**
+     * Whether opacity micromaps are worth enabling on this device.
+     *
+     * <p>The reordering hint is a good proxy <em>on NVIDIA</em>, where the OMM engine and the reordering
+     * hardware both arrived in Ada, and where the pre-Ada software path is catastrophic rather than merely
+     * slow. It says nothing about any other vendor, so it must not be allowed to veto OMM on one: a part
+     * that ships {@code VK_EXT_opacity_micromap} without ever shipping an NVIDIA-driven reordering
+     * extension would be silently denied a feature it may well accelerate.
+     *
+     * <p>No non-NVIDIA GPU exposes the OMM extension at the time of writing, so this branch is
+     * future-proofing rather than a live path. If a counter-example turns up — a vendor emulating OMM in
+     * software the way pre-Ada NVIDIA does — it wants its own evidence, not this heuristic stretched to
+     * cover it.
+     */
+    private static boolean ommLikelyAccelerated(VulkanPhysicalDevice physicalDevice, boolean reorders) {
+        if (!"NVIDIA".equals(physicalDevice.vendorName())) {
+            return true;
+        }
+        return reorders;
+    }
+
     private static boolean deviceReorders(VulkanPhysicalDevice physicalDevice) {
         if (!physicalDevice.hasDeviceExtension(VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME)) {
             // No reorder extension at all, so no evidence either way. Every device known to accelerate
@@ -511,14 +532,15 @@ public final class RtDeviceBringup {
             boolean reorders = hasSerExt && deviceReorders(physicalDevice);
             boolean hasOmmExt = physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
             boolean ommForced = CausticaConfig.Rt.Omm.FORCE.value();
-            if (ommRequested() && hasOmmExt && !reorders && !ommForced && !loggedOmmSoftware) {
+            boolean ommAccelerated = ommLikelyAccelerated(physicalDevice, reorders);
+            if (ommRequested() && hasOmmExt && !ommAccelerated && !ommForced && !loggedOmmSoftware) {
                 loggedOmmSoftware = true;
                 CausticaMod.LOGGER.info("Opacity micromaps: extension is present but this device reports SER "
                         + "reordering hint NONE, so OMM is very likely software-emulated here. Skipping it — the "
                         + "software path makes AS builds stall for seconds and trips Minecraft's 5s semaphore "
                         + "wait. Override with -Dcaustica.rt.omm.force=true.");
             }
-            boolean queryOmm = ommRequested() && hasOmmExt && (reorders || ommForced);
+            boolean queryOmm = ommRequested() && hasOmmExt && (ommAccelerated || ommForced);
             if (queryOmm) {
                 OMM_FEATURE.struct().findOrCreateStructInPNextChain(available, stack);
             }
