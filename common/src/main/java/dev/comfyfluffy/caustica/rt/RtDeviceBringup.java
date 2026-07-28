@@ -22,6 +22,7 @@ import org.lwjgl.vulkan.VkPhysicalDeviceRayTracingPipelinePropertiesKHR;
 import org.lwjgl.vulkan.VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR;
 import org.lwjgl.vulkan.VkPhysicalDeviceRayQueryFeaturesKHR;
 import org.lwjgl.vulkan.VkPhysicalDeviceRayTracingInvocationReorderFeaturesEXT;
+import org.lwjgl.vulkan.VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT;
 import org.lwjgl.vulkan.VkPhysicalDeviceFeatures;
 import org.lwjgl.vulkan.VkPhysicalDeviceVulkan12Features;
 import org.lwjgl.vulkan.VkPhysicalDeviceOpacityMicromapFeaturesEXT;
@@ -115,6 +116,14 @@ public final class RtDeviceBringup {
     private static volatile boolean rtRequested;
     private static volatile SerBackend serBackend = SerBackend.NONE;
     private static volatile boolean ommEnabled; // VK_EXT_opacity_micromap actually enabled on the device
+    // SER reordering hint reported by the device: REORDER means the hardware genuinely reorders, NONE
+    // means the extension exists but the reordered shader variant buys nothing. Doubles as the proxy for
+    // whether opacity micromaps are hardware-accelerated here (see ommHardwareAccelerated).
+    private static volatile int serReorderingHint;
+    // VkRayTracingInvocationReorderModeEXT. LWJGL 3.4.1 generates the sTypes for this extension but not
+    // its mode enum, so the spec values are spelled out here.
+    private static final int REORDER_MODE_NONE = 0;
+    private static final int REORDER_MODE_REORDER = 1;
     private static volatile boolean reflexEnabled; // VK_NV_low_latency2 actually enabled on the device
     private static volatile boolean presentIdEnabled; // VK_KHR_present_id actually enabled on the device
     private static volatile boolean wideLinesEnabled; // VkPhysicalDeviceFeatures.wideLines actually enabled
@@ -427,6 +436,48 @@ public final class RtDeviceBringup {
         return CausticaConfig.Rt.Omm.ENABLED.value();
     }
 
+    /**
+     * Whether this device is expected to run opacity micromaps on dedicated hardware.
+     *
+     * <p>Vulkan has no "is this extension hardware-accelerated" query, and {@code VK_EXT_opacity_micromap}
+     * is advertised well below the NVIDIA generation that actually has the engine for it. Enabling it
+     * there is not a mild pessimisation — the driver's software path turns acceleration-structure builds
+     * into multi-second stalls and Minecraft's own 5s semaphore wait then kills the client. Measured on an
+     * RTX 2080: 22 seconds in-world with OMM on and 9 sections tessellated, versus no crash at all and
+     * full 1023-section residency with it off.
+     *
+     * <p>The proxy is SER's reordering hint. {@code VK_EXT_ray_tracing_invocation_reorder} reports
+     * {@code REORDER} only on hardware that genuinely reorders, which on NVIDIA is the same Ada-and-later
+     * line that carries the OMM engine; pre-Ada parts advertise the extension but report {@code NONE}.
+     * It is a correlation, not a guarantee, so {@code caustica.rt.omm.force} overrides it for a device
+     * known to be fine.
+     */
+    private static boolean ommHardwareAccelerated(VulkanPhysicalDevice physicalDevice) {
+        if (!physicalDevice.hasDeviceExtension(VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME)) {
+            // No reorder extension at all: no evidence either way, and every device known to accelerate
+            // OMM also exposes it. Treat as not accelerated.
+            return false;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT reorderProps =
+                    VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT.calloc(stack).sType$Default();
+            VkPhysicalDeviceProperties2 props = VkPhysicalDeviceProperties2.calloc(stack).sType$Default()
+                    .pNext(reorderProps.address());
+            VK12.vkGetPhysicalDeviceProperties2(physicalDevice.vkPhysicalDevice(), props);
+            serReorderingHint = reorderProps.rayTracingInvocationReorderReorderingHint();
+            return serReorderingHint == REORDER_MODE_REORDER;
+        }
+    }
+
+    /**
+     * The device's SER reordering hint, as reported at bring-up: {@code REORDER} means the hardware
+     * genuinely reorders, {@code NONE} means the extension is present but the shader variant buys nothing.
+     * Worth knowing before attributing any performance result to SER.
+     */
+    public static boolean serActuallyReorders() {
+        return serReorderingHint == REORDER_MODE_REORDER;
+    }
+
     private static boolean reflexRequested() {
         return CausticaConfig.Rt.Reflex.ENABLED.value();
     }
@@ -445,8 +496,19 @@ public final class RtDeviceBringup {
                 SER_EXT_FEATURE.struct().findOrCreateStructInPNextChain(available, stack);
             }
 
+            boolean ommForced = CausticaConfig.Rt.Omm.FORCE.value();
+            boolean ommAccelerated = physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)
+                    && ommHardwareAccelerated(physicalDevice);
+            if (ommRequested() && !ommAccelerated && !ommForced
+                    && physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)) {
+                CausticaMod.LOGGER.info("Opacity micromaps: extension is present but this device reports SER "
+                        + "reordering hint NONE, so OMM is very likely software-emulated here. Skipping it — the "
+                        + "software path makes AS builds stall for seconds and trips Minecraft's 5s semaphore "
+                        + "wait. Override with -Dcaustica.rt.omm.force=true.");
+            }
             boolean queryOmm = ommRequested()
-                    && physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
+                    && physicalDevice.hasDeviceExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)
+                    && (ommAccelerated || ommForced);
             if (queryOmm) {
                 OMM_FEATURE.struct().findOrCreateStructInPNextChain(available, stack);
             }
@@ -598,6 +660,12 @@ public final class RtDeviceBringup {
         List<String> optionalExtensions = supportedOptionalExtensions(physicalDevice, support);
         CausticaMod.LOGGER.info(
                 "Ray tracing: enabling {}{}{} + features [bufferDeviceAddress, accelerationStructure, rayTracingPipeline, rayQuery, SER={}"
+                        // The reordering hint is what says whether SER does anything: a device can advertise
+                        // the extension and still report NONE, in which case the reordered raygen variant is
+                        // running for no benefit. Worth knowing before crediting SER with a measurement.
+                        + (support.serBackend == SerBackend.EXT
+                                ? "(hint=" + (serReorderingHint == REORDER_MODE_REORDER ? "REORDER" : "NONE") + ")"
+                                : "")
                         + (wideLinesEnabled ? ", wideLines(max=" + maxLineWidth + ")" : "")
                         + (ommEnabled ? ", opacityMicromap" : "") + "] + overlayMsaa=" + overlayMsaaSamples + "x on [{}]",
                 RT_EXTENSIONS, serBackend.extensionName == null ? "" : " + " + serBackend.extensionName,

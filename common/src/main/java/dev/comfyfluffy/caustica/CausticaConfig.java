@@ -591,6 +591,14 @@ public final class CausticaConfig {
 
         public static final class Omm {
             public static final BooleanSetting ENABLED = bool("caustica.rt.omm", "omm.enabled", true);
+
+            /** Enable opacity micromaps even when the device looks like it would emulate them in software.
+             * The extension is advertised well below the NVIDIA generation that has the engine for it, and
+             * on those parts the driver's software path stalls acceleration-structure builds for seconds —
+             * long enough to trip Minecraft's 5s semaphore wait and kill the client. Bring-up therefore
+             * skips OMM unless the device reports a real SER reordering hint; set this to override that
+             * for a device known to be fine. */
+            public static final BooleanSetting FORCE = bool("caustica.rt.omm.force", "omm.force", false);
             public static final IntSetting SUBDIVISION =
                     clampedInt("caustica.rt.ommSubdivision", "omm.subdivision", 4, 0, 6);
             public static final BooleanSetting STATS = bool("caustica.rt.ommStats", "omm.stats", false);
