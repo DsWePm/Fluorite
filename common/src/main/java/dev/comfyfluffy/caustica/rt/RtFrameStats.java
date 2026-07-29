@@ -31,6 +31,12 @@ public final class RtFrameStats {
 
     // trackGc: per-frame GC deltas (collection count + reported pause ms) help distinguish JVM pauses from
     // uninstrumented render work when a hitch's unaccounted time is large.
+    //
+    // Call sites name these scopes by string literal and stage() throws on an unknown one, so a scope that
+    // is renamed or added at the call site without being added here makes the renderer throw once per frame
+    // — but only when stats are switched on, which is never during ordinary play. That is exactly how
+    // frame.tracePrimary/frame.traceIndirect (the two-pass split of the old frame.trace) and
+    // terrain.lightGridPublish came to be missing. Adding a stage() call means adding the name here.
     public static final Profile FRAME = new Profile("frame",
             new String[] {
                     "terrain.windowSync",
@@ -38,6 +44,7 @@ public final class RtFrameStats {
                     "terrain.drainCompletion",
                     "terrain.snapshotDispatch",
                     "terrain.publish",
+                    "terrain.lightGridPublish",
                     "entity.capture",
                     "entity.capture.extract",
                     "entity.capture.submit",
@@ -63,7 +70,8 @@ public final class RtFrameStats {
                     "entity.blasRecord",
                     "frame.prepareTlas",
                     "frame.recordTlas",
-                    "frame.trace",
+                    "frame.tracePrimary",
+                    "frame.traceIndirect",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",
