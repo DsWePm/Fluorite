@@ -47,6 +47,15 @@ loom {
 			// does nothing, which looks exactly like the mod being broken. Forced here so the two loaders'
 			// run configs say the same thing; the NeoForge side has carried this since it was written.
 			programArgs "--graphicsBackend", "VULKAN"
+
+			// Benchmarks have to name their resolution. Without this a capture describes whatever size the
+			// window happened to be — the first cost figures taken for the volumetrics work were at
+			// 427x240 render / 854x480 output, while every budget in the plan is written for 1440p, and
+			// nothing in the numbers said so. Opt in with:
+			//   ./gradlew :fabric:runClient -PbenchWidth=2560 -PbenchHeight=1440
+			if (project.hasProperty("benchWidth") && project.hasProperty("benchHeight")) {
+				programArgs "--width", project.benchWidth, "--height", project.benchHeight
+			}
 			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
 			vmArg "--enable-native-access=ALL-UNNAMED"
 
