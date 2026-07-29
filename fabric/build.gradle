@@ -36,6 +36,17 @@ loom {
 			setConfigName("Fabric Client")
 			ideConfigGenerated = true
 			runDir = "../run"
+
+			// Loads the fixed test world straight from the launch, so a digest or frameStats capture is one
+			// command rather than a command plus a human clicking through the menu. The comparison only means
+			// anything if both loaders open the same save at the same spawn.
+			programArgs "--quickPlaySingleplayer", "Shader Testing Java"
+
+			// The renderer only exists on the Vulkan backend, and options.txt defaults to "default", which
+			// does not reliably resolve to Vulkan — the client then comes up on OpenGL and Caustica silently
+			// does nothing, which looks exactly like the mod being broken. Forced here so the two loaders'
+			// run configs say the same thing; the NeoForge side has carried this since it was written.
+			programArgs "--graphicsBackend", "VULKAN"
 			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
 			vmArg "--enable-native-access=ALL-UNNAMED"
 
