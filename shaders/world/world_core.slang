@@ -58,6 +58,10 @@ public static const float INV_PI = 0.31830988618;
 // as worldPush.lightDir / worldPush.lightRadiance / worldPush.sunDir.
 public static const float SURF_BIAS = 0.005;  // offset secondary-ray origins along the normal (anti-acne)
 public static const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset already clears the surface
+// How far a ray may travel before it is treated as having escaped. Named because it is not only a tmax:
+// a ray that escapes still travelled this far through whatever medium it was in, and the segment
+// attenuation has to use the same distance the trace did or the two silently drift apart.
+public static const float RAY_FAR = 10000.0;
 
 // Water is a smooth dielectric. IOR 1.333; absorption is per-block Beer-Lambert extinction.
 public static const float WATER_IOR = 1.333;

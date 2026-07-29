@@ -78,12 +78,30 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // SER lifetime phase: keep paths that are not roulette-eligible, paths that may terminate via
         // roulette, and paths guaranteed to end at the bounce cap in separate coherence groups.
         uint pathPhaseHint = bounce >= maxBounces ? 2u : (bounce >= rrStart ? 1u : 0u);
-        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0,
+        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, RAY_FAR,
                                showCelestial, rayConeWidth, rayConeSpread, pathPhaseHint);
 #else
-        traceRadiance(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0,
+        traceRadiance(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, RAY_FAR,
                       showCelestial, rayConeWidth, rayConeSpread);
 #endif
+
+        // Beer-Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
+        // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
+        // lies within it), shifting the transmitted radiance with distance. Air's extinction is zero, so
+        // the ordinary case costs one comparison.
+        //
+        // This runs before the escape test, not after. A ray that reaches the sky still travelled through
+        // whatever it was in to get there, and attenuating only the segments that end on geometry meant
+        // looking up from underwater showed an unattenuated sky. A segment that escaped covered the whole
+        // ray, hence RAY_FAR — the same distance the trace above used as its tmax.
+        //
+        // It matters more than the underwater case: the sky-facing segment is exactly the one an
+        // environment medium has the most of, so any volumetric term added here has to sit on this side of
+        // the break or it will be missing from precisely the direction it is most visible in.
+        float segmentEnd = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
+        if (any(medium.current.extinction > 0.0)) {
+            throughput *= exp(-medium.current.extinction * segmentEnd);
+        }
 
         if (payload.hitT < 0.0) {
             // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into payload.albedo. The
@@ -91,14 +109,6 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float3 sky = payload.albedo;
             L += throughput * sky; // escaped to sky
             break;
-        }
-
-        // Beer–Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
-        // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
-        // lies within it), shifting the transmitted radiance with distance. Air's extinction is zero, so
-        // the ordinary case costs one comparison.
-        if (any(medium.current.extinction > 0.0)) {
-            throughput *= exp(-medium.current.extinction * payload.hitT);
         }
 
         float3 n = payload.normal; // oriented toward the incoming ray by the closest-hit
@@ -199,7 +209,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float ndl = abs(signedNdl);
             if (ndl > 0.0) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
-                float3 vis = visibility(shadowOrigin, lightDir, 10000.0).transmittance;
+                float3 vis = visibility(shadowOrigin, lightDir, RAY_FAR).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                     L += throughput * albedo * INV_PI * worldPush.lightRadiance.xyz * ndl * vis;
                 }
@@ -274,7 +284,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         }
         float ndl = max(0.0, dot(n, lightDir));
         if (ndl > 0.0) {
-            VisibilityResult shadow = visibility(p, lightDir, 10000.0);
+            VisibilityResult shadow = visibility(p, lightDir, RAY_FAR);
             float3 vis = shadow.transmittance;
             // Underwater receiver whose shadow ray crossed a water surface: scale the direct light by
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
@@ -317,7 +327,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float backNdl = max(0.0, dot(-n, lightDir));
             if (backNdl > 0.0) {
-                VisibilityResult shadowBack = visibility(hitPos - n * SURF_BIAS, lightDir, 10000.0);
+                VisibilityResult shadowBack = visibility(hitPos - n * SURF_BIAS, lightDir, RAY_FAR);
                 float3 visB = shadowBack.transmittance;
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.
