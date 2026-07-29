@@ -259,10 +259,11 @@ public float2 unpackHalf2(uint p) {
 // can reflect its true std430 stride — segment.slang imports world_core, whose set-0 bindings would
 // collide with the probe's.
 //
-// Every field after ro is a uint, so std430 gives the struct 16-byte alignment and an exact 48-byte
-// stride. That is not slack: 48 is already a multiple of 16, so one more uint rounds the record up to
-// 64, and at 1440p with two records per pixel that is +118 MB rather than +29 MB. See
-// RtPathSegmentLayoutTest before adding a field; pathFlags has spare bits and they are much cheaper.
+// std430 gives the struct 16-byte alignment, so its stride is 48: eight uints after ro come to 44 bytes
+// and the last four are tail padding. That padding is the only room there is — a tenth uint fills it, an
+// eleventh rounds the stride to 64, and at 1440p with two records per pixel that step costs +118 MB
+// rather than the +29 MB one uint suggests. See RtPathSegmentLayoutTest before spending it; pathFlags
+// has spare bits above 11 and those are free.
 public struct PackedPathSegment {
     public float3 ro;
     public uint rd;
@@ -273,5 +274,4 @@ public struct PackedPathSegment {
     public uint rayCone;
     public uint seed;
     public uint pathFlags;
-    public uint nextRecord;
 };

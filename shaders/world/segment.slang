@@ -46,7 +46,11 @@ public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, Medi
 // cannot import this file, because it reaches world_core and its set-0 bindings would collide with the
 // probe's own. Pack and unpack stay here, next to the PathSegment they translate.
 
-public static const uint PATH_NO_NEXT = 0xffffffffu;
+// Whether a second record follows this one. It used to be a whole uint holding an index, but the index
+// was only ever baseRecordCount + pixelIndex, and the indirect pass computes both from its own dispatch
+// — so the record carried 32 bits to say something worth one. See PackedPathSegment for what a lane is
+// worth here.
+public static const uint PATH_HAS_NEXT = 1u << 11u;
 
 public float2 octEncode(float3 direction) {
     float3 n = direction / max(abs(direction.x) + abs(direction.y) + abs(direction.z), 1.0e-20);
@@ -96,7 +100,7 @@ public float3 unpackRgb9e5(uint p) {
     return float3(p & 0x1ffu, (p >> 9u) & 0x1ffu, (p >> 18u) & 0x1ffu) * scale;
 }
 
-public PackedPathSegment packPathSegment(PathSegment seg, uint nextRecord) {
+public PackedPathSegment packPathSegment(PathSegment seg, bool hasNext) {
     PackedPathSegment p;
     p.ro = seg.ro;
     p.rd = packUnorm16x2(octEncode(seg.rd));
@@ -109,8 +113,8 @@ public PackedPathSegment packPathSegment(PathSegment seg, uint nextRecord) {
     p.pathFlags = (uint(seg.bounce) & 15u)
             | (seg.showCelestial ? 1u << 8u : 0u)
             | (seg.medium.current.water ? 1u << 9u : 0u)
-            | (seg.medium.outer.water ? 1u << 10u : 0u);
-    p.nextRecord = nextRecord;
+            | (seg.medium.outer.water ? 1u << 10u : 0u)
+            | (hasNext ? PATH_HAS_NEXT : 0u);
     return p;
 }
 

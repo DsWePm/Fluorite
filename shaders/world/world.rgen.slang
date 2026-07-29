@@ -415,10 +415,14 @@ void main() {
         for (uint s = 0u; s < spp; ++s) {
             frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp);
         }
-        if (packed.nextRecord == PATH_NO_NEXT) {
+        if ((packed.pathFlags & PATH_HAS_NEXT) == 0u) {
             break;
         }
-        recordIndex = packed.nextRecord;
+        // Recomputed rather than stored. world_primary builds the split record's index from exactly this
+        // expression, so the two have to keep agreeing — which they do structurally, both being derived
+        // from the same dispatch dimensions, rather than because a uint was carried across the pass
+        // boundary to say it.
+        recordIndex = dimensions.x * dimensions.y + pixelIndex;
     }
     outImage[pix] = float4(frameRadiance / float(spp), 1.0);
 }

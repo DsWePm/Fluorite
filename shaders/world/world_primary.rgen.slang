@@ -25,7 +25,7 @@ import guides;
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
                                 uint splitRecord,
-                                out uint nextRecord) {
+                                out bool hasNext) {
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -35,7 +35,7 @@ public PathSegment tracePrimary(PathSegment seg,
     uint seed = seg.seed;
     bool showCelestial = seg.showCelestial;
     bool waterWaves = (worldPush.flags & 16u) != 0u;
-    nextRecord = PATH_NO_NEXT;
+    hasNext = false;
 
     {
         int bounce = seg.bounce;
@@ -172,8 +172,8 @@ public PathSegment tracePrimary(PathSegment seg,
                     deferredDir, throughput * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
                     true);
-            queue[splitRecord] = packPathSegment(deferred, PATH_NO_NEXT);
-            nextRecord = splitRecord;
+            queue[splitRecord] = packPathSegment(deferred, false);
+            hasNext = true;
             float3 reflectedDir = reflect(rd, n);
             PathSegment reflected = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
@@ -238,10 +238,10 @@ void main() {
     seed = pcg(seed);
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
             cameraMedium, 0.0, rayConeSpread, seed, 0, true);
-    uint nextRecord;
+    bool hasNext;
     PathSegment terminal = tracePrimary(
-            current, queue, splitRecord, nextRecord);
-    queue[pixelIndex] = packPathSegment(terminal, nextRecord);
+            current, queue, splitRecord, hasNext);
+    queue[pixelIndex] = packPathSegment(terminal, hasNext);
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);
     if (pc.debugView != 0u) {
