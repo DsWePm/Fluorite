@@ -42,19 +42,9 @@ public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, Medi
     s.showCelestial = showCelestial;
     return s;
 }
-// field is a uint, so Std430DataLayout gives this an exact 48-byte stride.
-public struct PackedPathSegment {
-    public float3 ro;
-    public uint rd;
-    public uint throughput;
-    public uint currentExtinction;
-    public uint outerExtinction;
-    public uint mediumIors;
-    public uint rayCone;
-    public uint seed;
-    public uint pathFlags;
-    public uint nextRecord;
-};
+// PackedPathSegment lives in world_common so the build-time layout probe can reflect it: the probe
+// cannot import this file, because it reaches world_core and its set-0 bindings would collide with the
+// probe's own. Pack and unpack stay here, next to the PathSegment they translate.
 
 public static const uint PATH_NO_NEXT = 0xffffffffu;
 

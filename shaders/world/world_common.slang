@@ -253,3 +253,25 @@ public uint packHalf2(float2 v) {
 public float2 unpackHalf2(uint p) {
     return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
 }
+
+// The wavefront record: what the primary pass writes and the indirect pass reads, one per split
+// continuation. Declared here rather than beside its pack/unpack in segment.slang so world_layout_probe
+// can reflect its true std430 stride — segment.slang imports world_core, whose set-0 bindings would
+// collide with the probe's.
+//
+// Every field after ro is a uint, so std430 gives the struct 16-byte alignment and an exact 48-byte
+// stride. That is not slack: 48 is already a multiple of 16, so one more uint rounds the record up to
+// 64, and at 1440p with two records per pixel that is +118 MB rather than +29 MB. See
+// RtPathSegmentLayoutTest before adding a field; pathFlags has spare bits and they are much cheaper.
+public struct PackedPathSegment {
+    public float3 ro;
+    public uint rd;
+    public uint throughput;
+    public uint currentExtinction;
+    public uint outerExtinction;
+    public uint mediumIors;
+    public uint rayCone;
+    public uint seed;
+    public uint pathFlags;
+    public uint nextRecord;
+};

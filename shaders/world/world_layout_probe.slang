@@ -11,8 +11,13 @@ struct MaterialHeaderLayoutProbe {
     MaterialHeader values[2]; // array stride is the complete, tail-padded MaterialHeader byte size
 };
 
+struct PackedPathSegmentLayoutProbe {
+    PackedPathSegment values[2]; // array stride is the complete, tail-padded PackedPathSegment byte size
+};
+
 [[vk::binding(0, 0)]] StructuredBuffer<WorldPushLayoutProbe, Std430DataLayout> worldPushLayoutProbe;
 [[vk::binding(1, 0)]] StructuredBuffer<MaterialHeaderLayoutProbe, Std430DataLayout> materialHeaderLayoutProbe;
+[[vk::binding(2, 0)]] StructuredBuffer<PackedPathSegmentLayoutProbe, Std430DataLayout> packedPathSegmentLayoutProbe;
 [[vk::push_constant]] WorldPushConstants pushConstantsLayoutProbe;
 
 [shader("compute")]
@@ -22,6 +27,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     if (id.x == 0xFFFFFFFFu) {
         float sink = worldPushLayoutProbe[0].values[0].invViewProj[0][0]
                 + materialHeaderLayoutProbe[0].values[0].params.x
-                + float(pushConstantsLayoutProbe.frameIndex);
+                + float(pushConstantsLayoutProbe.frameIndex)
+                + float(packedPathSegmentLayoutProbe[0].values[0].seed);
     }
 }

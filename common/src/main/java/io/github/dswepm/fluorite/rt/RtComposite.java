@@ -11,6 +11,7 @@ import io.github.dswepm.fluorite.FluoriteConfig;
 import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.client.FluoriteJitter;
 import io.github.dswepm.fluorite.mixin.CommandEncoderAccessor;
+import io.github.dswepm.fluorite.rt.gen.PackedPathSegmentData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushConstantsData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData.BreakEntry;
@@ -95,7 +96,9 @@ public final class RtComposite {
     // Hot addresses/frameIndex and raygen's debugView avoid unnecessary global-memory dereferences;
     // WorldPushConstantsData is generated from the same Slang module and owns this second ABI as well.
     private static final int GUIDE_COUNT = 6; // RR guide buffers bound at world-pipeline bindings 3..8
-    private static final long PATH_RECORD_BYTES = 48L;
+    // Generated from the shader's own std430 layout rather than hand-copied, like every other ABI size
+    // here. It was a literal 48 that nothing checked against the struct it describes.
+    private static final long PATH_RECORD_BYTES = PackedPathSegmentData.BYTE_SIZE;
     private static int debugView() {
         return FluoriteConfig.Rt.Composite.DEBUG_VIEW.value();
     }
