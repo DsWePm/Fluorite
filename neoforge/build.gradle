@@ -43,6 +43,15 @@ neoForge {
 			// without it the client comes up on OpenGL and Caustica silently does nothing.
 			programArguments.addAll("--renderDebugLabels", "--graphicsBackend", "VULKAN")
 
+			// FML's early loading screen creates the window with an OpenGL context and hands that same
+			// window to Minecraft, so glfwCreateWindowSurface then refuses it:
+			//   GLFW error 65540: Vulkan: Window surface creation requires the window to have the client
+			//   API set to GLFW_NO_API
+			// which kills the client before it draws a frame. Disabling the early window lets Minecraft
+			// create its own. The equivalent knob for a packaged install is earlyWindowControl=false in
+			// config/fml.toml — worth knowing, because a fresh run directory defaults it back on.
+			jvmArgument "-Dfml.earlyprogresswindow=false"
+
 			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
 			jvmArgument "--enable-native-access=ALL-UNNAMED"
 
