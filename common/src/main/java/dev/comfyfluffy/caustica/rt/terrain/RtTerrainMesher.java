@@ -480,7 +480,12 @@ final class RtTerrainMesher {
                 return false;
             }
             BlockState neighbor = view.getBlockState(cullPos.setWithOffset(pos, direction));
-            return !Block.shouldRenderFace(state, neighbor, direction);
+            boolean culled = !Block.shouldRenderFace(state, neighbor, direction);
+            if (RtTerrainDigest.CULL_TRACE_ACTIVE) {
+                RtTerrainDigest.traceCull(pos.getX(), pos.getY(), pos.getZ(), state, neighbor, direction,
+                        culled);
+            }
+            return culled;
         }
 
         /** Acquire a pooled PendingQuad for the current block (grown on demand, count reset by flushBlock). */

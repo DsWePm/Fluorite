@@ -59,7 +59,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
-            Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST,
         };
     }
 
@@ -769,6 +769,26 @@ public final class CausticaConfig {
              * hash per section build, and sections are built once and cached. */
             public static final BooleanSetting TERRAIN_DIGEST =
                     bool("caustica.rt.terrainDigest", "diagnostics.terrain-digest", false);
+
+            /** Sections to additionally dump triangle by triangle, as {@code "sx,sy,sz;sx,sy,sz"} in section
+             * coordinates (block coordinates rounded down to 16). The digest says a section differs; it
+             * cannot say which faces, and "NeoForge emitted two quads fewer here" is not something you can
+             * read off a hash. Each named section gets its own file of sorted per-triangle centroids and
+             * normals, so diffing two runs names the missing faces and where they are. Needs
+             * {@code terrain-digest} on. Empty by default — one file per section per run, so name only the
+             * sections a comparison already flagged. */
+            public static final StringSetting TERRAIN_DIGEST_SECTIONS =
+                    string("caustica.rt.terrainDigestSections", "diagnostics.terrain-digest-sections", "",
+                            String::trim);
+
+            /** Block positions to log face-culling decisions for, as {@code "x,y,z;x,y,z"}. Culling is
+             * shared code — {@code Block.shouldRenderFace} behind {@code RtTerrainMesher}'s cull predicate
+             * — so the two loaders cannot decide a face differently. When they nonetheless disagree about
+             * whether a face exists, this says so: matching verdicts here mean the quad sources bucket that
+             * quad under different cullfaces, and the culling logic is not where the bug is. Empty by
+             * default; the check is folded away entirely when nothing is named. */
+            public static final StringSetting CULL_TRACE =
+                    string("caustica.rt.cullTrace", "diagnostics.cull-trace", "", String::trim);
 
             private Diagnostics() {
             }
