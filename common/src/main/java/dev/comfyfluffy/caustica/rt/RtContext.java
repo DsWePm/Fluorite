@@ -42,6 +42,8 @@ import java.nio.LongBuffer;
 import java.util.function.Consumer;
 
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+import java.nio.IntBuffer;
+import org.lwjgl.vulkan.VkQueueFamilyProperties;
 
 /**
  * Shared per-device RT resources: a buffer-device-address-enabled VMA allocator (vanilla's
@@ -67,10 +69,14 @@ public final class RtContext {
     private final int maxShaderGroupStride;
     private final int accelerationStructureScratchAlignment;
     private final long updateAfterBindCombinedImageSamplerLimit;
+    /** Nanoseconds per device timestamp tick, and how many of a timestamp's bits actually count. */
+    private final float timestampPeriodNanos;
+    private final int graphicsTimestampValidBits;
     private long commandPool;
 
     private RtContext(VulkanDevice device, long vma, int handleSize, int baseAlign, int handleAlign,
-                      int maxSbtStride, int scratchAlign, long updateAfterBindCombinedImageSamplerLimit) {
+                      int maxSbtStride, int scratchAlign, long updateAfterBindCombinedImageSamplerLimit,
+                      float timestampPeriodNanos, int graphicsTimestampValidBits) {
         this.device = device;
         this.vk = device.vkDevice();
         this.vma = vma;
@@ -83,6 +89,8 @@ public final class RtContext {
         this.maxShaderGroupStride = maxSbtStride;
         this.accelerationStructureScratchAlignment = scratchAlign;
         this.updateAfterBindCombinedImageSamplerLimit = updateAfterBindCombinedImageSamplerLimit;
+        this.timestampPeriodNanos = timestampPeriodNanos;
+        this.graphicsTimestampValidBits = graphicsTimestampValidBits;
         this.gpuExecutor = new RtGpuExecutor(this);
     }
 
@@ -162,9 +170,21 @@ public final class RtContext {
                     Integer.toUnsignedLong(rtProps.maxShaderGroupStride()),
                     asProps.minAccelerationStructureScratchOffsetAlignment(), combinedImageSamplerLimit);
 
+            // Timestamp support is per queue family, not per device: a family can report zero valid bits
+            // and then every query it writes is meaningless rather than absent.
+            IntBuffer familyCount = stack.ints(0);
+            VK10.vkGetPhysicalDeviceQueueFamilyProperties(phys, familyCount, null);
+            VkQueueFamilyProperties.Buffer families = VkQueueFamilyProperties.calloc(familyCount.get(0), stack);
+            VK10.vkGetPhysicalDeviceQueueFamilyProperties(phys, familyCount, families);
+            int graphicsFamily = device.graphicsQueue().queueFamilyIndex();
+            int validBits = graphicsFamily < families.capacity()
+                    ? families.get(graphicsFamily).timestampValidBits()
+                    : 0;
+
             return new RtContext(device, pVma.get(0), rtProps.shaderGroupHandleSize(), rtProps.shaderGroupBaseAlignment(),
                     rtProps.shaderGroupHandleAlignment(), rtProps.maxShaderGroupStride(),
-                    asProps.minAccelerationStructureScratchOffsetAlignment(), combinedImageSamplerLimit);
+                    asProps.minAccelerationStructureScratchOffsetAlignment(), combinedImageSamplerLimit,
+                    limits.timestampPeriod(), validBits);
         }
     }
 
@@ -178,6 +198,16 @@ public final class RtContext {
 
     public VulkanDevice device() {
         return device;
+    }
+
+    /** Nanoseconds per tick of the device's timestamp counter. */
+    public float timestampPeriodNanos() {
+        return timestampPeriodNanos;
+    }
+
+    /** Meaningful bits in a timestamp written on the graphics queue; zero means it cannot time at all. */
+    public int graphicsTimestampValidBits() {
+        return graphicsTimestampValidBits;
     }
 
     public VkDevice vk() {

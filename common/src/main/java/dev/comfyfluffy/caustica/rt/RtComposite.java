@@ -178,6 +178,11 @@ public final class RtComposite {
     private static final int PUSH_RING = 6;
     private PushSlot[] pushRing;
     private int pushSlot;
+    // Device-side timing for the two trace dispatches. Shares the push ring's slot index and its graphics-use
+    // wait, so a slot is only read once the work that wrote it has completed and the read never blocks.
+    private static final int GPU_ZONE_TRACE_PRIMARY = 0;
+    private static final int GPU_ZONE_TRACE_INDIRECT = 1;
+    private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
@@ -539,6 +544,9 @@ public final class RtComposite {
                             VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i));
                 }
             }
+            if (gpuTimers == null) {
+                gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect");
+            }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
                 bindGuideImages();
@@ -820,6 +828,13 @@ public final class RtComposite {
             pushSlot = (pushSlot + 1) % PUSH_RING;
             PushSlot selectedPushSlot = pushRing[pushSlot];
             graphicsUseWaiter.await(selectedPushSlot.graphicsUse);
+            if (gpuTimers != null) {
+                // The await above is what makes this safe: this slot's timestamps are from PUSH_RING frames
+                // ago and the GPU has finished with them, so reading costs nothing and resetting cannot
+                // race the device still writing.
+                gpuTimers.resolve(ctx, pushSlot);
+                gpuTimers.beginFrame(cmd, pushSlot);
+            }
             selectedPushSlot.graphicsUse.mark(graphicsUse);
             RtBuffer pushBuf = selectedPushSlot.buffer;
             ByteBuffer push = MemoryUtil.memByteBuffer(pushBuf.mapped, WORLD_PUSH_SIZE);
@@ -957,12 +972,24 @@ public final class RtComposite {
                     (int) frameCounter, debugView).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
+                if (gpuTimers != null) {
+                    gpuTimers.begin(cmd, pushSlot, GPU_ZONE_TRACE_PRIMARY);
+                }
                 active.trace(cmd, renderW, renderH, pushConstants, 0);
+                if (gpuTimers != null) {
+                    gpuTimers.end(cmd, pushSlot, GPU_ZONE_TRACE_PRIMARY);
+                }
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // continuation/guide writes visible to pass B
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world indirect trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.traceIndirect")) {
+                if (gpuTimers != null) {
+                    gpuTimers.begin(cmd, pushSlot, GPU_ZONE_TRACE_INDIRECT);
+                }
                 active.trace(cmd, renderW, renderH, pushConstants, 1);
+                if (gpuTimers != null) {
+                    gpuTimers.end(cmd, pushSlot, GPU_ZONE_TRACE_INDIRECT);
+                }
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
@@ -1221,6 +1248,10 @@ public final class RtComposite {
         // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
         // longer in flight and can be freed immediately.
         tlasRing.destroy();
+        if (gpuTimers != null) {
+            gpuTimers.destroy(RtContext.get());
+            gpuTimers = null;
+        }
         if (RtDlssRr.enabled()) {
             RtDlssRr.INSTANCE.destroy();
         }

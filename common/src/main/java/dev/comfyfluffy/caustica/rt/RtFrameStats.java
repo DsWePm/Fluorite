@@ -72,6 +72,10 @@ public final class RtFrameStats {
                     "frame.recordTlas",
                     "frame.tracePrimary",
                     "frame.traceIndirect",
+                    // gpu.* are device timestamps; every other stage here times the thread recording the
+                    // commands. For a trace dispatch those differ by three orders of magnitude.
+                    "gpu.tracePrimary",
+                    "gpu.traceIndirect",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",
@@ -199,6 +203,21 @@ public final class RtFrameStats {
             int idx = indexOf(stageIndices, stageName);
             long start = System.nanoTime();
             return () -> stageNanos[idx] += System.nanoTime() - start;
+        }
+
+        /**
+         * Add an already-measured duration to a stage.
+         *
+         * <p>For timings this thread did not take: GPU timestamps resolve some frames after the frame they
+         * describe, so they land on whichever frame happens to be collecting when the results come back.
+         * That is fine for a median over thousands of frames and wrong for reading a single row, which is
+         * the only way these numbers are ever used.
+         */
+        public void addStage(String stageName, long nanos) {
+            if (!enabled() || !active) {
+                return;
+            }
+            stageNanos[indexOf(stageIndices, stageName)] += nanos;
         }
 
         /**
