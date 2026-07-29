@@ -99,6 +99,58 @@ public final class RtComposite {
     // Generated from the shader's own std430 layout rather than hand-copied, like every other ABI size
     // here. It was a literal 48 that nothing checked against the struct it describes.
     private static final long PATH_RECORD_BYTES = PackedPathSegmentData.BYTE_SIZE;
+    // ---- Ambient participating medium.
+    //
+    // Per-dimension presets are not here yet, so these are the overworld's numbers scaled by the player's
+    // multipliers. When presets arrive the preset supplies the base and these keep being the multipliers.
+
+    /** Reference density, height falloff, reference height and the distance past which fog stops. */
+    private static Float4 fogParams() {
+        var v = FluoriteConfig.Rt.Volumetrics.class;
+        boolean on = FluoriteConfig.Rt.Volumetrics.ENABLED.value()
+                && FluoriteConfig.Rt.Volumetrics.HEIGHT_FOG.value();
+        // A density of zero is the disable path: volume.slang returns early on it, so switching fog off
+        // costs one comparison per segment rather than a shader variant.
+        float density = on ? BASE_FOG_DENSITY * FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE.value() : 0f;
+        return new Float4(density,
+                FluoriteConfig.Rt.Volumetrics.HEIGHT_SCALE.value(),
+                FluoriteConfig.Rt.Volumetrics.HEIGHT_BASE.value(),
+                FluoriteConfig.Rt.Volumetrics.CULL_DISTANCE.value());
+    }
+
+    /**
+      * Per-channel extinction tint, slightly blue-biased so thick fog cools rather than greys, plus the
+      * near cutoff in w — the distance in front of the eye that stays clear.
+      */
+    private static Float4 fogExtinction() {
+        return new Float4(0.92f, 0.96f, 1.0f,
+                FluoriteConfig.Rt.Volumetrics.START_DISTANCE.value());
+    }
+
+    /** Single-scattering albedo and the sun lobe's anisotropy. */
+    private static Float4 fogScatter() {
+        float[] tint = FluoriteConfig.Rt.Volumetrics.scatterTintRgb();
+        float gain = FluoriteConfig.Rt.Volumetrics.INTENSITY_SCALE.value();
+        return new Float4(tint[0] * gain, tint[1] * gain, tint[2] * gain,
+                FluoriteConfig.Rt.Volumetrics.PHASE_G.value());
+    }
+
+    /**
+     * The isotropic radiance the fog is lit by besides the sun.
+     *
+     * <p>Derived from the NEE light rather than authored, so fog tracks time of day without a second set
+     * of numbers to keep in sync: at night the sun term is the moon's and this floor follows it down. The
+     * sky LUT work will replace this with the real ambient term.
+     */
+    private static Float4 fogAmbient(SkyPush sky) {
+        Float4 radiance = sky.lightRadiance();
+        return new Float4(radiance.x() * AMBIENT_FOG_FRACTION, radiance.y() * AMBIENT_FOG_FRACTION,
+                radiance.z() * AMBIENT_FOG_FRACTION, 0f);
+    }
+
+    private static final float BASE_FOG_DENSITY = 0.0016f;   // extinction per block at the reference height
+    private static final float AMBIENT_FOG_FRACTION = 0.25f; // sky's share of what lights the fog
+
     private static int debugView() {
         return FluoriteConfig.Rt.Composite.DEBUG_VIEW.value();
     }
@@ -936,7 +988,11 @@ public final class RtComposite {
                     new Float4(terrain.lightGridOriginX(), terrain.lightGridOriginY(), terrain.lightGridOriginZ(), 16f),
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
-                    FluoriteConfig.Rt.Lights.RIS_CANDIDATES.value()
+                    FluoriteConfig.Rt.Lights.RIS_CANDIDATES.value(),
+                    fogParams(),
+                    fogExtinction(),
+                    fogScatter(),
+                    fogAmbient(sky)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

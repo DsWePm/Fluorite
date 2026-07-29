@@ -114,7 +114,9 @@ public PackedPathSegment packPathSegment(PathSegment seg, bool hasNext) {
             | (seg.showCelestial ? 1u << 8u : 0u)
             | (seg.medium.current.water ? 1u << 9u : 0u)
             | (seg.medium.outer.water ? 1u << 10u : 0u)
-            | (hasNext ? PATH_HAS_NEXT : 0u);
+            | (hasNext ? PATH_HAS_NEXT : 0u)
+            | (seg.medium.current.ambient ? 1u << 12u : 0u)
+            | (seg.medium.outer.ambient ? 1u << 13u : 0u);
     return p;
 }
 
@@ -124,10 +126,12 @@ public PathSegment unpackPathSegment(PackedPathSegment p) {
     current.ior = iors.x;
     current.extinction = unpackRgb9e5(p.currentExtinction);
     current.water = (p.pathFlags & (1u << 9u)) != 0u;
+    current.ambient = (p.pathFlags & (1u << 12u)) != 0u;
     Medium outer;
     outer.ior = iors.y;
     outer.extinction = unpackRgb9e5(p.outerExtinction);
     outer.water = (p.pathFlags & (1u << 10u)) != 0u;
+    outer.ambient = (p.pathFlags & (1u << 13u)) != 0u;
     MediumStack medium;
     medium.current = current;
     medium.outer = outer;

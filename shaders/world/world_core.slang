@@ -63,6 +63,34 @@ public static const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset al
 // attenuation has to use the same distance the trace did or the two silently drift apart.
 public static const float RAY_FAR = 10000.0;
 
+/** The camera ray for one dispatch index, plus the jittered NDC both passes derive it from. */
+public struct CameraRay {
+    public float3 origin;
+    public float3 dir;
+    public float2 jndc;   // primaryRayConeSpread needs this; the volumetric prefix does not
+};
+
+/**
+ * Reconstructs the camera ray. Shared because both raygens need it and must agree exactly: the indirect
+ * pass measures the prefix segment the primary pass consumed as the distance from this origin to the
+ * queued record's, so two copies of these eight lines drifting apart would show up as fog appearing or
+ * vanishing in front of every water surface.
+ */
+public CameraRay cameraRay(uint2 dispatchIndex, uint2 dimensions) {
+    float2 size = float2(dimensions);
+    float2 uv = (float2(dispatchIndex) + 0.5) / size;
+    float2 jndc = (uv + worldPush.jitter / size) * 2.0 - 1.0;
+    float4 nearH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
+    float4 farH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
+    float3 nearP = nearH.xyz / nearH.w;
+    float3 farP = farH.xyz / farH.w;
+    CameraRay ray;
+    ray.origin = nearP + worldPush.camOffset;
+    ray.dir = normalize(farP - nearP);
+    ray.jndc = jndc;
+    return ray;
+}
+
 // Water is a smooth dielectric. IOR 1.333; absorption is per-block Beer-Lambert extinction.
 public static const float WATER_IOR = 1.333;
 public static const float3 SKY_SPEC_ALBEDO = float3(0.5, 0.5, 0.5); // RR guide default for sky pixels.

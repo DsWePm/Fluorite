@@ -43,6 +43,12 @@ public struct Medium {
     public float ior;
     public float3 extinction;
     public bool water; // drives the wave-refraction caustic on submerged receivers; nothing else is water-specific
+    // Whether this medium is the world's open air, and so subject to the unbounded ambient field —
+    // height fog and, later, noise fog and clouds. An explicit bit rather than ior == 1 && extinction ==
+    // 0, because a colourless dielectric would answer that test and the ambient field must not apply
+    // inside glass. mediumPop restores it through airMedium(), and the per-face re-derivation of
+    // `entering` means a path that somehow loses track re-synchronises at the next interface.
+    public bool ambient;
 };
 
 public struct MediumStack {
@@ -55,6 +61,7 @@ public Medium airMedium() {
     m.ior = 1.0;
     m.extinction = float3(0.0, 0.0, 0.0);
     m.water = false;
+    m.ambient = true;
     return m;
 }
 
@@ -82,5 +89,6 @@ public Medium makeDielectricMedium(bool isWater, float ior, float3 tint, float t
     m.ior = ior;
     m.extinction = isWater ? waterExtinction(tint) : volumeExtinction(tint, transmission);
     m.water = isWater;
+    m.ambient = false;
     return m;
 }

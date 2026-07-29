@@ -17,6 +17,7 @@ import world_common;
 import world_core;
 import math;
 import medium;
+import volume;
 import segment;
 import water;
 import trace;
@@ -216,14 +217,10 @@ void main() {
     uint2 dimensions = DispatchRaysDimensions().xy;
     int2 pix = int2(dispatchIndex);
     float2 size = float2(dimensions);
-    float2 uv = (float2(pix) + 0.5) / size;
-    float2 jndc = (uv + worldPush.jitter / size) * 2.0 - 1.0;
-    float4 nearH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
-    float4 farH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
-    float3 nearP = nearH.xyz / nearH.w;
-    float3 farP = farH.xyz / farH.w;
-    float3 origin = nearP + worldPush.camOffset;
-    float3 dir = normalize(farP - nearP);
+    CameraRay camera = cameraRay(dispatchIndex, dimensions);
+    float2 jndc = camera.jndc;
+    float3 origin = camera.origin;
+    float3 dir = camera.dir;
     float rayConeSpread = primaryRayConeSpread(jndc, size, dir);
     uint seed = (dispatchIndex.x * 1973u + dispatchIndex.y * 9277u + 26699u)
             ^ (worldPush.frameIndex * 2654435761u);

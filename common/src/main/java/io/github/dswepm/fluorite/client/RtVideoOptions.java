@@ -40,6 +40,15 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            fogEnabled(),
+            fogDensity(),
+            fogIntensity(),
+            fogHeightBase(),
+            fogStartDistance(),
+            fogCullDistance(),
+            fogHeightScale(),
+            fogPhaseG(),
+            fogScatterTint(),
             dlssQuality(),
             hdrEnabled(),
             hdrPaperWhite(),
@@ -122,6 +131,90 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("fluorite.options.rt.waterWaves", FluoriteConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    // ---- Ambient participating medium. Every one of these is re-read per frame straight into the world
+    // push, so they belong here rather than on the -Dfluorite.* startup surface. The two that would need
+    // resources rebuilt when the froxel pass exists — slice count and march steps — will not.
+
+    private static OptionInstance<Boolean> fogEnabled() {
+        return bool("fluorite.options.rt.fog", FluoriteConfig.Rt.Volumetrics.ENABLED);
+    }
+
+    private static OptionInstance<Integer> fogDensity() {
+        return scaleSlider("fluorite.options.rt.fogDensity", FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE);
+    }
+
+    private static OptionInstance<Integer> fogIntensity() {
+        return scaleSlider("fluorite.options.rt.fogIntensity", FluoriteConfig.Rt.Volumetrics.INTENSITY_SCALE);
+    }
+
+    private static OptionInstance<Integer> fogHeightBase() {
+        return blockSlider("fluorite.options.rt.fogHeightBase",
+                FluoriteConfig.Rt.Volumetrics.HEIGHT_BASE, -64, 320);
+    }
+
+    private static OptionInstance<Integer> fogStartDistance() {
+        return blockSlider("fluorite.options.rt.fogStart",
+                FluoriteConfig.Rt.Volumetrics.START_DISTANCE, 0, 256);
+    }
+
+    private static OptionInstance<Integer> fogCullDistance() {
+        return blockSlider("fluorite.options.rt.fogCull",
+                FluoriteConfig.Rt.Volumetrics.CULL_DISTANCE, 16, 2048);
+    }
+
+    private static OptionInstance<Integer> fogHeightScale() {
+        return blockSlider("fluorite.options.rt.fogHeightScale",
+                FluoriteConfig.Rt.Volumetrics.HEIGHT_SCALE, 1, 384);
+    }
+
+    private static OptionInstance<Integer> fogPhaseG() {
+        // Hundredths, so the slider can reach the useful -0.9..0.9 range at a readable step.
+        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.PHASE_G;
+        int initial = Math.clamp(Math.round(setting.value() * 100.0f), -90, 90);
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogPhaseG",
+            OptionInstance.cachedConstantTooltip(Component.translatable("fluorite.options.rt.fogPhaseG.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.format("%.2f", v / 100.0))),
+            new OptionInstance.IntRange(-90, 90),
+            initial,
+            v -> setting.set(v / 100.0f));
+    }
+
+    private static OptionInstance<String> fogScatterTint() {
+        StringSetting setting = FluoriteConfig.Rt.Volumetrics.SCATTER_TINT;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogTint",
+            OptionInstance.cachedConstantTooltip(Component.translatable("fluorite.options.rt.fogTint.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.fogTint." + value),
+            new OptionInstance.Enum<>(List.of("neutral", "warm", "cool", "green", "violet"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    /** A 0.0-10.0 multiplier, stepped in tenths. IntRange is the only slider vanilla exposes. */
+    private static OptionInstance<Integer> scaleSlider(String key, FloatSetting setting) {
+        int initial = Math.clamp(Math.round(setting.value() * 10.0f), 0, 100);
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.format("%.1f", v / 10.0))),
+            new OptionInstance.IntRange(0, 100),
+            initial,
+            v -> setting.set(v / 10.0f));
+    }
+
+    /** A slider over a distance in blocks. */
+    private static OptionInstance<Integer> blockSlider(String key, FloatSetting setting, int min, int max) {
+        int initial = Math.clamp(Math.round(setting.value()), min, max);
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(v + " blocks")),
+            new OptionInstance.IntRange(min, max),
+            initial,
+            v -> setting.set((float) v));
     }
 
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR

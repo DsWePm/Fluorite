@@ -22,6 +22,7 @@ import world_common;
 import world_core;
 import math;
 import medium;
+import volume;
 import segment;
 import water;
 import trace;
@@ -99,9 +100,11 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // environment medium has the most of, so any volumetric term added here has to sit on this side of
         // the break or it will be missing from precisely the direction it is most visible in.
         float segmentEnd = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
-        if (any(medium.current.extinction > 0.0)) {
-            throughput *= exp(-medium.current.extinction * segmentEnd);
-        }
+        SegmentIntegral segIntegral = integrateSegment(medium, ro, rd, segmentEnd);
+        // In-scatter first: it is what the segment added to the radiance arriving along it, so it is
+        // weighted by the throughput reaching the segment rather than the throughput leaving it.
+        L += throughput * segIntegral.inScatter;
+        throughput *= segIntegral.transmittance;
 
         if (payload.hitT < 0.0) {
             // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into payload.albedo. The
@@ -209,7 +212,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float ndl = abs(signedNdl);
             if (ndl > 0.0) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
-                float3 vis = visibility(shadowOrigin, lightDir, RAY_FAR).transmittance;
+                float3 vis = visibilityThroughAmbient(medium, shadowOrigin, lightDir, RAY_FAR).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                     L += throughput * albedo * INV_PI * worldPush.lightRadiance.xyz * ndl * vis;
                 }
@@ -284,7 +287,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         }
         float ndl = max(0.0, dot(n, lightDir));
         if (ndl > 0.0) {
-            VisibilityResult shadow = visibility(p, lightDir, RAY_FAR);
+            VisibilityResult shadow = visibilityThroughAmbient(medium, p, lightDir, RAY_FAR);
             float3 vis = shadow.transmittance;
             // Underwater receiver whose shadow ray crossed a water surface: scale the direct light by
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
@@ -327,7 +330,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float backNdl = max(0.0, dot(-n, lightDir));
             if (backNdl > 0.0) {
-                VisibilityResult shadowBack = visibility(hitPos - n * SURF_BIAS, lightDir, RAY_FAR);
+                VisibilityResult shadowBack = visibilityThroughAmbient(medium, hitPos - n * SURF_BIAS, lightDir, RAY_FAR);
                 float3 visB = shadowBack.transmittance;
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.
@@ -409,6 +412,28 @@ void main() {
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
     uint recordIndex = pixelIndex;
+
+    // The prefix segment: camera to wherever the primary pass left off. That pass consumed it — it
+    // applied the enclosed medium's absorption and queued the branches at the interface — so no record
+    // describes what the ambient field did along it, and without this the fog would be missing from
+    // exactly the stretch nearest the camera.
+    //
+    // A straight line, always. The primary pass traces one ray and resolves at most one interface, so the
+    // prefix is either zero-length (it did not split, and the queued origin is the camera's) or the one
+    // segment up to that interface. Both branches share it and it is additively independent of them, so
+    // it is integrated once here rather than per leaf. See docs/WAVEFRONT_PLAN.md.
+    CameraRay camera = cameraRay(dispatchIndex, dimensions);
+    float3 prefixOrigin = camera.origin;
+    float prefixLength = length(queue[pixelIndex].ro - prefixOrigin);
+    // Ambient only, with zero enclosed extinction: the primary pass already applied the enclosed
+    // medium's absorption to this segment and applying it twice would darken everything seen through
+    // water. A submerged camera is inside water rather than inside the world's air, so it leaves the
+    // ambient field too — which is why this is the flag rather than an unconditional airMedium().
+    Medium prefixAir = airMedium();
+    prefixAir.ambient = (worldPush.flags & 1u) == 0u;
+    MediumStack prefixMedium = makeMediumStack(prefixAir);
+    SegmentIntegral prefix = integrateSegment(prefixMedium, prefixOrigin, camera.dir, prefixLength);
+
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];
         PathSegment segment = unpackPathSegment(packed);
@@ -424,5 +449,5 @@ void main() {
         // boundary to say it.
         recordIndex = dimensions.x * dimensions.y + pixelIndex;
     }
-    outImage[pix] = float4(frameRadiance / float(spp), 1.0);
+    outImage[pix] = float4(prefix.inScatter + prefix.transmittance * (frameRadiance / float(spp)), 1.0);
 }

@@ -59,7 +59,7 @@ public final class FluoriteConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
-            Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST,
+            Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
         };
     }
 
@@ -104,6 +104,12 @@ public final class FluoriteConfig {
                         + " grid are always active whenever RIS is on. min-fill-ratio drops emissive footprints\n"
                         + " below that fraction of their bounding rectangle (speckle/sparse crossed planes), so\n"
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
+        FILE.setComment("volumetrics",
+                " The world's ambient participating medium — the fog every path is inside, as opposed\n"
+                        + " to the water and glass a path enters through geometry. density-scale and\n"
+                        + " intensity-scale are multipliers over the active dimension's preset rather\n"
+                        + " than absolute values; cull-distance bounds how far a segment keeps\n"
+                        + " accumulating fog. scatter-tint is one of: neutral, warm, cool, green, violet.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -575,6 +581,90 @@ public final class FluoriteConfig {
         }
 
         /** RIS block-emitter lights. {@code ris-candidates = 0} disables everything. */
+        /**
+         * The world's ambient participating medium: the fog every path is inside at all times, as opposed
+         * to the water and glass a path enters through geometry.
+         *
+         * <p>These are global multipliers over whatever the active dimension asks for, not the values
+         * themselves. Per-dimension character belongs in a preset; what belongs here is the player's
+         * ability to want more or less of it than the preset chose.
+         */
+        public static final class Volumetrics {
+            public static final BooleanSetting ENABLED =
+                    bool("fluorite.rt.fog.enabled", "volumetrics.enabled", true);
+
+            /** Exponential height fog: the analytic term, evaluated per segment with no marching. */
+            public static final BooleanSetting HEIGHT_FOG =
+                    bool("fluorite.rt.fog.heightFog", "volumetrics.height-fog", true);
+
+            /** Scales the preset's density. 1 is the preset as authored. */
+            public static final FloatSetting DENSITY_SCALE =
+                    clampedFloat("fluorite.rt.fog.densityScale", "volumetrics.density-scale", 1.0f, 0.0f, 10.0f);
+
+            /** Scales how brightly the fog scatters, without changing how much it occludes. */
+            public static final FloatSetting INTENSITY_SCALE =
+                    clampedFloat("fluorite.rt.fog.intensityScale", "volumetrics.intensity-scale", 1.0f, 0.0f, 10.0f);
+
+            /**
+             * Blocks in front of the eye that stay clear. Fog starts accumulating past this, which keeps
+             * the near field readable instead of veiling the whole screen uniformly.
+             */
+            public static final FloatSetting START_DISTANCE =
+                    clampedFloat("fluorite.rt.fog.startDistance", "volumetrics.start-distance", 16.0f, 0.0f, 512.0f);
+
+            /** Blocks beyond which a segment stops accumulating fog. Distant terrain stays readable. */
+            public static final FloatSetting CULL_DISTANCE =
+                    clampedFloat("fluorite.rt.fog.cullDistance", "volumetrics.cull-distance", 512.0f, 16.0f, 4096.0f);
+
+            /** Height in blocks over which the density falls by a factor of e. */
+            public static final FloatSetting HEIGHT_SCALE =
+                    clampedFloat("fluorite.rt.fog.heightScale", "volumetrics.height-scale", 48.0f, 1.0f, 512.0f);
+
+            /**
+              * World height the layer sits at. The density holds steady at and below this, and falls off
+              * above it with HEIGHT_SCALE, so this is what moves the fog rather than reshaping it.
+              */
+            public static final FloatSetting HEIGHT_BASE =
+                    clampedFloat("fluorite.rt.fog.heightBase", "volumetrics.height-base", 62.0f, -64.0f, 320.0f);
+
+            /**
+             * Scattering tint, as a named hue. Not a colour picker: the settings UI has no colour control,
+             * and an exact RGB belongs in the dimension preset rather than in a per-player override.
+             */
+            public static final StringSetting SCATTER_TINT =
+                    string("fluorite.rt.fog.scatterTint", "volumetrics.scatter-tint", "neutral",
+                            Volumetrics::sanitizeTint);
+
+            /**
+             * Forward-scattering anisotropy of the sun lobe. Positive values put a glow around the sun,
+             * which is most of what makes fog read as lit rather than as a grey wash.
+             */
+            public static final FloatSetting PHASE_G =
+                    clampedFloat("fluorite.rt.fog.phaseG", "volumetrics.phase-g", 0.55f, -0.9f, 0.9f);
+
+            private static String sanitizeTint(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "neutral", "warm", "cool", "green", "violet" -> v;
+                    default -> "neutral";
+                };
+            }
+
+            /** Linear RGB for the named tint. Kept beside the names so the two cannot drift. */
+            public static float[] scatterTintRgb() {
+                return switch (SCATTER_TINT.get()) {
+                    case "warm" -> new float[] {1.00f, 0.86f, 0.68f};
+                    case "cool" -> new float[] {0.72f, 0.82f, 1.00f};
+                    case "green" -> new float[] {0.72f, 0.92f, 0.74f};
+                    case "violet" -> new float[] {0.84f, 0.74f, 1.00f};
+                    default -> new float[] {0.92f, 0.94f, 0.96f};
+                };
+            }
+
+            private Volumetrics() {
+            }
+        }
+
         public static final class Lights {
             public static final IntSetting RIS_CANDIDATES =
                     intAtLeast("fluorite.rt.risCandidates", "lights.ris-candidates", 8, 0);

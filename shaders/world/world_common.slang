@@ -66,6 +66,13 @@ public struct WorldPush {
     public int4     lightGridDims;       // xyz dense grid dimensions, w reserved
     public uint     lightCount;       // packed Light records in pc.lightBufAddr
     public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
+    // Ambient participating medium — the world's air. Evaluated per segment from world position rather
+    // than carried on the medium stack; see volume.slang for why. Zero density disables it entirely at
+    // the cost of one comparison.
+    public float4   fogParams;        // x density at reference height, y height scale, z reference height, w cull distance
+    public float4   fogExtinction;    // xyz per-channel extinction tint
+    public float4   fogScatter;       // xyz single-scattering albedo, w Henyey-Greenstein g for the sun lobe
+    public float4   fogAmbient;       // xyz isotropic source radiance the fog is lit by besides the sun
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
