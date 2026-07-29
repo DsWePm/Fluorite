@@ -38,6 +38,11 @@ neoForge {
 			client()
 			gameDirectory = rootProject.file("run-neoforge")
 
+			// The renderer only exists on the Vulkan backend, and Minecraft defaults to OpenGL. Baked into
+			// the run config rather than left to the caller so :neoforge:runClient is usable on its own —
+			// without it the client comes up on OpenGL and Caustica silently does nothing.
+			programArguments.addAll("--renderDebugLabels", "--graphicsBackend", "VULKAN")
+
 			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
 			jvmArgument "--enable-native-access=ALL-UNNAMED"
 
@@ -72,6 +77,16 @@ processResources {
 	}
 }
 
+// ModDevGradle's NeoForm-runtime tasks resolve their own Java rather than reusing the daemon's, and ask
+// for 21. On a machine that only has the 25 this mod targets they fail with a toolchain error that names
+// no task you configured — and setting java.toolchain does not reach them. Point them at the JVM already
+// running the build instead; there is nothing about asset downloading or artifact assembly that needs an
+// older Java than the one compiling the mod.
+tasks.withType(net.neoforged.nfrtgradle.NeoFormRuntimeTask).configureEach {
+	def exe = org.gradle.internal.os.OperatingSystem.current().windows ? "java.exe" : "java"
+	javaExecutable = new File(new File(System.getProperty("java.home"), "bin"), exe).absolutePath
+}
+
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
 }
@@ -80,6 +95,12 @@ java {
 	sourceCompatibility = JavaVersion.VERSION_25
 	targetCompatibility = JavaVersion.VERSION_25
 	withSourcesJar()
+	// ModDevGradle's own tasks (downloadAssets and friends) resolve a toolchain rather than reusing the
+	// daemon's JVM, and default to 21. Without this they fail on a machine that only has the 25 this mod
+	// actually targets, with an error that names no task you configured.
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
 }
 
 tasks.named("jar", Jar).configure {
