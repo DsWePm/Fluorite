@@ -27,4 +27,14 @@ final class FabricRegion extends RtSectionSnapshots.Region {
 	public Holder<Biome> getBiomeFabric(BlockPos pos) {
 		return level.getBiomeFabric(pos);
 	}
+
+	/**
+	 * The other half of the same injection, and the one that got away. It carries no {@code net.fabricmc}
+	 * anywhere in its source either, so the bytecode scan passed it too — only compiling the shared code
+	 * against a classpath without the Fabric API found it. Which is the argument for doing that early.
+	 */
+	@Override
+	public boolean hasBiomes() {
+		return level.hasBiomes();
+	}
 }

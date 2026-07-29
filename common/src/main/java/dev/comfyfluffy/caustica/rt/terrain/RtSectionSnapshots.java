@@ -183,11 +183,6 @@ public final class RtSectionSnapshots {
         }
 
         @Override
-        public boolean hasBiomes() {
-            return level.hasBiomes();
-        }
-
-        @Override
         public int getMinY() {
             return level.getMinY();
         }

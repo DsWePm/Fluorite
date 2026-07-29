@@ -14,6 +14,22 @@ repositories {
 	mavenCentral()
 }
 
+// Shared sources live in common/ and are compiled here against NeoForge's Minecraft artifact. That this
+// compiles at all is the real proof the shared code is loader-agnostic: the Fabric API is simply not on
+// this classpath, so an interface injection that a bytecode scan cannot see still fails here.
+sourceSets {
+	main {
+		java.srcDir rootProject.file("common/src/main/java")
+		resources.srcDir rootProject.file("common/src/main/resources")
+	}
+}
+
+// Generated artifacts from the root project, depended on by task path so this module never touches
+// rootProject.tasks while configuring.
+sourceSets.main.java.srcDir(files(rootProject.ext.causticaShaderRecordsDir).builtBy(":generateShaderRecords"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.causticaShaderSpirvDir).builtBy(":compileShaders"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.causticaNgxNativesDir).builtBy(":bundleNgxNatives"))
+
 neoForge {
 	version = rootProject.neoforge_version
 
@@ -39,14 +55,6 @@ neoForge {
 		}
 	}
 }
-
-// M0 SKELETON. This module deliberately does NOT yet add common/src to its source sets: the shared code
-// still carries Fabric imports and a Fabric Renderer API geometry path, so it cannot compile here until
-// the platform abstraction lands. Wiring it up is M3's job, at which point this file gains the same
-// three srcDir blocks fabric/build.gradle has, and neoforge.mods.toml gains caustica-common.mixins.json.
-//
-// Until then the module exists to keep the NeoForge half of the toolchain honest — ModDevGradle
-// resolves, the NeoForge artifact resolves, neoforge.mods.toml parses, and a @Mod class compiles.
 
 dependencies {
 	// NightConfig is NOT jarJar'd here: NeoForge's own ModConfigSpec is built on it and ships it, which

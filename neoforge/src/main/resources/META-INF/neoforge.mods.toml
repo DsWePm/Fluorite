@@ -9,8 +9,9 @@ displayName = "Caustica"
 description = '''Hardware-ray-traced renderer with DLSS Ray Reconstruction for the Minecraft Vulkan backend.'''
 authors = "i"
 
-# caustica-common.mixins.json is added at M3, together with the common/ source sets in build.gradle.
-# Referencing it before this module compiles the shared sources would fail at load with missing targets.
+[[mixins]]
+config = "caustica-common.mixins.json"
+
 [[mixins]]
 config = "caustica-neoforge.mixins.json"
 
