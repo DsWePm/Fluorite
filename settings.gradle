@@ -13,7 +13,7 @@ pluginManagement {
 	}
 }
 
-rootProject.name = "caustica"
+rootProject.name = "fluorite"
 
 // `common` is intentionally absent: it is a plain shared source directory, not a Gradle project. Each
 // loader module adds common/src via srcDir so the shared code is compiled against that loader's own

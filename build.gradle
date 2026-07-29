@@ -1,6 +1,6 @@
 import javax.inject.Inject
 import org.gradle.process.ExecOperations
-import dev.comfyfluffy.caustica.build.GenerateShaderRecords
+import io.github.dswepm.fluorite.build.GenerateShaderRecords
 
 // Root project. Owns the three build steps that are identical for every mod loader — SPIR-V
 // compilation, the Slang-reflection Java record generator, and the NGX native bundle — and applies no
@@ -13,7 +13,7 @@ import dev.comfyfluffy.caustica.build.GenerateShaderRecords
 
 // Compile GLSL and Slang sources to SPIR-V at build time instead of tracking binaries. Requires
 // glslangValidator, slangc, and spirv-val from the Vulkan SDK or PATH.
-def shaderGenRoot = layout.buildDirectory.dir("generated/shaders") // classpath root -> /caustica/rt/*.spv
+def shaderGenRoot = layout.buildDirectory.dir("generated/shaders") // classpath root -> /fluorite/rt/*.spv
 
 // Resolution order for each shader tool:
 //   1. -P<name>Path=<file-or-dir>, or the <NAME> environment variable — pins one specific binary.
@@ -125,7 +125,7 @@ abstract class CompileShaders extends DefaultTask {
 					// publish the reordered variant separately when the extension is available.
 					compileOneSlang(src, spv, [])
 					compileOneSlang(src, new File(scratchDir, "world_ser.rgen.spv"),
-							["-DCAUSTICA_ENABLE_EXT_SER", "-capability", "spvShaderInvocationReorderEXT"])
+							["-DFLUORITE_ENABLE_EXT_SER", "-capability", "spvShaderInvocationReorderEXT"])
 				} else {
 					// Pass A intentionally uses ordinary TraceRay.
 					compileOneSlang(src, spv, [])
@@ -147,7 +147,7 @@ def compileShaders = tasks.register("compileShaders", CompileShaders) {
 	group = "build"
 	description = "Compiles shaders/** shader sources to SPIR-V and validates them."
 	srcDir = file("shaders")
-	outDir = layout.buildDirectory.dir("generated/shaders/caustica/rt")
+	outDir = layout.buildDirectory.dir("generated/shaders/fluorite/rt")
 	glslang = resolveVulkanTool("glslangValidator")
 	spirvVal = resolveVulkanTool("spirv-val")
 	slangc = resolveVulkanTool("slangc")
@@ -306,11 +306,11 @@ def bundleNgxNatives = tasks.register("bundleNgxNatives") {
 				from(fileTree(ngxShimOutDir) {
 					include platform.shimIncludes
 				}) {
-					into "caustica/natives/${platform.name}"
+					into "fluorite/natives/${platform.name}"
 				}
 				from(fileTree(platform.vendorRoot(dlssSdkRoot, ngxVendorConfig))) {
 					include platform.vendorIncludes
-					into "caustica/natives/${platform.name}"
+					into "fluorite/natives/${platform.name}"
 				}
 			}
 			into ngxNativeGenRoot
@@ -323,7 +323,7 @@ def bundleNgxNatives = tasks.register("bundleNgxNatives") {
 		// with getResourceAsStream, which needs no loader API on either side and works the same from a
 		// jar or an exploded dev run.
 		selectedNgxNativePlatforms.each { platform ->
-			def platformDir = new File(ngxNativeGenRoot.get().asFile, "caustica/natives/${platform.name}")
+			def platformDir = new File(ngxNativeGenRoot.get().asFile, "fluorite/natives/${platform.name}")
 			def names = (platformDir.listFiles() ?: [] as File[])
 					.findAll { it.isFile() && it.name != "index.txt" }
 					.collect { it.name }
@@ -337,7 +337,7 @@ def bundleNgxNatives = tasks.register("bundleNgxNatives") {
 // project; subprojects depend on them by task path (":compileShaders" etc.) so they never reach into
 // rootProject.tasks at configuration time.
 ext {
-	causticaShaderSpirvDir = shaderGenRoot
-	causticaShaderRecordsDir = layout.buildDirectory.dir("generated/sources/shaderRecords")
-	causticaNgxNativesDir = ngxNativeGenRoot
+	fluoriteShaderSpirvDir = shaderGenRoot
+	fluoriteShaderRecordsDir = layout.buildDirectory.dir("generated/sources/shaderRecords")
+	fluoriteNgxNativesDir = ngxNativeGenRoot
 }

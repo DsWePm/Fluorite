@@ -26,9 +26,9 @@ sourceSets {
 
 // Generated artifacts from the root project, depended on by task path so this module never touches
 // rootProject.tasks while configuring.
-sourceSets.main.java.srcDir(files(rootProject.ext.causticaShaderRecordsDir).builtBy(":generateShaderRecords"))
-sourceSets.main.resources.srcDir(files(rootProject.ext.causticaShaderSpirvDir).builtBy(":compileShaders"))
-sourceSets.main.resources.srcDir(files(rootProject.ext.causticaNgxNativesDir).builtBy(":bundleNgxNatives"))
+sourceSets.main.java.srcDir(files(rootProject.ext.fluoriteShaderRecordsDir).builtBy(":generateShaderRecords"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteShaderSpirvDir).builtBy(":compileShaders"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteNgxNativesDir).builtBy(":bundleNgxNatives"))
 
 neoForge {
 	version = rootProject.neoforge_version
@@ -40,7 +40,7 @@ neoForge {
 
 			// The renderer only exists on the Vulkan backend, and Minecraft defaults to OpenGL. Baked into
 			// the run config rather than left to the caller so :neoforge:runClient is usable on its own —
-			// without it the client comes up on OpenGL and Caustica silently does nothing.
+			// without it the client comes up on OpenGL and Fluorite silently does nothing.
 			programArguments.addAll("--renderDebugLabels", "--graphicsBackend", "VULKAN")
 
 				// Loads the fixed test world straight from the launch, so a digest or frameStats capture is
@@ -69,7 +69,7 @@ neoForge {
 	}
 
 	mods {
-		caustica {
+		fluorite {
 			sourceSet sourceSets.main
 		}
 	}
@@ -77,7 +77,7 @@ neoForge {
 
 dependencies {
 	// NightConfig is NOT jarJar'd here: NeoForge's own ModConfigSpec is built on it and ships it, which
-	// is exactly why CausticaConfig was written against NightConfig in the first place. Verify the
+	// is exactly why FluoriteConfig was written against NightConfig in the first place. Verify the
 	// shipped version stays API-compatible with the 3.8.3 the Fabric module bundles.
 	compileOnly "com.electronwill.night-config:core:3.8.3"
 	compileOnly "com.electronwill.night-config:toml:3.8.3"

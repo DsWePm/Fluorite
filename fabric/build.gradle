@@ -43,7 +43,7 @@ loom {
 			programArgs "--quickPlaySingleplayer", "Shader Testing Java"
 
 			// The renderer only exists on the Vulkan backend, and options.txt defaults to "default", which
-			// does not reliably resolve to Vulkan — the client then comes up on OpenGL and Caustica silently
+			// does not reliably resolve to Vulkan — the client then comes up on OpenGL and Fluorite silently
 			// does nothing, which looks exactly like the mod being broken. Forced here so the two loaders'
 			// run configs say the same thing; the NeoForge side has carried this since it was written.
 			programArgs "--graphicsBackend", "VULKAN"
@@ -80,7 +80,7 @@ dependencies {
 	testImplementation "org.junit.jupiter:junit-jupiter"
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
 
-	// Layered TOML config (config/caustica.toml) — NightConfig, the same library NeoForge's
+	// Layered TOML config (config/fluorite.toml) — NightConfig, the same library NeoForge's
 	// ModConfigSpec is built on. Jar-in-Jar'd here because Fabric ships no copy of its own.
 	include implementation("com.electronwill.night-config:core:3.8.3")
 	include implementation("com.electronwill.night-config:toml:3.8.3")
@@ -88,11 +88,11 @@ dependencies {
 
 // Generated artifacts from the root project. Depended on by task path rather than by task object so
 // this module never touches rootProject.tasks during configuration.
-sourceSets.main.java.srcDir(files(rootProject.ext.causticaShaderRecordsDir).builtBy(":generateShaderRecords"))
+sourceSets.main.java.srcDir(files(rootProject.ext.fluoriteShaderRecordsDir).builtBy(":generateShaderRecords"))
 // Emit the .spv into the main resources so they land in the jar / on the runClient classpath at the
-// same /caustica/rt/ path the loader (RtPipeline) reads.
-sourceSets.main.resources.srcDir(files(rootProject.ext.causticaShaderSpirvDir).builtBy(":compileShaders"))
-sourceSets.main.resources.srcDir(files(rootProject.ext.causticaNgxNativesDir).builtBy(":bundleNgxNatives"))
+// same /fluorite/rt/ path the loader (RtPipeline) reads.
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteShaderSpirvDir).builtBy(":compileShaders"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteNgxNativesDir).builtBy(":bundleNgxNatives"))
 
 processResources {
 	inputs.property "version", project.version
@@ -158,7 +158,7 @@ def verifyCommonIsLoaderAgnostic = tasks.register("verifyCommonIsLoaderAgnostic"
 		if (!offenders.isEmpty()) {
 			def detail = offenders.collect { name, needles -> " - ${name}: ${needles.join(', ')}" }.join("\n")
 			throw new GradleException("common/ classes reference a mod loader:\n" + detail
-					+ "\nMove the loader-specific part behind dev.comfyfluffy.caustica.platform, or add the "
+					+ "\nMove the loader-specific part behind io.github.dswepm.fluorite.platform, or add the "
 					+ "class to commonLoaderLeakAllowlist in fabric/build.gradle with a note saying why.")
 		}
 		logger.lifecycle("common/ is loader-agnostic ({} class(es) allowlisted)", commonLoaderLeakAllowlist.size())

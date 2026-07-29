@@ -1,22 +1,23 @@
 {
 	"schemaVersion": 1,
-	"id": "caustica",
+	"id": "fluorite",
 	"version": "${version}",
-	"name": "Caustica",
+	"name": "Fluorite",
 	"description": "Hardware-ray-traced renderer with DLSS Ray Reconstruction for the Minecraft Vulkan backend.",
 	"authors": [
-		"i"
+		"Yuhan YAN (DsWePm)",
+		"ComfyFluffy and Caustica contributors"
 	],
 	"license": "LGPL-3.0-or-later",
 	"environment": "client",
 	"entrypoints": {
 		"main": [
-			"dev.comfyfluffy.caustica.fabric.CausticaFabric"
+			"io.github.dswepm.fluorite.fabric.FluoriteFabric"
 		]
 	},
 	"mixins": [
-		"caustica-common.mixins.json",
-		"caustica-fabric.mixins.json"
+		"fluorite-common.mixins.json",
+		"fluorite-fabric.mixins.json"
 	],
 	"depends": {
 		"fabricloader": ">=0.19.3",

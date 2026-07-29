@@ -1,0 +1,60 @@
+{
+	"fluorite.options.rt.header": "Traçado de raios",
+
+	"fluorite.options.rt.exposureMode": "Exposição",
+	"fluorite.options.rt.exposureMode.tooltip": "Como a imagem com traçado de raios é mapeada para o brilho da tela. Automático se adapta à luminância da cena; Manual usa diretamente o valor de exposição.",
+	"fluorite.options.rt.exposureMode.auto": "Automático",
+	"fluorite.options.rt.exposureMode.manual": "Manual",
+
+	"fluorite.options.rt.manualEv": "Exposição EV",
+	"fluorite.options.rt.manualEv.tooltip": "Compensação de exposição em pontos. No Manual, esta é a exposição fixa. No Automático, ela desloca a exposição automática para mais clara ou mais escura.",
+
+	"fluorite.options.rt.spp": "Amostras por pixel",
+	"fluorite.options.rt.spp.tooltip": "Amostras de path tracing tomadas por pixel em cada quadro. Valores maiores são mais limpos, mas exigem mais desempenho.",
+
+	"fluorite.options.rt.maxBounces": "Rebatimentos de caminho",
+	"fluorite.options.rt.maxBounces.tooltip": "Número máximo de rebatimentos secundários de path tracing após o primeiro acerto. Valores maiores capturam mais luz indireta, mas custam mais.",
+
+	"fluorite.options.rt.sunSize": "Tamanho do sol",
+	"fluorite.options.rt.sunSize.tooltip": "Raio angular do disco do sol e da lua. Discos maiores projetam penumbras mais suaves.",
+
+	"fluorite.options.rt.entities": "Entidades com traçado de raios",
+	"fluorite.options.rt.entities.tooltip": "Inclui entidades e entidades de bloco na cena com traçado de raios.",
+
+	"fluorite.options.rt.particles": "Partículas com traçado de raios",
+	"fluorite.options.rt.particles.tooltip": "Desenha partículas como billboards de raio da câmera dentro da cena traçada.",
+
+	"fluorite.options.rt.glow": "Contorno brilhante de entidades",
+	"fluorite.options.rt.glow.tooltip": "Desenha o contorno vanilla do efeito Brilhante (através de paredes) ao redor de entidades brilhantes.",
+
+	"fluorite.options.rt.waterWaves": "Água animada",
+	"fluorite.options.rt.waterWaves.tooltip": "Anima as normais da superfície da água para brilhos de ondas em movimento.",
+
+	"fluorite.options.rt.hdr": "Saída HDR",
+	"fluorite.options.rt.hdr.tooltip": "Apresenta em HDR (ST.2084/PQ) em vez de SDR quando a tela oferece suporte. Entra em vigor após reiniciar o jogo.",
+
+	"fluorite.options.rt.hdrPaperWhite": "Branco de papel HDR",
+	"fluorite.options.rt.hdrPaperWhite.tooltip": "Brilho absoluto (em nits) ao qual o brilho da cena equivalente a SDR é mapeado em uma tela HDR.",
+
+	"fluorite.options.rt.hdrPeak": "Brilho máximo HDR",
+	"fluorite.options.rt.hdrPeak.tooltip": "Brilho absoluto (em nits) para o qual os realces fazem roll-off. Defina para o brilho HDR máximo da sua tela.",
+
+	"fluorite.options.rt.dlssQuality": "Qualidade DLSS",
+	"fluorite.options.rt.dlssQuality.tooltip": "Modo de qualidade do DLSS Ray Reconstruction. Modos de menor qualidade renderizam menos pixels e fazem upscaling mais agressivo para obter taxas de quadros maiores; modos de maior qualidade renderizam mais pixels para uma imagem mais nítida. Só afeta a imagem quando o DLSS Ray Reconstruction está ativado.",
+	"fluorite.options.rt.dlssQuality.3": "Ultra desempenho",
+	"fluorite.options.rt.dlssQuality.0": "Desempenho",
+	"fluorite.options.rt.dlssQuality.1": "Equilibrado",
+	"fluorite.options.rt.dlssQuality.2": "Qualidade",
+	"fluorite.options.rt.dlssQuality.5": "DLAA",
+
+	"fluorite.options.rt.debugView": "Visualização de depuração",
+	"fluorite.options.rt.debugView.tooltip": "Visualiza um buffer intermediário do traçado de raios em vez da imagem final.",
+	"fluorite.options.rt.debugView.0": "Desativado",
+	"fluorite.options.rt.debugView.1": "Normais",
+	"fluorite.options.rt.debugView.2": "Albedo",
+	"fluorite.options.rt.debugView.3": "Profundidade",
+	"fluorite.options.rt.debugView.4": "Rugosidade",
+	"fluorite.options.rt.debugView.5": "Movimento",
+	"fluorite.options.rt.debugView.6": "Especular",
+	"fluorite.options.rt.debugView.7": "Movimento especular"
+}

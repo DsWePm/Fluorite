@@ -46,7 +46,7 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - name: Checkout Caustica
+      - name: Checkout Fluorite
         uses: actions/checkout@v4
 
       - name: Checkout DLSS SDK
@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Caustica
+      - name: Checkout Fluorite
         uses: actions/checkout@v4
 
       - name: Checkout DLSS SDK
@@ -132,7 +132,7 @@ jobs:
       - native-linux
 
     steps:
-      - name: Checkout Caustica
+      - name: Checkout Fluorite
         uses: actions/checkout@v4
 
       - name: Checkout DLSS SDK
@@ -187,7 +187,7 @@ jobs:
       - name: Upload bundled jar
         uses: actions/upload-artifact@v4
         with:
-          name: caustica-bundled-jar
+          name: fluorite-bundled-jar
           path: |
             build/libs/*.jar
             !build/libs/*-sources.jar

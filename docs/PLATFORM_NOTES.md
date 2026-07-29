@@ -5,7 +5,7 @@ fixed. Anything not listed here is a bug.
 
 Terrain geometry is extracted through `QuadPipeline`: on Fabric via the Fabric Renderer API's
 `BlockStateModel.emitQuads`, on NeoForge via vanilla's `collectParts` + `BlockStateModelPart.getQuads`.
-The two are meant to produce the same triangles. `caustica.rt.terrainDigest` measures whether they do.
+The two are meant to produce the same triangles. `fluorite.rt.terrainDigest` measures whether they do.
 
 ## Before capturing: give both loaders the same world
 
@@ -44,7 +44,7 @@ being re-meshed by a moving world (flowing fluids) and cannot be attributed to c
 
 986 comparable sections, 975 geometrically identical.
 
-**The loaders disagree about face culling, and that is the loaders' own behaviour, not Caustica's.**
+**The loaders disagree about face culling, and that is the loaders' own behaviour, not Fluorite's.**
 `RtTerrainMesher.QuadCapture.isCulled` calls `Block.shouldRenderFace(state, neighbour, direction)` — one
 shared line of code — and gets different answers:
 
@@ -68,18 +68,18 @@ No visible artifact in any of this; it was found by digest, not by eye.
 
 `emissive()` is a second, deliberate loss: the Renderer API exposes a per-quad emissive flag that vanilla
 has no equivalent for, so the NeoForge quad view returns `false` and emission falls back to
-`BlockState.getLightEmission()`. Caustica's real emission sources — the heuristic, LabPBR `_s`, and
+`BlockState.getLightEmission()`. Fluorite's real emission sources — the heuristic, LabPBR `_s`, and
 `emission.strength` JSON overrides — are unaffected. Only resource packs that actively drive Renderer API
 materials lose anything.
 
 ## Investigating a difference
 
-`caustica.rt.terrainDigestSections` (`diagnostics.terrain-digest-sections`, `"sx,sy,sz;…"`) writes each
+`fluorite.rt.terrainDigestSections` (`diagnostics.terrain-digest-sections`, `"sx,sy,sz;…"`) writes each
 named section's triangles out individually — sorted centroids and normals, one file per section per
 loader. Diffing two of those names the exact faces one side is missing. The digest can only say a section
 differs.
 
-`caustica.rt.cullTrace` (`diagnostics.cull-trace`, `"x,y,z;…"`) then logs every culling decision for the
+`fluorite.rt.cullTrace` (`diagnostics.cull-trace`, `"x,y,z;…"`) then logs every culling decision for the
 blocks those faces belong to: state, neighbour, direction, verdict. That is what turned "seven faces are
 missing" into the table above — matching verdicts would have meant the quad sources bucket a quad under
 different cullfaces, and differing verdicts meant the culling itself, which is where it actually was.

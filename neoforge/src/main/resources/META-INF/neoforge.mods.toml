@@ -3,26 +3,26 @@ loaderVersion = "[1,)"
 license = "LGPL-3.0-or-later"
 
 [[mods]]
-modId = "caustica"
+modId = "fluorite"
 version = "${version}"
-displayName = "Caustica"
+displayName = "Fluorite"
 description = '''Hardware-ray-traced renderer with DLSS Ray Reconstruction for the Minecraft Vulkan backend.'''
-authors = "i"
+authors = "Yuhan YAN (DsWePm), ComfyFluffy and Caustica contributors"
 
 [[mixins]]
-config = "caustica-common.mixins.json"
+config = "fluorite-common.mixins.json"
 
 [[mixins]]
-config = "caustica-neoforge.mixins.json"
+config = "fluorite-neoforge.mixins.json"
 
-[[dependencies.caustica]]
+[[dependencies.fluorite]]
 modId = "neoforge"
 type = "required"
 versionRange = "[26.2,)"
 ordering = "NONE"
 side = "CLIENT"
 
-[[dependencies.caustica]]
+[[dependencies.fluorite]]
 modId = "minecraft"
 type = "required"
 versionRange = "[26.2,)"
