@@ -315,6 +315,21 @@ def bundleNgxNatives = tasks.register("bundleNgxNatives") {
 			}
 			into ngxNativeGenRoot
 		}
+
+		// Write down what was copied. NgxRuntime needs the vendor library file names at runtime, and
+		// enumerating a directory inside a mod jar is the one thing the two loaders disagree about most
+		// awkwardly — Fabric hands out container root paths, and NeoForge's IModFile has no findResource
+		// at all in FML 11. The build already knows the answer, so it records it and the runtime reads it
+		// with getResourceAsStream, which needs no loader API on either side and works the same from a
+		// jar or an exploded dev run.
+		selectedNgxNativePlatforms.each { platform ->
+			def platformDir = new File(ngxNativeGenRoot.get().asFile, "caustica/natives/${platform.name}")
+			def names = (platformDir.listFiles() ?: [] as File[])
+					.findAll { it.isFile() && it.name != "index.txt" }
+					.collect { it.name }
+					.sort()
+			new File(platformDir, "index.txt").setText(names.join("\n") + "\n", "UTF-8")
+		}
 	}
 }
 

@@ -17,8 +17,19 @@ public interface QuadPipeline {
 	 */
 	BlockQuadSource newBlockQuadSource();
 
-	/** Sprite lookup for an atlas. Implementations should cache per atlas and drop the cache on reload. */
+	/** Sprite lookup for one atlas. The terrain mesher resolves this once per dispatch and reuses it. */
 	SpriteLookup spriteLookup(TextureAtlas atlas);
+
+	/**
+	 * Sprite lookup that works for a quad from any atlas, for the entity path — which meets quads from
+	 * several atlases and so cannot hoist a single one.
+	 *
+	 * <p>Separate from {@link #spriteLookup} because the loaders answer it from opposite ends. Fabric has
+	 * to find the atlas, then its finder, then search by UV. Vanilla baked quads carry the sprite on the
+	 * quad, so there is nothing to search. Making the entity path name an atlas first would demand an
+	 * identifier only one of them has.
+	 */
+	SpriteLookup entitySpriteLookup();
 
 	/**
 	 * Build the immutable 3×3×3 snapshot view a tessellation job reads.

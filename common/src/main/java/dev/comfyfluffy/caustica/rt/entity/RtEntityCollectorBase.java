@@ -12,6 +12,7 @@ import dev.comfyfluffy.caustica.mixin.RenderTypeAccessor;
 import dev.comfyfluffy.caustica.platform.BlockQuadSource;
 import dev.comfyfluffy.caustica.platform.Platform;
 import dev.comfyfluffy.caustica.platform.RtQuadView;
+import dev.comfyfluffy.caustica.platform.SpriteLookup;
 import dev.comfyfluffy.caustica.rt.RtFrameStats;
 import dev.comfyfluffy.caustica.rt.accel.RtAccel;
 import net.minecraft.client.Minecraft;
@@ -93,6 +94,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     // Lazy FRAPI emitter used for contained and moving block models. Its callback reads the synchronous
     // context fields below; the entity collector itself is render-thread confined.
     private BlockQuadSource blockQuads;
+    private SpriteLookup entitySprites;
     private Matrix4f emittedBlockPose;
     private BlockAndTintGetter emittedBlockView;
     private BlockState emittedBlockState;
@@ -729,9 +731,10 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     protected void addQuadView(Matrix4f pose, RtQuadView quad, int[] tintLayers, boolean itemMesh,
                              BlockAndTintGetter view, BlockPos pos, BlockState state,
                              float offsetX, float offsetY, float offsetZ) {
-        TextureAtlasSprite sprite = Platform.get().quads()
-                .spriteLookup(Minecraft.getInstance().getAtlasManager().getAtlasOrThrow(quad.atlasId()))
-                .find(quad);
+        if (entitySprites == null) {
+            entitySprites = Platform.get().quads().entitySpriteLookup();
+        }
+        TextureAtlasSprite sprite = entitySprites.find(quad);
         capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(quad.atlasTextureLocation());
         // Chunk-layer translucency denotes a block-derived dielectric; a blended item render type denotes
         // ordinary stochastic alpha when the quad did not come from such a layer.

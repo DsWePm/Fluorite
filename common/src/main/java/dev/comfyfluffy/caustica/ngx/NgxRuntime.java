@@ -14,7 +14,9 @@ import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkInstance;
 
 import java.io.IOException;
+import java.io.BufferedReader;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -197,20 +199,36 @@ public final class NgxRuntime {
         }
     }
 
+    /**
+     * Vendor library names bundled for this platform, read from the manifest {@code bundleNgxNatives}
+     * writes beside them.
+     *
+     * <p>This used to enumerate the directory inside the mod container, which is the one thing the two
+     * loaders disagree about most awkwardly: Fabric exposes container root paths, NeoForge's IModFile has
+     * no findResource in FML 11. The build knows exactly which files it copied, so it records them and
+     * this reads the list off the classpath — no loader API, and the same behaviour from a jar or an
+     * exploded dev run.
+     */
     private static List<String> bundledFeatureLibraryNames() {
         List<String> names = new ArrayList<>();
-        String nativeDir = "caustica/natives/" + PLATFORM_NATIVES.platformDir();
-        // The directory-exists test lives in the platform implementation now: Fabric picks the first of
-        // the container's root paths that has this entry, NeoForge asks the mod file directly.
-        Platform.paths().findModResource(nativeDir).ifPresent(dir -> {
-            try (Stream<Path> files = Files.list(dir)) {
-                files.map(path -> path.getFileName().toString())
-                        .filter(PLATFORM_NATIVES::isFeatureLibrary)
-                        .forEach(names::add);
-            } catch (IOException e) {
-                CausticaMod.LOGGER.warn("Could not list bundled NGX natives in {}", dir, e);
+        String index = PLATFORM_NATIVES.resourceDir() + "index.txt";
+        try (InputStream in = NgxRuntime.class.getResourceAsStream(index)) {
+            if (in == null) {
+                return names;
             }
-        });
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String name = line.trim();
+                    if (!name.isEmpty() && PLATFORM_NATIVES.isFeatureLibrary(name)) {
+                        names.add(name);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            CausticaMod.LOGGER.warn("Could not read the bundled NGX native index {}", index, e);
+        }
         return names;
     }
 

@@ -47,13 +47,8 @@ public interface RtQuadView {
 	/** Whether the quad was authored as full-bright. False on sources that cannot express it. */
 	boolean emissive();
 
-	/** Which atlas this quad samples, so the caller can pick the right {@link SpriteLookup}. */
-	Identifier atlasId();
 
-	/**
-	 * That atlas's texture location — a different identifier from {@link #atlasId()}, and the one the
-	 * entity texture registry keys its bindless slots on.
-	 */
+	/** The atlas texture this quad samples — what the entity texture registry keys bindless slots on. */
 	Identifier atlasTextureLocation();
 
 	/** Entity path only: the item render type carrying this quad, when there is one. */

@@ -74,11 +74,6 @@ final class FabricQuadView implements RtQuadView {
 	}
 
 	@Override
-	public Identifier atlasId() {
-		return quad.atlas().getId();
-	}
-
-	@Override
 	public Identifier atlasTextureLocation() {
 		return quad.atlas().getTextureLocation();
 	}
