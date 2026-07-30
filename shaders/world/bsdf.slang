@@ -68,7 +68,7 @@ public BsdfContext makeBsdfContext(float3 hitPos, float3 n, float3 v, float3 rd,
 /**
  * The Disney parameters a material authored, or the defaults it inherits by saying nothing.
  *
- * `extensionOffset` is a one-based index into the extension table, and zero means the material never
+ * The payload carries a one-based index into the extension table, and zero means the material never
  * mentioned any of this — which is every material in an unmodified LabPBR pack, since no source format
  * carries these values. Those materials take the early return and never touch the extension buffer, so
  * supporting the feature costs them one comparison and no load.
@@ -77,13 +77,14 @@ public BsdfContext makeBsdfContext(float3 hitPos, float3 n, float3 v, float3 rd,
  * accidentally inherit something surprising for the rest. Every weight is zero, so the lobes they gate
  * are off and the surface behaves exactly as it did before this existed.
  */
-public MaterialExtension materialExtension(MaterialHeader header) {
+public MaterialExtension materialExtension(uint payloadFlags) {
     MaterialExtension e;
     e.sheen = float4(0.0, 0.5, 0.0, 1.0);      // no sheen; halfway tint and a polished coat if enabled
     e.specular = float4(0.0, 0.0, 0.0, 0.0);   // no tint, isotropic, no subsurface
     e.subsurface = float4(0.0, 0.0, 0.0, 0.0);
-    if (header.extensionOffset == 0u) {
+    uint index = (payloadFlags >> PAYLOAD_EXTENSION_SHIFT) & PAYLOAD_EXTENSION_MASK;
+    if (index == 0u) {
         return e;
     }
-    return ConstPtr<MaterialExtension>(pc.materialExtensionAddr)[header.extensionOffset - 1u];
+    return ConstPtr<MaterialExtension>(pc.materialExtensionAddr)[index - 1u];
 }

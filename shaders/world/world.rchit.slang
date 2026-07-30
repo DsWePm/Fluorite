@@ -19,8 +19,10 @@ import math;
 [[vk::binding(3, 1)]] Sampler2D materialSurface1Tex[];
 
 void payloadSetPacked(inout Payload payload, uint material, float roughness, float metalness,
-        float emission, float sss, float ior, float transmission, uint emissionSource) {
-    payload.flags = material | (emissionSource << PAYLOAD_EMISSION_SOURCE_SHIFT);
+        float emission, float sss, float ior, float transmission, uint emissionSource,
+        uint extensionIndex) {
+    payload.flags = material | (emissionSource << PAYLOAD_EMISSION_SOURCE_SHIFT)
+            | ((extensionIndex & PAYLOAD_EXTENSION_MASK) << PAYLOAD_EXTENSION_SHIFT);
     payload.roughMetal = packHalf2(float2(roughness, metalness));
     payload.emissionSss = packHalf2(float2(emission, sss));
     payload.iorTransmission = packHalf2(float2(ior, transmission));
@@ -256,7 +258,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         }
         payload.f0 = half3(0.0h, 0.0h, 0.0h);
         payloadSetPacked(payload, MATERIAL_PARTICLE, 1.0, 0.0, 0.0, 0.0,
-                1.0, 0.0, EMISSION_SOURCE_NONE);
+                1.0, 0.0, EMISSION_SOURCE_NONE, 0u); // particles carry no material record
         return;
     }
     // Dynamic entities: instances with this custom-index flag bit carry real captured ModelPart
@@ -322,7 +324,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float sss = material == MATERIAL_OPAQUE ? surface.sss : 0.0;
         payloadSetPacked(payload, material, surface.roughness, surface.metalness,
                 emission, sss, header.params.z, header.params.w,
-                materialEmissionSource(header, emission));
+                materialEmissionSource(header, emission), header.extensionOffset);
         payloadSetDielectric(payload, material, entering);
         return;
     }
@@ -391,7 +393,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         payload.f0 = half3(glassSurface.f0);
         payloadSetPacked(payload, MATERIAL_DIELECTRIC, glassSurface.roughness,
                 glassSurface.metalness, 0.0, 0.0, materialHeader.params.z,
-                materialHeader.params.w, EMISSION_SOURCE_NONE);
+                materialHeader.params.w, EMISSION_SOURCE_NONE, materialHeader.extensionOffset);
         payloadSetDielectric(payload, MATERIAL_DIELECTRIC, entering);
         return;
     }
@@ -424,7 +426,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     payload.f0 = half3(surface.f0);
     payloadSetPacked(payload, material, surface.roughness, surface.metalness,
             surface.emission, surface.sss, materialHeader.params.z, materialHeader.params.w,
-            materialEmissionSource(materialHeader, surface.emission));
+            materialEmissionSource(materialHeader, surface.emission), materialHeader.extensionOffset);
     payloadSetDielectric(payload, material, entering);
     // RIS emitter-NEE membership: raygen gates this emitter's direct-hit emission term (RIS covers it).
     if ((pr.flags & TERRAIN_PRIM_IN_LIGHT_BUFFER) != 0u) {

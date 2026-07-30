@@ -54,6 +54,9 @@ public final class RtMaterialRegistry {
     private static final int EMISSION_STRENGTH_SHIFT = 8;
     private static final int EMISSION_STRENGTH_MASK = 65535;
     private static final float MAX_EMISSION_STRENGTH = 32.0f;
+    /** Mirrors MAX_MATERIAL_EXTENSIONS in world_common.slang: 12 payload bits, one-based, 0 = none. */
+    private static final int MAX_EXTENSIONS = 4095;
+
     private static final int MAX_LOD_SHIFT = 24;
 
     private static final int MODEL_VARIANTS = 2; // ordinary opaque/cutout and transparent dielectric
@@ -578,6 +581,12 @@ public final class RtMaterialRegistry {
         RtMaterialDesc.Disney d = desc.disney();
         if (d.absent()) {
             return 0;
+        }
+        if (extensions.size() >= MAX_EXTENSIONS) {
+            // The index travels in 12 payload bits, so overflowing it would not fail — it would wrap and
+            // silently point a material at somebody else's parameters. Refuse instead.
+            throw new IllegalStateException("more than " + MAX_EXTENSIONS
+                    + " materials authored Disney parameters; the payload index cannot address them");
         }
         extensions.add(new MaterialExtensionData(
                 new MaterialExtensionData.Float4(d.sheen(), d.sheenTint(), d.clearcoat(), d.clearcoatGloss()),

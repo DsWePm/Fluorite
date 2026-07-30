@@ -165,6 +165,15 @@ public static const uint EMISSION_SOURCE_HEURISTIC = 2u;
 public static const uint EMISSION_SOURCE_LAB_PBR = 3u;
 
 public static const uint PAYLOAD_MATERIAL_MASK = 3u;
+
+// Which extension record the hit material owns, one-based, zero for none. Carried in the payload rather
+// than each Disney parameter separately: one field unlocks all of them, and a material without a record
+// never loads one. Twelve bits rather than sixteen so the tangent azimuth the anisotropic lobe needs can
+// share the same word — 12 bits of azimuth is 0.09 degrees, far below any visible streak error, and 4095
+// distinct materials authoring Disney parameters is already implausible. The compiler enforces the cap.
+public static const uint PAYLOAD_EXTENSION_SHIFT = 8u;
+public static const uint PAYLOAD_EXTENSION_MASK = 0xFFFu;
+public static const uint MAX_MATERIAL_EXTENSIONS = 4095u;
 public static const uint MATERIAL_OPAQUE = 0u;
 // Both dielectrics are volumes: they refract and push a participating medium. They stay distinct ids
 // because water owns behaviour nothing else has — an animated wave surface, the caustic term, biome-tint
