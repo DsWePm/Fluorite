@@ -295,12 +295,24 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
 // ray, and return throughput-free radiance contrib*vis*W. The one ray serves whichever term fired for
 // the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the
 // sample's side of the surface.
-public float3 shadeReservoir(MediumStack medium, BsdfContext c, Reservoir s) {
+public float3 shadeReservoir(MediumStack medium, BsdfContext c, MaterialExtension ext, Reservoir s) {
     if (s.W <= 0.0 || s.phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }
     float phat;
     float3 contrib = evalSampleContrib(c, s.pos, s.lnrm, s.le, s.area, phat);
+    // The survivor is shaded with the FULL response while the RIS target above stayed reduced. That is
+    // deliberate and unbiased: the estimator is f(y)*W with W = (1/M)*sum(w)/phat(y), which is unbiased
+    // for any strictly positive target phat — the target only shapes the variance. Keeping sheen out of
+    // the target keeps M+1 evaluations per vertex cheap; putting it in f keeps the picture right.
+    if (contrib.x + contrib.y + contrib.z > 0.0 && !c.twoSided) {
+        float3 wi = normalize(s.pos - c.hitPos);
+        if (dot(c.n, wi) > 0.0) {
+            float dist2 = max(dot(s.pos - c.hitPos, s.pos - c.hitPos), 1.0e-6);
+            float cosL = max(0.0, dot(s.lnrm, -wi));
+            contrib += sheenLobe(c, ext, wi) * s.le * (dot(c.n, wi) * cosL / dist2 * s.area);
+        }
+    }
     if (phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }

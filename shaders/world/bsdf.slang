@@ -88,3 +88,34 @@ public MaterialExtension materialExtension(uint payloadFlags) {
     }
     return ConstPtr<MaterialExtension>(pc.materialExtensionAddr)[index - 1u];
 }
+
+// ---- Lobes.
+
+/**
+ * Disney's sheen: the retroreflective grazing lobe that makes cloth, moss and foliage edges glow softly
+ * against the light instead of falling off to black like a Lambertian would.
+ *
+ * f = sheen * lerp(1, hueOfAlbedo, sheenTint) * (1 - cos(theta_d))^5
+ *
+ * theta_d is the angle between the light and the half vector, so the term peaks when light and view are
+ * on opposite sides at grazing — which is exactly the silhouette of a backlit leaf. The albedo hue is
+ * normalised by its own luminance so tinting shifts the colour without also changing how bright the
+ * sheen is; Disney's paper does the same.
+ *
+ * Additive on top of the diffuse lobe rather than energy-split against it. That is Disney's own
+ * formulation and it is not energy conserving in the strict sense, but sheen amounts are small and the
+ * alternative costs a normalisation nobody can author against.
+ */
+public float3 sheenLobe(BsdfContext c, MaterialExtension ext, float3 wi) {
+    float sheen = ext.sheen.x;
+    if (sheen <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 h = normalize(wi + c.v);
+    float ldh = clamp(dot(wi, h), 0.0, 1.0);
+    float f = pow(1.0 - ldh, 5.0);
+    float lum = max(luminance(c.diffAlb), 1.0e-4);
+    float3 hue = c.diffAlb / lum;
+    float3 tint = lerp(float3(1.0, 1.0, 1.0), hue, clamp(ext.sheen.y, 0.0, 1.0));
+    return sheen * tint * f;
+}

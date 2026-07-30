@@ -227,7 +227,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 BsdfContext bc = makeBsdfContext(hitPos, n, v, rd, albedo,
                                                  float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
                 Reservoir r = risInitial(bc, seed, proposalSeed);
-                L += throughput * shadeReservoir(medium, bc, r);
+                L += throughput * shadeReservoir(medium, bc, materialExtension(payload.flags), r);
             }
 
             if (bounce >= maxBounces) {
@@ -306,6 +306,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float G = ggxG1(ndv, rough) * ggxG1(ndl, rough); // separable Smith masking
                 float3 F = fresnelSchlick(vdh, F0);
                 brdf += (D * G) * F / (4.0 * ndv * ndl); // Cook–Torrance specular
+                brdf += sheenLobe(makeBsdfContext(hitPos, n, v, rd, diffAlb, F0, rough, false, 0.0),
+                                  materialExtension(payload.flags), lightDir);
                 L += throughput * brdf * worldPush.lightRadiance.xyz * ndl * vis;
             }
         }
@@ -319,7 +321,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
             BsdfContext bc = makeBsdfContext(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss);
             Reservoir r = risInitial(bc, seed, proposalSeed);
-            L += throughput * shadeReservoir(medium, bc, r);
+            L += throughput * shadeReservoir(medium, bc, materialExtension(payload.flags), r);
         }
 
         // Thin-surface SSS transmission. Light entering from the back face scatters through toward the
