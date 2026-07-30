@@ -150,6 +150,54 @@ public final class RtComposite {
      * in the shader as sigma_s/sigma_t from the extinction the wavefront record already carries — so this
      * costs no memory in the record, which had exactly one spare uint and now still does.
      */
+    // Last biome tint reported, so the line below prints on change instead of every frame.
+    private int loggedWaterTint = Integer.MIN_VALUE;
+
+    /**
+     * Report the water coefficients the shader will derive from this biome's tint.
+     *
+     * <p>The tint is the only per-biome input, and everything visible underwater comes out of it: swamp
+     * water absorbs red and violet and reads green, ocean absorbs red and green and reads blue. What
+     * this prints is the same arithmetic {@code waterAbsorption} and {@code waterExtinction} do in the
+     * shader, so a colour that looks wrong in the water can be checked against the numbers rather than
+     * guessed at — and the extinction is what tints everything seen through the water, so the two should
+     * agree by eye.
+     *
+     * <p>Absorption is per channel and inverted from the tint: a low red tint means red is absorbed
+     * fastest, which is why the tint's own colour and the water's apparent colour are not the same
+     * thing. Extinction adds the scattered part on top, so it rises with turbidity while the ratio
+     * between channels does not.
+     */
+    private void logWaterCoefficients(float r, float g, float b) {
+        int key = (Math.round(r * 255f) << 16) | (Math.round(g * 255f) << 8) | Math.round(b * 255f);
+        if (key == loggedWaterTint || !FluoriteConfig.Rt.FrameStats.ENABLED.value()) {
+            return;
+        }
+        loggedWaterTint = key;
+        float[] k = FluoriteConfig.Rt.Water.scatteringRgb();
+        float ar = WATER_ABSORB_FLOOR_R + WATER_DENSITY * (1f - Math.clamp(r, 0f, 1f));
+        float ag = WATER_ABSORB_FLOOR_G + WATER_DENSITY * (1f - Math.clamp(g, 0f, 1f));
+        float ab = WATER_ABSORB_FLOOR_B + WATER_DENSITY * (1f - Math.clamp(b, 0f, 1f));
+        FluoriteMod.LOGGER.info(
+                "Water: tint=({}, {}, {}) absorption=({}, {}, {}) extinction=({}, {}, {})"
+                        + " scatterAlbedo=({}, {}, {})",
+                fmt(r), fmt(g), fmt(b), fmt(ar), fmt(ag), fmt(ab),
+                fmt(ar * (1f + k[0])), fmt(ag * (1f + k[1])), fmt(ab * (1f + k[2])),
+                fmt(k[0] / (1f + k[0])), fmt(k[1] / (1f + k[1])), fmt(k[2] / (1f + k[2])));
+    }
+
+    private static String fmt(float v) {
+        return String.format(java.util.Locale.ROOT, "%.4f", v);
+    }
+
+    // Mirrors medium.slang's waterAbsorption. Duplicated deliberately and narrowly: this is a diagnostic
+    // that exists to be compared against the shader, so it has to restate the shader's arithmetic rather
+    // than share it. If they drift, the log stops being evidence — which is exactly what it is for.
+    private static final float WATER_DENSITY = 0.1f;
+    private static final float WATER_ABSORB_FLOOR_R = 0.015f;
+    private static final float WATER_ABSORB_FLOOR_G = 0.010f;
+    private static final float WATER_ABSORB_FLOOR_B = 0.008f;
+
     private static Float4 waterScatter() {
         float[] s = FluoriteConfig.Rt.Water.scatteringRgb();
         return new Float4(s[0], s[1], s[2], FluoriteConfig.Rt.Water.PHASE_G.value());
@@ -968,6 +1016,7 @@ public final class RtComposite {
                 wtr = ((wc >> 16) & 0xFF) / 255f;
                 wtg = ((wc >> 8) & 0xFF) / 255f;
                 wtb = (wc & 0xFF) / 255f;
+                logWaterCoefficients(wtr, wtg, wtb);
             }
             float waterWaveTime = (float) (System.nanoTime() / 1.0e9 % 3600.0);
             float waterWaveDelta = waterWaveTime - previousWaterWaveTime;

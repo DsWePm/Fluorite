@@ -290,10 +290,23 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
     // The sun, reaching depth d after travelling d / sin(elevation) through the water.
     float sunY = worldPush.lightDir.y;
     if (sunY > 1.0e-3) {
-        float cosT = dot(rd, worldPush.lightDir.xyz);
-        float3 source = worldPush.lightRadiance.xyz
-                * (4.0 * PI * enclosedPhase(cosT, worldPush.waterScatter.w));
-        total += source * depthAttenuatedIntegral(sigmaT, d0, rd.y / sunY, 1.0 / sunY, tEnd);
+        // One shadow ray, and it is what turns this from a wash into a volume. Without it the sun
+        // reaches every point in the water regardless of what is above it, so the lit side stays lit
+        // through any amount of terrain and the scattering has no structure to it — it varies only with
+        // distance to whatever the ray ends on, which is why it read as paint on the surfaces rather
+        // than as light in the water. Shafts, shadowed water and a dark side are all this term.
+        //
+        // Cast from the segment's ORIGIN rather than from a point inside it. Sampling the middle makes
+        // the answer depend on segment length, and segment length is whatever the ray happened to hit:
+        // neighbours disagreeing that way is what made the fog's sun halo blotchy and unstable, and the
+        // fix there was the same one. Every ray leaving a point now agrees about that point.
+        float3 sunVis = visibility(ro, worldPush.lightDir.xyz, RAY_FAR).transmittance;
+        if (any(sunVis > 0.0)) {
+            float cosT = dot(rd, worldPush.lightDir.xyz);
+            float3 source = worldPush.lightRadiance.xyz * sunVis
+                    * (4.0 * PI * enclosedPhase(cosT, worldPush.waterScatter.w));
+            total += source * depthAttenuatedIntegral(sigmaT, d0, rd.y / sunY, 1.0 / sunY, tEnd);
+        }
     }
 
     // Sky light, arriving from overhead, so its path to depth d is d.
