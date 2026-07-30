@@ -830,7 +830,12 @@ public final class FluoriteConfig {
              */
             public static float[] scatteringRgb() {
                 float t = TURBIDITY.value();
-                return new float[] {0.020f * t, 0.024f * t, 0.030f * t};
+                // k = sigma_s / sigma_a. The albedo is k/(1+k) and the extinction is sigma_a (1+k), so
+                // one number moves both: 1 gives a modest 0.3 albedo and 1.4x extinction, 10 gives 0.8
+                // and 5x — murky enough to lose the bottom, which is the thing turbidity is for.
+                // Slightly blue-weighted, since scattering in water tilts that way while the strong
+                // colour comes from absorption. Calibrated by eye against the reference view.
+                return new float[] {0.35f * t, 0.40f * t, 0.48f * t};
             }
 
             private Water() {

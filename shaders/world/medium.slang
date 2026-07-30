@@ -18,15 +18,19 @@ public float3 waterAbsorption(float3 tint) {
 }
 
 /**
- * Total extinction, unchanged from what the tint has always produced.
+ * Total extinction: the tint's absorption, raised by whatever is suspended in the water.
  *
- * Turbidity does not ADD to this — it decides how much of it scatters rather than absorbs. Keeping
- * sigma_t fixed means changing turbidity does not change how far you can see through water, only how
- * much light comes back out of it, and it makes turbidity 0 an exact reproduction of the
- * absorption-only water that shipped before. Adding to sigma_t as well would be a separate knob.
+ * Turbidity ADDS here rather than merely redistributing. An earlier version kept sigma_t fixed and only
+ * changed how much of it scattered, which made turbidity 0 an exact reproduction of the old water — but
+ * it also meant no amount of turbidity could stop you seeing the bottom, and not being able to see far
+ * is the first thing anyone notices about murky water. Turbidity 0 is still exact, because k is 0 there.
+ *
+ * Scattering is proportional to absorption, so a biome that absorbs more also scatters more: the same
+ * suspended particles do both, and the murky-looking biomes are the murky ones. That proportionality is
+ * also what keeps the single-scattering albedo derivable without storing it — see mediumScatterAlbedo.
  */
 public float3 waterExtinction(float3 tint) {
-    return waterAbsorption(tint);
+    return waterAbsorption(tint) * (float3(1.0, 1.0, 1.0) + worldPush.waterScatter.xyz);
 }
 
 // A non-water dielectric's tint is a filter over one block of travel rather than a biome water colour, so
@@ -86,33 +90,22 @@ public Medium airMedium() {
  * survives is tinted, what does not is gone — and that is why water read as a blue pane: the turbidity,
  * the shafts, the milky way depth closes in are all the scattered part.
  *
- * DERIVED FROM THE EXTINCTION, which is what makes it per-water-body without storing anything. The
- * physical relationship is real rather than a convenience: the same suspended particles that make water
- * murky both scatter more and attenuate more, so a swamp's high extinction earns a high albedo and
- * clear ocean's low extinction earns a low one. A biome therefore differs in how CLEAR it is, not only
- * in what colour it is, and the wavefront record still does not grow — sigma_t and the water bit beside
- * it are already there, for `current` and `outer` alike.
+ * With sigma_s = k * sigma_a, total extinction is sigma_a (1 + k), so the albedo is k / (1 + k) — a
+ * function of the turbidity alone, with the tint cancelling out entirely. Nothing about the water body
+ * needs storing to recover it, which is why this milestone costs the wavefront record nothing and
+ * leaves its last spare uint spare.
  *
- * What this cannot express is turbidity decoupled from darkness: very clear water that is nonetheless
- * very milky. That combination does not occur naturally, and buying it would cost the record's last
- * spare uint and the +118 MB the next field after it would trigger.
- *
- * Capped below 1 because an albedo of exactly 1 is a medium that never absorbs, which with a constant
- * source integrates to a surface as bright as the light itself.
+ * The per-biome part lives in the amount rather than the ratio, which is the right place for it: the
+ * fraction of collisions that scatter is a property of what is suspended in the water, while how much
+ * of it there is varies from swamp to open ocean. So both sigma_a and sigma_s rise together and murky
+ * biomes come out both darker and milkier.
  */
-public static const float WATER_MURK_REFERENCE = 0.08; // luminance of sigma_t for reference clear water
-public static const float MAX_WATER_SCATTER_ALBEDO = 0.92;
-
 public float3 mediumScatterAlbedo(Medium m) {
     if (!m.water) {
         return float3(0.0, 0.0, 0.0);
     }
-    // Inlined rather than importing math for one dot product: medium is imported by nearly
-    // everything, and its dependency graph is worth keeping as small as it is.
-    float murk = dot(m.extinction, float3(0.2126, 0.7152, 0.0722)) / WATER_MURK_REFERENCE;
-    float3 albedo = worldPush.waterScatter.xyz * murk;
-    return clamp(albedo, float3(0.0, 0.0, 0.0),
-                 float3(MAX_WATER_SCATTER_ALBEDO, MAX_WATER_SCATTER_ALBEDO, MAX_WATER_SCATTER_ALBEDO));
+    float3 k = worldPush.waterScatter.xyz;
+    return k / (float3(1.0, 1.0, 1.0) + k);
 }
 
 public MediumStack makeMediumStack(Medium start) {

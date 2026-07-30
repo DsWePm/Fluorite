@@ -231,7 +231,14 @@ public float enclosedPhase(float cosT, float g) {
  */
 float3 depthAttenuatedIntegral(float3 sigmaT, float d0, float descentPerT, float pathScale, float tEnd) {
     float3 head = exp(-sigmaT * (d0 * pathScale));
-    float3 a = sigmaT * (descentPerT * pathScale - 1.0);
+    // Clamped at zero, and this is load-bearing rather than defensive. `a` combines the light getting
+    // BRIGHTER as the ray rises toward the surface with the view path attenuating as it goes; when a ray
+    // climbs faster than the light descends the first wins and exp(a T) grows without bound. The
+    // underlying error is that depth is allowed to go negative — above the surface there is no water
+    // left to attenuate the light, so exp(-sigma d) quietly becomes exp(+sigma |d|) and the source is
+    // amplified instead. It showed up as water sparkling at grazing angles, where segments are longest,
+    // and on any upward look from below the surface.
+    float3 a = min(sigmaT * (descentPerT * pathScale - 1.0), float3(0.0, 0.0, 0.0));
     float3 span;
     // a -> 0 is a ray climbing at exactly the rate the light descends, where the exponential is flat and
     // the closed form is 0/0. The limit is T.
