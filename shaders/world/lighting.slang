@@ -80,10 +80,24 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             // The floor applies to D alone. Smith masking is within a fraction of a percent of 1 for any
             // alpha this small at any angle that survives the ndl > 0 test, so flooring it too would buy
             // nothing and would cost the hoisted c.g1v below.
-            float D = ggxD(ndh, max(c.rough, UNWEIGHTED_SPEC_ALPHA_FLOOR));
-            // c.g1v is the view half of Smith masking, hoisted: it depends only on the receiver, and
-            // this function runs once per RIS candidate.
-            float Gs = c.g1v * ggxG1(ndl, c.rough);
+            //
+            // This is the one specular site that still branches on anisotropy rather than running the
+            // anisotropic form for everyone. It is called M+1 times per shading vertex — the measured
+            // 5.9ms loop — and the branch is uniform across that loop because it depends only on the
+            // receiver, so it costs one comparison and never diverges.
+            float D;
+            float Gs;
+            if (c.aniso) {
+                float ax = max(c.alphaX, UNWEIGHTED_SPEC_ALPHA_FLOOR);
+                float ay = max(c.alphaY, UNWEIGHTED_SPEC_ALPHA_FLOOR);
+                D = ggxDAniso(dot(h, c.t), dot(h, c.b), ndh, ax, ay);
+                Gs = c.g1v * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, ax, ay);
+            } else {
+                D = ggxD(ndh, max(c.rough, UNWEIGHTED_SPEC_ALPHA_FLOOR));
+                // c.g1v is the view half of Smith masking, hoisted: it depends only on the receiver, and
+                // this function runs once per RIS candidate.
+                Gs = c.g1v * ggxG1(ndl, c.rough);
+            }
             float3 Fs = fresnelSchlick(vdh, c.F0);
             brdf += (D * Gs) * Fs / (4.0 * c.ndv * ndl);
         }

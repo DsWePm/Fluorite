@@ -219,6 +219,38 @@ public float powerHeuristic(float pdfA, float pdfB) {
 public static const uint PAYLOAD_EXTENSION_SHIFT = 8u;
 public static const uint PAYLOAD_EXTENSION_MASK = 0xFFFu;
 public static const uint MAX_MATERIAL_EXTENSIONS = 4095u;
+
+// The surface tangent's azimuth about the shading normal, for the anisotropic specular lobe.
+//
+// Carried as an ANGLE against a frame both ends rebuild from the normal, rather than as a vector. That
+// is what makes it free: the payload does not grow, so the SER path spills nothing extra for it, and a
+// tangent is otherwise three floats the closest-hit computes and throws away.
+//
+// Eleven bits, not the sixteen originally sketched — bits 8..19 went to the extension index and bit 20
+// to the celestial light. 11 bits is 0.18 degrees, still far below any visible error in a brushed
+// streak. Bit 20 could in principle be shared, since it only means anything on a miss and this only on
+// a hit, but PAYLOAD_SHOW_CELESTIAL and PAYLOAD_DIELECTRIC_ENTERING already declined that trade to keep
+// the two concerns unambiguous, and this follows them.
+public static const uint PAYLOAD_TANGENT_SHIFT = 21u;
+public static const uint PAYLOAD_TANGENT_MASK = 0x7FFu;
+public static const float PAYLOAD_TANGENT_STEPS = 2047.0;
+
+/**
+ * An arbitrary but DETERMINISTIC basis about n.
+ *
+ * Not a surface tangent and not meant to be one. Its only job is to be reproducible: a frame built here
+ * in the closest-hit and a frame rebuilt here in the raygen agree exactly, because both derive it from
+ * the one normal the payload carries. The real tangent then travels as an angle against it.
+ *
+ * sampleGGXVNDF and cosineDir build their sampling basis from this same function, so a lobe sampled in
+ * one place and evaluated in another cannot end up in differently-rolled frames.
+ */
+public void canonicalTangentFrame(float3 n, out float3 t, out float3 b) {
+    t = normalize(abs(n.x) > 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0));
+    b = normalize(cross(n, t));
+    t = cross(b, n);
+}
+
 public static const uint MATERIAL_OPAQUE = 0u;
 // Both dielectrics are volumes: they refract and push a participating medium. They stay distinct ids
 // because water owns behaviour nothing else has — an animated wave surface, the caustic term, biome-tint

@@ -50,6 +50,7 @@ public final class RtVideoOptions {
             fogPhaseG(),
             fogScatterTint(),
             sunMis(),
+            anisotropy(),
             dlssEnabled(),
             dlssQuality(),
             hdrEnabled(),
@@ -246,6 +247,15 @@ public final class RtVideoOptions {
      */
     private static OptionInstance<Boolean> sunMis() {
         return bool("fluorite.options.rt.sunMis", FluoriteConfig.Rt.Bsdf.MIS_ENABLED);
+    }
+
+    /**
+     * The anisotropic specular lobe. Here for the same reason as the switch above: it changes how a
+     * material looks, and the comparison is the point. A material that authored no anisotropy is
+     * identical either way, so this is only ever visible on packs that use it.
+     */
+    private static OptionInstance<Boolean> anisotropy() {
+        return bool("fluorite.options.rt.anisotropy", FluoriteConfig.Rt.Bsdf.ANISOTROPY_ENABLED);
     }
 
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR

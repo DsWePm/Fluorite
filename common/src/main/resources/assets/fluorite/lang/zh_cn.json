@@ -69,5 +69,7 @@
   "fluorite.options.rt.dlssEnabled": "DLSS 光线重建",
   "fluorite.options.rt.dlssEnabled.tooltip": "关闭后按完整分辨率追踪，不降噪也不做时域累积——判断材质改动本身是否正确时的参考视图。请同时调高每像素采样数。",
   "fluorite.options.rt.sunMis": "日月多重重要性采样",
-  "fluorite.options.rt.sunMis.tooltip": "对太阳的两种估计——朝它发一条阴影光线，以及反射光线正好打到它——加权合并而不是相加。仅粗糙度低于 0.006 的材质会变化，镜面不受影响。关闭可做对比。"
+  "fluorite.options.rt.sunMis.tooltip": "对太阳的两种估计——朝它发一条阴影光线，以及反射光线正好打到它——加权合并而不是相加。仅粗糙度低于 0.006 的材质会变化，镜面不受影响。关闭可做对比。",
+  "fluorite.options.rt.anisotropy": "各向异性高光",
+  "fluorite.options.rt.anisotropy.tooltip": "沿表面纹理方向拉长高光，即拉丝金属和缎面的样子。仅影响资源包写了 anisotropy.amount 的材质，其余材质开关两态完全一致。关闭可做对比。"
 }

@@ -324,6 +324,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         float ps = exactSpecular && luminance(diffAlb) <= 1.0e-6
                        ? 1.0
                        : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
+        // One shading context for the whole vertex: the sun NEE, the emitter RIS and the continuation
+        // all have to agree on the specular frame, and rebuilding it three times was how they could
+        // quietly stop agreeing. It also carries the anisotropic tangent, decoded once here.
+        MaterialExtension ext = materialExtension(payload.flags);
+        float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
+        BsdfContext bc = makeBsdfContextAniso(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
+                                              ext, payload.flags);
 
         // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
         // RIS emitter NEE: the direct-hit emission term is gated only for emitters RIS actually samples
@@ -365,17 +372,25 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                 float3 h = normalize(lightDir + v);
                 float ndh = max(0.0, dot(n, h));
-                float ndv = max(1.0e-4, dot(n, v));
+                float ndv = bc.ndv;
                 float vdh = max(0.0, dot(v, h));
                 // With MIS off, nothing weights this peak down and the floor that the old ggxD epsilon
                 // amounted to comes back — otherwise the switch would be comparing MIS against a
                 // firefly storm rather than against what the renderer actually shipped. A delta lobe is
                 // exempt: alpha stays 0, so a mirror keeps having no specular NEE term at all.
-                float neeAlpha = (misActive || exactSpecular)
-                        ? rough : max(rough, UNWEIGHTED_SPEC_ALPHA_FLOOR);
-                float g1v = ggxG1(ndv, neeAlpha);
-                float D = ggxD(ndh, neeAlpha);
-                float G = g1v * ggxG1(ndl, neeAlpha); // separable Smith masking
+                bool floorAlpha = !(misActive || exactSpecular);
+                float ax = floorAlpha ? max(bc.alphaX, UNWEIGHTED_SPEC_ALPHA_FLOOR) : bc.alphaX;
+                float ay = floorAlpha ? max(bc.alphaY, UNWEIGHTED_SPEC_ALPHA_FLOOR) : bc.alphaY;
+                // The anisotropic form unconditionally: with ax == ay it IS the isotropic one, term for
+                // term, so an isotropic material pays four dot products and there is no second code
+                // path to fall out of step. This site runs once per vertex, unlike the RIS loop.
+                float hx = dot(h, bc.t);
+                float hy = dot(h, bc.b);
+                float lx = dot(lightDir, bc.t);
+                float ly = dot(lightDir, bc.b);
+                float g1v = ggxG1Aniso(dot(v, bc.t), dot(v, bc.b), ndv, ax, ay);
+                float D = ggxDAniso(hx, hy, ndh, ax, ay);
+                float G = g1v * ggxG1Aniso(lx, ly, ndl, ax, ay); // separable Smith masking
                 float3 F = fresnelSchlick(vdh, F0);
                 // The two lobes the continuation actually samples: Lambertian diffuse (f = albedo/PI)
                 // and Cook–Torrance specular.
@@ -394,12 +409,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 // drops out of the mixture — and D is identically zero there anyway, so the whole
                 // specular half of `sampled` vanishes with it. Mirrors are untouched by this.
                 float pdfB = (1.0 - ps) * ndl * INV_PI
-                        + (exactSpecular ? 0.0 : ps * ggxReflectPdf(ndh, ndv, neeAlpha, g1v));
+                        + (exactSpecular ? 0.0 : ps * ggxReflectPdfAniso(hx, hy, ndh, ndv, ax, ay, g1v));
                 float wLight = misActive ? powerHeuristic(pdfLight, pdfB) : 1.0;
 
-                float3 brdf = sampled * wLight
-                        + disneyLobes(makeBsdfContext(hitPos, n, v, rd, diffAlb, F0, rough, false, 0.0),
-                                      materialExtension(payload.flags), lightDir);
+                float3 brdf = sampled * wLight + disneyLobes(bc, ext, lightDir);
                 L += throughput * brdf * worldPush.lightRadiance.xyz * ndl * vis;
             }
         }
@@ -410,10 +423,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // exact, not an approximation. The SSS term is gated off past MAX_SSS_INDIRECT_DEPTH by passing
         // sss=0 there (falls back to plain front-only RIS).
         if (risOn) {
-            float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
-            BsdfContext bc = makeBsdfContext(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss);
             Reservoir r = risInitial(bc, seed, proposalSeed);
-            L += throughput * shadeReservoir(medium, bc, materialExtension(payload.flags), r);
+            L += throughput * shadeReservoir(medium, bc, ext, r);
         }
 
         // Thin-surface SSS transmission. Light entering from the back face scatters through toward the
@@ -456,7 +467,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0) / ps;
                 bsdfPdf = -1.0;
             } else {
-                float3 h = sampleGGXVNDF(n, v, rough, seed);
+                float3 h = sampleGGXVNDFAniso(n, bc.t, bc.b, v, bc.alphaX, bc.alphaY, seed);
                 l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
                 float ndl2 = dot(n, l);
                 if (ndl2 <= 0.0) {
@@ -464,10 +475,14 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 }
                 // VNDF + separable Smith ⇒ weight = F · G2/G1(v) = F · G1(l); divide by the lobe pdf ps.
                 float3 F = fresnelSchlick(max(0.0, dot(v, h)), F0);
-                throughput *= F * ggxG1(ndl2, rough) / ps;
-                rayConeSpread = max(rayConeSpread, rough * RAY_CONE_GLOSSY_SPREAD_SCALE);
-                float ndvC = max(1.0e-4, dot(n, v));
-                bsdfPdf = ps * ggxReflectPdf(max(0.0, dot(n, h)), ndvC, rough, ggxG1(ndvC, rough));
+                throughput *= F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY) / ps;
+                // The cone grows by the wider axis: it bounds the texture footprint, and taking the
+                // narrower one would sharpen mip selection along the stretched direction, which is
+                // exactly where it should blur.
+                rayConeSpread = max(rayConeSpread,
+                        max(bc.alphaX, bc.alphaY) * RAY_CONE_GLOSSY_SPREAD_SCALE);
+                bsdfPdf = ps * ggxReflectPdfAniso(dot(h, bc.t), dot(h, bc.b), max(0.0, dot(n, h)),
+                                                  bc.ndv, bc.alphaX, bc.alphaY, bc.g1v);
             }
             ro = p;
             rd = l;

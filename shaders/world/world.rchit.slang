@@ -88,18 +88,38 @@ float rayConeUnitUvLod(uint rayCone, float2 textureSizePx) {
 // don't invert it through the surface (the black-spot fix). Returns AO (blue) via `ao`; falls back to
 // `n` on a degenerate UV triangle. Instance transforms are translation-only, so object edges equal
 // world edges.
-float3 perturbNormal(float3 n, float3 p0, float3 p1, float3 p2, float2 t0, float2 t1, float2 t2, float3 vdir, float4 ntex, out float ao) {
-    ao = 1.0;
+/**
+ * The direction texture U increases in, projected onto the shading plane.
+ *
+ * Two things want this and they must agree: the normal map decodes in this basis, and an anisotropic
+ * streak runs along it. One derivation, so a pack cannot end up with a highlight stretched across the
+ * grain of its own normal map. Returns the zero vector for a degenerate UV triangle.
+ */
+float3 uvTangent(float3 n, float3 p0, float3 p1, float3 p2,
+                 float2 t0, float2 t1, float2 t2, out float handedness) {
+    handedness = 1.0;
     float2 g1 = t1 - t0;
     float2 g2 = t2 - t0;
     float det = g1.x * g2.y - g1.y * g2.x;
     if (abs(det) <= 1.0e-12) {
-        return n;
+        return float3(0.0, 0.0, 0.0);
     }
     float r = 1.0 / det;
     float3 traw = ((p1 - p0) * g2.y - (p2 - p0) * g1.y) * r;
-    float3 T = normalize(traw - n * dot(n, traw));       // Gram-Schmidt against the viewer-oriented normal
-    float3 B = cross(n, T) * (det < 0.0 ? -1.0 : 1.0);   // handedness from the UV winding
+    handedness = det < 0.0 ? -1.0 : 1.0;                 // from the UV winding
+    float3 t = traw - n * dot(n, traw);                  // Gram-Schmidt against the viewer-oriented normal
+    float len2 = dot(t, t);
+    return len2 > 1.0e-12 ? t * rsqrt(len2) : float3(0.0, 0.0, 0.0);
+}
+
+float3 perturbNormal(float3 n, float3 p0, float3 p1, float3 p2, float2 t0, float2 t1, float2 t2, float3 vdir, float4 ntex, out float ao) {
+    ao = 1.0;
+    float handedness;
+    float3 T = uvTangent(n, p0, p1, p2, t0, t1, t2, handedness);
+    if (dot(T, T) <= 0.0) {
+        return n;
+    }
+    float3 B = cross(n, T) * handedness;
     float2 nxy = ntex.xy * 2.0 - 1.0;                    // R,G = tangent-space X,Y
     float nz = sqrt(max(0.0, 1.0 - dot(nxy, nxy)));      // reconstruct Z
     float3 nm = normalize(nxy.x * T + nxy.y * B + nz * n);
@@ -113,6 +133,7 @@ float3 perturbNormal(float3 n, float3 p0, float3 p1, float3 p2, float2 t0, float
 
 struct Surface {
     float3 normal;
+    float3 tangent;   // UV-space, on the shading plane; zero when the UV triangle is degenerate
     float3 f0;
     float roughness;
     float metalness;
@@ -140,6 +161,8 @@ Surface evaluateMaterial(MaterialHeader header, float2 atlasUv, float lod, float
         float fallbackRoughness, float fallbackMetalness, float fallbackEmission, bool allowSss) {
     Surface surface;
     surface.normal = geometricNormal;
+    float tangentHandedness;
+    surface.tangent = uvTangent(geometricNormal, p0, p1, p2, uv0, uv1, uv2, tangentHandedness);
     surface.roughness = fallbackRoughness;
     surface.metalness = fallbackMetalness;
     surface.f0 = lerp(float3(0.04, 0.04, 0.04), albedo, fallbackMetalness);
@@ -332,6 +355,9 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         payloadSetPacked(payload, material, surface.roughness, surface.metalness,
                 emission, sss, header.params.z, header.params.w,
                 materialEmissionSource(header, emission), header.extensionOffset);
+        // Measured against the normal that was just written, which is what raygen rebuilds the
+        // reference frame from. Free: an angle in bits nobody was using, not a vector in the payload.
+        payload.flags |= packTangentAzimuth(n, surface.tangent);
         payloadSetDielectric(payload, material, entering);
         return;
     }

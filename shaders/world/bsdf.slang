@@ -41,6 +41,16 @@ public struct BsdfContext {
     public bool   twoSided;
     public float  sss;
 
+    // ---- The specular frame. alphaX/alphaY are equal unless the material authored anisotropy, and
+    // every anisotropic function reduces exactly to its isotropic twin when they are — which is why the
+    // sun NEE and the continuation can use one code path for both. The RIS candidate loop still
+    // branches, because there the difference is paid M+1 times per vertex rather than once.
+    public float3 t;      // surface tangent (canonical basis when isotropic — see canonicalTangentFrame)
+    public float3 b;
+    public float  alphaX;
+    public float  alphaY;
+    public bool   aniso;
+
     // ---- Derived once from the above.
     public float  ndv;    // clamped away from zero: it divides the specular term
     public float  g1v;    // Smith masking for the view direction
@@ -60,6 +70,41 @@ public BsdfContext makeBsdfContext(float3 hitPos, float3 n, float3 v, float3 rd,
     c.sss = sss;
     c.ndv = max(1.0e-4, dot(n, v));
     c.g1v = ggxG1(c.ndv, rough);
+    canonicalTangentFrame(n, c.t, c.b);
+    c.alphaX = rough;
+    c.alphaY = rough;
+    c.aniso = false;
+    return c;
+}
+
+/** True when the anisotropic lobe is switched on for this frame. */
+public bool anisotropyEnabled() {
+    return (worldPush.flags & 64u) != 0u;
+}
+
+/**
+ * As above, but honouring an authored anisotropy.
+ *
+ * The tangent arrives as an angle in the payload's spare bits and is rebuilt here against a frame
+ * derived from the same normal the closest-hit wrote — see PAYLOAD_TANGENT_SHIFT for why it travels that
+ * way. A material that authored nothing takes the early return and is bit-identical to the isotropic
+ * constructor, which is what keeps this off everyone else's cost sheet.
+ *
+ * twoSided is excluded outright: those callers are particle billboards, which have no tangent frame
+ * worth the name and no business having a grain.
+ */
+public BsdfContext makeBsdfContextAniso(float3 hitPos, float3 n, float3 v, float3 rd, float3 diffAlb,
+                                        float3 F0, float rough, bool twoSided, float sss,
+                                        MaterialExtension ext, uint payloadFlags) {
+    BsdfContext c = makeBsdfContext(hitPos, n, v, rd, diffAlb, F0, rough, twoSided, sss);
+    float anisotropy = ext.specular.y;
+    if (twoSided || abs(anisotropy) <= 1.0e-3 || !anisotropyEnabled()) {
+        return c;
+    }
+    unpackTangentFrame(n, payloadFlags, c.t, c.b);
+    anisoAlphas(rough, anisotropy, c.alphaX, c.alphaY);
+    c.g1v = ggxG1Aniso(dot(v, c.t), dot(v, c.b), c.ndv, c.alphaX, c.alphaY);
+    c.aniso = true;
     return c;
 }
 
@@ -205,6 +250,17 @@ public struct SpecularGuide {
  */
 public SpecularGuide specularGuide(float3 F0, float alpha, float ndv, MaterialExtension ext) {
     SpecularGuide g;
+    // RR takes one roughness, and an anisotropic lobe has two. The geometric mean is the isotropic lobe
+    // of the same solid angle, so the denoiser filters over the right total width even though it cannot
+    // be told the shape. A stretched highlight therefore denoises as a round one of equal area — visible
+    // if you look for it at high anisotropy, and the alternative is telling RR the wrong width in one
+    // axis or the other.
+    float anisotropy = ext.specular.y;
+    if (abs(anisotropy) > 1.0e-3 && anisotropyEnabled()) {
+        float ax, ay;
+        anisoAlphas(alpha, anisotropy, ax, ay);
+        alpha = sqrt(ax * ay);
+    }
     g.alpha = alpha;
     g.reflectance = rrSpecularAlbedo(F0, alpha, ndv);
 

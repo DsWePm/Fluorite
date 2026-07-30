@@ -62,6 +62,52 @@ public float ggxG1(float ndx, float alpha) {
     return 2.0 * ndx / (ndx + sqrt(a2 + (1.0 - a2) * ndx * ndx) + 1.0e-7);
 }
 
+// ---- Anisotropic GGX. Set ax == ay and every function here reduces exactly to its isotropic twin
+// above; that identity is the test, and it is worth re-deriving before touching any of them.
+
+/**
+ * Split one alpha into a tangent/bitangent pair.
+ *
+ * Disney's aspect ratio. `anisotropy` runs -1..1 and its SIGN picks which axis stretches, so a pack can
+ * turn a brushed streak ninety degrees without also rotating the tangent.
+ *
+ * Disney writes ax = roughness^2 / aspect. Ours is ax = alpha / aspect, with no squaring, because
+ * roughness here already IS alpha — the invariant at the top of bsdf.slang. This is one of the formulas
+ * that file warns about.
+ */
+public void anisoAlphas(float alpha, float anisotropy, out float ax, out float ay) {
+    float a = clamp(anisotropy, -1.0, 1.0);
+    float aspect = sqrt(1.0 - 0.9 * abs(a));
+    float wide = alpha / aspect;
+    float tight = alpha * aspect;
+    ax = a >= 0.0 ? wide : tight;
+    ay = a >= 0.0 ? tight : wide;
+}
+
+/** hx/hy are the half vector along the tangent and bitangent. ax == ay gives ggxD exactly. */
+public float ggxDAniso(float hx, float hy, float ndh, float ax, float ay) {
+    float dx = hx / ax;
+    float dy = hy / ay;
+    float d = dx * dx + dy * dy + ndh * ndh;
+    return 1.0 / (PI * ax * ay * d * d + 1.0e-20);
+}
+
+/**
+ * Smith masking for one direction under the anisotropic distribution.
+ *
+ * With ax == ay == a this is sqrt(a^2 (vx^2 + vy^2) + ndv^2), and vx^2 + vy^2 is 1 - ndv^2, which is
+ * sqrt(a^2 + (1 - a^2) ndv^2) — the isotropic form above, term for term.
+ */
+public float ggxG1Aniso(float vx, float vy, float ndv, float ax, float ay) {
+    float sx = ax * vx;
+    float sy = ay * vy;
+    return 2.0 * ndv / (ndv + sqrt(sx * sx + sy * sy + ndv * ndv) + 1.0e-7);
+}
+
+public float ggxReflectPdfAniso(float hx, float hy, float ndh, float ndv, float ax, float ay, float g1v) {
+    return ggxDAniso(hx, hy, ndh, ax, ay) * g1v / max(4.0 * ndv, 1.0e-8);
+}
+
 public float3 fresnelSchlick(float cosT, float3 f0) {
     float m = clamp(1.0 - cosT, 0.0, 1.0);
     float m2 = m * m;
@@ -188,12 +234,24 @@ public float3 sampleSquare(float3 axis, float halfAngle, inout uint s) {
 // sampled microfacet normal (half-vector) in world space. Paired with the separable Smith term, the
 // importance-sampling weight reduces to F * G1(NdotL) (applied by the caller).
 public float3 sampleGGXVNDF(float3 n, float3 ve, float alpha, inout uint s) {
-    float3 t = normalize(abs(n.x) > 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0));
-    float3 b = normalize(cross(n, t));
-    t = cross(b, n);
+    // The isotropic case is the anisotropic one with a square lobe, and routing it through the same
+    // function is what keeps the two from drifting apart as either is edited.
+    float3 t, b;
+    canonicalTangentFrame(n, t, b);
+    return sampleGGXVNDFAniso(n, t, b, ve, alpha, alpha, s);
+}
+
+/**
+ * As above, but in a caller-supplied tangent frame with a separate alpha per axis.
+ *
+ * The frame matters here in a way it does not for the isotropic lobe: a square lobe is invariant to how
+ * the basis is rolled about n, a stretched one is not. So this takes the SURFACE tangent, which the
+ * closest-hit derived from the UV parameterisation and shipped as an angle — see PAYLOAD_TANGENT_SHIFT.
+ */
+public float3 sampleGGXVNDFAniso(float3 n, float3 t, float3 b, float3 ve,
+                                 float ax, float ay, inout uint s) {
     float3 Ve = float3(dot(ve, t), dot(ve, b), dot(ve, n)); // view in tangent space (z = n)
-    float a = alpha;
-    float3 Vh = normalize(float3(a * Ve.x, a * Ve.y, Ve.z));
+    float3 Vh = normalize(float3(ax * Ve.x, ay * Ve.y, Ve.z));
     float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
     float3 T1 = lensq > 0.0 ? float3(-Vh.y, Vh.x, 0.0) * rsqrt(lensq) : float3(1.0, 0.0, 0.0);
     float3 T2 = cross(Vh, T1);
@@ -206,8 +264,35 @@ public float3 sampleGGXVNDF(float3 n, float3 ve, float alpha, inout uint s) {
     float ss = 0.5 * (1.0 + Vh.z);
     p2 = (1.0 - ss) * sqrt(1.0 - p1 * p1) + ss * p2;
     float3 Nh = p1 * T1 + p2 * T2 + sqrt(max(0.0, 1.0 - p1 * p1 - p2 * p2)) * Vh;
-    float3 Ne = normalize(float3(a * Nh.x, a * Nh.y, max(0.0, Nh.z))); // microfacet normal, tangent space
-    return normalize(Ne.x * t + Ne.y * b + Ne.z * n);                 // -> world space
+    float3 Ne = normalize(float3(ax * Nh.x, ay * Nh.y, max(0.0, Nh.z))); // microfacet normal, tangent space
+    return normalize(Ne.x * t + Ne.y * b + Ne.z * n);                    // -> world space
+}
+
+/** Quantise a surface tangent to the payload's azimuth field. Returns 0 for a degenerate tangent. */
+public uint packTangentAzimuth(float3 n, float3 tangent) {
+    float3 refT, refB;
+    canonicalTangentFrame(n, refT, refB);
+    float3 t = tangent - n * dot(n, tangent); // the normal may have been perturbed since
+    float len2 = dot(t, t);
+    if (len2 < 1.0e-12) {
+        return 0u;
+    }
+    t *= rsqrt(len2);
+    float angle = atan2(dot(t, refB), dot(t, refT));       // -PI .. PI
+    float unit = clamp(angle * (0.5 / PI) + 0.5, 0.0, 1.0);
+    return (uint(unit * PAYLOAD_TANGENT_STEPS + 0.5) & PAYLOAD_TANGENT_MASK) << PAYLOAD_TANGENT_SHIFT;
+}
+
+/** Rebuild the surface tangent frame a hit packed. `n` must be the normal the payload carries. */
+public void unpackTangentFrame(float3 n, uint flags, out float3 t, out float3 b) {
+    float3 refT, refB;
+    canonicalTangentFrame(n, refT, refB);
+    float unit = float((flags >> PAYLOAD_TANGENT_SHIFT) & PAYLOAD_TANGENT_MASK) / PAYLOAD_TANGENT_STEPS;
+    float angle = (unit - 0.5) * (2.0 * PI);
+    float s = sin(angle);
+    float c = cos(angle);
+    t = refT * c + refB * s;
+    b = cross(n, t);
 }
 
 public float3 srgbToLinear(float3 c) {

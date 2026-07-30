@@ -917,6 +917,9 @@ public final class RtComposite {
             if (FluoriteConfig.Rt.Bsdf.MIS_ENABLED.value()) {
                 flags |= 0b100000; // weight the sun's two estimators instead of summing them
             }
+            if (FluoriteConfig.Rt.Bsdf.ANISOTROPY_ENABLED.value()) {
+                flags |= 0b1000000; // stretch the specular lobe along the surface tangent
+            }
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.

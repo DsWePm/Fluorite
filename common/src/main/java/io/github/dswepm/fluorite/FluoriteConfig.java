@@ -60,7 +60,7 @@ public final class FluoriteConfig {
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
-            Rt.Bsdf.MIS_ENABLED,
+            Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED,
         };
     }
 
@@ -115,7 +115,9 @@ public final class FluoriteConfig {
                 " Surface response. sun-mis weights the two ways the sun and moon are estimated —\n"
                         + " next-event estimation toward the light, and a continuation ray landing on it —\n"
                         + " against each other instead of summing them. Only materials smoother than\n"
-                        + " roughness ~0.006 are affected; mirrors are untouched by construction.");
+                        + " roughness ~0.006 are affected; mirrors are untouched by construction.\n"
+                        + " anisotropy stretches the specular highlight along the surface tangent for\n"
+                        + " materials that author anisotropy.amount; everything else is unaffected.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -691,6 +693,22 @@ public final class FluoriteConfig {
              */
             public static final BooleanSetting MIS_ENABLED =
                     bool("fluorite.rt.bsdf.sunMis", "bsdf.sun-mis", true);
+
+            /**
+             * The anisotropic specular lobe.
+             *
+             * <p>Stretches the highlight along the surface tangent, which is what brushed metal, satin
+             * and hair look like. Costs nothing on a material that authored no {@code anisotropy}: the
+             * lobe collapses to the isotropic one exactly, and the shading context takes an early
+             * return rather than decoding a tangent.
+             *
+             * <p>Default on, unlike the original plan. That plan reasoned there was no authoring channel
+             * for it, so the feature could only ever cost. There is one now — {@code anisotropy.amount}
+             * in a material JSON — and a material that does not use it is unaffected either way, so the
+             * switch exists to A/B the lobe rather than to keep it off.
+             */
+            public static final BooleanSetting ANISOTROPY_ENABLED =
+                    bool("fluorite.rt.bsdf.anisotropy", "bsdf.anisotropy", true);
 
             private Bsdf() {
             }
