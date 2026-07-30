@@ -65,5 +65,7 @@
   "fluorite.options.rt.fogTint.green": "绿色",
   "fluorite.options.rt.fogTint.violet": "紫色",
   "fluorite.options.rt.fogHeightBase": "雾层高度",
-  "fluorite.options.rt.fogHeightBase.tooltip": "雾层所在的世界高度。此高度及以下浓度保持不变，以上逐渐变稀，因此这一项移动雾层而不改变其形状。"
+  "fluorite.options.rt.fogHeightBase.tooltip": "雾层所在的世界高度。此高度及以下浓度保持不变，以上逐渐变稀，因此这一项移动雾层而不改变其形状。",
+  "fluorite.options.rt.dlssEnabled": "DLSS 光线重建",
+  "fluorite.options.rt.dlssEnabled.tooltip": "关闭后按完整分辨率追踪，不降噪也不做时域累积——判断材质改动本身是否正确时的参考视图。请同时调高每像素采样数。"
 }

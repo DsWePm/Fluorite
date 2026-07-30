@@ -49,6 +49,7 @@ public final class RtVideoOptions {
             fogHeightScale(),
             fogPhaseG(),
             fogScatterTint(),
+            dlssEnabled(),
             dlssQuality(),
             hdrEnabled(),
             hdrPaperWhite(),
@@ -215,6 +216,23 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(min, max),
             initial,
             v -> setting.set((float) v));
+    }
+
+    /**
+      * The reference switch.
+      *
+      * <p>With Ray Reconstruction off the renderer traces at display resolution and shows the raw path
+      * trace — noisy at low spp, and with no temporal accumulation whatsoever. That is the only way to
+      * judge whether a change to the BSDF is right: every denoised comparison is also a comparison of how
+      * the denoiser reacted, and the two are hard to tell apart. A specular highlight that trails behind
+      * the camera under RR is perfectly still here, because the trail is temporal lag rather than
+      * anything the material did.
+      *
+      * <p>Raise spp and bounces alongside it for a converged reference. ensureOutput already treats the
+      * toggle as a resize trigger, so this takes effect on the next frame.
+      */
+    private static OptionInstance<Boolean> dlssEnabled() {
+        return bool("fluorite.options.rt.dlssEnabled", FluoriteConfig.Rt.DlssRr.ENABLED);
     }
 
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR

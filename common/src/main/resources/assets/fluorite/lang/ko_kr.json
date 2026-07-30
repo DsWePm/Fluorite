@@ -65,5 +65,7 @@
   "fluorite.options.rt.fogTint.green": "Green",
   "fluorite.options.rt.fogTint.violet": "Violet",
   "fluorite.options.rt.fogHeightBase": "Fog Layer Height",
-  "fluorite.options.rt.fogHeightBase.tooltip": "World height the fog layer sits at. Density holds steady at and below this and thins out above it, so this moves the layer rather than reshaping it."
+  "fluorite.options.rt.fogHeightBase.tooltip": "World height the fog layer sits at. Density holds steady at and below this and thins out above it, so this moves the layer rather than reshaping it.",
+  "fluorite.options.rt.dlssEnabled": "DLSS Ray Reconstruction",
+  "fluorite.options.rt.dlssEnabled.tooltip": "Off traces at full resolution with no denoising and no temporal accumulation — the reference view for judging a material change on its own terms. Raise samples per pixel alongside it."
 }
