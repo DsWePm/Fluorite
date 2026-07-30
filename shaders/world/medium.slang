@@ -17,9 +17,16 @@ public float3 waterAbsorption(float3 tint) {
     return WATER_ABSORB_FLOOR + WATER_DENSITY * (float3(1.0, 1.0, 1.0) - clamp(tint, 0.0, 1.0));
 }
 
-/** Total extinction: what Beer-Lambert attenuates by, and the sum of the two above. */
+/**
+ * Total extinction, unchanged from what the tint has always produced.
+ *
+ * Turbidity does not ADD to this — it decides how much of it scatters rather than absorbs. Keeping
+ * sigma_t fixed means changing turbidity does not change how far you can see through water, only how
+ * much light comes back out of it, and it makes turbidity 0 an exact reproduction of the
+ * absorption-only water that shipped before. Adding to sigma_t as well would be a separate knob.
+ */
 public float3 waterExtinction(float3 tint) {
-    return waterAbsorption(tint) + worldPush.waterScatter.xyz;
+    return waterAbsorption(tint);
 }
 
 // A non-water dielectric's tint is a filter over one block of travel rather than a biome water colour, so
@@ -73,31 +80,39 @@ public Medium airMedium() {
 }
 
 /**
- * How much a medium scatters, per channel.
- *
- * Scattering is what separates water from coloured glass. Absorption alone gives a filter — light that
- * survives is tinted, light that does not is gone — and that is why water has read as a blue pane rather
- * than as water: the turbidity, the shafts, the milky falloff with depth are all the scattered part.
- *
- * GLOBAL rather than per water body, and that is a deliberate trade. It means the single-scattering
- * albedo can be recovered wherever it is needed as sigma_s / sigma_t, from the extinction the record
- * already carries and the one water bit beside it — so the wavefront record does not grow, and the last
- * spare uint in it stays spare. Per-biome character survives regardless, because it lives in the
- * absorption, which is still driven by the tint.
- */
-public float3 mediumScattering(Medium m) {
-    return m.water ? worldPush.waterScatter.xyz : float3(0.0, 0.0, 0.0);
-}
-
-/**
  * Single-scattering albedo: the fraction of an extinction event that scatters rather than absorbs.
  *
- * Derived, not stored. sigma_t is in the record, sigma_s is global, and the ratio is the albedo — which
- * is why M9 costs no bytes at all despite the plan having budgeted the last lane for it.
+ * Scattering is what separates water from coloured glass. Absorption alone gives a filter — what
+ * survives is tinted, what does not is gone — and that is why water read as a blue pane: the turbidity,
+ * the shafts, the milky way depth closes in are all the scattered part.
+ *
+ * DERIVED FROM THE EXTINCTION, which is what makes it per-water-body without storing anything. The
+ * physical relationship is real rather than a convenience: the same suspended particles that make water
+ * murky both scatter more and attenuate more, so a swamp's high extinction earns a high albedo and
+ * clear ocean's low extinction earns a low one. A biome therefore differs in how CLEAR it is, not only
+ * in what colour it is, and the wavefront record still does not grow — sigma_t and the water bit beside
+ * it are already there, for `current` and `outer` alike.
+ *
+ * What this cannot express is turbidity decoupled from darkness: very clear water that is nonetheless
+ * very milky. That combination does not occur naturally, and buying it would cost the record's last
+ * spare uint and the +118 MB the next field after it would trigger.
+ *
+ * Capped below 1 because an albedo of exactly 1 is a medium that never absorbs, which with a constant
+ * source integrates to a surface as bright as the light itself.
  */
+public static const float WATER_MURK_REFERENCE = 0.08; // luminance of sigma_t for reference clear water
+public static const float MAX_WATER_SCATTER_ALBEDO = 0.92;
+
 public float3 mediumScatterAlbedo(Medium m) {
-    float3 sigmaS = mediumScattering(m);
-    return sigmaS / max(m.extinction, float3(1.0e-6, 1.0e-6, 1.0e-6));
+    if (!m.water) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    // Inlined rather than importing math for one dot product: medium is imported by nearly
+    // everything, and its dependency graph is worth keeping as small as it is.
+    float murk = dot(m.extinction, float3(0.2126, 0.7152, 0.0722)) / WATER_MURK_REFERENCE;
+    float3 albedo = worldPush.waterScatter.xyz * murk;
+    return clamp(albedo, float3(0.0, 0.0, 0.0),
+                 float3(MAX_WATER_SCATTER_ALBEDO, MAX_WATER_SCATTER_ALBEDO, MAX_WATER_SCATTER_ALBEDO));
 }
 
 public MediumStack makeMediumStack(Medium start) {

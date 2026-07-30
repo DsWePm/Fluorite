@@ -77,7 +77,10 @@ public struct WorldPush {
     public float4   sunUv;            // vanilla sun sprite atlas rect (u0,v0,u1,v1)
     public float4   moonUv;           // vanilla current-moon-phase sprite atlas rect
     public float4   waterParams;      // xyz camera-biome water tint, w wave time (s)
-    public float4   waterAnchor;      // xy world-stable wave-domain anchor, z previous wave time
+    // w is the camera's own water surface height (rebased), or -1e9 when the camera is not in
+    // water. Enclosed single scattering needs to know how deep a point is to know how much light
+    // ever reached it — see integrateSegment.
+    public float4   waterAnchor;      // xy wave-domain anchor, z previous wave time, w water surface Y
     public float4x4 curViewProj;      // forward camera-relative view-projection
     public uint     breakCount;
     public BreakEntry breaking[8];    // Java capacity and breakCount serialization are generated from this
@@ -93,11 +96,12 @@ public struct WorldPush {
     public float4   fogExtinction;    // xyz per-channel extinction tint
     public float4   fogScatter;       // xyz single-scattering albedo, w Henyey-Greenstein g for the sun lobe
     public float4   fogAmbient;       // xyz isotropic source radiance the fog is lit by besides the sun
-    // Enclosed media. Absorption is per water body (biome tint); scattering is one global value, which
-    // is what lets the single-scattering albedo be derived as sigma_s/sigma_t from the extinction the
-    // wavefront record already carries — see mediumScatterAlbedo. Zero here reproduces the
-    // absorption-only water this renderer shipped with, exactly.
-    public float4   waterScatter;     // xyz scattering coefficient per block, w Henyey-Greenstein g
+    // Enclosed media. Turbidity does not add extinction — it decides how much of the extinction the
+    // biome tint already produces scatters rather than absorbs. The albedo is then DERIVED from that
+    // extinction (see mediumScatterAlbedo), which is what makes clarity vary per biome without the
+    // wavefront record growing: murkier water attenuates more and scatters more, being the same
+    // suspended particles doing both. Zero here reproduces the absorption-only water exactly.
+    public float4   waterScatter;     // xyz albedo shape x turbidity, w Henyey-Greenstein g
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

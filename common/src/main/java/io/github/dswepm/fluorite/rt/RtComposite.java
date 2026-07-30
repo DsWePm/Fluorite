@@ -925,6 +925,8 @@ public final class RtComposite {
             // gate a Lambertian fallback BRDF that nothing ever turned off; the GGX path is unconditional
             // now, so that bit is unused rather than reassigned, to avoid a stale reader elsewhere.
             int flags = 0;
+            // Far below any world, so the shader reads "not submerged" without a second flag to check.
+            float waterSurfaceY = -1.0e9f;
             var level = Minecraft.getInstance().level;
             if (level != null) {
                 cameraBlockPos.set(Mth.floor(camX), Mth.floor(camY), Mth.floor(camZ));
@@ -933,8 +935,14 @@ public final class RtComposite {
                 // above its actual surface (shallow/flowing water, or standing with your head just over a
                 // source block).
                 FluidState fs = level.getFluidState(cameraBlockPos);
-                if (fs.is(FluidTags.WATER) && camY < cameraBlockPos.getY() + fs.getHeight(level, cameraBlockPos)) {
-                    flags |= 0b01;
+                if (fs.is(FluidTags.WATER)) {
+                    float surface = cameraBlockPos.getY() + fs.getHeight(level, cameraBlockPos);
+                    if (camY < surface) {
+                        flags |= 0b01;
+                        // Enclosed single scattering needs to know how deep a point is to know how much
+                        // light ever reached it; rebased to match every other position in the push.
+                        waterSurfaceY = surface - terrain.blockY;
+                    }
                 }
             }
             if (waterWaves()) {
@@ -975,7 +983,7 @@ public final class RtComposite {
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
-                    terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, 0f);
+                    terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, waterSurfaceY);
 
             // Rebuild the TLAS this frame from static section instances merged with dynamic entity
             // instances, bind it into the pipeline's descriptor ring, record the build, then barrier so

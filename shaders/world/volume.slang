@@ -222,6 +222,79 @@ public float enclosedPhase(float cosT, float g) {
     return lerp(hg(cosT, g), rayleigh, ENCLOSED_RAYLEIGH_FRACTION);
 }
 
+/**
+ * integral of exp(-sigma_t * (d0 - rd_y_over_sun * t) * pathScale) * exp(-sigma_t * t) dt over [0, T].
+ *
+ * Split out because the sun and the sky differ only in how long their path to a given depth is: the sun
+ * arrives at an angle and travels depth / sin(elevation), the sky arrives overhead and travels depth.
+ * Same closed form, one parameter apart.
+ */
+float3 depthAttenuatedIntegral(float3 sigmaT, float d0, float descentPerT, float pathScale, float tEnd) {
+    float3 head = exp(-sigmaT * (d0 * pathScale));
+    float3 a = sigmaT * (descentPerT * pathScale - 1.0);
+    float3 span;
+    // a -> 0 is a ray climbing at exactly the rate the light descends, where the exponential is flat and
+    // the closed form is 0/0. The limit is T.
+    [unroll]
+    for (int c = 0; c < 3; ++c) {
+        float ac = a[c];
+        span[c] = abs(ac) < 1.0e-5 ? tEnd : (exp(ac * tEnd) - 1.0) / ac;
+    }
+    return head * span;
+}
+
+/**
+ * Single scattering inside an enclosed medium, with the source attenuated by the medium above it.
+ *
+ * The attenuation of the SOURCE is the whole difference between a volume and a coat of paint. Integrate
+ * a constant source and every ray converges to albedo * source, which lands on each underwater surface
+ * as one flat pale wash — the light does not get dimmer as it goes down, so nothing reads as depth. What
+ * makes water look like water is that a photon arriving at a point three metres down has already
+ * crossed three metres of water to get there.
+ *
+ * So the source carries exp(-sigma_t * depth / sin(elevation)) — the light's own path from the surface
+ * down to wherever it scatters — and because that depth varies linearly along the ray, the whole
+ * integral stays closed form. For a segment of length T starting at depth d0:
+ *
+ *   I = albedo * sigma_t * S * exp(-sigma_t * d0 / sunY) * (exp(a T) - 1) / a
+ *   a = sigma_t * (rd.y / sunY - 1)
+ *
+ * where the two exponentials inside are the light's path down and the view path back out. `a` is
+ * negative for anything but a ray climbing faster than the light descends, so the term saturates rather
+ * than growing — deep water reaches a bounded glow instead of an unbounded one.
+ *
+ * This is HPWater's structure — analytic single scattering, spectral sigma, forward phase — with the
+ * light attenuation that makes it volumetric. None of its constants: see enclosedPhase and R20.
+ *
+ * The reference surface is the camera's own water body. A different pool at a different height gets the
+ * wrong depth, which is a real limitation and a cheap one to accept: the body the camera is in is the
+ * one filling the screen. When the camera is not in water at all, the segment's own start is the
+ * surface crossing, which is exactly right for looking down into a pond.
+ */
+float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd, float tEnd) {
+    float3 sigmaT = medium.extinction;
+    float surfaceY = worldPush.waterAnchor.w;
+    // Submerged: depth is measured from the pushed surface. Otherwise this segment began where the ray
+    // crossed into the water, so it starts at the surface by construction.
+    float d0 = surfaceY > -1.0e8 ? max(0.0, surfaceY - ro.y) : 0.0;
+
+    float3 total = float3(0.0, 0.0, 0.0);
+
+    // The sun, reaching depth d after travelling d / sin(elevation) through the water.
+    float sunY = worldPush.lightDir.y;
+    if (sunY > 1.0e-3) {
+        float cosT = dot(rd, worldPush.lightDir.xyz);
+        float3 source = worldPush.lightRadiance.xyz
+                * (4.0 * PI * enclosedPhase(cosT, worldPush.waterScatter.w));
+        total += source * depthAttenuatedIntegral(sigmaT, d0, rd.y / sunY, 1.0 / sunY, tEnd);
+    }
+
+    // Sky light, arriving from overhead, so its path to depth d is d.
+    total += worldPush.fogAmbient.xyz * depthAttenuatedIntegral(sigmaT, d0, rd.y, 1.0, tEnd);
+
+    return albedo * sigmaT * total;
+}
+
 public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd, float tEnd) {
     SegmentIntegral seg;
     seg.transmittance = float3(1.0, 1.0, 1.0);
@@ -233,24 +306,9 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
         float3 enclosedT = exp(-stack.current.extinction * tEnd);
         seg.transmittance = enclosedT;
 
-        // Scattering is what separates water from a pane of coloured glass. Absorption alone is a
-        // filter: what survives is tinted and what does not is gone. The turbidity, the shafts, the
-        // milky way depth closes in — all of it is the scattered part, and until now water had none.
-        //
-        // Under a constant source the single-scattering integral converges exactly to
-        // albedo * source * (1 - T), which is the same identity the ambient branch below uses. The
-        // source is the sun through the phase function plus an isotropic floor, and it is deliberately
-        // NOT shadowed or depth-attenuated at this stage — the same simplification the height fog
-        // shipped with. Deep water therefore glows as readily as shallow; the fix is a shadowed source,
-        // which is what the froxel pass is for.
         float3 scatterAlbedo = mediumScatterAlbedo(stack.current);
         if (any(scatterAlbedo > 0.0)) {
-            float cosT = dot(rd, worldPush.lightDir.xyz);
-            float3 source = worldPush.lightRadiance.xyz
-                    * (4.0 * PI * enclosedPhase(cosT, worldPush.waterScatter.w))
-                    + worldPush.fogAmbient.xyz;
-            seg.inScatter += scatterAlbedo * source
-                    * (float3(1.0, 1.0, 1.0) - enclosedT);
+            seg.inScatter += enclosedSingleScatter(stack.current, scatterAlbedo, ro, rd, tEnd);
         }
     }
 
