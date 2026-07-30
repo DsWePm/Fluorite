@@ -12,25 +12,33 @@ import world_core;
 public static const float WATER_DENSITY = 0.1;
 public static const float3 WATER_ABSORB_FLOOR = float3(0.015, 0.010, 0.008);
 
-/** Absorption only: what the biome tint has always meant. Colour comes from here. */
+/**
+ * Absorption: what the biome tint has always meant, and where the water's colour comes from.
+ *
+ * Inverted from the tint, which is the part that surprises: a low red tint means red is absorbed
+ * fastest, so a swamp's low red and violet read as green and an ocean's low red and green read as blue.
+ * The tint and the water's apparent colour are not the same quantity.
+ *
+ * waterAbsorbOverride.w turns the biome off and substitutes a fixed absorption, which is there to be
+ * dialled by eye — this is the channel every visible property of water descends from, so being able to
+ * set it directly is the base for tuning any of them.
+ */
 public float3 waterAbsorption(float3 tint) {
+    if (worldPush.waterAbsorbOverride.w > 0.5) {
+        return worldPush.waterAbsorbOverride.xyz;
+    }
     return WATER_ABSORB_FLOOR + WATER_DENSITY * (float3(1.0, 1.0, 1.0) - clamp(tint, 0.0, 1.0));
 }
 
 /**
- * Total extinction: the tint's absorption, raised by whatever is suspended in the water.
+ * Total extinction: the tint's absorption plus what the suspended particles scatter.
  *
- * Turbidity ADDS here rather than merely redistributing. An earlier version kept sigma_t fixed and only
- * changed how much of it scattered, which made turbidity 0 an exact reproduction of the old water — but
- * it also meant no amount of turbidity could stop you seeing the bottom, and not being able to see far
- * is the first thing anyone notices about murky water. Turbidity 0 is still exact, because k is 0 there.
- *
- * Scattering is proportional to absorption, so a biome that absorbs more also scatters more: the same
- * suspended particles do both, and the murky-looking biomes are the murky ones. That proportionality is
- * also what keeps the single-scattering albedo derivable without storing it — see mediumScatterAlbedo.
+ * Scattering is added, not carved out of the absorption. Turbidity therefore also costs visibility,
+ * which is the first thing anyone notices about murky water, and turbidity 0 is still exactly the
+ * absorption-only water this renderer shipped with.
  */
 public float3 waterExtinction(float3 tint) {
-    return waterAbsorption(tint) * (float3(1.0, 1.0, 1.0) + worldPush.waterScatter.xyz);
+    return waterAbsorption(tint) + worldPush.waterScatter.xyz;
 }
 
 // A non-water dielectric's tint is a filter over one block of travel rather than a biome water colour, so
@@ -86,26 +94,29 @@ public Medium airMedium() {
 /**
  * Single-scattering albedo: the fraction of an extinction event that scatters rather than absorbs.
  *
- * Scattering is what separates water from coloured glass. Absorption alone gives a filter — what
- * survives is tinted, what does not is gone — and that is why water read as a blue pane: the turbidity,
- * the shafts, the milky way depth closes in are all the scattered part.
+ * sigma_s / sigma_t, with sigma_s global and sigma_t already in the wavefront record — so it is
+ * recoverable for `current` and `outer` alike without storing anything, and the record keeps its last
+ * spare uint.
  *
- * With sigma_s = k * sigma_a, total extinction is sigma_a (1 + k), so the albedo is k / (1 + k) — a
- * function of the turbidity alone, with the tint cancelling out entirely. Nothing about the water body
- * needs storing to recover it, which is why this milestone costs the wavefront record nothing and
- * leaves its last spare uint spare.
+ * Scattering in water is very nearly neutral while absorption is strongly wavelength-dependent, so this
+ * ratio comes out heavily blue-weighted: high where the water barely absorbs, low where it absorbs
+ * fast. THAT is why deep water is blue, and it is also the energy accounting — red light that has been
+ * absorbed cannot be scattered back out.
  *
- * The per-biome part lives in the amount rather than the ratio, which is the right place for it: the
- * fraction of collisions that scatter is a property of what is suspended in the water, while how much
- * of it there is varies from swamp to open ocean. So both sigma_a and sigma_s rise together and murky
- * biomes come out both darker and milkier.
+ * An earlier version made sigma_s proportional to sigma_a so that the ratio would be constant and
+ * trivially derivable. It was derivable and it was wrong: a constant ratio is a GREY albedo, and in the
+ * deep limit the extinction cancels out of the single-scattering integral and leaves the albedo as the
+ * only colour there is. Every biome came out the same milky white, and it looked like it was not
+ * conserving energy because nothing was being taken out of the scattered light at all.
+ *
+ * Per-biome variation survives, and for the right reason: sigma_t is per water body, so a strongly
+ * absorbing swamp gets a low albedo and clear ocean a high one.
  */
 public float3 mediumScatterAlbedo(Medium m) {
     if (!m.water) {
         return float3(0.0, 0.0, 0.0);
     }
-    float3 k = worldPush.waterScatter.xyz;
-    return k / (float3(1.0, 1.0, 1.0) + k);
+    return worldPush.waterScatter.xyz / max(m.extinction, float3(1.0e-6, 1.0e-6, 1.0e-6));
 }
 
 public MediumStack makeMediumStack(Medium start) {

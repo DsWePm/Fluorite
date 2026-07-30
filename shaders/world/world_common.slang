@@ -101,7 +101,8 @@ public struct WorldPush {
     // extinction (see mediumScatterAlbedo), which is what makes clarity vary per biome without the
     // wavefront record growing: murkier water attenuates more and scatters more, being the same
     // suspended particles doing both. Zero here reproduces the absorption-only water exactly.
-    public float4   waterScatter;     // xyz albedo shape x turbidity, w Henyey-Greenstein g
+    public float4   waterScatter;     // xyz scattering coefficient per block, w Henyey-Greenstein g
+    public float4   waterAbsorbOverride; // xyz fixed absorption, w != 0 to use it instead of the biome
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

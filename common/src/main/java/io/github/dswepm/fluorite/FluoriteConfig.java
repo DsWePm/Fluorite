@@ -61,7 +61,7 @@ public final class FluoriteConfig {
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
             Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
-            Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.TURBIDITY,
+            Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.TURBIDITY, Rt.Water.ABSORB_OVERRIDE,
         };
     }
 
@@ -828,14 +828,44 @@ public final class FluoriteConfig {
              * wavelength-dependent, and the strong colour comes from absorption instead. Calibrated by
              * eye against the reference view rather than from a measurement, so it is a starting point.
              */
+            /**
+             * Absorption dialled directly, in 0-255 per channel, instead of taken from the biome.
+             *
+             * <p>Absorption is the channel every visible property of water descends from — the colour,
+             * how far you can see, and now the scattering albedo, which is sigma_s over sigma_t and so
+             * inherits the tint from here. Being able to set it by hand is the base for art-directing
+             * any of them, and the base for telling a wrong colour from a wrong formula.
+             *
+             * <p>Note it is INVERTED from what a water colour looks like: high red absorption means red
+             * is removed fastest, so the water reads cyan. A swamp is high red and high blue; an ocean
+             * is high red and high green.
+             */
+            public static final BooleanSetting ABSORB_OVERRIDE =
+                    bool("fluorite.rt.water.absorbOverride", "water.absorb-override", false);
+            public static final IntSetting ABSORB_R =
+                    clampedInt("fluorite.rt.water.absorbR", "water.absorb-r", 60, 0, 255);
+            public static final IntSetting ABSORB_G =
+                    clampedInt("fluorite.rt.water.absorbG", "water.absorb-g", 42, 0, 255);
+            public static final IntSetting ABSORB_B =
+                    clampedInt("fluorite.rt.water.absorbB", "water.absorb-b", 12, 0, 255);
+
+            /** 0-255 maps onto 0..ABSORB_FULL_SCALE per block, which covers clear ocean to opaque silt. */
+            public static final float ABSORB_FULL_SCALE = 0.4f;
+
+            public static float[] absorptionRgb() {
+                return new float[] {
+                        ABSORB_R.value() / 255f * ABSORB_FULL_SCALE,
+                        ABSORB_G.value() / 255f * ABSORB_FULL_SCALE,
+                        ABSORB_B.value() / 255f * ABSORB_FULL_SCALE};
+            }
+
             public static float[] scatteringRgb() {
                 float t = TURBIDITY.value();
-                // k = sigma_s / sigma_a. The albedo is k/(1+k) and the extinction is sigma_a (1+k), so
-                // one number moves both: 1 gives a modest 0.3 albedo and 1.4x extinction, 10 gives 0.8
-                // and 5x — murky enough to lose the bottom, which is the thing turbidity is for.
-                // Slightly blue-weighted, since scattering in water tilts that way while the strong
-                // colour comes from absorption. Calibrated by eye against the reference view.
-                return new float[] {0.35f * t, 0.40f * t, 0.48f * t};
+                // Very nearly neutral, which is the physics and also the point: absorption is what
+                // varies strongly with wavelength, so the albedo sigma_s/sigma_t comes out blue-weighted
+                // on its own. Making this proportional to absorption instead produced a grey albedo and
+                // every biome looked the same milky white.
+                return new float[] {0.028f * t, 0.030f * t, 0.032f * t};
             }
 
             private Water() {

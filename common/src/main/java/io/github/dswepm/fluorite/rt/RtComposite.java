@@ -198,6 +198,15 @@ public final class RtComposite {
     private static final float WATER_ABSORB_FLOOR_G = 0.010f;
     private static final float WATER_ABSORB_FLOOR_B = 0.008f;
 
+    /** Absorption dialled by hand, replacing the biome's, for art direction and for diagnosis. */
+    private static Float4 waterAbsorbOverride() {
+        if (!FluoriteConfig.Rt.Water.ABSORB_OVERRIDE.value()) {
+            return new Float4(0f, 0f, 0f, 0f);
+        }
+        float[] a = FluoriteConfig.Rt.Water.absorptionRgb();
+        return new Float4(a[0], a[1], a[2], 1f);
+    }
+
     private static Float4 waterScatter() {
         float[] s = FluoriteConfig.Rt.Water.scatteringRgb();
         return new Float4(s[0], s[1], s[2], FluoriteConfig.Rt.Water.PHASE_G.value());
@@ -1087,7 +1096,8 @@ public final class RtComposite {
                     fogExtinction(),
                     fogScatter(),
                     fogAmbient(sky),
-                    waterScatter()
+                    waterScatter(),
+                    waterAbsorbOverride()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
