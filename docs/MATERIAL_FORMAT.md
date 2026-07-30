@@ -84,6 +84,22 @@ Everything is optional. Anything absent is inherited, not defaulted.
 Unknown keys are an error, and the file is skipped with a warning naming it. That is deliberate: a typo
 that silently did nothing would be worse than one that says so.
 
+## Rough transparent materials
+
+`base.roughness` means something on `water` and `dielectric` too — frosted glass, cloudy ice — but only
+past **0.06**. Below that the interface is treated as an exact refraction, which is both what the
+material physically is and what lets the renderer keep a sharp guide through it for the denoiser. Above
+it, the interface scatters: reflections and refractions through it blur together, and what is behind it
+stops being legible.
+
+The threshold sits where it does because vanilla authors glass and ice at 0.0025 and water at 0.0064.
+Ten times over the roughest thing in the game means nothing crosses it by accident, and anything that
+does crossed it on purpose. Values between roughly 0.1 and 0.4 read as frosted; past that a pane is
+closer to translucent stone than to glass.
+
+The same applies to a LabPBR `_s` texture: a roughness authored there on a transparent block reaches the
+interface, where earlier it was decoded and then discarded.
+
 ## What "absent" means
 
 A block that mentions only a tint has expressed nothing:

@@ -188,9 +188,21 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float etaI = medium.current.ior;
             float etaT = entering ? entered.ior : medium.outer.ior;
 
-            float cosI = clamp(dot(-rd, n), 0.0, 1.0);
+            // The normal the interface refracts about. A smooth dielectric uses its own surface normal
+            // and stays an exact delta — which is water, glass and ice, everything vanilla ships. A
+            // rough one draws a microfacet from the GGX visible-normal distribution instead, and that
+            // is the whole of what turns a pane into frosted glass: same Fresnel, same medium push and
+            // pop, same bias choice, one different normal.
+            //
+            // Resolving both here rather than as two materials is what keeps the medium bookkeeping
+            // singular. A second code path would be a second place for a push to go missing.
+            float interfaceAlpha = clamp(payloadRoughness(), 0.0, 1.0);
+            bool deltaInterface = isDeltaTransmission(interfaceAlpha);
+            float3 m = deltaInterface ? n : sampleGGXVNDF(n, -rd, interfaceAlpha, seed);
+
+            float cosI = clamp(dot(-rd, m), 0.0, 1.0);
             float F = fresnelDielectric(cosI, etaI, etaT);
-            float3 transmittedDir = refract(rd, n, etaI / etaT);
+            float3 transmittedDir = refract(rd, m, etaI / etaT);
             // The translucent terrain layer is recessed by TRANSLUCENT_INSET (RtTerrainMesher), so a
             // glass/ice face touching a slab or stair sits a hair behind that neighbour's surface. A full
             // SURF_BIAS would restart the transmitted ray past the neighbour and see through it. Water
@@ -199,7 +211,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 
             bool chooseReflection = rndf(seed) < F;
             if (chooseReflection) {
-                rd = reflect(rd, n);
+                rd = reflect(rd, m);
+                // A microfacet can reflect back into the surface it sits on. The delta case cannot, so
+                // this only ever fires for a rough interface.
+                if (!deltaInterface && dot(rd, geometricNormal) <= 0.0) {
+                    break;
+                }
                 ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, SURF_BIAS);
             } else {
                 if (dot(transmittedDir, transmittedDir) <= 0.0) break; // TIR with F < 1 cannot happen
@@ -213,8 +230,20 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                     mediumPop(medium);
                 }
             }
+            if (!deltaInterface) {
+                // VNDF weight. The Fresnel split is already paid by the stochastic branch above, and
+                // the sampling density cancels the distribution, leaving Smith's shadowing on the
+                // outgoing direction — the same reduction the opaque specular lobe gets, and it holds
+                // for the refracted branch too under the separable Smith approximation. abs() because
+                // the transmitted direction is on the far side of the normal.
+                throughput *= ggxG1(abs(dot(n, rd)), interfaceAlpha);
+                rayConeSpread = max(rayConeSpread, interfaceAlpha * RAY_CONE_GLOSSY_SPREAD_SCALE);
+            }
             showCelestial = true; // specular interface: the continuation ray may see the sun/moon disc
-            bsdfPdf = -1.0;       // both branches are delta, wave normal or not
+            // A dielectric runs no NEE at all, so there is no second estimate of the light for MIS to
+            // combine with and the sentinel is right for a rough interface as well as a delta one: it
+            // means "this path takes the drawn sprite, not the light".
+            bsdfPdf = -1.0;
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
                 if (rndf(seed) > q) {

@@ -140,6 +140,24 @@ public bool isDeltaAlpha(float roughness) {
     return clamp(roughness, 0.0, 1.0) <= MIRROR_ALPHA_MAX;
 }
 
+/**
+ * Above this alpha a dielectric interface stops being a delta and is resolved as a microfacet lobe.
+ *
+ * Deliberately NOT MIRROR_ALPHA_MAX, and the difference is load-bearing. That threshold is 4e-4, and
+ * every transparent block the game ships is authored above it — glass and ice at 0.0025, water at
+ * 0.0064. Reusing it here would take every pane of glass in Minecraft off Pass A's split path and
+ * switch off resolveTransmissionGuide with it, which is the entire reason that chain exists.
+ *
+ * 0.06 leaves about a factor of ten over water, the roughest thing vanilla authors, so only a pack that
+ * genuinely means frosted glass crosses it. Note that means a LabPBR pack authoring a high roughness on
+ * glass in its _s texture now gets what it asked for, where before the value was read and discarded.
+ */
+public static const float TRANSMISSION_DELTA_ALPHA_MAX = 0.06;
+
+public bool isDeltaTransmission(float roughness) {
+    return clamp(roughness, 0.0, 1.0) <= TRANSMISSION_DELTA_ALPHA_MAX;
+}
+
 // Continuations one sample may carry: the camera segment, plus the reflection branch a primary
 // dielectric splits off. Raising this needs a real queue, which is what the continuation buffer is for.
 public static const uint MAX_PATH_SEGMENTS = 2u;

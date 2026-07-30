@@ -63,15 +63,25 @@ public PathSegment tracePrimary(PathSegment seg,
         float3 n = payload.normal;
         float3 hitPos = ro + rd * payload.hitT;
         uint material = payloadMaterial();
-        if (material != MATERIAL_WATER && material != MATERIAL_DIELECTRIC) {
+        bool dielectric = material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC;
+        // A rough dielectric is handed to Pass B whole instead of being resolved here. Two reasons, and
+        // either alone would be enough: everything below refracts exactly through the interface, which
+        // only describes a delta; and the split budget is two records per pixel, which an interface that
+        // scatters cannot be allowed to branch out of.
+        if (!dielectric || !isDeltaTransmission(clamp(payloadRoughness(), 0.0, 1.0))) {
             float rough = material == MATERIAL_PARTICLE
                     ? 1.0 : clamp(payloadRoughness(), 0.0, 1.0);
             bool exactSpecular = material == MATERIAL_OPAQUE && isDeltaAlpha(rough);
             rough = exactSpecular ? 0.0 : rough;
             float metal = material == MATERIAL_PARTICLE
                     ? 0.0 : clamp(payloadMetalness(), 0.0, 1.0);
-            float3 diffAlb = material == MATERIAL_PARTICLE
-                    ? float3(payload.albedo) : float3(payload.albedo) * (1.0 - metal);
+            // A dielectric's albedo lane is its transmission tint, not a diffuse reflectance. Handing
+            // that to RR as gAlbedo would have it demodulate a frosted pane by the colour of what it
+            // filters, which is a different quantity that happens to share a lane.
+            float3 diffAlb = dielectric
+                    ? float3(0.0, 0.0, 0.0)
+                    : (material == MATERIAL_PARTICLE
+                            ? float3(payload.albedo) : float3(payload.albedo) * (1.0 - metal));
             if (bounce == 0) {
                 gv_normal = n;
                 gv_hitCamRel = hitPos - worldPush.camOffset;
