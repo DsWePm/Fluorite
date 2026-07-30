@@ -73,7 +73,14 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float3 h = normalize(wi + c.v);
             float ndh = max(0.0, dot(c.n, h));
             float vdh = max(0.0, dot(c.v, h));
-            float D = ggxD(ndh, c.rough);
+            // Emitter rectangles are sampled by area and never weighted against BSDF sampling, so this
+            // is one of the two places UNWEIGHTED_SPEC_ALPHA_FLOOR is what bounds the peak. The real fix
+            // is MIS against emitter sampling, which is its own piece of work.
+            //
+            // The floor applies to D alone. Smith masking is within a fraction of a percent of 1 for any
+            // alpha this small at any angle that survives the ndl > 0 test, so flooring it too would buy
+            // nothing and would cost the hoisted c.g1v below.
+            float D = ggxD(ndh, max(c.rough, UNWEIGHTED_SPEC_ALPHA_FLOOR));
             // c.g1v is the view half of Smith masking, hoisted: it depends only on the receiver, and
             // this function runs once per RIS candidate.
             float Gs = c.g1v * ggxG1(ndl, c.rough);

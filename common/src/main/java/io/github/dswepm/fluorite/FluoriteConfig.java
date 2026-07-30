@@ -60,6 +60,7 @@ public final class FluoriteConfig {
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
+            Rt.Bsdf.MIS_ENABLED,
         };
     }
 
@@ -110,6 +111,11 @@ public final class FluoriteConfig {
                         + " intensity-scale are multipliers over the active dimension's preset rather\n"
                         + " than absolute values; cull-distance bounds how far a segment keeps\n"
                         + " accumulating fog. scatter-tint is one of: neutral, warm, cool, green, violet.");
+        FILE.setComment("bsdf",
+                " Surface response. sun-mis weights the two ways the sun and moon are estimated —\n"
+                        + " next-event estimation toward the light, and a continuation ray landing on it —\n"
+                        + " against each other instead of summing them. Only materials smoother than\n"
+                        + " roughness ~0.006 are affected; mirrors are untouched by construction.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -662,6 +668,31 @@ public final class FluoriteConfig {
             }
 
             private Volumetrics() {
+            }
+        }
+
+        /** Surface response: which parts of the Disney model are active, and how they are estimated. */
+        public static final class Bsdf {
+            /**
+             * Multiple importance sampling for the sun and moon.
+             *
+             * <p>The celestial light is estimated twice at every glossy vertex — once by next-event
+             * estimation toward it, once by whatever the continuation lobe happens to hit — and without
+             * a weight the two are summed, which counts it twice. It was held in check by an epsilon in
+             * the GGX denominator that clamped every specular peak in the renderer; with this on, the
+             * clamp is gone and each estimate is weighted by the density of the strategy that produced
+             * it.
+             *
+             * <p>Only materials smoother than roughness ~0.006 change, since that is where a lobe gets
+             * tight enough to compete with the light's own angular size. Mirrors are untouched by
+             * construction: a delta lobe has no finite density, contributes no specular next-event term,
+             * and keeps reflecting the drawn sprite exactly as before. Off restores the summation, for
+             * comparing the two.
+             */
+            public static final BooleanSetting MIS_ENABLED =
+                    bool("fluorite.rt.bsdf.sunMis", "bsdf.sun-mis", true);
+
+            private Bsdf() {
             }
         }
 

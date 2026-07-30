@@ -288,6 +288,31 @@ void main(inout Payload payload) {
         }
     }
 
+    // The drawn discs are scenery and join the sky. They are vanilla's stylised sun and moon — sixteen
+    // and eleven degrees across — and nothing samples them directly, so they are only ever reached one
+    // way and want no weighting. Keeping them here is also what keeps a glossy reflection of the sun
+    // looking like the sun in the sky above it rather than like the point light below.
+    col += disc;
+
+    // The light itself, which is a different object: the small square NEE jitters over. It is estimated
+    // both by NEE and by a BSDF ray landing on it, so it travels in its own lane for the raygen to
+    // weight. See PAYLOAD_ANALYTIC_LIGHT — including why this is an irradiance and not a radiance.
+    float3 analytic = float3(0.0, 0.0, 0.0);
+    float lightHalfAngle = worldPush.lightDir.w;
+    if (lightHalfAngle > 0.0) {
+        float3 axis = worldPush.lightDir.xyz;
+        float toward = dot(dir, axis);
+        if (toward > 1.0e-3) {
+            float3 right, up;
+            squareLightFrame(axis, worldPush.celestial.xyz, right, up);
+            float3 tangentPoint = dir / toward; // on the plane where tangentPoint . axis == 1
+            float t = tan(lightHalfAngle);
+            if (max(abs(dot(tangentPoint, right)), abs(dot(tangentPoint, up))) < t) {
+                analytic = worldPush.lightRadiance.xyz;
+            }
+        }
+    }
+
     // albedo is a half3 lane, so the sky's HDR radiance is clamped to half's finite range rather than
     // allowed to round up to +inf and propagate as NaN through the path throughput. This is a guard, not
     // a correction: the brightest term here is SUN_DISC_RADIANCE at 24.0, far under the 65504 ceiling.
@@ -295,10 +320,8 @@ void main(inout Payload payload) {
     payload.hitT = -1.0;
     payload.normal = half3(0.0h, 0.0h, 0.0h);
     payload.motionPrev = half3(0.0h, 0.0h, 0.0h);
-    // The disc travels separately from the sky so multiple importance sampling can weight it. f0 is dead
-    // space on a miss, so this is free; see PAYLOAD_CELESTIAL_DISC.
-    payload.f0 = half3(clamp(disc, float3(0.0, 0.0, 0.0), float3(HALF_MAX, HALF_MAX, HALF_MAX)));
-    payload.flags = dot(disc, float3(1.0, 1.0, 1.0)) > 0.0 ? PAYLOAD_CELESTIAL_DISC : 0u;
+    payload.f0 = half3(analytic); // f0 is dead space on a miss; irradiance, so it cannot overflow half
+    payload.flags = dot(analytic, float3(1.0, 1.0, 1.0)) > 0.0 ? PAYLOAD_ANALYTIC_LIGHT : 0u;
     payload.roughMetal = packHalf2(float2(1.0, 0.0));
     payload.emissionSss = packHalf2(float2(0.0, 0.0));
     payload.iorTransmission = packHalf2(float2(1.0, 0.0));

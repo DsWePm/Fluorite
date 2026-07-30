@@ -119,6 +119,23 @@ public static const float MIRROR_ALPHA_MAX = 4.0e-4; // LabPBR perceptual smooth
 // reflection MV is left at zero and RR falls back to the ordinary MV.
 public static const float SPEC_MOTION_ALPHA_MAX = 0.25; // perceptual smoothness <= 0.5
 
+/**
+ * Alpha floor for a specular peak that nothing weights.
+ *
+ * A GGX peak goes as 1/(PI alpha^2), so a light sampled by area against a near-mirror receiver puts the
+ * whole lobe into one sample and the estimator has no way to temper it. Where the light is also sampled
+ * by the BSDF, MIS does the tempering and no floor is wanted. Where it is not — block emitters, and the
+ * sun with MIS switched off — this is what bounds it.
+ *
+ * It is not physically motivated: it makes a very smooth surface reflect a light as though it were
+ * slightly rougher. 0.02 is where the 1e-7 epsilon that used to sit in ggxD effectively capped the peak,
+ * so surfaces look as they did when that epsilon was doing this job for the whole renderer.
+ *
+ * Delta lobes are exempt and must stay exempt: alpha 0 means no microfacet specular term at all, and
+ * flooring it would invent a highlight on a mirror that has never had one.
+ */
+public static const float UNWEIGHTED_SPEC_ALPHA_FLOOR = 0.02;
+
 public bool isDeltaAlpha(float roughness) {
     return clamp(roughness, 0.0, 1.0) <= MIRROR_ALPHA_MAX;
 }

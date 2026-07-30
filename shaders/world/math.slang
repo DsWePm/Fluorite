@@ -7,18 +7,35 @@ import world_core;
 public float luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 
 // GGX normal distribution.
-// NOTE: the 1e-7 denominator guard is not merely a divide-by-zero epsilon, and it is load-bearing. At
-// the lobe peak d == a2, so the guard dominates PI*d*d until a2 >> 1.8e-4, i.e. rough >> 0.116; every
-// smoother material has its NEE highlight peak truncated. That truncation is what keeps the sun from
-// being counted twice: a specular continuation sets showCelestial, so the BSDF-sampled ray may hit the
-// sun disc in world.rmiss while NEE is also adding a sun term for the same lobe, with no MIS weighting
-// between them. Removing the guard restores the physical peak AND the double count, and makes the
-// single-sample sun estimator explode wherever the lobe is tighter than the disc (~0.0047 rad). The
-// real fix is MIS (or a disc-aware specular light sample), not an epsilon edit — left as-is.
+//
+// The denominator epsilon is a divide-by-zero guard and nothing else. It used to be 1e-7, which is large
+// enough to clamp the lobe itself: at the peak d == alpha^2, so PI*d*d is PI*alpha^4 and the epsilon
+// dominates it below alpha ~ 0.013, capping the peak at about 890 however smooth the material claims to
+// be. That clamp was load-bearing. It was the only thing keeping the sun from being counted twice on a
+// near-mirror surface, because NEE evaluated a full specular term toward the sun while the specular
+// continuation could also land on the light, with nothing weighting the two against each other.
+//
+// Multiple importance sampling replaced it — see the sun MIS block in world.rgen, which weights both
+// estimates by the density of the strategy that produced them and is what now bounds the near-delta
+// case. Do not raise this back: with MIS in place the clamp only removes energy that is already
+// weighted correctly, and it would do so silently.
 public float ggxD(float ndh, float alpha) {
     float a2 = alpha * alpha;
     float d = ndh * ndh * (a2 - 1.0) + 1.0;
-    return a2 / (PI * d * d + 1.0e-7);
+    return a2 / (PI * d * d + 1.0e-20);
+}
+
+/**
+ * Solid-angle density sampleGGXVNDF induces on the direction it reflects.
+ *
+ * The visible-normal distribution is D_v(h) = G1(v) * max(0, v.h) * D(h) / (n.v), and the reflection
+ * about h carries a Jacobian of 1/(4 v.h) — the v.h cancels, which is why this is cheaper than it looks
+ * and why it needs no half-vector dot product beyond the one D already wanted.
+ *
+ * `g1v` is passed in rather than recomputed because every caller already holds it.
+ */
+public float ggxReflectPdf(float ndh, float ndv, float alpha, float g1v) {
+    return ggxD(ndh, alpha) * g1v / max(4.0 * ndv, 1.0e-8);
 }
 
 // Smith GGX masking term for one direction (separable form; G2 = G1(v) * G1(l)).
@@ -159,8 +176,8 @@ public float3 cosineDir(float3 n, inout uint s) {
 // direction, from worldPush.celestial.xyz). Averaged over frames by DLSS-RR this yields soft penumbrae that
 // widen with occluder distance (contact-hardening) for free. halfAngle <= 0 ⇒ exact direction (hard).
 public float3 sampleSquare(float3 axis, float halfAngle, inout uint s) {
-    float3 right = normalize(cross(axis, worldPush.celestial.xyz));
-    float3 up = cross(right, axis);
+    float3 right, up;
+    squareLightFrame(axis, worldPush.celestial.xyz, right, up); // shared with world.rmiss — see there
     float t = tan(halfAngle);
     float u = (rndf(s) * 2.0 - 1.0) * t;
     float v = (rndf(s) * 2.0 - 1.0) * t;

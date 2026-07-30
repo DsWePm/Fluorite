@@ -65,6 +65,28 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // diffuse-sampled continuation rays — those are already covered by the sun NEE, so the tiny disc
     // would be a double-counted firefly. Reset true on every specular/water bounce, false on a diffuse one.
     bool showCelestial = seg.showCelestial;
+    // Multiple importance sampling for the celestial light. The light is estimated twice per vertex —
+    // once by NEE, once by whatever the continuation lobe happens to hit — and this is the density of
+    // the continuation about to be traced, so the miss that lands on the light can be weighted against
+    // the NEE sample that competed for it.
+    //
+    // Negative marks a delta lobe: a mirror, or a dielectric interface, which has no finite density.
+    // The textbook weight for a delta strategy is 1, but the light is deliberately given ZERO on those
+    // paths. There are two suns here and only by art direction: the drawn sprite is vanilla's, sixteen
+    // degrees across, while the light is 0.6. A delta path already carries the sprite, and letting it
+    // also carry the light would put a core a thousand times brighter into every wave facet on the
+    // water. So a delta path sees the sprite and a glossy one is MIS-weighted against the light, which
+    // is also exactly why this change cannot touch a mirror.
+    //
+    // Pass A hands over either the camera ray or a delta dielectric split, so the sentinel is the right
+    // starting value too and no density has to cross the pass boundary.
+    float bsdfPdf = -1.0;
+    bool sunMis = (worldPush.flags & 32u) != 0u;
+    // Solid angle of the square NEE draws from, as a density. Zero half-angle is a delta light: NEE is
+    // then the only strategy that can reach it, and no BSDF ray ever will.
+    float lightHalfAngle = worldPush.lightDir.w;
+    float pdfLight = lightHalfAngle > 0.0 ? squareLightPdf(lightHalfAngle) : 0.0;
+    bool misActive = sunMis && lightHalfAngle > 0.0;
     // Pass B treats every hit it sees as one indirect-depth step, regardless of material or selected
     // continuation lobe. Deliberately start at zero instead of seg.bounce: the first hit of either
     // queued split branch is still the primary-terminal shading point. Hits 0 and 1 retain SSS; RIS
@@ -108,12 +130,16 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         throughput *= segIntegral.transmittance;
 
         if (payload.hitT < 0.0) {
-            // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into payload.albedo. The
-            // packed show-celestial flag decides whether this path segment may see the bright disc.
-            // Sky and disc arrive separately now (see PAYLOAD_CELESTIAL_DISC). Summed here, so this
-            // is exactly what a single blended lane used to carry; the MIS weight goes on the disc term
-            // once the BSDF reports a pdf.
-            float3 sky = float3(payload.albedo) + float3(payload.f0);
+            // world.rmiss writes sky radiance (gradient + drawn sun/moon sprite + stars) into
+            // payload.albedo. The packed show-celestial flag decides whether this path segment may see
+            // the sprite. All of it is reached one way only, so it takes the throughput unweighted.
+            float3 sky = float3(payload.albedo);
+            // The celestial light, if this ray landed inside it and its lobe had a density to weigh.
+            // payload.f0 carries the light's irradiance; the solid angle is what turns it into the
+            // radiance a ray arriving from that direction actually sees.
+            if (misActive && bsdfPdf >= 0.0 && (payload.flags & PAYLOAD_ANALYTIC_LIGHT) != 0u) {
+                sky += float3(payload.f0) * pdfLight * powerHeuristic(bsdfPdf, pdfLight);
+            }
             L += throughput * sky; // escaped to sky
             break;
         }
@@ -188,6 +214,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 }
             }
             showCelestial = true; // specular interface: the continuation ray may see the sun/moon disc
+            bsdfPdf = -1.0;       // both branches are delta, wave normal or not
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
                 if (rndf(seed) > q) {
@@ -204,8 +231,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (material == MATERIAL_PARTICLE) {
             float3 albedo = payload.albedo;
 
+            // No MIS here: a billboard's only lobe is Lambertian, whose density toward the light is
+            // eight orders of magnitude under the light's own, so the weight is 1 to well past float.
             float3 lightDir = worldPush.lightDir.xyz;
-            float lightHalfAngle = worldPush.lightDir.w;
             if (lightHalfAngle > 0.0) {
                 lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
             }
@@ -239,6 +267,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             throughput *= albedo;
             ro = hitPos + n * SURF_BIAS;
             rd = cosineDir(n, seed);
+            bsdfPdf = max(0.0, dot(n, rd)) * INV_PI;
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
             showCelestial = false; // diffuse receiver: direct sun/moon was handled by NEE above
             continue;
@@ -260,6 +289,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         rough = exactSpecular ? 0.0 : rough;
         float3 diffAlb = albedo * (1.0 - metal);
         float3 F0 = payload.f0;
+        // Probability of continuing along the specular lobe rather than the diffuse one. Hoisted above
+        // the NEE below, which needs it to know the density of the ray it is competing with — the
+        // continuation is sampled from this mixture, so the mixture is what MIS has to weight against.
+        float ps = exactSpecular && luminance(diffAlb) <= 1.0e-6
+                       ? 1.0
+                       : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
 
         // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
         // RIS emitter NEE: the direct-hit emission term is gated only for emitters RIS actually samples
@@ -285,7 +320,6 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // over accumulation. The same sampled direction drives ndl, the shadow ray, and the specular
         // half-vector.
         float3 lightDir = worldPush.lightDir.xyz;
-        float lightHalfAngle = worldPush.lightDir.w;
         if (lightHalfAngle > 0.0) {
             lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
         }
@@ -300,17 +334,43 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 vis *= waterCaustic(p + lightDir * shadow.waterHitT, lightDir, shadow.waterHitT);
             }
             if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
-                float3 brdf = diffAlb * INV_PI; // Lambertian diffuse (f = albedo/PI)
                 float3 h = normalize(lightDir + v);
                 float ndh = max(0.0, dot(n, h));
                 float ndv = max(1.0e-4, dot(n, v));
                 float vdh = max(0.0, dot(v, h));
-                float D = ggxD(ndh, rough);
-                float G = ggxG1(ndv, rough) * ggxG1(ndl, rough); // separable Smith masking
+                // With MIS off, nothing weights this peak down and the floor that the old ggxD epsilon
+                // amounted to comes back — otherwise the switch would be comparing MIS against a
+                // firefly storm rather than against what the renderer actually shipped. A delta lobe is
+                // exempt: alpha stays 0, so a mirror keeps having no specular NEE term at all.
+                float neeAlpha = (misActive || exactSpecular)
+                        ? rough : max(rough, UNWEIGHTED_SPEC_ALPHA_FLOOR);
+                float g1v = ggxG1(ndv, neeAlpha);
+                float D = ggxD(ndh, neeAlpha);
+                float G = g1v * ggxG1(ndl, neeAlpha); // separable Smith masking
                 float3 F = fresnelSchlick(vdh, F0);
-                brdf += (D * G) * F / (4.0 * ndv * ndl); // Cook–Torrance specular
-                brdf += disneyLobes(makeBsdfContext(hitPos, n, v, rd, diffAlb, F0, rough, false, 0.0),
-                                    materialExtension(payload.flags), lightDir);
+                // The two lobes the continuation actually samples: Lambertian diffuse (f = albedo/PI)
+                // and Cook–Torrance specular.
+                float3 sampled = diffAlb * INV_PI + (D * G) * F / (4.0 * ndv * ndl);
+
+                // Multiple importance sampling, but only over `sampled`. MIS pairs strategies for one
+                // integral, and the strategies here are NEE and the continuation mixture — so the
+                // weight applies to exactly the lobes that mixture can draw, and nothing else. Sheen
+                // and clearcoat are evaluated but never sampled as a continuation, so NEE is their only
+                // estimator and they keep the full contribution; weighting them down would simply lose
+                // that energy, because no BSDF ray would ever arrive to make it up. (It is also why the
+                // clearcoat highlight stays noisy on a very smooth coat: adding the coat to the
+                // continuation mixture is what would fix that, and it is not this change.)
+                //
+                // A delta specular lobe contributes no density at any direction but its own, so it
+                // drops out of the mixture — and D is identically zero there anyway, so the whole
+                // specular half of `sampled` vanishes with it. Mirrors are untouched by this.
+                float pdfB = (1.0 - ps) * ndl * INV_PI
+                        + (exactSpecular ? 0.0 : ps * ggxReflectPdf(ndh, ndv, neeAlpha, g1v));
+                float wLight = misActive ? powerHeuristic(pdfLight, pdfB) : 1.0;
+
+                float3 brdf = sampled * wLight
+                        + disneyLobes(makeBsdfContext(hitPos, n, v, rd, diffAlb, F0, rough, false, 0.0),
+                                      materialExtension(payload.flags), lightDir);
                 L += throughput * brdf * worldPush.lightRadiance.xyz * ndl * vis;
             }
         }
@@ -357,10 +417,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         }
 
         // Indirect continuation: importance-sample the diffuse OR the GGX specular lobe, chosen by their
-        // relative reflectance.
-        float ps = exactSpecular && luminance(diffAlb) <= 1.0e-6
-                       ? 1.0
-                       : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
+        // relative reflectance (ps, hoisted above the NEE that had to weigh against it).
         if (rndf(seed) < ps) {
             float3 l;
             if (exactSpecular) {
@@ -368,6 +425,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 // degenerate VNDF at alpha=0 and preserves a genuinely sharp reflection without a floor.
                 l = reflect(rd, n);
                 throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0) / ps;
+                bsdfPdf = -1.0;
             } else {
                 float3 h = sampleGGXVNDF(n, v, rough, seed);
                 l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
@@ -379,6 +437,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 F = fresnelSchlick(max(0.0, dot(v, h)), F0);
                 throughput *= F * ggxG1(ndl2, rough) / ps;
                 rayConeSpread = max(rayConeSpread, rough * RAY_CONE_GLOSSY_SPREAD_SCALE);
+                float ndvC = max(1.0e-4, dot(n, v));
+                bsdfPdf = ps * ggxReflectPdf(max(0.0, dot(n, h)), ndvC, rough, ggxG1(ndvC, rough));
             }
             ro = p;
             rd = l;
@@ -387,8 +447,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             throughput *= diffAlb / (1.0 - ps);
             ro = p;
             rd = cosineDir(n, seed);
+            bsdfPdf = (1.0 - ps) * max(0.0, dot(n, rd)) * INV_PI;
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
-            showCelestial = false; // diffuse lobe: disc covered by NEE, hide it (anti-firefly)
+            showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
         }
 
         // Russian roulette on deeper bounces: survive with prob = max channel, rescale survivors.

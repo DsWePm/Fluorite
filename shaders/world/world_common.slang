@@ -48,7 +48,7 @@ public struct WorldPush {
     public float3   camDelta;
     public uint     spp;
     public float2   jitter;
-    public uint     flags;            // bit0 submerged, bit4 waves (bit1 was PBR-toggle, now unconditional)
+    public uint     flags;            // bit0 submerged, bit4 waves, bit5 sun MIS (bit1 was PBR-toggle, now unconditional)
     public uint     maxBounces;
     public float4   sunDir;           // xyz true sun direction, w dayFactor 0..1
     public float4   lightDir;         // xyz active NEE light dir, w square half-angle (rad)
@@ -171,12 +171,50 @@ public static const uint PAYLOAD_MATERIAL_MASK = 3u;
 // never loads one. Twelve bits rather than sixteen so the tangent azimuth the anisotropic lobe needs can
 // share the same word — 12 bits of azimuth is 0.09 degrees, far below any visible streak error, and 4095
 // distinct materials authoring Disney parameters is already implausible. The compiler enforces the cap.
-// A miss that landed on the sun's or moon's disc. The disc's radiance rides in payload.f0, which a
-// miss otherwise writes zero and nobody reads — so separating the two costs no payload growth, and the
-// SER path pays nothing for it. Multiple importance sampling needs them apart: the sky is only ever
-// reached by a BSDF ray, while the disc is also sampled directly by NEE, so the two want different
-// weights. Without the split there is no way to weight one and not the other.
-public static const uint PAYLOAD_CELESTIAL_DISC = 1u << 20u;
+// A miss whose ray landed inside the celestial light's own square — the light NEE samples, not the
+// drawn sun/moon sprite. The sprite is vanilla's stylised sun, sixteen degrees across, and it is
+// scenery: it travels with the sky in payload.albedo and is never weighted. The light is roughly the
+// real thing (0.6 degrees by default) and it is what actually lights the world, so it is estimated two
+// ways at once — once by NEE, once by a BSDF ray landing on it — and multiple importance sampling has
+// to weight those against each other. That is what needs its own lane.
+//
+// It rides in payload.f0, which a miss otherwise writes zero and nobody reads, so the split costs no
+// payload growth and the SER path pays nothing for it. The lane carries the light's IRRADIANCE rather
+// than its radiance: dividing by the square's solid angle is the raygen's job, because at the smallest
+// configurable sun the radiance is over a million and half would clamp it.
+public static const uint PAYLOAD_ANALYTIC_LIGHT = 1u << 20u;
+
+// The celestial light is a square of angular half-size `halfAngle` laid out on the plane tangent to the
+// light direction, spun to the celestial axis so it does not roll as the sun tracks across the sky.
+// sampleSquare draws from it and world.rmiss tests against it; the two have to agree on this frame
+// exactly, or NEE and BSDF sampling would be weighting two differently-oriented lights against each
+// other and the combination would be neither estimate.
+public void squareLightFrame(float3 axis, float3 celestialAxis, out float3 right, out float3 up) {
+    right = normalize(cross(axis, celestialAxis));
+    up = cross(right, axis);
+}
+
+/**
+ * Solid-angle density of a direction drawn from that square.
+ *
+ * Sampling is uniform in the tangent-plane coordinates, so the exact density carries a 1/cos^3 from the
+ * projection onto the sphere. It is dropped: 1.0002 at the 0.6 degree default and 1.011 at the largest
+ * sun the settings offer. Keeping it would also make the light's brightness depend on its angular size,
+ * which is an appearance knob — the pushed radiance is an irradiance, and this is exactly the factor
+ * that turns one into the other, so the two have to use the same approximation or the sun changes
+ * brightness when you change its size.
+ */
+public float squareLightPdf(float halfAngle) {
+    float t = tan(halfAngle);
+    return 1.0 / max(4.0 * t * t, 1.0e-20);
+}
+
+/** Power heuristic (Veach, beta = 2) for combining two sampling strategies for the same integral. */
+public float powerHeuristic(float pdfA, float pdfB) {
+    float a = pdfA * pdfA;
+    float b = pdfB * pdfB;
+    return a / (a + b + 1.0e-20);
+}
 
 public static const uint PAYLOAD_EXTENSION_SHIFT = 8u;
 public static const uint PAYLOAD_EXTENSION_MASK = 0xFFFu;

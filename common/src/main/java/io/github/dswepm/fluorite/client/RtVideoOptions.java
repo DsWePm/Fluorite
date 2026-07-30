@@ -49,6 +49,7 @@ public final class RtVideoOptions {
             fogHeightScale(),
             fogPhaseG(),
             fogScatterTint(),
+            sunMis(),
             dlssEnabled(),
             dlssQuality(),
             hdrEnabled(),
@@ -233,6 +234,18 @@ public final class RtVideoOptions {
       */
     private static OptionInstance<Boolean> dlssEnabled() {
         return bool("fluorite.options.rt.dlssEnabled", FluoriteConfig.Rt.DlssRr.ENABLED);
+    }
+
+    /**
+     * Multiple importance sampling for the sun and moon.
+     *
+     * <p>Here rather than in the TOML because it exists to be flipped back and forth: it is the only
+     * change so far that alters how bright a material is, and the comparison is the point. Read alongside
+     * the reference switch above — RR off is where a brightness change is judged, since a denoiser
+     * reacting to a sharper highlight looks a lot like the highlight itself changing.
+     */
+    private static OptionInstance<Boolean> sunMis() {
+        return bool("fluorite.options.rt.sunMis", FluoriteConfig.Rt.Bsdf.MIS_ENABLED);
     }
 
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR
