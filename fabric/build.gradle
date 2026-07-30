@@ -40,7 +40,12 @@ loom {
 			// Loads the fixed test world straight from the launch, so a digest or frameStats capture is one
 			// command rather than a command plus a human clicking through the menu. The comparison only means
 			// anything if both loaders open the same save at the same spawn.
-			programArgs "--quickPlaySingleplayer", "Shader Testing Java"
+			// -PbenchWorld selects a different save. Performance captures use a dedicated one that
+			// tools/bench-world.sh restores from a pristine master first: Minecraft writes the
+			// player position back on exit, so a world that has been played in has a camera that
+			// moved, and the camera dominates trace cost far more than whatever is being measured.
+			programArgs "--quickPlaySingleplayer",
+					project.hasProperty("benchWorld") ? project.benchWorld : "Shader Testing Java"
 
 			// The renderer only exists on the Vulkan backend, and options.txt defaults to "default", which
 			// does not reliably resolve to Vulkan — the client then comes up on OpenGL and Fluorite silently
