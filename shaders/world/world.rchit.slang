@@ -157,8 +157,15 @@ Surface evaluateMaterial(MaterialHeader header, float2 atlasUv, float lod, float
         float4 surface0 = samplePageSurface0(page, pageUv, materialLod);
         if ((header.features & MATERIAL_FEATURE_SPEC) != 0u) {
             float4 surface1 = samplePageSurface1(page, pageUv, materialLod); // LabPBR F0
-            surface.roughness = surface0.r;
-            surface.metalness = surface0.g;
+            // A channel the pack named in its material JSON keeps the JSON value; everything else takes
+            // the decoded texture. See MATERIAL_FEATURE_ROUGHNESS_AUTHORED for why the JSON outranks the
+            // _s texture rather than the other way round.
+            if ((header.features & MATERIAL_FEATURE_ROUGHNESS_AUTHORED) == 0u) {
+                surface.roughness = surface0.r;
+            }
+            if ((header.features & MATERIAL_FEATURE_METALNESS_AUTHORED) == 0u) {
+                surface.metalness = surface0.g;
+            }
             surface.emission = surface0.b;
             surface.sss = allowSss ? surface0.a : 0.0;
             surface.f0 = surface1.rgb;

@@ -227,7 +227,14 @@ public final class RtMaterialOverrides {
             // this can brighten/dim an existing emitter but never light up a genuinely non-emissive one.
             float nextEmissionStrength = emissionStrength != null
                     ? base.emissionStrength() * emissionStrength : base.emissionStrength();
-            return new RtMaterialDesc(nextModel, RtMaterialDesc.Source.OVERRIDE, base.features(),
+            // Mark the channels this rule actually named, so the hit shader knows to keep them through
+            // the LabPBR decode. Source.OVERRIDE alone cannot say it: a rule that only sets sheen also
+            // produces an OVERRIDE desc, and its inherited roughness must still lose to a real _s
+            // texture. See MATERIAL_FEATURE_ROUGHNESS_AUTHORED.
+            int nextFeatures = base.features()
+                    | (roughness != null ? RtMaterialRegistry.FEATURE_ROUGHNESS_AUTHORED : 0)
+                    | (metalness != null ? RtMaterialRegistry.FEATURE_METALNESS_AUTHORED : 0);
+            return new RtMaterialDesc(nextModel, RtMaterialDesc.Source.OVERRIDE, nextFeatures,
                     nextRoughness, nextMetalness, nextIor, nextTransmission,
                     base.emissionSource(), nextEmissionStrength, base.emissionSummary(),
                     disney != null ? disney : base.disney());

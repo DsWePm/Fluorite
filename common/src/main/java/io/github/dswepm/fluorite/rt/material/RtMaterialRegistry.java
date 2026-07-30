@@ -46,6 +46,14 @@ public final class RtMaterialRegistry {
     public static final int FEATURE_NORMAL = 2;
     public static final int FEATURE_HEURISTIC_EMISSION = 4;
     public static final int FEATURE_STOCHASTIC_ALPHA = 16;
+    /**
+     * The pack named this channel in its material JSON, so the hit shader must not overwrite it with the
+     * LabPBR {@code _s} decode. Set only by {@link RtMaterialOverrides.Rule#apply}, and only for the
+     * fields a rule actually mentioned — see {@code MATERIAL_FEATURE_ROUGHNESS_AUTHORED} in
+     * world_common.slang for why the JSON outranks the texture, and why an inherited value must not.
+     */
+    public static final int FEATURE_ROUGHNESS_AUTHORED = 8;
+    public static final int FEATURE_METALNESS_AUTHORED = 32;
     // HDR radiance of a full (level-15-equivalent) emitter, modulated by albedo — the single knob
     // (formerly duplicated as a literal in world.rgen.slang and RtLightCollector). Baked into every
     // emissive RtMaterialDesc.emissionStrength at compile time (compileDesc/compileEntityDesc), times

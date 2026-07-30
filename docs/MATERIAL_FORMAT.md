@@ -100,6 +100,23 @@ closer to translucent stone than to glass.
 The same applies to a LabPBR `_s` texture: a roughness authored there on a transparent block reaches the
 interface, where earlier it was decoded and then discarded.
 
+## When both a texture and this file say something
+
+`base.roughness` and `base.metalness` **win over a LabPBR `_s` texture** for the materials a rule names.
+
+They are not peers. LabPBR is a source format — it gets decoded into canonical channels like every other
+source, and the decode happens per texel in the hit shader because that is where the texture is. These
+files are an authoring decision one stage further along, applied to the already-decoded material. So they
+outrank it, the same way they outrank the vanilla heuristics.
+
+Only the fields a rule actually writes are protected. A rule that sets `sheen` and says nothing about
+roughness leaves the `_s` texture in charge, because its roughness was inherited rather than chosen — and
+a default must never beat a real texture. This is also why an unmodified LabPBR pack is unaffected: with
+no rules, nothing is marked.
+
+Practically: if you are testing a material override on top of a LabPBR pack and see no change, this is
+the first thing to check — it used to be that the texture silently won.
+
 ## What "absent" means
 
 A block that mentions only a tint has expressed nothing:
