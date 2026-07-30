@@ -71,5 +71,12 @@
   "fluorite.options.rt.sunMis": "Sun & Moon MIS",
   "fluorite.options.rt.sunMis.tooltip": "Weights the two ways the sun is estimated — a shadow ray toward it, and a reflection landing on it — instead of adding both. Only materials smoother than roughness 0.006 change; mirrors are untouched. Off to compare.",
   "fluorite.options.rt.anisotropy": "Anisotropic Specular",
-  "fluorite.options.rt.anisotropy.tooltip": "Stretches the highlight along the surface grain, the way brushed metal and satin look. Only affects materials whose pack authored anisotropy.amount; everything else is identical either way. Off to compare."
+  "fluorite.options.rt.anisotropy.tooltip": "Stretches the highlight along the surface grain, the way brushed metal and satin look. Only affects materials whose pack authored anisotropy.amount; everything else is identical either way. Off to compare.",
+  "fluorite.options.rt.subsurfaceMode": "Subsurface Scattering",
+  "fluorite.options.rt.subsurfaceMode.tooltip": "How light that enters a material is traced back out. Thin is a surface approximation with no interior — cheap, and right for a backlit leaf. Random walk actually walks the photon through the medium, which is what gives a thick material depth. Costs one traversal per scattering event; bound it with the budget below.",
+  "fluorite.options.rt.subsurfaceMode.off": "Off",
+  "fluorite.options.rt.subsurfaceMode.thin": "Thin Shell",
+  "fluorite.options.rt.subsurfaceMode.random-walk": "Random Walk",
+  "fluorite.options.rt.subsurfaceMaxEvents": "Subsurface Events",
+  "fluorite.options.rt.subsurfaceMaxEvents.tooltip": "Scattering events one random walk may take. Cost is near-linear in this. Lowering it does not darken anything — a walk that runs out falls back to a diffuse bounce — it makes thick material less accurate. This is the lever to turn if subsurface is too expensive."
 }

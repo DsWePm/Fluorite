@@ -30,6 +30,7 @@ import trace;
 #ifdef FLUORITE_ENABLE_EXT_SER
 import trace_ser;
 #endif
+import subsurface;
 import lighting;
 
 public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
@@ -82,6 +83,11 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // starting value too and no density has to cross the pass boundary.
     float bsdfPdf = -1.0;
     bool sunMis = (worldPush.flags & 32u) != 0u;
+    // Subsurface mode and event budget, packed into the flags word rather than given lanes of their
+    // own: WorldPush is loaded once per path, but every field added to it is paid by the layout test,
+    // the generated record and everyone reading the struct. 0 off, 1 thin shell, 2 random walk.
+    uint sssMode = (worldPush.flags >> 7u) & 3u;
+    int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
     // Solid angle of the square NEE draws from, as a density. Zero half-angle is a delta light: NEE is
     // then the only strategy that can reach it, and no BSDF ray ever will.
     float lightHalfAngle = worldPush.lightDir.w;
@@ -329,6 +335,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // quietly stop agreeing. It also carries the anisotropic tangent, decoded once here.
         MaterialExtension ext = materialExtension(payload.flags);
         float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
+        // Hoisted above the NEE because the sun's MIS needs to know how much of the non-specular half
+        // the walk will take; the lobe itself is selected further down.
+        float walkSssShare = 0.0;
+        if (sssMode == 2u && sssMaxEvents > 0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
+            float authoredSss = ext.specular.z;
+            walkSssShare = clamp(authoredSss > 0.0 ? authoredSss : sss, 0.0, 1.0);
+        }
         BsdfContext bc = makeBsdfContextAniso(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                               ext, payload.flags);
 
@@ -408,7 +421,11 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 // A delta specular lobe contributes no density at any direction but its own, so it
                 // drops out of the mixture — and D is identically zero there anyway, so the whole
                 // specular half of `sampled` vanishes with it. Mirrors are untouched by this.
-                float pdfB = (1.0 - ps) * ndl * INV_PI
+                // The diffuse share shrinks when a subsurface lobe is in the mixture, and the walk
+                // itself contributes no analytic density, so this is the whole of what the continuation
+                // can put toward the sun. Getting it wrong loses energy quietly on smooth materials.
+                float diffuseShare = (1.0 - ps) * (1.0 - walkSssShare);
+                float pdfB = diffuseShare * ndl * INV_PI
                         + (exactSpecular ? 0.0 : ps * ggxReflectPdfAniso(hx, hy, ndh, ndv, ax, ay, g1v));
                 float wLight = misActive ? powerHeuristic(pdfLight, pdfB) : 1.0;
 
@@ -432,7 +449,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // through them toward the light source). Shadow ray fires from the back face to avoid
         // self-occlusion. cosT = dot(lightDir, rd): rd tracks the ray toward the sun when the sun is
         // behind the slab, giving cosT ≈ 1 → forward-scatter peak.
-        if (sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
+        // The thin-shell transmission term stays live in random-walk mode too, and deliberately. It is
+        // the DIRECT lighting estimate — one shadow ray toward the sun — while the walk is a
+        // CONTINUATION lobe. They estimate different things and do not double count: the walk carries a
+        // path onward into the scene, the term below answers "what does the sun put through this slab
+        // right now". Next-event estimation for a random walk is a research problem, and the reduced
+        // estimator is exactly where a cheap approximation belongs.
+        if (sssMode != 0u && sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float backNdl = max(0.0, dot(-n, lightDir));
             if (backNdl > 0.0) {
                 VisibilityResult shadowBack = visibilityThroughAmbient(medium, hitPos - n * SURF_BIAS, lightDir, RAY_FAR);
@@ -458,6 +481,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 
         // Indirect continuation: importance-sample the diffuse OR the GGX specular lobe, chosen by their
         // relative reflectance (ps, hoisted above the NEE that had to weigh against it).
+        // How much of the non-specular half goes to the walk. The JSON weight, when a pack authored one,
+        // overrides the LabPBR mask outright rather than scaling it — same precedence as every other
+        // authored channel, and it means a rule that mentions only sheen leaves the texel mask alone
+        // instead of silently zeroing subsurface (weight 0 falls through to sss).
+        float walkSss = walkSssShare;
+
         if (rndf(seed) < ps) {
             float3 l;
             if (exactSpecular) {
@@ -487,11 +516,49 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             ro = p;
             rd = l;
             showCelestial = true; // specular lobe: this ray is a (glossy) mirror — show the disc
+        } else if (walkSss > 0.0 && rndf(seed) < walkSss) {
+            // The subsurface lobe. Everything about it happens inside this one shading vertex — the
+            // walk enters, scatters and leaves before the path continues — so nothing here reaches the
+            // continuation record or the pass boundary.
+            //
+            // radius is a mean free path in blocks, the language an author thinks in. LabPBR has no
+            // channel for it, so a material carrying only the _s mask gets a default rather than a
+            // zero: zero would mean an infinitely dense medium and the walk would exit at the entry
+            // point, which looks exactly like the effect being switched off.
+            float3 radius = ext.subsurface.xyz;
+            if (max(radius.x, max(radius.y, radius.z)) <= 0.0) {
+                radius = float3(SSS_DEFAULT_RADIUS, SSS_DEFAULT_RADIUS, SSS_DEFAULT_RADIUS);
+            }
+            float lobeProb = (1.0 - ps) * walkSss;
+            WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, radius, ext.specular.w,
+                                                   sssMaxEvents, seed);
+            if (walk.absorbed) {
+                break; // roulette inside the walk: an unbiased stop, so this path is simply over
+            }
+            if (walk.escaped) {
+                throughput *= walk.weight / lobeProb;
+                ro = walk.origin;
+                rd = walk.dir;
+            } else {
+                // Ran out of events. Fall back to the cheap lobe rather than dropping the energy —
+                // truncating here would darken the thickest parts of a material, which reads as dirt
+                // rather than as a budget. This is the knob SUBSURFACE_MAX_EVENTS turns.
+                throughput *= diffAlb / lobeProb;
+                ro = p;
+                rd = cosineDir(n, seed);
+            }
+            // The exit direction has no analytic density — it depends on where inside the material the
+            // photon happened to turn around — so there is nothing for the sun's MIS to weigh against
+            // and this path takes the drawn sprite rather than the light.
+            bsdfPdf = -1.0;
+            rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
+            showCelestial = false;
         } else {
-            throughput *= diffAlb / (1.0 - ps);
+            float lobeProb = (1.0 - ps) * (1.0 - walkSss);
+            throughput *= diffAlb / lobeProb;
             ro = p;
             rd = cosineDir(n, seed);
-            bsdfPdf = (1.0 - ps) * max(0.0, dot(n, rd)) * INV_PI;
+            bsdfPdf = lobeProb * max(0.0, dot(n, rd)) * INV_PI;
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
             showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
         }

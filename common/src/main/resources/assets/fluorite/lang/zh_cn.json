@@ -71,5 +71,12 @@
   "fluorite.options.rt.sunMis": "日月多重重要性采样",
   "fluorite.options.rt.sunMis.tooltip": "对太阳的两种估计——朝它发一条阴影光线，以及反射光线正好打到它——加权合并而不是相加。仅粗糙度低于 0.006 的材质会变化，镜面不受影响。关闭可做对比。",
   "fluorite.options.rt.anisotropy": "各向异性高光",
-  "fluorite.options.rt.anisotropy.tooltip": "沿表面纹理方向拉长高光，即拉丝金属和缎面的样子。仅影响资源包写了 anisotropy.amount 的材质，其余材质开关两态完全一致。关闭可做对比。"
+  "fluorite.options.rt.anisotropy.tooltip": "沿表面纹理方向拉长高光，即拉丝金属和缎面的样子。仅影响资源包写了 anisotropy.amount 的材质，其余材质开关两态完全一致。关闭可做对比。",
+  "fluorite.options.rt.subsurfaceMode": "次表面散射",
+  "fluorite.options.rt.subsurfaceMode.tooltip": "进入材质的光如何被追踪出来。薄壳是没有内部的表面近似，便宜，逆光树叶用它就对了。随机游走真的让光子在介质里游走，厚材质的通透感来自它。每次散射事件一条遍历，用下面的预算限制它。",
+  "fluorite.options.rt.subsurfaceMode.off": "关闭",
+  "fluorite.options.rt.subsurfaceMode.thin": "薄壳近似",
+  "fluorite.options.rt.subsurfaceMode.random-walk": "随机游走",
+  "fluorite.options.rt.subsurfaceMaxEvents": "次表面事件上限",
+  "fluorite.options.rt.subsurfaceMaxEvents.tooltip": "一次随机游走最多经历的散射事件数，开销与它近乎线性。调低不会让画面变暗——用尽的游走会退回普通漫反射弹射——只是厚材质内部不那么准。次表面太贵时该动的就是这个。"
 }

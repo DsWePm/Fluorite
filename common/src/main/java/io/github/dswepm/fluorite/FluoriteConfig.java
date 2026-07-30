@@ -61,6 +61,7 @@ public final class FluoriteConfig {
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
             Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
+            Rt.Bsdf.SUBSURFACE_MODE,
         };
     }
 
@@ -119,7 +120,11 @@ public final class FluoriteConfig {
                         + " anisotropy stretches the specular highlight along the surface tangent for\n"
                         + " materials that author anisotropy.amount; everything else is unaffected.\n"
                         + " subsurface-solid-layer lets ordinary (SOLID-layer) blocks carry LabPBR\n"
-                        + " subsurface; turn it off if a pack's _s alpha makes plain blocks look waxy.");
+                        + " subsurface; turn it off if a pack's _s alpha makes plain blocks look waxy.\n"
+                        + " subsurface-mode is off | thin | random-walk. thin is the cheap surface\n"
+                        + " approximation; random-walk actually walks the photon through the medium and\n"
+                        + " costs one traversal per scattering event. subsurface-max-events bounds that\n"
+                        + " walk — running out falls back to a diffuse bounce rather than losing energy.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -727,6 +732,54 @@ public final class FluoriteConfig {
              */
             public static final BooleanSetting SUBSURFACE_SOLID_LAYER =
                     bool("fluorite.rt.bsdf.subsurfaceSolidLayer", "bsdf.subsurface-solid-layer", true);
+
+            /**
+             * How subsurface scattering is estimated: {@code off}, {@code thin}, or {@code random-walk}.
+             *
+             * <p>{@code thin} is the shipping approximation — one forward-biased phase term across the
+             * surface, no interior at all. It is cheap, it looks right on a backlit leaf, and it has
+             * nothing to say about a block with volume.
+             *
+             * <p>{@code random-walk} adds a real walk through the medium as a continuation lobe: the
+             * photon enters, scatters until it finds a way out, and leaves somewhere else. That is what
+             * gives quartz depth rather than a painted-on glow. It costs one traversal per scattering
+             * event, which is why the budget below exists.
+             *
+             * <p>Default {@code thin}. The walk is opt-in until it has been measured on more than one
+             * machine — see the note on Turing in the plan: the extension is exposed there but the
+             * hardware behind it is not, so short incoherent rays cost what they say they cost.
+             */
+            public static final StringSetting SUBSURFACE_MODE =
+                    string("fluorite.rt.bsdf.subsurfaceMode", "bsdf.subsurface-mode", "thin",
+                            Bsdf::sanitizeSubsurfaceMode);
+
+            /**
+             * Scattering events one walk may take before it gives up.
+             *
+             * <p>This is the performance lever, and it is meant to be turned. Cost is very close to
+             * linear in it, because each event is one traversal. Running out does NOT truncate the
+             * energy — the path falls back to an ordinary diffuse bounce — so lowering it trades
+             * accuracy inside thick material for time, rather than trading brightness for time.
+             */
+            public static final IntSetting SUBSURFACE_MAX_EVENTS =
+                    clampedInt("fluorite.rt.bsdf.subsurfaceMaxEvents", "bsdf.subsurface-max-events", 4, 0, 7);
+
+            private static String sanitizeSubsurfaceMode(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "off", "thin", "random-walk" -> v;
+                    default -> "thin";
+                };
+            }
+
+            /** 0 off, 1 thin, 2 random walk — the encoding world.rgen unpacks from the flags word. */
+            public static int subsurfaceModeId() {
+                return switch (SUBSURFACE_MODE.get()) {
+                    case "off" -> 0;
+                    case "random-walk" -> 2;
+                    default -> 1;
+                };
+            }
 
             private Bsdf() {
             }

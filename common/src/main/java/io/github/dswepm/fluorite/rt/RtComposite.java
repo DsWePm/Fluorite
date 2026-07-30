@@ -933,6 +933,11 @@ public final class RtComposite {
             if (FluoriteConfig.Rt.Bsdf.ANISOTROPY_ENABLED.value()) {
                 flags |= 0b1000000; // stretch the specular lobe along the surface tangent
             }
+            // Subsurface mode in bits 7-8 and the walk's event budget in bits 9-11. Packed rather than
+            // given lanes of their own: WorldPush is read once per path, but every field added to it is
+            // paid by the layout test, the generated record and everyone reading the struct.
+            flags |= (FluoriteConfig.Rt.Bsdf.subsurfaceModeId() & 0b11) << 7;
+            flags |= (Math.clamp(FluoriteConfig.Rt.Bsdf.SUBSURFACE_MAX_EVENTS.value(), 0, 7)) << 9;
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.

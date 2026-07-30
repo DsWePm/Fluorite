@@ -51,6 +51,8 @@ public final class RtVideoOptions {
             fogScatterTint(),
             sunMis(),
             anisotropy(),
+            subsurfaceMode(),
+            subsurfaceMaxEvents(),
             dlssEnabled(),
             dlssQuality(),
             hdrEnabled(),
@@ -256,6 +258,37 @@ public final class RtVideoOptions {
      */
     private static OptionInstance<Boolean> anisotropy() {
         return bool("fluorite.options.rt.anisotropy", FluoriteConfig.Rt.Bsdf.ANISOTROPY_ENABLED);
+    }
+
+    /** Subsurface estimator: off, the thin-shell approximation, or a real walk through the medium. */
+    private static OptionInstance<String> subsurfaceMode() {
+        StringSetting setting = FluoriteConfig.Rt.Bsdf.SUBSURFACE_MODE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.subsurfaceMode",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.subsurfaceMode.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.subsurfaceMode." + value),
+            new OptionInstance.Enum<>(List.of("off", "thin", "random-walk"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    /**
+     * The walk's event budget — the lever, not a quality dial you set and forget.
+     *
+     * <p>Cost is near-linear in it: every event is one traversal. Lowering it does not darken anything,
+     * because a walk that runs out falls back to a diffuse bounce; it makes thick material less accurate.
+     */
+    private static OptionInstance<Integer> subsurfaceMaxEvents() {
+        IntSetting setting = FluoriteConfig.Rt.Bsdf.SUBSURFACE_MAX_EVENTS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.subsurfaceMaxEvents",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.subsurfaceMaxEvents.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(0, 7),
+            Math.clamp(setting.value(), 0, 7),
+            setting::set);
     }
 
     // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR
