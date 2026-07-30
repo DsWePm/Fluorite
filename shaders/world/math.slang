@@ -84,12 +84,34 @@ public void anisoAlphas(float alpha, float anisotropy, out float ax, out float a
     ay = a >= 0.0 ? tight : wide;
 }
 
-/** hx/hy are the half vector along the tangent and bitangent. ax == ay gives ggxD exactly. */
+/**
+ * hx/hy are the half vector along the tangent and bitangent. ax == ay gives ggxD exactly.
+ *
+ * Written WITHOUT dividing by ax or ay, and that is not a style choice. The textbook form is
+ *
+ *     1 / (PI ax ay ((hx/ax)^2 + (hy/ay)^2 + ndh^2)^2)
+ *
+ * which is NaN at alpha 0: hx/0 is infinite, and PI*0*0*inf*inf is not a number. Alpha zero is not a
+ * corner case anyone has to go looking for — isDeltaAlpha SNAPS every near-mirror to exactly zero, and
+ * ggxD returns a clean 0 there because its numerator is alpha^2. The delta path depends on that zero.
+ *
+ * Multiplying numerator and denominator through by (ax ay)^3 gives an algebraically identical
+ * expression with the alphas in the numerator, so alpha 0 falls out as 0 rather than poisoning every
+ * lit pixel of the surface. It really did: a NaN here reached L through the sun's NEE, which runs only
+ * where ndl > 0 and the shadow ray is clear — so the lit faces of a mirror went black while the shaded
+ * ones stayed correct, which is a strange enough symptom to be worth naming.
+ *
+ * The claim that this reduces exactly to the isotropic form was made once already and was wrong at
+ * exactly one value. Substituting ax = ay = a gives a^6 / (PI (a^2(hx^2+hy^2) + ndh^2 a^4)^2), and
+ * hx^2 + hy^2 = 1 - ndh^2, so it collapses to a^2 / (PI (ndh^2(a^2-1) + 1)^2) — ggxD, term for term,
+ * and now at a = 0 as well.
+ */
 public float ggxDAniso(float hx, float hy, float ndh, float ax, float ay) {
-    float dx = hx / ax;
-    float dy = hy / ay;
-    float d = dx * dx + dy * dy + ndh * ndh;
-    return 1.0 / (PI * ax * ay * d * d + 1.0e-20);
+    float ax2 = ax * ax;
+    float ay2 = ay * ay;
+    float t = hx * hx * ay2 + hy * hy * ax2 + ndh * ndh * ax2 * ay2;
+    float num = ax2 * ax * ay2 * ay;
+    return num / (PI * t * t + 1.0e-30);
 }
 
 /**
