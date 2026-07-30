@@ -173,3 +173,54 @@ public float3 disneyLobes(BsdfContext c, MaterialExtension ext, float3 wi) {
     }
     return sheenLobe(c, ext, wi) + clearcoatLobe(c, ext, wi);
 }
+
+// ---- What DLSS-RR is told.
+
+/** The specular guide a surface should report: one roughness, one integrated reflectance. */
+public struct SpecularGuide {
+    public float alpha;       // what RR filters at
+    public float3 reflectance;
+};
+
+/**
+ * Collapses the specular lobes into the single roughness and reflectance DLSS-RR accepts.
+ *
+ * RR takes one roughness per pixel and picks its filter width from it, so a surface with two specular
+ * lobes has to nominate one. Reporting the base unconditionally is wrong in the direction that shows:
+ * a sharp coat over a rough base tells the denoiser to blur a highlight that should stay tight, and the
+ * result reads as DLSS being broken rather than as the material being described wrongly.
+ *
+ * Nominates by PEAK radiance, not by total energy. That distinction is the whole function: a clear coat
+ * carries far less energy than a rough base — 0.04 reflectance at a quarter weight against a rough
+ * dielectric's integrated 0.05 to 0.10 — yet concentrates it into a solid angle four orders of magnitude
+ * smaller, so it is the coat that puts a hard edge in the image. Comparing integrated reflectance picks
+ * the base every time and changes nothing, which is exactly what an A/B of that version showed.
+ *
+ * Peak goes as reflectance over the lobe's solid angle, and a GGX lobe's solid angle goes as alpha^2.
+ *
+ * Reflectance is still the sum, since both lobes genuinely contribute and RR demodulates by it.
+ *
+ * Uses the existing rrSpecularAlbedo fit rather than a second one: RR was tuned against that curve, and
+ * two approximations of the same quantity would drift.
+ */
+public SpecularGuide specularGuide(float3 F0, float alpha, float ndv, MaterialExtension ext) {
+    SpecularGuide g;
+    g.alpha = alpha;
+    g.reflectance = rrSpecularAlbedo(F0, alpha, ndv);
+
+    float clearcoat = ext.sheen.z;
+    if (clearcoat <= 0.0) {
+        return g;
+    }
+    float coatAlpha = lerp(0.1, 0.001, clamp(ext.sheen.w, 0.0, 1.0));
+    // The 0.25 is the lobe's own weight, so the comparison is between what each layer actually sends to
+    // the eye rather than between their raw reflectances.
+    float3 coat = rrSpecularAlbedo(float3(0.04, 0.04, 0.04), coatAlpha, ndv) * (0.25 * clearcoat);
+    float basePeak = luminance(g.reflectance) / max(alpha * alpha, 1.0e-8);
+    float coatPeak = luminance(coat) / max(coatAlpha * coatAlpha, 1.0e-8);
+    if (coatPeak > basePeak) {
+        g.alpha = coatAlpha;
+    }
+    g.reflectance += coat;
+    return g;
+}

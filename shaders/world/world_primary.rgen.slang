@@ -16,6 +16,7 @@
 import world_common;
 import world_core;
 import math;
+import bsdf;
 import medium;
 import volume;
 import segment;
@@ -83,10 +84,14 @@ public PathSegment tracePrimary(PathSegment seg,
                                               float3(0.0, 0.0, 0.0));
                 } else {
                     float3 v = -rd;
+                    // One roughness reaches RR, so a clearcoated surface has to nominate whichever of
+                    // its two specular lobes carries the energy — see specularGuide.
+                    SpecularGuide guide = specularGuide(float3(payload.f0), rough,
+                            max(1.0e-4, dot(n, v)), materialExtension(payload.flags));
                     gv_albedo = diffAlb;
-                    gv_rough = rough;
-                    gv_spec = makeSpecSurface(gv_hitCamRel, n, float3(payload.motionPrev), rough,
-                                              rrSpecularAlbedo(payload.f0, rough, dot(n, v)));
+                    gv_rough = guide.alpha;
+                    gv_spec = makeSpecSurface(gv_hitCamRel, n, float3(payload.motionPrev), guide.alpha,
+                                              guide.reflectance);
                 }
             }
 
