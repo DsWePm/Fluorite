@@ -462,7 +462,7 @@ public final class RtMaterialRegistry {
         }
         float emissionStrength = emissionSource == RtMaterialDesc.EmissionSource.NONE ? 0.0f : EMISSIVE_STRENGTH;
         return new RtMaterialDesc(model, source, features, roughness, metalness, ior, transmission,
-                emissionSource, emissionStrength, emissionSummary);
+                emissionSource, emissionStrength, emissionSummary, RtMaterialDesc.Disney.NONE);
     }
 
     private static RtMaterialDesc compileEntityDesc(int features, boolean neutral,
@@ -474,7 +474,8 @@ public final class RtMaterialRegistry {
                 ? RtMaterialDesc.EmissionSource.LAB_PBR : RtMaterialDesc.EmissionSource.NONE;
         float emissionStrength = emissionSource == RtMaterialDesc.EmissionSource.NONE ? 0.0f : EMISSIVE_STRENGTH;
         return new RtMaterialDesc(MODEL_OPAQUE, source, features, RtMaterials.ENTITY_ROUGH, 0.0f,
-                1.0f, 0.0f, emissionSource, emissionStrength, emissionSummary);
+                1.0f, 0.0f, emissionSource, emissionStrength, emissionSummary,
+                RtMaterialDesc.Disney.NONE);
     }
 
     private static void add(List<MaterialHeaderData> headers, List<RtMaterialDesc> descriptions,
