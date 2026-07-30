@@ -110,7 +110,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (payload.hitT < 0.0) {
             // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into payload.albedo. The
             // packed show-celestial flag decides whether this path segment may see the bright disc.
-            float3 sky = payload.albedo;
+            // Sky and disc arrive separately now (see PAYLOAD_CELESTIAL_DISC). Summed here, so this
+            // is exactly what a single blended lane used to carry; the MIS weight goes on the disc term
+            // once the BSDF reports a pdf.
+            float3 sky = float3(payload.albedo) + float3(payload.f0);
             L += throughput * sky; // escaped to sky
             break;
         }

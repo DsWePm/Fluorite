@@ -260,6 +260,7 @@ void main(inout Payload payload) {
     // Sun & moon discs — sampled from the vanilla celestials atlas, gated to rays that haven't already
     // accounted for the light via diffuse NEE. squareBody gives the body-local [-1,1] coord; the
     // sprite's own texel coverage (alpha) shapes the disc.
+    float3 disc = float3(0.0, 0.0, 0.0);
     if (showCelestial) {
         float2 local;
         squareBody(dir, sd, SUN_DISC_HALF_ANGLE, worldPush.celestial.xyz, local);
@@ -271,7 +272,7 @@ void main(inout Payload payload) {
             // survives, the halo collapses to ~0.
             float core = pow(clamp(dot(t, t) * 0.45, 0.0, 1.0), 6.0);
             // transmittanceToSpace reddens+dims the disc through the sunset on the sky's own curve.
-            col += SUN_DISC_RADIANCE * transmittanceToSpace(dir) * core * sunUp;
+            disc += SUN_DISC_RADIANCE * transmittanceToSpace(dir) * core * sunUp;
         }
         // Same horizon gate as the sun: with the soft-horizon change, below-horizon rays no longer clip
         // at the planet, so without this the moon disc would stay visible after it set.
@@ -283,7 +284,7 @@ void main(inout Payload payload) {
             // Moon: a smoothstep contrast ramp suppresses the faint halo while keeping the lit phase
             // shape from the texture. The transmittance tint gives a warm amber moon at moonrise/set.
             float m = smoothstep(0.0, 1.0, min(length(t), 1.0)) * 1.3;
-            col += MOON_DISC_RADIANCE * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp;
+            disc += MOON_DISC_RADIANCE * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp;
         }
     }
 
@@ -294,8 +295,10 @@ void main(inout Payload payload) {
     payload.hitT = -1.0;
     payload.normal = half3(0.0h, 0.0h, 0.0h);
     payload.motionPrev = half3(0.0h, 0.0h, 0.0h);
-    payload.f0 = half3(0.0h, 0.0h, 0.0h);
-    payload.flags = 0u;
+    // The disc travels separately from the sky so multiple importance sampling can weight it. f0 is dead
+    // space on a miss, so this is free; see PAYLOAD_CELESTIAL_DISC.
+    payload.f0 = half3(clamp(disc, float3(0.0, 0.0, 0.0), float3(HALF_MAX, HALF_MAX, HALF_MAX)));
+    payload.flags = dot(disc, float3(1.0, 1.0, 1.0)) > 0.0 ? PAYLOAD_CELESTIAL_DISC : 0u;
     payload.roughMetal = packHalf2(float2(1.0, 0.0));
     payload.emissionSss = packHalf2(float2(0.0, 0.0));
     payload.iorTransmission = packHalf2(float2(1.0, 0.0));

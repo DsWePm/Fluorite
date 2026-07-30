@@ -171,6 +171,13 @@ public static const uint PAYLOAD_MATERIAL_MASK = 3u;
 // never loads one. Twelve bits rather than sixteen so the tangent azimuth the anisotropic lobe needs can
 // share the same word — 12 bits of azimuth is 0.09 degrees, far below any visible streak error, and 4095
 // distinct materials authoring Disney parameters is already implausible. The compiler enforces the cap.
+// A miss that landed on the sun's or moon's disc. The disc's radiance rides in payload.f0, which a
+// miss otherwise writes zero and nobody reads — so separating the two costs no payload growth, and the
+// SER path pays nothing for it. Multiple importance sampling needs them apart: the sky is only ever
+// reached by a BSDF ray, while the disc is also sampled directly by NEE, so the two want different
+// weights. Without the split there is no way to weight one and not the other.
+public static const uint PAYLOAD_CELESTIAL_DISC = 1u << 20u;
+
 public static const uint PAYLOAD_EXTENSION_SHIFT = 8u;
 public static const uint PAYLOAD_EXTENSION_MASK = 0xFFFu;
 public static const uint MAX_MATERIAL_EXTENSIONS = 4095u;
