@@ -64,17 +64,19 @@ float3 walkAlbedo(float3 diffuse) {
 }
 
 /**
- * Mean free path a material gets when nothing authored one, in blocks.
+ * Largest share of the non-specular response the walk may take.
  *
- * LabPBR has no channel for it: its subsurface byte is a mask saying "this is translucent", with no way
- * to say how far light travels inside. So every material coming from a pack without a Fluorite JSON
- * needs a number, and zero is not it — zero means an infinitely dense medium, the walk leaves at the
- * point it entered, and the result is indistinguishable from the feature being switched off.
+ * A lobe's contribution is divided by the probability of having chosen it, so a lobe that takes
+ * essentially everything leaves the others with a vanishing probability and a reciprocal weight to
+ * match. SPBR writes 254 of 255 in LabPBR's subsurface byte for diamond and emerald; unclamped, that
+ * leaves the diffuse lobe selected 0.4% of the time and weighted 250x. What that looks like is not
+ * noise — a denoiser turns those spikes into a blown-out patch, while the reference view shows the same
+ * surface as black, and the two readings look like unrelated bugs.
  *
- * A quarter of a block reads as leaf-and-petal thickness rather than as a solid stone block, which is
- * what the LabPBR mask is overwhelmingly used for today.
+ * ps above is clamped to [0.1, 0.9] for exactly this reason. This is the same guard for the same
+ * hazard, and the two should be read together.
  */
-public static const float SSS_DEFAULT_RADIUS = 0.25;
+public static const float MAX_WALK_LOBE_SHARE = 0.9;
 
 public struct WalkResult {
     public bool escaped;   // found its way out: origin/dir/weight describe where and with what

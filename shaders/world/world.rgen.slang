@@ -337,10 +337,24 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
         // Hoisted above the NEE because the sun's MIS needs to know how much of the non-specular half
         // the walk will take; the lobe itself is selected further down.
+        // The walk runs only where a pack authored a mean free path. LabPBR's subsurface byte is a
+        // MASK — "light gets through this" — with no way to say how far, and packs use it liberally:
+        // SPBR marks diamond and emerald at 254 of 255. Inventing a radius for those and walking a
+        // photon through them is what turns a solid block into a light leak, because the walk exits
+        // through whichever face it reaches first and four of a wall's six faces are buried against a
+        // neighbour. A mask alone gets the thin-shell term, which is what it was authored for.
+        float3 sssRadius = ext.subsurface.xyz;
+        bool walkAuthored = max(sssRadius.x, max(sssRadius.y, sssRadius.z)) > 0.0;
         float walkSssShare = 0.0;
-        if (sssMode == 2u && sssMaxEvents > 0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
+        if (sssMode == 2u && sssMaxEvents > 0 && walkAuthored
+                && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float authoredSss = ext.specular.z;
-            walkSssShare = clamp(authoredSss > 0.0 ? authoredSss : sss, 0.0, 1.0);
+            // Clamped away from 1 for the same reason ps is clamped away from 0 and 1 a few lines up:
+            // a lobe whose selection probability collapses still has to be divided by that probability,
+            // so the rare time it IS chosen it carries the reciprocal. At the 0.995 SPBR writes, the
+            // diffuse lobe would be picked 0.4% of the time and weighted 250x — a firefly generator,
+            // and one that a denoiser turns into a blown-out patch rather than a speckle.
+            walkSssShare = clamp(authoredSss > 0.0 ? authoredSss : sss, 0.0, MAX_WALK_LOBE_SHARE);
         }
         BsdfContext bc = makeBsdfContextAniso(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                               ext, payload.flags);
@@ -521,16 +535,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // walk enters, scatters and leaves before the path continues — so nothing here reaches the
             // continuation record or the pass boundary.
             //
-            // radius is a mean free path in blocks, the language an author thinks in. LabPBR has no
-            // channel for it, so a material carrying only the _s mask gets a default rather than a
-            // zero: zero would mean an infinitely dense medium and the walk would exit at the entry
-            // point, which looks exactly like the effect being switched off.
-            float3 radius = ext.subsurface.xyz;
-            if (max(radius.x, max(radius.y, radius.z)) <= 0.0) {
-                radius = float3(SSS_DEFAULT_RADIUS, SSS_DEFAULT_RADIUS, SSS_DEFAULT_RADIUS);
-            }
             float lobeProb = (1.0 - ps) * walkSss;
-            WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, radius, ext.specular.w,
+            WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, sssRadius, ext.specular.w,
                                                    sssMaxEvents, seed);
             if (walk.absorbed) {
                 break; // roulette inside the walk: an unbiased stop, so this path is simply over
