@@ -1308,8 +1308,9 @@ public final class RtComposite {
     }
 
     public void destroy() {
-        // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
-        // longer in flight and can be freed immediately.
+        // Teardown runs after the device is idle, so the TLAS ring's slots are no longer in flight and
+        // can be freed immediately. That wait is FluoriteLifecycle.shutdown's first act — it was named
+        // here as something CLIENT_STOPPING already did for years before anyone checked, and it did not.
         tlasRing.destroy();
         if (gpuTimers != null) {
             gpuTimers.destroy(RtContext.get());

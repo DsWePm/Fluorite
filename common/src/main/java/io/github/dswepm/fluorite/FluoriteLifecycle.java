@@ -95,6 +95,27 @@ public final class FluoriteLifecycle {
 
 	public static void shutdown() {
 		RtTerrainDigest.dumpIfDirty();
+
+		// Make the device idle before anything is destroyed.
+		//
+		// Four teardown paths document that they may free immediately because the device is already
+		// idle by the time they run, and RtComposite.destroy names the mechanism: "CLIENT_STOPPING
+		// waits". This method IS the CLIENT_STOPPING handler, and it did not wait. Nothing did. Every
+		// destroy below ran against a device that could still have the last frame in flight, freeing
+		// images and buffers the GPU was reading.
+		//
+		// The symptom was an intermittent access violation inside vkDestroyDevice, in the driver,
+		// after the final frame — crashing on roughly half of exits with a byte-identical stack each
+		// time. Identical stack with intermittent occurrence is the shape of a race, not of a wrong
+		// destroy order: how far the GPU happened to get decides whether the driver's bookkeeping
+		// survives to the device destroy that trips over it.
+		//
+		// Placed above every destroy, including the two that are not gated on rtInitDone.
+		RtContext ctx = RtContext.currentOrNull();
+		if (ctx != null) {
+			ctx.waitIdle();
+		}
+
 		WorldRenderScaler.INSTANCE.destroy();
 		RtUiOverlay.destroy(); // GUI redirect is not gated by rtInitDone; always release its TextureTarget
 		if (!rtInitDone) {
@@ -102,7 +123,6 @@ public final class FluoriteLifecycle {
 			return;
 		}
 
-		RtContext ctx = RtContext.currentOrNull();
 		if (ctx != null) {
 			// Let the terrain epoch cancel queued work and release every active-task token before
 			// shutdownNow(): discarded worker Runnables cannot deliver their terminal callbacks.
