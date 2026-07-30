@@ -119,3 +119,57 @@ public float3 sheenLobe(BsdfContext c, MaterialExtension ext, float3 wi) {
     float3 tint = lerp(float3(1.0, 1.0, 1.0), hue, clamp(ext.sheen.y, 0.0, 1.0));
     return sheen * tint * f;
 }
+
+/**
+ * Disney's clearcoat: a second, thin specular layer over the base, with its own distribution and a fixed
+ * dielectric F0.
+ *
+ * Three details are Disney's and none of them are arbitrary:
+ *
+ *  - the distribution is GTR1, not GGX. The wider tail is what reads as a coat rather than as a second
+ *    ordinary highlight.
+ *  - the coat's alpha is lerp(0.1, 0.001, gloss) directly. Those numbers ARE alphas, so unlike most
+ *    formulas transcribed from that paper this one needs no un-squaring — see the header of this file for
+ *    why that distinction matters so much here.
+ *  - the masking term uses a fixed alpha of 0.25 rather than the coat's own. Disney found the coat's true
+ *    roughness far too smooth to shadow anything, and a constant reads better than the truth.
+ *
+ * F0 is 0.04: a clear coat is a dielectric whatever the base is, which is the point of layering it over a
+ * metal. The 0.25 weight is Disney's, absorbing the layer's thickness into one number an author can turn.
+ */
+public float3 clearcoatLobe(BsdfContext c, MaterialExtension ext, float3 wi) {
+    float clearcoat = ext.sheen.z;
+    float ndl = dot(c.n, wi);
+    if (clearcoat <= 0.0 || ndl <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 h = normalize(wi + c.v);
+    float ndh = max(0.0, dot(c.n, h));
+    float ldh = clamp(dot(wi, h), 0.0, 1.0);
+    float coatAlpha = lerp(0.1, 0.001, clamp(ext.sheen.w, 0.0, 1.0));
+    float d = gtr1(ndh, coatAlpha);
+    float fr = lerp(0.04, 1.0, pow(1.0 - ldh, 5.0));
+    float g = ggxG1(ndl, 0.25) * ggxG1(c.ndv, 0.25);
+    // Same Cook-Torrance arrangement the base specular uses, so the two are directly comparable. Disney's
+    // smithG_GGX folds the 1/(4 ndl ndv) into its G; ggxG1 does not, hence the explicit divide.
+    float value = 0.25 * clearcoat * d * fr * g / (4.0 * ndl * c.ndv);
+    return float3(value, value, value);
+}
+
+/**
+ * Every optional lobe a material may have authored, summed.
+ *
+ * One entry point so that adding the next lobe does not mean editing the direct-lighting sites again —
+ * they were already edited once for sheen, and a lobe that someone forgets to wire into one of the two
+ * would make a surface respond differently to sunlight than to a torch.
+ *
+ * Returns immediately for the overwhelming majority of materials, which authored none of this.
+ */
+public float3 disneyLobes(BsdfContext c, MaterialExtension ext, float3 wi) {
+    // twoSided callers are particle billboards: flat, unlit-ish quads that were never meant to have a
+    // fabric sheen or a lacquer coat.
+    if (c.twoSided || (ext.sheen.x <= 0.0 && ext.sheen.z <= 0.0)) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    return sheenLobe(c, ext, wi) + clearcoatLobe(c, ext, wi);
+}

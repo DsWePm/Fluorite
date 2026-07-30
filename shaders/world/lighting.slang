@@ -305,12 +305,12 @@ public float3 shadeReservoir(MediumStack medium, BsdfContext c, MaterialExtensio
     // deliberate and unbiased: the estimator is f(y)*W with W = (1/M)*sum(w)/phat(y), which is unbiased
     // for any strictly positive target phat — the target only shapes the variance. Keeping sheen out of
     // the target keeps M+1 evaluations per vertex cheap; putting it in f keeps the picture right.
-    if (contrib.x + contrib.y + contrib.z > 0.0 && !c.twoSided) {
+    if (contrib.x + contrib.y + contrib.z > 0.0) {
         float3 wi = normalize(s.pos - c.hitPos);
         if (dot(c.n, wi) > 0.0) {
             float dist2 = max(dot(s.pos - c.hitPos, s.pos - c.hitPos), 1.0e-6);
             float cosL = max(0.0, dot(s.lnrm, -wi));
-            contrib += sheenLobe(c, ext, wi) * s.le * (dot(c.n, wi) * cosL / dist2 * s.area);
+            contrib += disneyLobes(c, ext, wi) * s.le * (dot(c.n, wi) * cosL / dist2 * s.area);
         }
     }
     if (phat <= 0.0) {

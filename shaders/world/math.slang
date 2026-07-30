@@ -22,6 +22,24 @@ public float ggxD(float ndh, float alpha) {
 }
 
 // Smith GGX masking term for one direction (separable form; G2 = G1(v) * G1(l)).
+/**
+ * GTR1 (Berry) normal distribution — the clearcoat lobe's, not the base specular's.
+ *
+ * GGX is GTR2. GTR1 has a longer tail still, which is what gives a clear coat its wide dim halo around a
+ * tight core rather than GGX's more compact falloff. Disney uses it for exactly this one layer.
+ *
+ * `alpha` is linear roughness, like everywhere else here. Degenerate at alpha == 1, where the closed form
+ * divides by log(1) — uniform is the correct limit.
+ */
+public float gtr1(float ndh, float alpha) {
+    if (alpha >= 1.0) {
+        return 1.0 / PI;
+    }
+    float a2 = alpha * alpha;
+    float t = 1.0 + (a2 - 1.0) * ndh * ndh;
+    return (a2 - 1.0) / (PI * log(a2) * t + 1.0e-7);
+}
+
 public float ggxG1(float ndx, float alpha) {
     float a2 = alpha * alpha;
     return 2.0 * ndx / (ndx + sqrt(a2 + (1.0 - a2) * ndx * ndx) + 1.0e-7);
