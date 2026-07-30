@@ -21,6 +21,7 @@
 import world_common;
 import world_core;
 import math;
+import bsdf;
 import medium;
 import volume;
 import segment;
@@ -223,10 +224,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // striking either side of the quad should still land (matches the sun/moon NEE above).
             if (risOn) {
                 float3 v = -rd;
-                Reservoir r = risInitial(hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
-                                         true, 0.0, seed, proposalSeed);
-                L += throughput * shadeReservoir(medium, r, hitPos, n, v, rd, albedo,
+                BsdfContext bc = makeBsdfContext(hitPos, n, v, rd, albedo,
                                                  float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
+                Reservoir r = risInitial(bc, seed, proposalSeed);
+                L += throughput * shadeReservoir(medium, bc, r);
             }
 
             if (bounce >= maxBounces) {
@@ -316,10 +317,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // sss=0 there (falls back to plain front-only RIS).
         if (risOn) {
             float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
-            Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
-                                     seed, proposalSeed);
-            L += throughput * shadeReservoir(medium, r, hitPos, n, v, rd, diffAlb, F0, rough, false,
-                                             activeSss);
+            BsdfContext bc = makeBsdfContext(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss);
+            Reservoir r = risInitial(bc, seed, proposalSeed);
+            L += throughput * shadeReservoir(medium, bc, r);
         }
 
         // Thin-surface SSS transmission. Light entering from the back face scatters through toward the

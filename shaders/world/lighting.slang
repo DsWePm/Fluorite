@@ -5,6 +5,7 @@
 
 import world_common;
 import world_core;
+import bsdf;
 import math;
 import medium;
 import trace;
@@ -42,11 +43,10 @@ public Reservoir resEmpty() {
 //   - twoSided (particles): billboards have no back face, ndl=abs(ndl) folds both sides into the front;
 //   - back hemisphere with sss>0 (LabPBR leaves/grass): HG transmission phase — cosT = dot(wi,rd) peaks
 //     when the ray points from the light through the slab toward the camera (same as the sun SSS term).
-public float3 evalSampleContrib(float3 sp, float3 lnrm, float3 le, float area, float3 hitPos, float3 n,
-                         float3 v, float3 rd, float3 diffAlb, float3 F0, float rough,
-                         bool twoSided, float sss, out float phat) {
+public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le, float area,
+                         out float phat) {
     phat = 0.0;
-    float3 toL = sp - hitPos;
+    float3 toL = sp - c.hitPos;
     float dist2 = dot(toL, toL);
     if (dist2 < 1.0e-6) {
         return float3(0.0, 0.0, 0.0);
@@ -57,34 +57,35 @@ public float3 evalSampleContrib(float3 sp, float3 lnrm, float3 le, float area, f
     if (cosL <= 0.0) {
         return float3(0.0, 0.0, 0.0); // receiver behind the emitter face
     }
-    float ndl = dot(n, wi);
-    if (twoSided) {
+    float ndl = dot(c.n, wi);
+    if (c.twoSided) {
         ndl = abs(ndl);
     }
     float3 contrib = float3(0.0, 0.0, 0.0);
     if (ndl > 0.0) {
         float G = ndl * cosL / dist2; // area-light geometry term (x area)
-        float3 brdf = diffAlb * INV_PI;
+        float3 brdf = c.diffAlb * INV_PI;
         // twoSided callers are particle billboards, which pass rough=1/F0=0 and want diffuse-only
         // shading: fresnelSchlick still returns up to full white at grazing angles even with F0=0 (that
         // IS the Fresnel effect), so skipping the term here — not just zeroing F0 — is what keeps
         // billboards from picking up a rim highlight they were never meant to have.
-        if (!twoSided) {
-            float3 h = normalize(wi + v);
-            float ndh = max(0.0, dot(n, h));
-            float ndv = max(1.0e-4, dot(n, v));
-            float vdh = max(0.0, dot(v, h));
-            float D = ggxD(ndh, rough);
-            float Gs = ggxG1(ndv, rough) * ggxG1(ndl, rough);
-            float3 Fs = fresnelSchlick(vdh, F0);
-            brdf += (D * Gs) * Fs / (4.0 * ndv * ndl);
+        if (!c.twoSided) {
+            float3 h = normalize(wi + c.v);
+            float ndh = max(0.0, dot(c.n, h));
+            float vdh = max(0.0, dot(c.v, h));
+            float D = ggxD(ndh, c.rough);
+            // c.g1v is the view half of Smith masking, hoisted: it depends only on the receiver, and
+            // this function runs once per RIS candidate.
+            float Gs = c.g1v * ggxG1(ndl, c.rough);
+            float3 Fs = fresnelSchlick(vdh, c.F0);
+            brdf += (D * Gs) * Fs / (4.0 * c.ndv * ndl);
         }
         contrib = brdf * le * (G * area);
-    } else if (sss > 0.0) {
+    } else if (c.sss > 0.0) {
         float backNdl = -ndl;
         float G = backNdl * cosL / dist2;
-        float cosT = dot(wi, rd);
-        contrib = diffAlb * sss * SSS_STRENGTH * hg(cosT, SSS_G) * le * (G * area);
+        float cosT = dot(wi, c.rd);
+        contrib = c.diffAlb * c.sss * SSS_STRENGTH * hg(cosT, SSS_G) * le * (G * area);
     }
     phat = luminance(contrib);
     return contrib;
@@ -233,12 +234,11 @@ public void selectLightGridLight(LightGridCell cell, bool useLocal, inout uint p
 
 // Initial RIS over M power-weighted candidates -> one resampled sample, no shadow ray yet. The chosen
 // sample's W = wSum / (M * p-hat); M counts every candidate, including zero-weight ones.
-public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3 diffAlb, float3 F0,
-                     float rough, bool twoSided, float sss, inout uint seed, inout uint proposalSeed) {
+public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposalSeed) {
     Reservoir r = resEmpty();
     LightGridCell gridCell;
     int3 gridCellCoord;
-    float3 gridLookup = hitPos;
+    float3 gridLookup = ctx.hitPos;
     if (pc.lightGridCellAddr != 0) {
         // Stochastically blend across hard section boundaries. Every cell proposal retains full global
         // support, so conditioning on this independently jittered lookup remains unbiased.
@@ -272,8 +272,7 @@ public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3
         float3 lightNormal = lightGeometricNormal(lg);
         float area = lightArea(lg);
         float phat;
-        evalSampleContrib(sp, lightNormal, le, area, hitPos, n, v, rd,
-                diffAlb, F0, rough, twoSided, sss, phat);
+        evalSampleContrib(ctx, sp, lightNormal, le, area, phat);
         if (phat <= 0.0) {
             continue;
         }
@@ -296,15 +295,12 @@ public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3
 // ray, and return throughput-free radiance contrib*vis*W. The one ray serves whichever term fired for
 // the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the
 // sample's side of the surface.
-public float3 shadeReservoir(MediumStack medium, Reservoir s, float3 hitPos, float3 n, float3 v,
-                      float3 rd, float3 diffAlb,
-                      float3 F0, float rough, bool twoSided, float sss) {
+public float3 shadeReservoir(MediumStack medium, BsdfContext c, Reservoir s) {
     if (s.W <= 0.0 || s.phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }
     float phat;
-    float3 contrib = evalSampleContrib(s.pos, s.lnrm, s.le, s.area, hitPos, n, v, rd,
-            diffAlb, F0, rough, twoSided, sss, phat);
+    float3 contrib = evalSampleContrib(c, s.pos, s.lnrm, s.le, s.area, phat);
     if (phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }
@@ -312,8 +308,8 @@ public float3 shadeReservoir(MediumStack medium, Reservoir s, float3 hitPos, flo
     // that origin — measuring dist from hitPos while tracing from the biased origin shifts the ray tip
     // up to SURF_BIAS*ndl toward the emitter plane, beating the 0.001*dist stop-short margin for lights
     // closer than ~SURF_BIAS/0.001 blocks -> shadow ray hits the emitter's own face -> per-texel black.
-    float side = dot(n, s.pos - hitPos) >= 0.0 ? 1.0 : -1.0;
-    float3 origin = hitPos + side * n * SURF_BIAS;
+    float side = dot(c.n, s.pos - c.hitPos) >= 0.0 ? 1.0 : -1.0;
+    float3 origin = c.hitPos + side * c.n * SURF_BIAS;
     float3 toL = s.pos - origin;
     float dist = length(toL);
     // Stop just short of the sample point so the ray doesn't self-occlude on the emitter's own face.
