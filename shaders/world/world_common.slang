@@ -198,6 +198,24 @@ public struct TerrainPrim {
 // Compiled material record (80 B). Source-format data has already been decoded into canonical pages;
 // texturePage indexes the dedicated canonical page arrays. materialUv maps sprite-local UV into the packed
 // page, while albedoUv maps the vanilla atlas rectangle back to sprite-local UV.
+/**
+ * Optional Disney parameters, addressed by MaterialHeader.extensionOffset.
+ *
+ * Separate from the header because almost no material needs any of it: a block with default parameters
+ * keeps extensionOffset == 0 and costs nothing, neither a record nor a load. Only materials that
+ * actually author sheen, clearcoat, anisotropy or subsurface pay for one.
+ *
+ * Packed into float4s rather than declared field by field: std430 gives a float3 16-byte alignment, so
+ * ten loose scalars would round up to far more than these 48 bytes. Every roughness-like quantity in
+ * here is linear and is the GGX alpha — see the header of bsdf.slang before transcribing anything from
+ * Disney's paper.
+ */
+public struct MaterialExtension {
+    public float4 sheen;      // x sheen, y sheenTint, z clearcoat, w clearcoatGloss
+    public float4 specular;   // x specularTint, y anisotropy, z subsurfaceWeight, w subsurfacePhaseG
+    public float4 subsurface; // xyz subsurface radius (blocks, per channel), w reserved
+};
+
 public struct MaterialHeader {
     public uint model;
     public uint features;        // low feature bits; bits 24..31 = maximum valid material-page LOD

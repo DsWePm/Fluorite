@@ -230,6 +230,14 @@ abstract class GenerateShaderRecords extends DefaultTask {
         Map materialHeaderType = materialProbeArray.type.elementType as Map
         int materialHeaderByteSize = materialProbeArray.type.uniformStride as int
 
+        def extensionParameter = reflection.parameters.find { it.name == "materialExtensionLayoutProbe" }
+        def extensionProbeArray = extensionParameter?.type?.resultType?.fields?.find { it.name == "values" }
+        if (extensionProbeArray?.type?.kind != "array" || extensionProbeArray.type.elementType?.name != "MaterialExtension") {
+            throw new GradleException("unexpected MaterialExtension reflection probe shape")
+        }
+        Map materialExtensionType = extensionProbeArray.type.elementType as Map
+        int materialExtensionByteSize = extensionProbeArray.type.uniformStride as int
+
         def segmentParameter = reflection.parameters.find { it.name == "packedPathSegmentLayoutProbe" }
         def segmentProbeArray = segmentParameter?.type?.resultType?.fields?.find { it.name == "values" }
         if (segmentProbeArray?.type?.kind != "array" || segmentProbeArray.type.elementType?.name != "PackedPathSegment") {
@@ -260,6 +268,8 @@ abstract class GenerateShaderRecords extends DefaultTask {
         // The Java side only reads BYTE_SIZE from this one — the records are written by the GPU. The
         // generated writer is unused but harmless, and having the size come from the shader's own layout
         // is the point: it was a hand-copied 48 that nothing checked.
+        new File(packageDir, "MaterialExtensionData.java").setText(
+                generateJava(materialExtensionType, materialExtensionByteSize, "MaterialExtensionData"), "UTF-8")
         new File(packageDir, "PackedPathSegmentData.java").setText(
                 generateJava(packedPathSegmentType, packedPathSegmentByteSize, "PackedPathSegmentData"), "UTF-8")
     }
