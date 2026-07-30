@@ -30,7 +30,26 @@ public struct WorldPushConstants {
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
     public uint frameIndex;
     public uint debugView;
+    // Shading switches the CLOSEST-HIT needs. They live here rather than in WorldPush because the hit
+    // shader deliberately never dereferences that struct — see the note at the top of world.rchit — and
+    // a per-hit BDA load to read one bit would cost more than the feature it gates.
+    public uint shadeFlags;
 };
+
+/**
+ * Let the SOLID terrain layer carry subsurface scattering.
+ *
+ * Extraction packs a non-SOLID marker into the prim's light lane, and the hit shader has been using it
+ * to zero the LabPBR subsurface channel for SOLID blocks — so quartz, smooth stone and every other
+ * ordinary block was excluded outright. That is also where a BSSRDF is most worth having: the materials
+ * people expect to glow through are mostly SOLID.
+ *
+ * The gate exists because it is a genuine risk rather than a free win. LabPBR's subsurface channel is
+ * the alpha of the _s texture, and packs that never intended to use it can leave anything in there; the
+ * moment this opens, whatever they left becomes visible as translucency on ordinary blocks. One switch,
+ * off, restores today's behaviour.
+ */
+public static const uint SHADE_SOLID_LAYER_SSS = 1u;
 
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
 // w = bindless entityAlbedoTex slot of the destroy-stage texture.

@@ -60,7 +60,7 @@ public final class FluoriteConfig {
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
-            Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED,
+            Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
         };
     }
 
@@ -117,7 +117,9 @@ public final class FluoriteConfig {
                         + " against each other instead of summing them. Only materials smoother than\n"
                         + " roughness ~0.006 are affected; mirrors are untouched by construction.\n"
                         + " anisotropy stretches the specular highlight along the surface tangent for\n"
-                        + " materials that author anisotropy.amount; everything else is unaffected.");
+                        + " materials that author anisotropy.amount; everything else is unaffected.\n"
+                        + " subsurface-solid-layer lets ordinary (SOLID-layer) blocks carry LabPBR\n"
+                        + " subsurface; turn it off if a pack's _s alpha makes plain blocks look waxy.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -709,6 +711,22 @@ public final class FluoriteConfig {
              */
             public static final BooleanSetting ANISOTROPY_ENABLED =
                     bool("fluorite.rt.bsdf.anisotropy", "bsdf.anisotropy", true);
+
+            /**
+             * Let the SOLID terrain layer carry subsurface scattering.
+             *
+             * <p>Terrain extraction marks non-SOLID (cutout/translucent) quads, and the hit shader has
+             * been using that marker to zero the LabPBR subsurface channel for everything else — so
+             * quartz, smooth stone and every ordinary block were excluded. That is precisely where a
+             * BSSRDF earns its cost: the materials people expect light to seep through are mostly SOLID.
+             *
+             * <p>On by default, but the switch is not ceremonial. LabPBR keeps subsurface in the alpha of
+             * the {@code _s} texture, and a pack that never meant to use it can leave anything there;
+             * opening this makes whatever they left visible as translucency on ordinary blocks. If a pack
+             * suddenly looks waxy, this is the first thing to turn off.
+             */
+            public static final BooleanSetting SUBSURFACE_SOLID_LAYER =
+                    bool("fluorite.rt.bsdf.subsurfaceSolidLayer", "bsdf.subsurface-solid-layer", true);
 
             private Bsdf() {
             }

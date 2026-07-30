@@ -151,6 +151,19 @@ public final class RtComposite {
     private static final float BASE_FOG_DENSITY = 0.0016f;   // extinction per block at the reference height
     private static final float AMBIENT_FOG_FRACTION = 0.25f; // sky's share of what lights the fog
 
+    /**
+     * Shading switches the closest-hit reads. Inline in the push constant rather than in WorldPush
+     * because the hit shader never dereferences that struct — one BDA load per hit to read a bit would
+     * cost more than the feature it gates.
+     */
+    private static int shadeFlags() {
+        int flags = 0;
+        if (FluoriteConfig.Rt.Bsdf.SUBSURFACE_SOLID_LAYER.value()) {
+            flags |= 1; // SHADE_SOLID_LAYER_SSS
+        }
+        return flags;
+    }
+
     private static int debugView() {
         return FluoriteConfig.Rt.Composite.DEBUG_VIEW.value();
     }
@@ -1035,7 +1048,7 @@ public final class RtComposite {
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
-                    (int) frameCounter, debugView).write(pushConstants);
+                    (int) frameCounter, debugView, shadeFlags()).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 if (gpuTimers != null) {

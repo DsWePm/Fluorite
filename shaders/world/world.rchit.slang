@@ -445,9 +445,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     float ew = pr.normal.w;
     bool nonSolid = ew >= 1.5;
     float emission = nonSolid ? ew - 2.0 : ew; // heuristic emission source (block light level)
+    // SOLID blocks were excluded from subsurface outright; see SHADE_SOLID_LAYER_SSS for why that is
+    // both where the effect is most wanted and where a pack can most easily surprise you.
+    bool allowSss = nonSolid || (pc.shadeFlags & SHADE_SOLID_LAYER_SSS) != 0u;
     Surface surface = evaluateMaterial(materialHeader, uv, blockLod, float3(payload.albedo), n,
             tp0, tp1, tp2, uv0, uv1, uv2, vdir,
-            materialHeader.params.x, materialHeader.params.y, emission, nonSolid);
+            materialHeader.params.x, materialHeader.params.y, emission, allowSss);
     n = surface.normal;
     payload.albedo *= half(surface.ao);
     // Block-breaking overlay: opaque/cutout terrain (water skips — fluids aren't breakable). Evaluate
