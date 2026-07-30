@@ -20,6 +20,8 @@
   "fluorite.options.rt.glow.tooltip": "为发光实体绘制原版发光效果轮廓（可穿墙显示）。",
   "fluorite.options.rt.waterWaves": "动态水面",
   "fluorite.options.rt.waterWaves.tooltip": "对水面法线进行动画处理，以显示移动波浪高光。",
+  "fluorite.options.rt.waterTurbidity": "水体浑浊度",
+  "fluorite.options.rt.waterTurbidity.tooltip": "水的散射强度，叠加在生物群系色调本来就驱动的吸收之上。只有吸收的话水就是一块有颜色的滤镜；浑浊感、水下光柱、以及深处那种发乳白而不只是变暗的观感，全部来自散射。0 就是以前只有吸收的水，也是其余一切的对照。",
   "fluorite.options.rt.hdr": "HDR 输出",
   "fluorite.options.rt.hdr.tooltip": "当显示器支持时，以 HDR (ST.2084/PQ) 而不是 SDR 显示。重启游戏后生效。",
   "fluorite.options.rt.hdrPaperWhite": "HDR 纸白亮度",

@@ -11,8 +11,15 @@ import world_core;
 
 public static const float WATER_DENSITY = 0.1;
 public static const float3 WATER_ABSORB_FLOOR = float3(0.015, 0.010, 0.008);
-public float3 waterExtinction(float3 tint) {
+
+/** Absorption only: what the biome tint has always meant. Colour comes from here. */
+public float3 waterAbsorption(float3 tint) {
     return WATER_ABSORB_FLOOR + WATER_DENSITY * (float3(1.0, 1.0, 1.0) - clamp(tint, 0.0, 1.0));
+}
+
+/** Total extinction: what Beer-Lambert attenuates by, and the sum of the two above. */
+public float3 waterExtinction(float3 tint) {
+    return waterAbsorption(tint) + worldPush.waterScatter.xyz;
 }
 
 // A non-water dielectric's tint is a filter over one block of travel rather than a biome water colour, so
@@ -63,6 +70,34 @@ public Medium airMedium() {
     m.water = false;
     m.ambient = true;
     return m;
+}
+
+/**
+ * How much a medium scatters, per channel.
+ *
+ * Scattering is what separates water from coloured glass. Absorption alone gives a filter — light that
+ * survives is tinted, light that does not is gone — and that is why water has read as a blue pane rather
+ * than as water: the turbidity, the shafts, the milky falloff with depth are all the scattered part.
+ *
+ * GLOBAL rather than per water body, and that is a deliberate trade. It means the single-scattering
+ * albedo can be recovered wherever it is needed as sigma_s / sigma_t, from the extinction the record
+ * already carries and the one water bit beside it — so the wavefront record does not grow, and the last
+ * spare uint in it stays spare. Per-biome character survives regardless, because it lives in the
+ * absorption, which is still driven by the tint.
+ */
+public float3 mediumScattering(Medium m) {
+    return m.water ? worldPush.waterScatter.xyz : float3(0.0, 0.0, 0.0);
+}
+
+/**
+ * Single-scattering albedo: the fraction of an extinction event that scatters rather than absorbs.
+ *
+ * Derived, not stored. sigma_t is in the record, sigma_s is global, and the ratio is the albedo — which
+ * is why M9 costs no bytes at all despite the plan having budgeted the last lane for it.
+ */
+public float3 mediumScatterAlbedo(Medium m) {
+    float3 sigmaS = mediumScattering(m);
+    return sigmaS / max(m.extinction, float3(1.0e-6, 1.0e-6, 1.0e-6));
 }
 
 public MediumStack makeMediumStack(Medium start) {

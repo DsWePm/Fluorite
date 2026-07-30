@@ -20,6 +20,8 @@
   "fluorite.options.rt.glow.tooltip": "Disegna il contorno vanilla dell'effetto Luminescenza (attraverso i muri) attorno alle entità luminose.",
   "fluorite.options.rt.waterWaves": "Acqua animata",
   "fluorite.options.rt.waterWaves.tooltip": "Anima le normali della superficie dell'acqua per riflessi di onde in movimento.",
+  "fluorite.options.rt.waterTurbidity": "Water Turbidity",
+  "fluorite.options.rt.waterTurbidity.tooltip": "How much water scatters, on top of the absorption its biome tint already drives. Absorption alone makes water a coloured filter; the scattered part is what gives it turbidity, shafts, and a depth that closes in milkily instead of merely darkening. 0 is the absorption-only water from before, and is the comparison for everything else.",
   "fluorite.options.rt.hdr": "Uscita HDR",
   "fluorite.options.rt.hdr.tooltip": "Presenta in HDR (ST.2084/PQ) invece che in SDR, quando il display lo supporta. Ha effetto dopo il riavvio del gioco.",
   "fluorite.options.rt.hdrPaperWhite": "Bianco carta HDR",

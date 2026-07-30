@@ -93,6 +93,11 @@ public struct WorldPush {
     public float4   fogExtinction;    // xyz per-channel extinction tint
     public float4   fogScatter;       // xyz single-scattering albedo, w Henyey-Greenstein g for the sun lobe
     public float4   fogAmbient;       // xyz isotropic source radiance the fog is lit by besides the sun
+    // Enclosed media. Absorption is per water body (biome tint); scattering is one global value, which
+    // is what lets the single-scattering albedo be derived as sigma_s/sigma_t from the extinction the
+    // wavefront record already carries — see mediumScatterAlbedo. Zero here reproduces the
+    // absorption-only water this renderer shipped with, exactly.
+    public float4   waterScatter;     // xyz scattering coefficient per block, w Henyey-Greenstein g
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

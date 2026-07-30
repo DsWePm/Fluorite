@@ -61,7 +61,7 @@ public final class FluoriteConfig {
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
             Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
-            Rt.Bsdf.SUBSURFACE_MODE,
+            Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.TURBIDITY,
         };
     }
 
@@ -125,6 +125,12 @@ public final class FluoriteConfig {
                         + " approximation; random-walk actually walks the photon through the medium and\n"
                         + " costs one traversal per scattering event. subsurface-max-events bounds that\n"
                         + " walk — running out falls back to a diffuse bounce rather than losing energy.");
+        FILE.setComment("water",
+                " Enclosed participating media. Absorption is what the biome tint has always driven;\n"
+                        + " turbidity adds the scattered part, which is what separates water from a pane of\n"
+                        + " coloured glass. 0 reproduces the absorption-only water exactly and is the A/B\n"
+                        + " for the rest. phase-g is forward-scattering anisotropy: positive puts a halo\n"
+                        + " around the sun seen from underwater.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -782,6 +788,52 @@ public final class FluoriteConfig {
             }
 
             private Bsdf() {
+            }
+        }
+
+        /** Enclosed participating media: what water does besides absorb. */
+        public static final class Water {
+            /**
+             * How much water scatters, as a multiple of a clear-ocean reference.
+             *
+             * <p>Absorption alone makes water a coloured filter — what survives is tinted, what does not
+             * is gone. Every property that reads as water rather than as glass is the scattered part: the
+             * turbidity, the shafts, the way depth closes in milkily instead of merely darkening.
+             *
+             * <p>0 reproduces the absorption-only water this renderer shipped with, exactly, and is the
+             * A/B for everything below. 1 is clear ocean; a pond or a swamp is higher.
+             *
+             * <p>One value for every water body, deliberately. Per-biome character lives in the
+             * absorption, which the tint still drives, and keeping scattering global is what lets the
+             * single-scattering albedo be recovered as sigma_s/sigma_t from data the wavefront record
+             * already carries — so this milestone costs no memory at all.
+             */
+            public static final FloatSetting TURBIDITY =
+                    clampedFloat("fluorite.rt.water.turbidity", "water.turbidity", 1.0f, 0.0f, 10.0f);
+
+            /**
+             * Forward-scattering anisotropy of the water's phase function.
+             *
+             * <p>Positive keeps light going the way it was already going, which is what puts a bright
+             * halo around the sun seen from underwater. Water is strongly forward-scattering in reality;
+             * 0 would be a fog of perfectly isotropic particles and looks flat.
+             */
+            public static final FloatSetting PHASE_G =
+                    clampedFloat("fluorite.rt.water.phaseG", "water.phase-g", 0.75f, -0.9f, 0.9f);
+
+            /**
+             * Scattering coefficient per block, before TURBIDITY scales it.
+             *
+             * <p>Roughly neutral with a slight blue lift: scattering in clean water is only weakly
+             * wavelength-dependent, and the strong colour comes from absorption instead. Calibrated by
+             * eye against the reference view rather than from a measurement, so it is a starting point.
+             */
+            public static float[] scatteringRgb() {
+                float t = TURBIDITY.value();
+                return new float[] {0.020f * t, 0.024f * t, 0.030f * t};
+            }
+
+            private Water() {
             }
         }
 

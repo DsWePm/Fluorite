@@ -40,6 +40,7 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
+            waterTurbidity(),
             fogEnabled(),
             fogDensity(),
             fogIntensity(),
@@ -136,6 +137,14 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("fluorite.options.rt.waterWaves", FluoriteConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    /**
+     * How much water scatters. 0 is the absorption-only water that shipped before, and is the A/B for
+     * everything the scattered part does.
+     */
+    private static OptionInstance<Integer> waterTurbidity() {
+        return scaleSlider("fluorite.options.rt.waterTurbidity", FluoriteConfig.Rt.Water.TURBIDITY);
     }
 
     // ---- Ambient participating medium. Every one of these is re-read per frame straight into the world

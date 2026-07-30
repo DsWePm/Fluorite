@@ -142,6 +142,19 @@ public final class RtComposite {
      * of numbers to keep in sync: at night the sun term is the moon's and this floor follows it down. The
      * sky LUT work will replace this with the real ambient term.
      */
+    /**
+     * Water's scattering coefficient and phase anisotropy.
+     *
+     * <p>One value for every water body. Per-biome character lives in the absorption, which the tint
+     * still drives; keeping the scattering global is what lets the single-scattering albedo be recovered
+     * in the shader as sigma_s/sigma_t from the extinction the wavefront record already carries — so this
+     * costs no memory in the record, which had exactly one spare uint and now still does.
+     */
+    private static Float4 waterScatter() {
+        float[] s = FluoriteConfig.Rt.Water.scatteringRgb();
+        return new Float4(s[0], s[1], s[2], FluoriteConfig.Rt.Water.PHASE_G.value());
+    }
+
     private static Float4 fogAmbient(SkyPush sky) {
         Float4 radiance = sky.lightRadiance();
         return new Float4(radiance.x() * AMBIENT_FOG_FRACTION, radiance.y() * AMBIENT_FOG_FRACTION,
@@ -1016,7 +1029,8 @@ public final class RtComposite {
                     fogParams(),
                     fogExtinction(),
                     fogScatter(),
-                    fogAmbient(sky)
+                    fogAmbient(sky),
+                    waterScatter()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

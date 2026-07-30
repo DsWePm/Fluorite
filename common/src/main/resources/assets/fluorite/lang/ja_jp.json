@@ -20,6 +20,8 @@
   "fluorite.options.rt.glow.tooltip": "発光中のエンティティに、バニラの発光効果アウトライン（壁越し）を描画します。",
   "fluorite.options.rt.waterWaves": "アニメーションする水",
   "fluorite.options.rt.waterWaves.tooltip": "水面の法線をアニメーションさせ、動く波のハイライトを表示します。",
+  "fluorite.options.rt.waterTurbidity": "Water Turbidity",
+  "fluorite.options.rt.waterTurbidity.tooltip": "How much water scatters, on top of the absorption its biome tint already drives. Absorption alone makes water a coloured filter; the scattered part is what gives it turbidity, shafts, and a depth that closes in milkily instead of merely darkening. 0 is the absorption-only water from before, and is the comparison for everything else.",
   "fluorite.options.rt.hdr": "HDR 出力",
   "fluorite.options.rt.hdr.tooltip": "ディスプレイが対応している場合、SDR ではなく HDR (ST.2084/PQ) で表示します。ゲームの再起動後に反映されます。",
   "fluorite.options.rt.hdrPaperWhite": "HDR ペーパーホワイト",

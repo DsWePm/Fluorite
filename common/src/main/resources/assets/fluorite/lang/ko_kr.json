@@ -20,6 +20,8 @@
   "fluorite.options.rt.glow.tooltip": "발광 중인 엔티티 주위에 바닐라 발광 효과 윤곽선(벽 너머 표시)을 그립니다.",
   "fluorite.options.rt.waterWaves": "애니메이션 물",
   "fluorite.options.rt.waterWaves.tooltip": "움직이는 물결 하이라이트를 위해 물 표면 노멀을 애니메이션합니다.",
+  "fluorite.options.rt.waterTurbidity": "Water Turbidity",
+  "fluorite.options.rt.waterTurbidity.tooltip": "How much water scatters, on top of the absorption its biome tint already drives. Absorption alone makes water a coloured filter; the scattered part is what gives it turbidity, shafts, and a depth that closes in milkily instead of merely darkening. 0 is the absorption-only water from before, and is the comparison for everything else.",
   "fluorite.options.rt.hdr": "HDR 출력",
   "fluorite.options.rt.hdr.tooltip": "디스플레이가 지원하는 경우 SDR 대신 HDR(ST.2084/PQ)로 표시합니다. 게임을 다시 시작한 뒤 적용됩니다.",
   "fluorite.options.rt.hdrPaperWhite": "HDR 페이퍼 화이트",

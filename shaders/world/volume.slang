@@ -203,15 +203,55 @@ public struct SegmentIntegral {
  * What it gives up is occlusion: the fog is lit as though nothing shadowed it. That is the price of not
  * spending a ray here, and it is why god rays need the froxel pass rather than this function.
  */
+/**
+ * Phase function for an enclosed medium: mostly forward Mie, with a small Rayleigh component.
+ *
+ * The Rayleigh term is what makes water go blue with depth rather than merely darker — short wavelengths
+ * keep being redirected while long ones are absorbed, so the light that reaches the eye from deep water
+ * has been turned around more times AND is bluer for it.
+ *
+ * The structure is HPWater's; the constants are not, and must not be. Its HenyeyPhase omits the 1/(4 PI)
+ * normalisation, so every parameter in that project is tuned around a factor of ~4 PI of energy error —
+ * transplanting its numbers onto a normalised phase function comes out about twelve times too bright.
+ * See R20. math.slang's hg() is normalised, so this is a straight convex combination.
+ */
+public static const float ENCLOSED_RAYLEIGH_FRACTION = 0.05;
+
+public float enclosedPhase(float cosT, float g) {
+    float rayleigh = (3.0 / (16.0 * PI)) * (1.0 + cosT * cosT);
+    return lerp(hg(cosT, g), rayleigh, ENCLOSED_RAYLEIGH_FRACTION);
+}
+
 public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd, float tEnd) {
     SegmentIntegral seg;
     seg.transmittance = float3(1.0, 1.0, 1.0);
     seg.inScatter = float3(0.0, 0.0, 0.0);
 
-    // Enclosed medium: homogeneous over the segment, absorption only for now. Air's extinction is zero,
-    // so the ordinary case costs one comparison.
+    // Enclosed medium: homogeneous over the segment. Air's extinction is zero, so the ordinary case
+    // costs one comparison.
     if (any(stack.current.extinction > 0.0)) {
-        seg.transmittance = exp(-stack.current.extinction * tEnd);
+        float3 enclosedT = exp(-stack.current.extinction * tEnd);
+        seg.transmittance = enclosedT;
+
+        // Scattering is what separates water from a pane of coloured glass. Absorption alone is a
+        // filter: what survives is tinted and what does not is gone. The turbidity, the shafts, the
+        // milky way depth closes in — all of it is the scattered part, and until now water had none.
+        //
+        // Under a constant source the single-scattering integral converges exactly to
+        // albedo * source * (1 - T), which is the same identity the ambient branch below uses. The
+        // source is the sun through the phase function plus an isotropic floor, and it is deliberately
+        // NOT shadowed or depth-attenuated at this stage — the same simplification the height fog
+        // shipped with. Deep water therefore glows as readily as shallow; the fix is a shadowed source,
+        // which is what the froxel pass is for.
+        float3 scatterAlbedo = mediumScatterAlbedo(stack.current);
+        if (any(scatterAlbedo > 0.0)) {
+            float cosT = dot(rd, worldPush.lightDir.xyz);
+            float3 source = worldPush.lightRadiance.xyz
+                    * (4.0 * PI * enclosedPhase(cosT, worldPush.waterScatter.w))
+                    + worldPush.fogAmbient.xyz;
+            seg.inScatter += scatterAlbedo * source
+                    * (float3(1.0, 1.0, 1.0) - enclosedT);
+        }
     }
 
     // A path inside water is inside water — not inside water *and* the world's fog.

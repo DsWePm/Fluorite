@@ -20,6 +20,8 @@
   "fluorite.options.rt.glow.tooltip": "Dibuja el contorno del efecto Brillo de Minecraft vanilla (a través de paredes) alrededor de las entidades brillantes.",
   "fluorite.options.rt.waterWaves": "Agua animada",
   "fluorite.options.rt.waterWaves.tooltip": "Anima las normales de la superficie del agua para reflejos de olas en movimiento.",
+  "fluorite.options.rt.waterTurbidity": "Water Turbidity",
+  "fluorite.options.rt.waterTurbidity.tooltip": "How much water scatters, on top of the absorption its biome tint already drives. Absorption alone makes water a coloured filter; the scattered part is what gives it turbidity, shafts, and a depth that closes in milkily instead of merely darkening. 0 is the absorption-only water from before, and is the comparison for everything else.",
   "fluorite.options.rt.hdr": "Salida HDR",
   "fluorite.options.rt.hdr.tooltip": "Presenta en HDR (ST.2084/PQ) en lugar de SDR cuando la pantalla lo admite. Surte efecto después de reiniciar el juego.",
   "fluorite.options.rt.hdrPaperWhite": "Blanco de papel HDR",
