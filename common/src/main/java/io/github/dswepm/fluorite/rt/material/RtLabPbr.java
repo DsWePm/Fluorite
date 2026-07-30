@@ -1,10 +1,19 @@
 package io.github.dswepm.fluorite.rt.material;
 
 /**
- * CPU reference decoder for the LabPBR 1.3 specular texture. Runtime shading currently performs the
- * same decode in {@code world.rchit.slang}; keeping the source-format rules here gives the material
- * compiler and its tests one deterministic implementation to use when LabPBR is canonicalized before
- * upload.
+ * Decoder for the LabPBR 1.3 specular texture, and the only place in the renderer that knows what
+ * LabPBR's channels mean.
+ *
+ * <p>This runs once, on the CPU, at the resource-epoch boundary: {@code RtBlockMaterials} decodes each
+ * sprite into the canonical material pages, and every shader downstream reads physical quantities —
+ * {@code surface0 = (roughness, metalness, emission, sss)}, {@code surface1.rgb = F0} — with no idea a
+ * source format was ever involved. That boundary is what makes a second source format (SEUS PBR, or a
+ * pack-authored extension) a matter of adding a decoder beside this one rather than a second decode path
+ * in the hit shader.
+ *
+ * <p>Do not reintroduce a runtime decode. An earlier version of this comment claimed the hit shader
+ * performed the same decode; it no longer does, and the duplication it described is exactly what the
+ * canonical pages exist to prevent.
  */
 public final class RtLabPbr {
     private RtLabPbr() {
