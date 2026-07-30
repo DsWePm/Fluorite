@@ -78,6 +78,21 @@ float3 walkAlbedo(float3 diffuse) {
  */
 public static const float MAX_WALK_LOBE_SHARE = 0.9;
 
+/**
+ * Mean free path for a material whose pack marked it translucent but never said how far, in blocks.
+ *
+ * LabPBR's subsurface byte is a MASK with no length in it, and a walk needs a length. Requiring an
+ * authored radius was tried and is too strict in practice: it leaves every LabPBR pack with no
+ * volumetric subsurface at all, since none of them can express a radius. So mask-only materials get
+ * this, and a pack that cares authors its own.
+ *
+ * PROVISIONAL, like WALK_ALBEDO_STEEPNESS. Too large and photons cross a whole block and exit through a
+ * face buried against its neighbour, where the light that follows has nowhere to go; too small and they
+ * scatter a few times near the entry point and the cap sends them back to a diffuse bounce, which looks
+ * like the feature doing nothing. This sits between those and has not been calibrated against anything.
+ */
+public static const float SSS_DEFAULT_RADIUS = 0.15;
+
 public struct WalkResult {
     public bool escaped;   // found its way out: origin/dir/weight describe where and with what
     // Ended by Russian roulette rather than by the event cap. The two must not be conflated: roulette
