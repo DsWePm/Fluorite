@@ -1025,6 +1025,7 @@ public final class RtComposite {
             ByteBuffer pushConstants = stack.malloc(WorldPushConstantsData.BYTE_SIZE);
             new WorldPushConstantsData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
                     RtMaterialRegistry.INSTANCE.tableAddress(),
+                    RtMaterialRegistry.INSTANCE.extensionTableAddress(),
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,

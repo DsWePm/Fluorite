@@ -21,6 +21,7 @@ public struct WorldPushConstants {
     public uint64_t tableAddr;
     public uint64_t entityTableAddr;
     public uint64_t materialTableAddr;
+    public uint64_t materialExtensionAddr; // optional Disney records; MaterialHeader.extensionOffset indexes it 1-based
     public uint64_t lightBufAddr;        // RIS emitter-NEE global light buffer (0 = none published)
     public uint64_t lightAliasAddr;      // power-weighted O(1) alias table (0 = uniform fallback)
     public uint64_t lightLocalAliasAddr; // power aliases relative to each section's range

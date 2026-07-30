@@ -1,5 +1,5 @@
 // Surface response: the shading context a receiver builds once, and the BSDF evaluated against it.
-// Depends on math and world_core.
+// Depends on math, world_common and world_core.
 //
 // =====================================================================================================
 //  ROUGHNESS IS LINEAR AND IS THE GGX ALPHA. NEVER SQUARE IT.
@@ -17,6 +17,7 @@
 // snapping to delta — all at once, and none of it raises an error.
 
 import math;
+import world_common;
 import world_core;
 
 /**
@@ -60,4 +61,29 @@ public BsdfContext makeBsdfContext(float3 hitPos, float3 n, float3 v, float3 rd,
     c.ndv = max(1.0e-4, dot(n, v));
     c.g1v = ggxG1(c.ndv, rough);
     return c;
+}
+
+// ---- Optional Disney parameters.
+
+/**
+ * The Disney parameters a material authored, or the defaults it inherits by saying nothing.
+ *
+ * `extensionOffset` is a one-based index into the extension table, and zero means the material never
+ * mentioned any of this — which is every material in an unmodified LabPBR pack, since no source format
+ * carries these values. Those materials take the early return and never touch the extension buffer, so
+ * supporting the feature costs them one comparison and no load.
+ *
+ * The defaults are Disney's own, chosen so that a material which authors one parameter does not
+ * accidentally inherit something surprising for the rest. Every weight is zero, so the lobes they gate
+ * are off and the surface behaves exactly as it did before this existed.
+ */
+public MaterialExtension materialExtension(MaterialHeader header) {
+    MaterialExtension e;
+    e.sheen = float4(0.0, 0.5, 0.0, 1.0);      // no sheen; halfway tint and a polished coat if enabled
+    e.specular = float4(0.0, 0.0, 0.0, 0.0);   // no tint, isotropic, no subsurface
+    e.subsurface = float4(0.0, 0.0, 0.0, 0.0);
+    if (header.extensionOffset == 0u) {
+        return e;
+    }
+    return ConstPtr<MaterialExtension>(pc.materialExtensionAddr)[header.extensionOffset - 1u];
 }

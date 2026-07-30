@@ -5,6 +5,7 @@ import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.mixin.SpriteContentsAccessor;
 import io.github.dswepm.fluorite.rt.RtContext;
 import io.github.dswepm.fluorite.rt.accel.RtBuffer;
+import io.github.dswepm.fluorite.rt.gen.MaterialExtensionData;
 import io.github.dswepm.fluorite.rt.gen.MaterialHeaderData;
 import io.github.dswepm.fluorite.rt.gen.MaterialHeaderData.Float4;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -76,6 +77,7 @@ public final class RtMaterialRegistry {
 
     private volatile Snapshot snapshot;
     private RtBuffer table;
+    private RtBuffer extensionTable;
     private long nextEpoch;
     private Map<Identifier, Integer> entityTextureIds = Map.of();
     private Map<Identifier, EntityTemplate> entityTemplates = Map.of();
@@ -118,7 +120,10 @@ public final class RtMaterialRegistry {
                 + sprites.size() * profileVariants);
         List<RtMaterialDesc> descriptions = new ArrayList<>(headers.size());
         List<RtEmissionGrid> grids = new ArrayList<>(headers.size());
-        add(headers, descriptions, grids, compileDesc(MODEL_OPAQUE, 0, RtMaterials.Profile.DEFAULT,
+        // Parallel to headers only in build order, not in index: an extension record exists for the few
+        // materials that authored Disney parameters, and headers point at it by one-based index.
+        List<MaterialExtensionData> extensions = new ArrayList<>();
+        add(headers, extensions, descriptions, grids, compileDesc(MODEL_OPAQUE, 0, RtMaterials.Profile.DEFAULT,
                 false, true, RtMaterialDesc.EmissionSummary.NONE), transparentWhiteAverage(), fallbackEntry, null);
         int[] fallbackVariants = new int[profileVariants];
         for (RtMaterials.Profile profile : SPRITE_PROFILES) {
@@ -130,23 +135,23 @@ public final class RtMaterialRegistry {
                         continue;
                     }
                     fallbackVariants[variant] = headers.size();
-                    add(headers, descriptions, grids, compileDesc(glass ? MODEL_DIELECTRIC : MODEL_OPAQUE, 0,
+                    add(headers, extensions, descriptions, grids, compileDesc(glass ? MODEL_DIELECTRIC : MODEL_OPAQUE, 0,
                                     profile, emitting, true, RtMaterialDesc.EmissionSummary.NONE),
                             transparentWhiteAverage(), fallbackEntry, null);
                 }
             }
         }
         int waterId = headers.size();
-        add(headers, descriptions, grids, compileDesc(MODEL_WATER, 0, RtMaterials.Profile.WATER,
+        add(headers, extensions, descriptions, grids, compileDesc(MODEL_WATER, 0, RtMaterials.Profile.WATER,
                 false, true, RtMaterialDesc.EmissionSummary.NONE), whiteAverage(), fallbackEntry, null);
         int lavaId = headers.size();
         // Lava's fluid mesher assigns this singleton id (no sprite resolve), so its light color comes from
         // the lava_still albedo grid — a mean-color area light instead of the old branch's white lava.
-        add(headers, descriptions, grids, compileDesc(MODEL_OPAQUE, 0, RtMaterials.Profile.LAVA,
+        add(headers, extensions, descriptions, grids, compileDesc(MODEL_OPAQUE, 0, RtMaterials.Profile.LAVA,
                 true, true, uniformWhiteSummary()), whiteAverage(), fallbackEntry,
                 albedoGridFor(sprites, spriteStats, "block/lava_still"));
         int nextEntityFallbackId = headers.size();
-        add(headers, descriptions, grids, compileEntityDesc(0, true, RtMaterialDesc.EmissionSummary.NONE),
+        add(headers, extensions, descriptions, grids, compileEntityDesc(0, true, RtMaterialDesc.EmissionSummary.NONE),
                 transparentWhiteAverage(), fallbackEntry, null);
 
         IdentityHashMap<TextureAtlasSprite, int[]> ids = new IdentityHashMap<>();
@@ -187,7 +192,7 @@ public final class RtMaterialRegistry {
                             desc = spriteWide.rule.apply(desc);
                         }
                         variants[index(profile, glass, emitting)] = headers.size();
-                        add(headers, descriptions, grids, desc, stats.average(), entry, stats.albedoGrid());
+                        add(headers, extensions, descriptions, grids, desc, stats.average(), entry, stats.albedoGrid());
                     }
                 }
             }
@@ -206,7 +211,7 @@ public final class RtMaterialRegistry {
                                     dielectricIor);
                             RtMaterialDesc desc = compiled.rule.apply(base);
                             overrideVariants[index(profile, glass, emitting)] = headers.size();
-                            add(headers, descriptions, grids, desc, stats.average(), entry, stats.albedoGrid());
+                            add(headers, extensions, descriptions, grids, desc, stats.average(), entry, stats.albedoGrid());
                         }
                     }
                 }
@@ -228,7 +233,7 @@ public final class RtMaterialRegistry {
                 break;
             }
             int id = headers.size();
-            add(headers, descriptions, grids, desc, transparentWhiteAverage(), entry, null);
+            add(headers, extensions, descriptions, grids, desc, transparentWhiteAverage(), entry, null);
             nextEntityTextureIds.put(name, id);
             nextEntityTemplates.put(name, new EntityTemplate(desc, entry));
         }
@@ -259,7 +264,34 @@ public final class RtMaterialRegistry {
             throw t;
         }
 
+        // Extension records, in their own buffer rather than appended to the header table: the header
+        // table has a dynamic reserve that entity sprites append into at runtime, and anything living
+        // past the end of it would have to move whenever that grew.
+        //
+        // Never empty. Vulkan has no use for a zero-sized buffer, and a world where no material authored
+        // Disney parameters is the common case, so one unused record is the floor.
+        long extensionBytes = Math.multiplyExact(
+                (long) Math.max(1, extensions.size()), MaterialExtensionData.BYTE_SIZE);
+        RtBuffer nextExtensionTable = ctx.createBuffer(extensionBytes,
+                VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "material extension table");
+        try {
+            ByteBuffer mapped = MemoryUtil.memByteBuffer(nextExtensionTable.mapped, (int) extensionBytes)
+                    .order(ByteOrder.nativeOrder());
+            for (int i = 0; i < extensions.size(); i++) {
+                // One-based indices, so record i lands one slot along: slot 0 is never addressed.
+                ByteBuffer entry = mapped.slice(i * MaterialExtensionData.BYTE_SIZE,
+                        MaterialExtensionData.BYTE_SIZE).order(ByteOrder.nativeOrder());
+                extensions.get(i).write(entry);
+            }
+            nextExtensionTable.flush();
+        } catch (Throwable t) {
+            nextExtensionTable.destroy();
+            nextTable.destroy();
+            throw t;
+        }
+
         RtBuffer oldTable = table;
+        RtBuffer oldExtensionTable = extensionTable;
         long epoch = ++nextEpoch;
         List<CompiledOverride> frozenOverrides = compiledOverrides.stream()
                 .filter(value -> !value.ids.isEmpty())
@@ -284,8 +316,10 @@ public final class RtMaterialRegistry {
         nextDynamicId = headers.size();
         tableCapacity = recordCapacity;
         table = nextTable;
+        extensionTable = nextExtensionTable;
         snapshot = next; // volatile publication: map and arrays are never mutated afterward
         if (oldTable != null) oldTable.destroy();
+        if (oldExtensionTable != null) oldExtensionTable.destroy();
         long emissive = descriptions.stream().filter(desc -> desc.emissionSource() != RtMaterialDesc.EmissionSource.NONE)
                 .count();
         long inferred = descriptions.stream().filter(desc -> desc.emissionSource()
@@ -321,6 +355,13 @@ public final class RtMaterialRegistry {
     public long tableAddress() {
         RtBuffer current = table;
         if (current == null) throw new IllegalStateException("RT material table is not uploaded");
+        return current.deviceAddress;
+    }
+
+    /** Base of the optional Disney parameter records; headers index it one-based, zero meaning none. */
+    public long extensionTableAddress() {
+        RtBuffer current = extensionTable;
+        if (current == null) throw new IllegalStateException("RT material extension table is not uploaded");
         return current.deviceAddress;
     }
 
@@ -382,7 +423,14 @@ public final class RtMaterialRegistry {
             throw new IllegalStateException("RT entity material header reserve exhausted");
         }
         int id = nextDynamicId++;
-        MaterialHeaderData header = header(template.desc(), transparentWhiteAverage(), template.entry(),
+        // The extension table is sized and uploaded once the material build finishes, so there is no
+        // index to allocate here. Entity descriptions compile with Disney.NONE so there is nothing to
+        // allocate either — but say so loudly rather than drop parameters silently if that ever changes.
+        if (!template.desc().disney().absent()) {
+            throw new IllegalStateException(
+                    "entity material carries Disney parameters, which the fixed extension table cannot hold");
+        }
+        MaterialHeaderData header = header(template.desc(), 0, transparentWhiteAverage(), template.entry(),
                 sprite.getU0(), sprite.getV0(),
                 RtBlockMaterials.inverseExtent(sprite.getU1() - sprite.getU0()),
                 RtBlockMaterials.inverseExtent(sprite.getV1() - sprite.getV0()));
@@ -408,6 +456,10 @@ public final class RtMaterialRegistry {
         if (table != null) {
             table.destroy();
             table = null;
+        }
+        if (extensionTable != null) {
+            extensionTable.destroy();
+            extensionTable = null;
         }
     }
 
@@ -478,11 +530,12 @@ public final class RtMaterialRegistry {
                 RtMaterialDesc.Disney.NONE);
     }
 
-    private static void add(List<MaterialHeaderData> headers, List<RtMaterialDesc> descriptions,
+    private static void add(List<MaterialHeaderData> headers, List<MaterialExtensionData> extensions,
+                            List<RtMaterialDesc> descriptions,
                             List<RtEmissionGrid> grids, RtMaterialDesc desc, float[] average,
                             RtBlockMaterials.Entry entry, RtEmissionGrid uniformGrid) {
-        headers.add(header(desc, average, entry, entry.albedoU(), entry.albedoV(),
-                entry.albedoInvDu(), entry.albedoInvDv()));
+        headers.add(header(desc, extensionIndex(extensions, desc), average, entry,
+                entry.albedoU(), entry.albedoV(), entry.albedoInvDu(), entry.albedoInvDv()));
         descriptions.add(desc);
         grids.add(gridFor(desc, entry, uniformGrid));
     }
@@ -514,7 +567,28 @@ public final class RtMaterialRegistry {
         return null;
     }
 
-    private static MaterialHeaderData header(RtMaterialDesc desc, float[] average,
+    /**
+     * Appends an extension record for this material if it wants one, and returns its one-based index.
+     *
+     * <p>One-based so zero can keep meaning "none", which is what MaterialHeader.extensionOffset has
+     * documented since long before anything wrote it. Almost every material returns 0 and costs neither a
+     * record nor a load.
+     */
+    private static int extensionIndex(List<MaterialExtensionData> extensions, RtMaterialDesc desc) {
+        RtMaterialDesc.Disney d = desc.disney();
+        if (d.absent()) {
+            return 0;
+        }
+        extensions.add(new MaterialExtensionData(
+                new MaterialExtensionData.Float4(d.sheen(), d.sheenTint(), d.clearcoat(), d.clearcoatGloss()),
+                new MaterialExtensionData.Float4(d.specularTint(), d.anisotropy(),
+                        d.subsurfaceWeight(), d.subsurfacePhaseG()),
+                new MaterialExtensionData.Float4(d.subsurfaceRadiusR(), d.subsurfaceRadiusG(),
+                        d.subsurfaceRadiusB(), 0.0f)));
+        return extensions.size();
+    }
+
+    private static MaterialHeaderData header(RtMaterialDesc desc, int extensionIndex, float[] average,
                                              RtBlockMaterials.Entry entry, float albedoU, float albedoV,
                                              float albedoInvDu, float albedoInvDv) {
         int packedFeatures = desc.features() | (entry.maxLod() << MAX_LOD_SHIFT);
@@ -523,7 +597,7 @@ public final class RtMaterialRegistry {
         int strength = Math.round(Math.min(MAX_EMISSION_STRENGTH, desc.emissionStrength())
                 * (EMISSION_STRENGTH_MASK / MAX_EMISSION_STRENGTH));
         packedFeatures |= strength << EMISSION_STRENGTH_SHIFT;
-        return new MaterialHeaderData(desc.model(), packedFeatures, entry.pageIndex(), 0,
+        return new MaterialHeaderData(desc.model(), packedFeatures, entry.pageIndex(), extensionIndex,
                 new Float4(entry.materialU(), entry.materialV(), entry.materialDu(), entry.materialDv()),
                 new Float4(albedoU, albedoV, albedoInvDu, albedoInvDv),
                 new Float4(desc.roughness(), desc.metalness(), desc.ior(), desc.transmission()),
