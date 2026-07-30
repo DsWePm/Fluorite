@@ -225,8 +225,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 v = -rd;
                 Reservoir r = risInitial(hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
                                          true, 0.0, seed, proposalSeed);
-                L += throughput * shadeReservoir(r, hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
-                                                 true, 0.0);
+                L += throughput * shadeReservoir(medium, r, hitPos, n, v, rd, albedo,
+                                                 float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
             }
 
             if (bounce >= maxBounces) {
@@ -318,7 +318,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
             Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                      seed, proposalSeed);
-            L += throughput * shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
+            L += throughput * shadeReservoir(medium, r, hitPos, n, v, rd, diffAlb, F0, rough, false,
                                              activeSss);
         }
 

@@ -6,7 +6,9 @@
 import world_common;
 import world_core;
 import math;
+import medium;
 import trace;
+import volume;
 
 public struct Reservoir {
     public float3 pos;  // light sample point (rebased world space)
@@ -294,7 +296,8 @@ public Reservoir risInitial(float3 hitPos, float3 n, float3 v, float3 rd, float3
 // ray, and return throughput-free radiance contrib*vis*W. The one ray serves whichever term fired for
 // the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the
 // sample's side of the surface.
-public float3 shadeReservoir(Reservoir s, float3 hitPos, float3 n, float3 v, float3 rd, float3 diffAlb,
+public float3 shadeReservoir(MediumStack medium, Reservoir s, float3 hitPos, float3 n, float3 v,
+                      float3 rd, float3 diffAlb,
                       float3 F0, float rough, bool twoSided, float sss) {
     if (s.W <= 0.0 || s.phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
@@ -314,7 +317,9 @@ public float3 shadeReservoir(Reservoir s, float3 hitPos, float3 n, float3 v, flo
     float3 toL = s.pos - origin;
     float dist = length(toL);
     // Stop just short of the sample point so the ray doesn't self-occlude on the emitter's own face.
-    VisibilityResult shadow = visibility(origin, toL / dist, dist * 0.999);
+    // Through the ambient wrapper like every other shadow ray: an emitter 200 blocks away is behind the
+    // same fog the sun is, and this one call site quietly missed that when the ambient medium landed.
+    VisibilityResult shadow = visibilityThroughAmbient(medium, origin, toL / dist, dist * 0.999);
     float3 vis = shadow.transmittance;
     return contrib * vis * s.W;
 }
