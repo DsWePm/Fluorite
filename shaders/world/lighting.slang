@@ -10,6 +10,7 @@ import math;
 import medium;
 import trace;
 import volume;
+import water;
 
 public struct Reservoir {
     public float3 pos;  // light sample point (rebased world space)
@@ -106,7 +107,7 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
         float backNdl = -ndl;
         float G = backNdl * cosL / dist2;
         float cosT = dot(wi, c.rd);
-        contrib = c.diffAlb * c.sss * SSS_STRENGTH * hg(cosT, SSS_G) * le * (G * area);
+        contrib = c.diffAlb * c.sss * sssStrength() * sssPhase(cosT) * le * (G * area);
     }
     phat = luminance(contrib);
     return contrib;
@@ -348,8 +349,22 @@ public float3 shadeReservoir(MediumStack medium, BsdfContext c, MaterialExtensio
     // Stop just short of the sample point so the ray doesn't self-occlude on the emitter's own face.
     // Through the ambient wrapper like every other shadow ray: an emitter 200 blocks away is behind the
     // same fog the sun is, and this one call site quietly missed that when the ambient medium landed.
-    VisibilityResult shadow = visibilityThroughAmbient(medium, origin, toL / dist, dist * 0.999);
+    float3 wiShadow = toL / dist;
+    VisibilityResult shadow = visibilityThroughAmbient(medium, origin, wiShadow, dist * 0.999);
     float3 vis = shadow.transmittance;
+    // The other half of R23. The ambient wrapper above fixed this call site's fog; the caustic was the
+    // part still missing, so a lantern over a pond lit the bottom through a surface that visibly bends
+    // its light while the sun through the same surface did not. Focusing scales incident irradiance, so
+    // like the sun's it multiplies the whole term rather than any one lobe.
+    //
+    // Approximate for a NEAR emitter in a way the sun is not: waterCaustic finite-differences a single
+    // refracted direction, which is a collimated beam's Jacobian. A point source's rays reach
+    // neighbouring surface points from different directions, so the true focusing differs — the error
+    // shrinks with distance and is bounded by the same CAUSTIC_MAX either way. An emitter below the
+    // surface never crosses it, leaves waterHitT at the -1 sentinel, and takes no caustic at all.
+    if (medium.current.water && (worldPush.flags & 16u) != 0u && shadow.waterHitT > 0.0) {
+        vis *= waterCaustic(origin + wiShadow * shadow.waterHitT, wiShadow, shadow.waterHitT);
+    }
     return contrib * vis * s.W;
 }
 

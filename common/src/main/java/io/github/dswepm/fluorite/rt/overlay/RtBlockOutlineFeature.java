@@ -140,7 +140,7 @@ final class RtBlockOutlineFeature implements RtOverlayFeature {
             return false;
         }
 
-        ensureResources(ctx, width, height);
+        ensureResources(ctx, graphicsUse, width, height);
         float[] data = verts.toFloatArray();
         vbo = pool.acquireVertex(ctx, (long) data.length * Float.BYTES, "block outline vbo");
         MemoryUtil.memFloatBuffer(vbo.mapped, data.length).put(data);
@@ -182,7 +182,8 @@ final class RtBlockOutlineFeature implements RtOverlayFeature {
                 && (itemStack.canBreakBlockInAdventureMode(blockInWorld) || itemStack.canPlaceOnBlockInAdventureMode(blockInWorld));
     }
 
-    private void ensureResources(RtContext ctx, int width, int height) {
+    private void ensureResources(RtContext ctx, RtGpuExecutor.GraphicsUse graphicsUse,
+                                 int width, int height) {
         this.ctxRef = ctx;
         if (pipeline == null) {
             accelSet = RtOverlayPipelines.accelStructureSet(ctx, VK10.VK_SHADER_STAGE_FRAGMENT_BIT, "block outline");
@@ -207,16 +208,22 @@ final class RtBlockOutlineFeature implements RtOverlayFeature {
                     .descriptorSetLayout(compositeSet.layout)
                     .build(ctx, "block outline composite");
         }
+        // Both retired against graphics completion rather than destroyed inline: RtImage.destroy() is an
+        // immediate vkDestroyImageView + vmaDestroyImage, and frames still in flight reference these — the
+        // resolved mask through compositeSet, the MSAA image as a render target. See the same note in
+        // RtGlowOutlineFeature; the trigger is a size change, i.e. a window resize or F11.
         if (msaaImage == null || msaaImage.width != width || msaaImage.height != height) {
             if (msaaImage != null) {
-                msaaImage.destroy();
+                RtImage retired = msaaImage;
+                ctx.gpuExecutor().retireAfterGraphics(graphicsUse, retired::destroy);
             }
             msaaImage = ctx.createTransientMsaaColorImage(width, height, RtWorldOverlay.TARGET_FORMAT,
                     RtDeviceBringup.overlayMsaaSamples(), "block outline msaa " + width + "x" + height);
         }
         if (resolvedMask == null || resolvedMask.width != width || resolvedMask.height != height) {
             if (resolvedMask != null) {
-                resolvedMask.destroy();
+                RtImage retired = resolvedMask;
+                ctx.gpuExecutor().retireAfterGraphics(graphicsUse, retired::destroy);
             }
             resolvedMask = ctx.createStorageImage(width, height, RtWorldOverlay.TARGET_FORMAT,
                     "block outline resolved mask " + width + "x" + height, VK10.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);

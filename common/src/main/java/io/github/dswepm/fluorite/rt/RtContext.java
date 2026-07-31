@@ -24,6 +24,8 @@ import org.lwjgl.vulkan.VkCommandPoolCreateInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkFenceCreateInfo;
 import org.lwjgl.vulkan.VkFormatProperties;
+import org.lwjgl.vulkan.VkClearColorValue;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
 import org.lwjgl.vulkan.VkImageCreateInfo;
 import org.lwjgl.vulkan.VkImageFormatProperties;
 import org.lwjgl.vulkan.VkImageMemoryBarrier;
@@ -412,6 +414,18 @@ public final class RtContext {
                 b.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
                 VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                         0, null, null, b);
+                // A fresh VkImage's contents are UNDEFINED, and undefined here means whatever the memory
+                // held before — during a window resize that is the allocation just freed, or a texture
+                // atlas page. Any frame that presents one of these before its writer has run therefore
+                // blits someone else's memory over the screen. That is not a spec violation, so the
+                // validation layer says nothing about it, and it is indistinguishable on screen from a
+                // use-after-free while having a completely different cause and cure.
+                //
+                // Clearing costs one dispatch-free command on a path that already submits and waits.
+                VkClearColorValue clear = VkClearColorValue.calloc(stack); // transparent black
+                VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+                range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
+                VK10.vkCmdClearColorImage(cmd, imageFinal, VK10.VK_IMAGE_LAYOUT_GENERAL, clear, range);
             }
         });
         return new RtImage(vma, vk, image, allocation, view, width, height);

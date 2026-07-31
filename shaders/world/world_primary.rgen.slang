@@ -23,6 +23,8 @@ import segment;
 import water;
 import trace;
 import guides;
+import atmosphere;
+import atmosphere_lut;
 
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
@@ -228,6 +230,9 @@ public PathSegment tracePrimary(PathSegment seg,
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+    // Same dye as pass B's raygen, for the same reason: this pass integrates the camera prefix segment,
+    // so it reads fogAmbient/lightRadiance too and the two passes must not disagree about the sunset.
+    dyeCelestialLight(worldPush);
     uint2 dispatchIndex = DispatchRaysIndex().xy;
     uint2 dimensions = DispatchRaysDimensions().xy;
     int2 pix = int2(dispatchIndex);
@@ -256,7 +261,9 @@ void main() {
     queue[pixelIndex] = packPathSegment(terminal, hasNext);
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);
-    if (pc.debugView != 0u) {
+    // The volume views (8+) describe what happens between hits, which no guide buffer records, so pass B
+    // writes those. Anything below is a guide visualization and belongs here.
+    if (pc.debugView != 0u && pc.debugView < 8u) {
         writeDebugView(pix);
     }
 }

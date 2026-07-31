@@ -32,6 +32,10 @@ import trace_ser;
 #endif
 import subsurface;
 import lighting;
+// The transmittance table. Raygen already has binding 10 in its stage flags — the NEE consumers below
+// are next in line for it — and debugView 12 reads it here.
+import atmosphere;
+import atmosphere_lut;
 
 public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     float3 L = float3(0.0, 0.0, 0.0);
@@ -60,6 +64,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // (so the first ray already carries the right relative index and absorption); for a segment split off
     // a dielectric it is whatever the parent was travelling through.
     MediumStack medium = seg.medium;
+    // Read once per path rather than per bounce: it is a frame-wide branch on a value already loaded.
+    uint secondaryCull = secondaryCullMask();
     bool waterWaves = (worldPush.flags & 16u) != 0u; // animated wave-normal perturbation
     // Sky-disc gate (see world.rmiss): the sun/moon disc is shown to the primary ray and to rays spawned
     // by a specular/dielectric bounce (mirror reflections + refractions of the sun/moon), but hidden from
@@ -103,15 +109,16 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
         // Primary (bounce 0) is the camera ray (CULL_PRIMARY): sees particles but not the first-person
-        // player. Bounce rays are secondary (CULL_SECONDARY): exclude particles, include the player.
+        // player. Bounce rays are secondary: exclude particles, and include the player everywhere except
+        // with the eye in the water — see secondaryCullMask.
 #ifdef FLUORITE_ENABLE_EXT_SER
         // SER lifetime phase: keep paths that are not roulette-eligible, paths that may terminate via
         // roulette, and paths guaranteed to end at the bounce cap in separate coherence groups.
         uint pathPhaseHint = bounce >= maxBounces ? 2u : (bounce >= rrStart ? 1u : 0u);
-        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, RAY_FAR,
+        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
                                showCelestial, rayConeWidth, rayConeSpread, pathPhaseHint);
 #else
-        traceRadiance(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, RAY_FAR,
+        traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
                       showCelestial, rayConeWidth, rayConeSpread);
 #endif
 
@@ -483,7 +490,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 }
                 if (max(visB.r, max(visB.g, visB.b)) > 0.0) {
                     float cosT = dot(lightDir, rd);
-                    L += throughput * diffAlb * sss * SSS_STRENGTH * hg(cosT, SSS_G) * backNdl * worldPush.lightRadiance.xyz * visB;
+                    L += throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl * worldPush.lightRadiance.xyz * visB;
                 }
             }
         }
@@ -582,18 +589,164 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     return L;
 }
 
+// ---- Volume diagnostics (debugView 8..10), owned by this pass because the guide buffers pass A can
+// visualize say nothing about what happens BETWEEN hits.
+//
+// Every one of them describes the same thing — the queued record's first segment — so they can be read
+// against each other pixel by pixel: how long it was, what medium it was in, what the sun could see from
+// its origin, and what all that produced. Written because the water's in-scatter was reasoned about three
+// times from the formula and the formula was right each time.
+//
+// These go through exposure and the tonemap like any other frame, since they are written into the same
+// image. For 8 that is what is wanted (it is radiance). For 9 and 10 read them as "black or not black"
+// and as ordering, not as absolute values.
+static const uint DEBUG_VIEW_VOLUME_INSCATTER = 8u;
+static const uint DEBUG_VIEW_VOLUME_SEGMENT = 9u;
+static const uint DEBUG_VIEW_VOLUME_SUNVIS = 10u;
+// The caustic's CHROMATIC DEVIATION, amplified. Not the caustic itself: showing the raw factor could
+// not distinguish "the three channels are identical" from "they differ by a few percent", and a few
+// percent is invisible against a black-and-white pattern — which is exactly the ambiguity that made a
+// first attempt at this view useless. Each channel is divided by the mean and the difference multiplied
+// up, so identical channels are EXACTLY neutral grey and any real spread is a strong tint.
+static const uint DEBUG_VIEW_WATER_CAUSTIC = 11u;
+static const float CAUSTIC_DEVIATION_GAIN = 20.0;
+
+// The transmittance table, painted straight onto the screen, with a control strip along the bottom that
+// recomputes the SAME (r, mu) by marching. Written because "the sun and moon discs are black while the
+// sunlight is right" has two very different explanations — an empty table, or a table that is fine and a
+// consumer that is not — and no amount of reading the descriptor wiring separates them.
+//
+// The whole screen is the (u, v) domain of the table. Alternating vertical bands choose who answers:
+//
+//   even band: skyTransmittanceLut sampled there      (bake + binding + sampler, end to end)
+//   odd  band: atmosphereTransmittance(r, mu, 8) there (the maths alone, no GPU resource involved)
+//
+// Both are asked the SAME (r, mu), which is the whole point. A first version split the screen top/bottom
+// instead, and that could not be read: each half ran v from 0 to 1 over its own height, so the two sides
+// of the seam described different altitudes and stepped no matter what — "is that step real?" had no
+// answer. Banding at equal uv has one: agreement is literally invisible.
+//
+//   uniformly black          -> the table never arrived; look at the bake, the barrier, the descriptor.
+//   smooth, no visible bands -> the table is fine; the fault is in whoever consumes it.
+//   visible bands            -> the table disagrees with the integral it was baked from.
+//
+// It read black the first time it ran, and the cause was the bake's descriptor write leaving
+// descriptorCount at zero — see RtSky.create. Kept rather than deleted because M10.2/10.3 add two more
+// tables through the same three links, and this separates "the table" from "the reader" in one look.
+//
+// Expected picture either way: white at the left (straight up, thin air) grading to orange-red at the
+// right (toward the horizon), and black in the top-right — sea level along the longest path, where
+// nothing gets through. v is altitude, and it runs top to bottom.
+static const uint DEBUG_VIEW_SKY_TRANSMITTANCE = 12u;
+static const float SKY_LUT_BAND_PX = 48.0; // wide enough to see, narrow enough to give many comparisons
+
+// The multi-scatter table, painted the same way, with the same equal-uv banding against the same kind of
+// control — except the control here cannot be "recompute it", because recomputing it is a 64-direction
+// march that has no business running per pixel. The control is the TRANSMITTANCE at the same altitude
+// and sun angle, which answers a different question but shares the table's geometry, so a table that is
+// empty, constant, or has its axes transposed is visible against it.
+//
+// Expected picture: a smooth field, brightest where the sun is high and the air thin, with NO sharp
+// features anywhere — this quantity is isotropic by construction, so any edge in it is a bug. Blue-ish
+// throughout, since Rayleigh dominates what bounces more than once. Values are small (a few percent of
+// the sun); it is a correction to single scattering, not a replacement.
+static const uint DEBUG_VIEW_SKY_MULTISCATTER = 13u;
+static const float MULTISCATTER_DEBUG_GAIN = 8.0; // it is small on purpose; this makes it readable
+
+float3 skyMultiScatterDebug(float2 uv, uint2 pix) {
+    float2 lutUv = float2(uv.x, 1.0 - uv.y);
+    float r;
+    float muS;
+    multiScatterLutParams(lutUv, r, muS);
+    if ((uint(float(pix.x) / SKY_LUT_BAND_PX) & 1u) == 0u) {
+        return skyMultiScatterLut.SampleLevel(lutUv, 0.0).rgb * MULTISCATTER_DEBUG_GAIN;
+    }
+    return sampleTransmittance(r, muS);
+}
+
+float3 skyTransmittanceDebug(float2 uv, uint2 pix) {
+    // outImage is stored bottom-up with respect to the window: makeCameraRay builds ndc as
+    // pix/size * 2 - 1, so row 0 is ndc.y = -1, and the projection this renderer is handed puts ndc.y =
+    // -1 at the BOTTOM of the picture. Every other debug view is a per-pixel property and cannot notice;
+    // this one is the first thing here with a deliberate top and bottom, so it has to flip.
+    float2 lutUv = float2(uv.x, 1.0 - uv.y);
+    if ((uint(float(pix.x) / SKY_LUT_BAND_PX) & 1u) == 0u) {
+        return skyTransmittanceLut.SampleLevel(lutUv, 0.0).rgb;
+    }
+    float r;
+    float mu;
+    transmittanceLutParams(lutUv, r, mu);
+    return atmosphereTransmittance(r, mu, 8);
+}
+
+float3 volumeDebug(PackedPathSegment packed) {
+    PathSegment seg = unpackPathSegment(packed);
+    traceRadiance(seg.bounce == 0 ? CULL_PRIMARY : secondaryCullMask(),
+                  seg.ro, 0.0, seg.rd, RAY_FAR, seg.showCelestial,
+                  seg.rayConeWidth, seg.rayConeSpread);
+    bool escaped = payload.hitT < 0.0;
+    float segmentEnd = escaped ? RAY_FAR : payload.hitT;
+
+    if (pc.debugView == DEBUG_VIEW_VOLUME_SEGMENT) {
+        // R: the segment hit nothing and therefore ran the full RAY_FAR — the case whose in-scatter should
+        // saturate. G: length, ramped to 64 blocks. B: the medium is water.
+        return float3(escaped ? 1.0 : 0.0,
+                      min(segmentEnd * (1.0 / 64.0), 1.0),
+                      seg.medium.current.water ? 1.0 : 0.0);
+    }
+    if (pc.debugView == DEBUG_VIEW_WATER_CAUSTIC) {
+        // Same conditions the sun NEE applies it under: an underwater receiver whose shadow ray crossed
+        // a water surface. Black therefore means "no caustic here", which is itself an answer.
+        if (escaped || !seg.medium.current.water) {
+            return float3(0.0, 0.0, 0.0);
+        }
+        float3 hitPos = seg.ro + seg.rd * segmentEnd;
+        float3 lightDir = worldPush.lightDir.xyz;
+        VisibilityResult sh = visibilityMasked(CULL_SECONDARY_NO_SELF,
+                hitPos - seg.rd * SURF_BIAS, lightDir, RAY_FAR);
+        if (sh.waterHitT <= 0.0) {
+            return float3(0.0, 0.0, 0.0);
+        }
+        float3 caustic = waterCaustic(hitPos + lightDir * sh.waterHitT, lightDir, sh.waterHitT);
+        float mean = max((caustic.x + caustic.y + caustic.z) * (1.0 / 3.0), 1.0e-6);
+        return float3(0.5, 0.5, 0.5) + (caustic / mean - 1.0) * CAUSTIC_DEVIATION_GAIN;
+    }
+    if (pc.debugView == DEBUG_VIEW_VOLUME_SUNVIS) {
+        // The shadow ray enclosedSingleScatter casts, on its own. Black here means the scattering has no
+        // sun term at all, whatever the rest of the arithmetic does.
+        return visibilityMasked(CULL_SECONDARY_NO_SELF, seg.ro,
+                                worldPush.lightDir.xyz, RAY_FAR).transmittance;
+    }
+    // What the segment added, with nothing the path did afterwards. A water medium is never ambient, so
+    // for a submerged view this is the enclosed single-scattering term alone.
+    return integrateSegment(seg.medium, seg.ro, seg.rd, segmentEnd).inScatter;
+}
+
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-    if (pc.debugView != 0u) {
-        return; // pass A owns guide visualization output
-    }
+    // The push carries the light's UNDYED peak; the atmosphere it crossed is applied here, once, before
+    // anything downstream reads it. See dyeCelestialLight for why this is not done at the use sites.
+    dyeCelestialLight(worldPush);
     uint2 dispatchIndex = DispatchRaysIndex().xy;
     uint2 dimensions = DispatchRaysDimensions().xy;
     int2 pix = int2(dispatchIndex);
-    uint spp = max(worldPush.spp, 1u);
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
+    if (pc.debugView != 0u) {
+        if (pc.debugView == DEBUG_VIEW_SKY_TRANSMITTANCE || pc.debugView == DEBUG_VIEW_SKY_MULTISCATTER) {
+            // Screen-space, not a path property, so these take the pixel rather than the queued record.
+            float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
+            float3 table = pc.debugView == DEBUG_VIEW_SKY_TRANSMITTANCE
+                    ? skyTransmittanceDebug(screenUv, dispatchIndex)
+                    : skyMultiScatterDebug(screenUv, dispatchIndex);
+            outImage[pix] = float4(table, 1.0);
+        } else if (pc.debugView >= DEBUG_VIEW_VOLUME_INSCATTER) {
+            outImage[pix] = float4(volumeDebug(queue[pixelIndex]), 1.0);
+        }
+        return; // pass A owns the guide visualizations
+    }
+    uint spp = max(worldPush.spp, 1u);
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
     uint recordIndex = pixelIndex;
 

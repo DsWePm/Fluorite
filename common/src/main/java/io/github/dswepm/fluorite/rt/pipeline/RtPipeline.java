@@ -95,10 +95,13 @@ public final class RtPipeline {
     private final long bindlessPool;
     private final long bindlessSet;
     private final int skyAtlasBinding;
+    private final int transmittanceBinding;
+    private final int multiScatterBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
-                       long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding) {
+                       long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
+                       int transmittanceBinding, int multiScatterBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -122,6 +125,8 @@ public final class RtPipeline {
         this.bindlessPool = bindlessPool;
         this.bindlessSet = bindlessSet;
         this.skyAtlasBinding = skyAtlasBinding;
+        this.transmittanceBinding = transmittanceBinding;
+        this.multiScatterBinding = multiScatterBinding;
     }
 
     /**
@@ -157,7 +162,21 @@ public final class RtPipeline {
             // draw the sun/moon discs. Canonical material pages live in the bindless set, not set 0.
             int skyBinding = skyAtlas ? materialBase : -1;
             int skySamplers = skyAtlas ? 1 : 0;
-            int bindingCount = firstExtraBinding + extraStorageImages + skySamplers;
+            // The atmosphere's transmittance LUT (M10). A sampled image rather than a storage image
+            // because it must filter: the table is 256x64 over the whole sky, so unfiltered fetches show
+            // its texel grid as banding along exactly the horizon gradient it exists to get right.
+            // Visible from MISS (the sun/moon disc tint) and RAYGEN (the NEE consumers).
+            int transmittanceBinding = skyAtlas ? materialBase + skySamplers : -1;
+            int transmittanceSamplers = skyAtlas ? 1 : 0;
+            // The multi-scatter table (M10.2). Consumed in MISS, where the sky is built; raygen is in the
+            // stage flags because the two raygens import atmosphere_lut for the celestial-light dye, and
+            // a binding declared in a module reaches every importer whether it reads it or not (debug
+            // view 13 does read it there). Nothing in the shading path wants it: NEE sunlight is DIRECT
+            // light, and light that has bounced twice in the air is by definition not that.
+            int multiScatterBinding = skyAtlas ? materialBase + skySamplers + transmittanceSamplers : -1;
+            int multiScatterSamplers = skyAtlas ? 1 : 0;
+            int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
+                    + multiScatterSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -175,6 +194,12 @@ public final class RtPipeline {
             if (skyAtlas) {
                 binds.get(skyBinding).binding(skyBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+                binds.get(transmittanceBinding).binding(transmittanceBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(multiScatterBinding).binding(multiScatterBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -182,7 +207,8 @@ public final class RtPipeline {
             long dsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, label + " descriptor set layout");
 
-            int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers;
+            int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers + transmittanceSamplers
+                    + multiScatterSamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -367,7 +393,8 @@ public final class RtPipeline {
             }
             sbt.flush();
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
-                    bindlessLayout, bindlessPool, bindlessSet, skyBinding);
+                    bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
+                    multiScatterBinding);
         }
     }
 
@@ -450,6 +477,20 @@ public final class RtPipeline {
 
     public boolean hasSkyAtlas() {
         return skyAtlasBinding >= 0;
+    }
+
+    /** Bind the atmosphere's transmittance LUT (M10), sampled by world.rmiss and world.rgen. */
+    public void setTransmittanceLut(long imageView, long sampler) {
+        writeAtlasBinding(transmittanceBinding, imageView, sampler);
+    }
+
+    public boolean hasTransmittanceLut() {
+        return transmittanceBinding >= 0;
+    }
+
+    /** Bind the atmosphere's multi-scatter table (M10.2), sampled by world.rmiss. */
+    public void setMultiScatterLut(long imageView, long sampler) {
+        writeAtlasBinding(multiScatterBinding, imageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

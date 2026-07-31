@@ -28,6 +28,7 @@ public struct WorldPushConstants {
     public uint64_t lightGridCellAddr;   // dense light grid cell headers (0 = global proposals only)
     public uint64_t lightGridSpanAddr;   // packed weighted section spans referenced by cell headers
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
+    public uint64_t skyLightAddr;        // byte-per-cell sky-openness grid (0 = none published, factor 1)
     public uint frameIndex;
     public uint debugView;
     // Shading switches the CLOSEST-HIT needs. They live here rather than in WorldPush because the hit
@@ -95,14 +96,33 @@ public struct WorldPush {
     public float4   fogParams;        // x density at reference height, y height scale, z reference height, w cull distance
     public float4   fogExtinction;    // xyz per-channel extinction tint
     public float4   fogScatter;       // xyz single-scattering albedo, w Henyey-Greenstein g for the sun lobe
-    public float4   fogAmbient;       // xyz isotropic source radiance the fog is lit by besides the sun
-    // Enclosed media. Turbidity does not add extinction — it decides how much of the extinction the
-    // biome tint already produces scatters rather than absorbs. The albedo is then DERIVED from that
-    // extinction (see mediumScatterAlbedo), which is what makes clarity vary per biome without the
-    // wavefront record growing: murkier water attenuates more and scatters more, being the same
-    // suspended particles doing both. Zero here reproduces the absorption-only water exactly.
+    public float4   fogAmbient;       // xyz isotropic source radiance the fog is lit by besides the sun,
+                                      // w thin-shell subsurface thickness (unrelated; see math.slang)
+    // Enclosed media. Absorption and scattering are TWO INDEPENDENTLY AUTHORED spectral coefficients,
+    // not one derived from the other. A single "turbidity" scalar that only raised sigma_s was tried and
+    // is the reason this comment is here: the deep-water limit of the single-scattering integral is
+    // albedo * source with sigma_t cancelling out, and albedo = sigma_s/(sigma_a+sigma_s), so a knob that
+    // only raises sigma_s drives the albedo to 1 and can therefore only ever make deep water WHITER and
+    // never darker. Measured at turbidity 10: albedo (0.76, 0.82, 0.95) and a deep limit of (1.79, 1.68,
+    // 1.80) — grey, and as bright as a sunlit mid-grey surface, in every biome. Authoring both lets
+    // "murky AND dark" exist, which it could not before.
+    //
+    // sigma_s stays GLOBAL (one value for the world) on purpose: mediumScatterAlbedo recovers the albedo
+    // as sigma_s/extinction from the extinction the wavefront record already carries, which is the only
+    // reason M9 never had to spend the record's last spare uint. Per-biome character lives in sigma_a.
     public float4   waterScatter;     // xyz scattering coefficient per block, w Henyey-Greenstein g
     public float4   waterAbsorbOverride; // xyz fixed absorption, w != 0 to use it instead of the biome
+    // Isotropic source the water volume is lit by besides the sun, i.e. the downwelling sky. Its own
+    // field rather than reusing fogAmbient: the fog's source is 0.25x the sun's irradiance, which is not
+    // a sky RADIANCE (that is closer to E_sky/pi, a few percent of E_sun) and only passes unnoticed in
+    // fog because fog's 1-T never leaves the neighbourhood of zero. Water saturates within a few blocks
+    // and puts the whole albedo*source product on screen, so the same constant arrives ~5x too bright.
+    public float4   waterAmbient;     // xyz sky source radiance inside water, w unused
+    // Coarse sky-openness grid the ambient term above is gated by (volume.slang skyLightFactor): vanilla
+    // sky light averaged over each cell's water blocks, byte per cell, built incrementally on the CPU
+    // around the camera. Origin is in the terrain's rebased coordinates like every other position here.
+    public float4   skyLightOrigin;   // xyz grid origin (rebased), w cell size in blocks
+    public int4     skyLightDims;     // xyz cell counts, w unused
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

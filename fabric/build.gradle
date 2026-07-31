@@ -61,6 +61,23 @@ loom {
 			if (project.hasProperty("benchWidth") && project.hasProperty("benchHeight")) {
 				programArgs "--width", project.benchWidth, "--height", project.benchHeight
 			}
+			// Vulkan validation, opt-in:
+			//   ./gradlew :fabric:runClient -PvkValidation
+			// Minecraft's VulkanInstance takes a `validation` flag but nothing here can reach it, so this
+			// goes through the loader instead: VK_INSTANCE_LAYERS force-enables a layer the application
+			// never asked for. Off by default because it costs a large fraction of the frame and would
+			// make every benchmark meaningless — but it is the right first instrument for anything that
+			// smells like a destroyed-resource-still-bound bug, where the symptom on screen is whatever
+			// memory got reused and says nothing about who freed it.
+			//
+			// Messages need somewhere to go: with no VK_EXT_debug_utils messenger created by the app, the
+			// layer drops them unless a settings file redirects them, hence run/vk_layer_settings.txt.
+			if (project.hasProperty("vkValidation")) {
+				environmentVariable "VK_INSTANCE_LAYERS", "VK_LAYER_KHRONOS_validation"
+				environmentVariable "VK_LAYER_SETTINGS_PATH",
+						file("${project.rootDir}/run/vk_layer_settings.txt").absolutePath
+			}
+
 			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
 			vmArg "--enable-native-access=ALL-UNNAMED"
 

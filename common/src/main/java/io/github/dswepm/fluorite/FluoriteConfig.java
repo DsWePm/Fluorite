@@ -61,7 +61,8 @@ public final class FluoriteConfig {
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
             Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
-            Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.TURBIDITY, Rt.Water.ABSORB_OVERRIDE,
+            Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.AMBIENT_SCALE, Rt.Water.ABSORB_OVERRIDE,
+            Rt.Water.SCATTER_R,
         };
     }
 
@@ -736,6 +737,37 @@ public final class FluoriteConfig {
              * opening this makes whatever they left visible as translucency on ordinary blocks. If a pack
              * suddenly looks waxy, this is the first thing to turn off.
              */
+            /**
+             * Modelled thickness of the thin-shell subsurface slab. 1 is exactly today's behaviour.
+             *
+             * <p><b>Added as a calibration instrument with an explicit end state to decide.</b> The thin
+             * shell is the default subsurface path after M8 (the random walk is correct but lands at
+             * 1.612x the trace budget against a 1.5x gate, so it stays opt-in), which makes its look
+             * worth tuning by eye against the real renderer instead of by editing two constants and
+             * rebuilding. When a value is settled, ONE of two things must happen deliberately:
+             *
+             * <ul>
+             *   <li>fold it into SSS_STRENGTH and SSS_G in math.slang and delete this setting, its UI
+             *       row and its lang keys — the default if it turns out one number suits everything; or
+             *   <li>keep it as an art-direction control, in which case its home is the TOML / dimension
+             *       preset surface rather than the video settings screen, alongside the other authored
+             *       appearance values (see M14).
+             * </ul>
+             *
+             * <p>What must not happen is neither: a knob left in the UI after its purpose is served is
+             * how a settings screen fills with rows nobody can explain, and this one is doubly
+             * misleading because it looks like a material property when it is really two hardcoded
+             * constants wearing a disguise.
+             *
+             * <p>One number for two effects because thickness drives both, and separate sliders would
+             * let someone build a slab that cannot exist — very thick yet still sharply forward
+             * scattering, which reads as glowing through without diffusing. Thicker transmits less and
+             * scatters more isotropically; thinner is brighter and more directional, like a petal.
+             */
+            public static final FloatSetting SUBSURFACE_THICKNESS =
+                    clampedFloat("fluorite.rt.bsdf.subsurfaceThickness", "bsdf.subsurface-thickness",
+                            1.0f, 0.05f, 5.0f);
+
             public static final BooleanSetting SUBSURFACE_SOLID_LAYER =
                     bool("fluorite.rt.bsdf.subsurfaceSolidLayer", "bsdf.subsurface-solid-layer", true);
 
@@ -794,22 +826,111 @@ public final class FluoriteConfig {
         /** Enclosed participating media: what water does besides absorb. */
         public static final class Water {
             /**
-             * How much water scatters, as a multiple of a clear-ocean reference.
+             * How bright the sky is inside the water, as a fraction of the sun's radiance.
              *
-             * <p>Absorption alone makes water a coloured filter — what survives is tinted, what does not
-             * is gone. Every property that reads as water rather than as glass is the scattered part: the
-             * turbidity, the shafts, the way depth closes in milkily instead of merely darkening.
+             * <p>The one number that sets how bright the murk is. Deep water saturates — sigma_t cancels
+             * out of the single-scattering integral — and what is left is {@code albedo * source}, so
+             * this and the scattering colour below are jointly the whole answer to "why is the water so
+             * pale".
              *
-             * <p>0 reproduces the absorption-only water this renderer shipped with, exactly, and is the
-             * A/B for everything below. 1 is clear ocean; a pond or a swamp is higher.
-             *
-             * <p>One value for every water body, deliberately. Per-biome character lives in the
-             * absorption, which the tint still drives, and keeping scattering global is what lets the
-             * single-scattering albedo be recovered as sigma_s/sigma_t from data the wavefront record
-             * already carries — so this milestone costs no memory at all.
+             * <p>The default is a sky RADIANCE, roughly E_sky/pi with a clear sky's E_sky at a sixth of
+             * the sun's. The air fog uses 0.25 for the same quantity, which is not a radiance and is
+             * about five times too large; it goes unnoticed there only because fog's optical depth is
+             * ~0.0016 per block, so its {@code 1 - T} never leaves the neighbourhood of zero and the
+             * source's magnitude never shows. Water runs 20-70x that and shows all of it.
              */
-            public static final FloatSetting TURBIDITY =
-                    clampedFloat("fluorite.rt.water.turbidity", "water.turbidity", 1.0f, 0.0f, 10.0f);
+            public static final FloatSetting AMBIENT_SCALE =
+                    clampedFloat("fluorite.rt.water.ambientScale", "water.ambient-scale", 0.05f, 0.0f, 1.0f);
+
+            /**
+             * Which of the two sources feeds the water's single scattering: {@code both}, {@code sun},
+             * {@code sky}, {@code none}.
+             *
+             * <p>A measurement switch, not a look. The scattering has two independent sources with
+             * independent occlusion models — the sun through shadow rays, the sky through the sky-light
+             * grid — and when the result misbehaves the first question is always which of them did it.
+             * Setting AMBIENT_SCALE to zero silences the sky but there was no matching way to silence
+             * the sun, so every investigation so far has had to reason about the sum. Isolating a term
+             * is the difference between measuring and guessing.
+             *
+             * <p>{@code none} is not redundant with turning scattering off through the coefficients:
+             * this leaves sigma_s (and therefore the extinction, and therefore visibility) exactly as
+             * it is, and removes only the in-scattered light. That separates "the water is too bright"
+             * from "the water is too opaque".
+             */
+            public static final StringSetting SCATTER_SOURCE =
+                    string("fluorite.rt.water.scatterSource", "water.scatter-source", "both",
+                            Water::sanitizeScatterSource);
+
+            private static String sanitizeScatterSource(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "sun", "sky", "none" -> v;
+                    default -> "both";
+                };
+            }
+
+            /**
+             * Cast the sun term's shadow rays, or take the sun as unoccluded.
+             *
+             * <p>DEFAULT OFF, and that is a considered retreat rather than a gap. One to three point
+             * samples of "can this spot see the sun" is not a volumetric shadow, it is a coin flip
+             * evaluated near the camera and then applied to the whole segment — so crossing any occlusion
+             * boundary toggled the murk across the entire screen at once, in every view direction, at one
+             * precise height. Measured by isolation, not argued: with this off the step disappears.
+             *
+             * <p>Shafts of light underwater are the same computation as the fog's god rays — in-scatter
+             * modulated by per-point light visibility — and they want the same answer: M13's froxel,
+             * where visibility is solved once per frame in world-space voxels and interpolated, so
+             * neighbouring pixels and neighbouring camera positions get continuous values instead of
+             * independent binary ones. Sampling harder here (8-16 rays a segment) would soften the step
+             * at several times the cost, and every line of it would be deleted when the froxel lands.
+             * The fog already made this trade — see integrateSegment, which is unshadowed for exactly
+             * this reason — and water has no claim to volumetric shadows the fog does not have.
+             *
+             * <p>Kept as a switch because it is still the isolation tool that found this, and because it
+             * is how the froxel will be A/B'd against the thing it replaces.
+             */
+            public static final BooleanSetting SUN_SHADOW =
+                    bool("fluorite.rt.water.sunShadow", "water.sun-shadow", false);
+
+            /**
+             * Chromatic spread of the caustic pattern, as a multiple of water's real dispersion.
+             *
+             * <p>1 is physical: water's index runs about 1.331 at 700 nm against 1.340 at 450 nm.
+             *
+             * <p>It was expected to be visible at 1 anyway, on the reasoning that it only has to matter
+             * where {@code det J} approaches zero, so the fringes would appear along the bright
+             * filaments where the eye already is. MEASURED, and that reasoning is wrong: at TWENTY times
+             * physical, a debug view amplifying the inter-channel deviation twentyfold still showed
+             * neutral grey — under one percent of channel separation. Colour only appears around 100x.
+             *
+             * <p>The likely reason is {@link io.github.dswepm.fluorite.rt.RtComposite} nothing and this
+             * file nothing: it is CAUSTIC_MAX in water.slang. The filaments clamp, all three channels
+             * clamp to the same 6, and the fringe can only show where the fold has moved far enough that
+             * one channel clamps and another does not. That is a lot of spread.
+             *
+             * <p>So the default is an exaggeration, deliberately and by a large factor. 0 is monochrome.
+             * Physically correct and invisible is a legitimate thing to overrule, but it should be
+             * overruled knowingly rather than by a number that quietly means something else.
+             *
+             * <p>Nearly free: the expensive part of a caustic is evaluating the wave field, the wave
+             * field does not know about colour, and all three wavelengths share the same three surface
+             * normals. Only the refraction and the landing arithmetic run three times.
+             */
+            public static final FloatSetting CAUSTIC_DISPERSION =
+                    clampedFloat("fluorite.rt.water.causticDispersion", "water.caustic-dispersion",
+                            50.0f, 0.0f, 100.0f);
+
+            /** Bits 13-14 of worldPush.flags: 0 both, 1 sun only, 2 sky only, 3 neither. */
+            public static int scatterSourceId() {
+                return switch (SCATTER_SOURCE.get()) {
+                    case "sun" -> 1;
+                    case "sky" -> 2;
+                    case "none" -> 3;
+                    default -> 0;
+                };
+            }
 
             /**
              * Forward-scattering anisotropy of the water's phase function.
@@ -821,13 +942,6 @@ public final class FluoriteConfig {
             public static final FloatSetting PHASE_G =
                     clampedFloat("fluorite.rt.water.phaseG", "water.phase-g", 0.75f, -0.9f, 0.9f);
 
-            /**
-             * Scattering coefficient per block, before TURBIDITY scales it.
-             *
-             * <p>Roughly neutral with a slight blue lift: scattering in clean water is only weakly
-             * wavelength-dependent, and the strong colour comes from absorption instead. Calibrated by
-             * eye against the reference view rather than from a measurement, so it is a starting point.
-             */
             /**
              * Absorption dialled directly, in 0-255 per channel, instead of taken from the biome.
              *
@@ -859,13 +973,50 @@ public final class FluoriteConfig {
                         ABSORB_B.value() / 255f * ABSORB_FULL_SCALE};
             }
 
+            /**
+             * Scattering, dialled directly in 0-255 per channel — the other half of the medium, and
+             * authored independently of absorption rather than derived from it.
+             *
+             * <p>Absorption alone makes water a coloured filter: what survives is tinted, what does not
+             * is gone. Everything that reads as water rather than as glass is the scattered part — the
+             * murk, the shafts, the way depth closes in instead of merely darkening.
+             *
+             * <p>Very nearly neutral by default, which is both the physics and the point: absorption is
+             * what varies strongly with wavelength, so the albedo {@code sigma_s/sigma_t} comes out
+             * blue-weighted on its own without this having to be blue.
+             *
+             * <p>This used to be a single "turbidity" multiplier over a fixed neutral colour, and that
+             * shape is the whole reason the water went pale. Raising a knob that only feeds sigma_s
+             * raises the albedo toward 1, and the deep-water limit is albedo * source, so more turbid
+             * could only ever mean whiter and brighter — never darker, which is the opposite of what
+             * suspended matter does. Real particles scatter AND absorb; two coefficients let that be
+             * said. Murky water is high in BOTH.
+             *
+             * <p>Zero reproduces the absorption-only water this renderer shipped with, exactly, and is
+             * the A/B for everything here. Reference points at the default full scale: ~24 is clear
+             * ocean; a pond or a swamp wants both this and the absorption several times higher.
+             */
+            public static final IntSetting SCATTER_R =
+                    clampedInt("fluorite.rt.water.scatterR", "water.scatter-r", 24, 0, 255);
+            public static final IntSetting SCATTER_G =
+                    clampedInt("fluorite.rt.water.scatterG", "water.scatter-g", 26, 0, 255);
+            public static final IntSetting SCATTER_B =
+                    clampedInt("fluorite.rt.water.scatterB", "water.scatter-b", 28, 0, 255);
+
+            /**
+             * 0-255 maps onto 0..SCATTER_FULL_SCALE per block.
+             *
+             * <p>Half of {@link #ABSORB_FULL_SCALE} deliberately. Water whose scattering rivals its
+             * absorption has a single-scattering albedo near 1, and that is the pale-grey failure this
+             * replaced; the ceiling being lower makes the well-behaved range the easy one to land in.
+             */
+            public static final float SCATTER_FULL_SCALE = 0.2f;
+
             public static float[] scatteringRgb() {
-                float t = TURBIDITY.value();
-                // Very nearly neutral, which is the physics and also the point: absorption is what
-                // varies strongly with wavelength, so the albedo sigma_s/sigma_t comes out blue-weighted
-                // on its own. Making this proportional to absorption instead produced a grey albedo and
-                // every biome looked the same milky white.
-                return new float[] {0.028f * t, 0.030f * t, 0.032f * t};
+                return new float[] {
+                        SCATTER_R.value() / 255f * SCATTER_FULL_SCALE,
+                        SCATTER_G.value() / 255f * SCATTER_FULL_SCALE,
+                        SCATTER_B.value() / 255f * SCATTER_FULL_SCALE};
             }
 
             private Water() {

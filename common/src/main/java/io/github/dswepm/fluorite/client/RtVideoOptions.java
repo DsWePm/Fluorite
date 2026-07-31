@@ -13,10 +13,10 @@ import net.minecraft.client.Options;
 import net.minecraft.network.chat.Component;
 
 /**
- * Builds the {@link OptionInstance} widgets shown in the RT section of the vanilla Video Settings screen
- * (injected by {@code VideoSettingsScreenMixin}). Each option is bound straight to a {@link FluoriteConfig}
- * runtime setting: the initial value is read from the current config, and the value-update listener writes
- * back through {@code set(...)} so changes take effect on the next frame.
+ * Builds the {@link OptionInstance} widgets shown on Fluorite's own options screens (opened from the
+ * vanilla Video Settings screen by {@code VideoSettingsScreenMixin}). Each option is bound straight to a
+ * {@link FluoriteConfig} runtime setting: the initial value is read from the current config, and the
+ * value-update listener writes back through {@code set(...)} so changes take effect on the next frame.
  *
  * <p>Only settings the renderer re-reads per-frame are exposed here — toggles that would require a device or
  * buffer-pool rebuild (worker threads, OMM, max-entity capacities, PBR material flags) are intentionally
@@ -29,38 +29,83 @@ public final class RtVideoOptions {
     private RtVideoOptions() {
     }
 
-    /** Runtime-tunable RT options, in display order. Paired two-per-row by {@code OptionsList.addSmall}. */
-    public static OptionInstance<?>[] runtimeOptions() {
-        return new OptionInstance<?>[] {
-            exposureMode(),
-            manualEv(),
-            spp(),
-            maxBounces(),
-            sunSize(),
-            entities(),
-            particles(),
-            waterWaves(),
-            waterTurbidity(),
-            fogEnabled(),
-            fogDensity(),
-            fogIntensity(),
-            fogHeightBase(),
-            fogStartDistance(),
-            fogCullDistance(),
-            fogHeightScale(),
-            fogPhaseG(),
-            fogScatterTint(),
-            sunMis(),
-            anisotropy(),
-            subsurfaceMode(),
-            subsurfaceMaxEvents(),
-            dlssEnabled(),
-            dlssQuality(),
-            hdrEnabled(),
-            hdrPaperWhite(),
-            hdrPeak(),
-            debugView(),
-        };
+    /**
+     * One run of options under an optional header, inside a category.
+     *
+     * <p>{@code titleKey} empty means no header — the common case. It exists for the categories that hold
+     * two related but distinct groups and would otherwise need a screen each for two rows.
+     */
+    public record Section(String titleKey, OptionInstance<?>[] options) {
+        static Section of(OptionInstance<?>... options) {
+            return new Section("", options);
+        }
+
+        static Section titled(String titleKey, OptionInstance<?>... options) {
+            return new Section(titleKey, options);
+        }
+    }
+
+    /**
+     * A screen's worth of settings.
+     *
+     * <p>Grouped by what the player is looking at rather than by which config class holds the setting —
+     * water waves live in {@code Rt.Composite} and turbidity in {@code Rt.Water}, and nobody tuning water
+     * cares. The one place the two agree is fog, which is why {@code Rt.Volumetrics} maps 1:1.
+     *
+     * <p>Options are built when a category's screen opens, never up front: an {@link OptionInstance}
+     * captures its setting's value at construction, so one built to label a button would show whatever the
+     * config said when the hub was drawn.
+     */
+    public enum Category {
+        TRACING("tracing"),
+        EXPOSURE("exposure"),
+        MATERIAL("material"),
+        WATER("water"),
+        FOG("fog"),
+        UPSCALING("upscaling"),
+        HDR("hdr"),
+        DIAGNOSTICS("diagnostics");
+
+        private final String key;
+
+        Category(String key) {
+            this.key = key;
+        }
+
+        public Component title() {
+            return Component.translatable("fluorite.options.rt.category." + key);
+        }
+
+        public Component description() {
+            return Component.translatable("fluorite.options.rt.category." + key + ".tooltip");
+        }
+
+        /** Freshly built, in display order. Paired two-per-row by {@code OptionsList.addSmall}. */
+        public List<Section> sections() {
+            return switch (this) {
+                case TRACING -> List.of(Section.of(spp(), maxBounces(), sunSize(), entities(), particles()));
+                case EXPOSURE -> List.of(Section.of(exposureMode(), manualEv()));
+                case MATERIAL -> List.of(
+                        Section.of(sunMis(), anisotropy()),
+                        Section.titled("fluorite.options.rt.section.subsurface",
+                                subsurfaceMode(), subsurfaceThickness(), subsurfaceMaxEvents()));
+                case WATER -> List.of(
+                        Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
+                                bool("fluorite.options.rt.waterSunShadow",
+                                        FluoriteConfig.Rt.Water.SUN_SHADOW),
+                                waterAmbientScale(), waterPhaseG()),
+                        Section.titled("fluorite.options.rt.section.waterScatter",
+                                waterScatterR(), waterScatterG(), waterScatterB()),
+                        Section.titled("fluorite.options.rt.section.waterAbsorb",
+                                waterAbsorbOverride(), waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
+                case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogIntensity(),
+                        fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
+                        fogPhaseG(), fogScatterTint()));
+                case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
+                case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
+                case DIAGNOSTICS -> List.of(Section.of(debugView()));
+            };
+        }
     }
 
     private static OptionInstance<String> exposureMode() {
@@ -140,11 +185,115 @@ public final class RtVideoOptions {
     }
 
     /**
-     * How much water scatters. 0 is the absorption-only water that shipped before, and is the A/B for
-     * everything the scattered part does.
+     * The water's two coefficients, dialled side by side.
+     *
+     * <p>Both here on purpose. They are what the medium IS — absorption takes light out, scattering
+     * sends it elsewhere — and the look lives in their ratio, not in either alone: the colour deep water
+     * settles on is {@code sigma_s/(sigma_a+sigma_s)} times the sky, with the extinction cancelling out
+     * entirely. Tuning one without seeing the other is how "murkier" ended up meaning "paler".
+     *
+     * <p>Raise scattering alone and the water goes pale and bright. Raise both and it goes murky and
+     * dark, which is what suspended matter really does and what could not be expressed at all while a
+     * single turbidity multiplier drove scattering by itself.
      */
-    private static OptionInstance<Integer> waterTurbidity() {
-        return scaleSlider("fluorite.options.rt.waterTurbidity", FluoriteConfig.Rt.Water.TURBIDITY);
+    private static OptionInstance<Integer> waterScatterR() {
+        return byteSlider("fluorite.options.rt.waterScatterR", FluoriteConfig.Rt.Water.SCATTER_R);
+    }
+
+    private static OptionInstance<Integer> waterScatterG() {
+        return byteSlider("fluorite.options.rt.waterScatterG", FluoriteConfig.Rt.Water.SCATTER_G);
+    }
+
+    private static OptionInstance<Integer> waterScatterB() {
+        return byteSlider("fluorite.options.rt.waterScatterB", FluoriteConfig.Rt.Water.SCATTER_B);
+    }
+
+    private static OptionInstance<Boolean> waterAbsorbOverride() {
+        return bool("fluorite.options.rt.waterAbsorbOverride", FluoriteConfig.Rt.Water.ABSORB_OVERRIDE);
+    }
+
+    private static OptionInstance<Integer> waterAbsorbR() {
+        return byteSlider("fluorite.options.rt.waterAbsorbR", FluoriteConfig.Rt.Water.ABSORB_R);
+    }
+
+    private static OptionInstance<Integer> waterAbsorbG() {
+        return byteSlider("fluorite.options.rt.waterAbsorbG", FluoriteConfig.Rt.Water.ABSORB_G);
+    }
+
+    private static OptionInstance<Integer> waterAbsorbB() {
+        return byteSlider("fluorite.options.rt.waterAbsorbB", FluoriteConfig.Rt.Water.ABSORB_B);
+    }
+
+    /**
+     * How bright the sky is inside the water. The single brightness control for the murk: deep water
+     * saturates at albedo times this, so it is half of why the water was ever too pale.
+     */
+    private static OptionInstance<Integer> waterAmbientScale() {
+        FloatSetting setting = FluoriteConfig.Rt.Water.AMBIENT_SCALE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterAmbient",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterAmbient.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 100f), 0, 100),
+            v -> setting.set(v / 100.0f));
+    }
+
+    /**
+     * Which source feeds the water's scattering. A measurement control, deliberately in the UI rather
+     * than the TOML: the question it answers ("which term is doing that?") comes up while looking at the
+     * water, and an answer that needs a restart is one nobody collects.
+     */
+    private static OptionInstance<String> waterScatterSource() {
+        StringSetting setting = FluoriteConfig.Rt.Water.SCATTER_SOURCE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterScatterSource",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterScatterSource.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.waterScatterSource." + value),
+            new OptionInstance.Enum<>(List.of("both", "sun", "sky", "none"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    /** Caustic dispersion, in tenths so the physical 1.0 is reachable and exaggeration is a step away. */
+    private static OptionInstance<Integer> waterCausticDispersion() {
+        FloatSetting setting = FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterCausticDispersion",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterCausticDispersion.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.1fx", v / 10.0))),
+            new OptionInstance.IntRange(0, 1000),
+            Math.clamp(Math.round(setting.value() * 10f), 0, 1000),
+            v -> setting.set(v / 10.0f));
+    }
+
+    private static OptionInstance<Integer> waterPhaseG() {
+        FloatSetting setting = FluoriteConfig.Rt.Water.PHASE_G;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterPhaseG",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterPhaseG.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
+            new OptionInstance.IntRange(-90, 90),
+            Math.clamp(Math.round(setting.value() * 100f), -90, 90),
+            v -> setting.set(v / 100.0f));
+    }
+
+    /** A 0-255 per-channel coefficient. The medium's coefficients are authored the way a colour is. */
+    private static OptionInstance<Integer> byteSlider(String key, IntSetting setting) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(0, 255),
+            Math.clamp(setting.value(), 0, 255),
+            setting::set);
     }
 
     // ---- Ambient participating medium. Every one of these is re-read per frame straight into the world
@@ -288,6 +437,24 @@ public final class RtVideoOptions {
      * <p>Cost is near-linear in it: every event is one traversal. Lowering it does not darken anything,
      * because a walk that runs out falls back to a diffuse bounce; it makes thick material less accurate.
      */
+    /**
+     * Thin-shell thickness. In the UI rather than the TOML because after M8 the thin shell is the
+     * default subsurface path, not a fallback — it is the look most people will ever see, so its one
+     * shaping control should be reachable while looking at a leaf.
+     */
+    private static OptionInstance<Integer> subsurfaceThickness() {
+        FloatSetting setting = FluoriteConfig.Rt.Bsdf.SUBSURFACE_THICKNESS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.subsurfaceThickness",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.subsurfaceThickness.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
+            new OptionInstance.IntRange(5, 500),
+            Math.clamp(Math.round(setting.value() * 100f), 5, 500),
+            v -> setting.set(v / 100.0f));
+    }
+
     private static OptionInstance<Integer> subsurfaceMaxEvents() {
         IntSetting setting = FluoriteConfig.Rt.Bsdf.SUBSURFACE_MAX_EVENTS;
         return new OptionInstance<>(
@@ -354,8 +521,11 @@ public final class RtVideoOptions {
             // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
             // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
             (caption, value) -> Component.translatable("fluorite.options.rt.debugView." + value),
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7), Codec.INT),
-            Math.clamp(setting.value(), 0, 7),
+            // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
+            // between hits rather than the hits themselves. See world.rgen's volumeDebug. 12 is neither —
+            // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13), Codec.INT),
+            Math.clamp(setting.value(), 0, 13),
             setting::set);
     }
 

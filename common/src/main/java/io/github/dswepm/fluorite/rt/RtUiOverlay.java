@@ -140,6 +140,7 @@ public final class RtUiOverlay {
         overlayClearedThisFrame = false;
     }
 
+
     /**
      * Ensure the overlay exists, sized to {@code main}, and cleared (transparent + depth 0.0) exactly once
      * this frame, then mark it used. Both the hand redirect and the GUI redirect funnel through here so the
@@ -215,8 +216,26 @@ public final class RtUiOverlay {
     private static TextureTarget ensureSized(RenderTarget main) {
         if (overlay == null) {
             overlay = new TextureTarget("fluorite UI overlay", main.width, main.height, true, GpuFormat.RGBA8_UNORM);
+            overlayClearedThisFrame = false;
         } else if (overlay.width != main.width || overlay.height != main.height) {
             overlay.resize(main.width, main.height);
+            // Second stage of the same probe, one level up. Stage one cleared every image Fluorite creates
+            // and the resize corruption did NOT turn magenta, so the memory reaching the screen belongs to
+            // a Minecraft-owned target instead — and this is the one Fluorite reads every frame.
+            // RenderTarget.resize reallocates its texture, whose contents are as undefined as any other
+            // fresh allocation; nothing here clears it, and the per-frame clear latch only fires if a
+            // redirect runs before the composite.
+            //
+            // GREEN, so the two stages stay distinguishable: magenta would have meant one of ours, green
+            // means this one, and neither colour means the search moves on again. Fragments that differ on
+            // every resize and once carried the Mojang logo are what recycled memory looks like, so the
+            // question is only WHICH surface is being shown unwritten.
+            // A fresh allocation, so whatever the latch says about THIS frame is now about a texture that
+            // no longer exists. Two redirects funnel through prepare() each frame — the hand first, the
+            // GUI second — so a resize landing between them would otherwise leave the second one drawing
+            // into, and then compositing, an unwritten surface. That is undefined contents blitted over
+            // the screen on exactly the frame the window changed size.
+            overlayClearedThisFrame = false;
         }
         return overlay;
     }

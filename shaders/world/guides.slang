@@ -101,8 +101,9 @@ public float2 resolveSpecularGuides(SpecSurface surface, float3 primaryDir,
     float3 specDir = reflect(primaryDir, n);
 
     // Pass A stops radiance traversal at the first split, so reflection motion keeps one dedicated,
-    // deterministic guide probe.
-    traceGuide(CULL_SECONDARY,
+    // deterministic guide probe. Same cull mask Pass B's reflection will use, so the motion vector
+    // describes the surface the radiance actually lands on rather than one the body still occludes.
+    traceGuide(secondaryCullMask(),
             offsetSurfaceOrigin(surfacePos, surface.biasNormal, specDir, SURF_BIAS),
             RAY_TMIN, specDir, RAY_FAR,
             max(length(surface.camRel) * primaryConeSpread, RAY_CONE_MIN_WIDTH),

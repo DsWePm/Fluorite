@@ -9,6 +9,8 @@
 // disc isn't double-counted against the direct light → fireflies). The atmosphere gradient + stars are
 // added on every miss (any bounce): stars aren't a NEE light, so they never double-count.
 import world_common;
+import atmosphere;
+import atmosphere_lut;
 
 [[vk::push_constant]] WorldPushConstants pc;
 
@@ -20,7 +22,7 @@ static const float PI = 3.14159265359;
 float pow2(float x) { return x * x; }
 
 // Near-white top-of-atmosphere disc radiances: the visible warm/red tint comes from multiplying by
-// transmittanceToSpace(dir) at draw time — at noon the sun reads warm-white, at the horizon it reddens
+// sampleTransmittanceToSpace(dir) at draw time — at noon the sun reads warm-white, at the horizon it reddens
 // on exactly the sky's own sunset curve.
 static const float3 SUN_DISC_RADIANCE  = float3(24.0, 23.0, 21.5);
 static const float3 MOON_DISC_RADIANCE = float3(1.7, 1.85, 2.2) / 4.0; // lit-side moon (HDR, bright at night exposure)
@@ -40,33 +42,15 @@ static const float3 NIGHT_HORIZON = float3(0.015, 0.022, 0.045) / 5.0;
 // (a second, shorter march), giving Rayleigh (blue-sky / red-sunset) + Mie (sun halo) in-scattered
 // radiance. World up = +Y; the camera sits a couple km above a spherical planet. Output is HDR in the
 // same units as tracePath.
-static const float  PLANET_R   = 6371000.0;
-static const float  ATMOS_R    = 6471000.0;        // 100 km shell
-static const float3 RAY_BETA   = float3(5.5e-6, 13.0e-6, 22.4e-6); // Rayleigh scattering at sea level
-static const float  MIE_BETA   = 21.0e-6;          // Mie scattering at sea level
-static const float  RAY_SCALE_H = 8000.0;          // Rayleigh density scale height
-static const float  MIE_SCALE_H = 1200.0;          // Mie density scale height
-static const float  MIE_G      = 0.758;            // Mie anisotropy (forward-scattering)
-// Ozone: absorption only (no scattering), tent-shaped density peaking at 25 km. Its green-heavy
-// absorption keeps the zenith deep blue at noon and turns twilight purple-orange.
-static const float3 OZONE_BETA = float3(0.650e-6, 1.881e-6, 0.085e-6);
-static const float  OZONE_CENTER_H = 25000.0;
-static const float  OZONE_WIDTH_H  = 15000.0;
-static const float  SUN_INTENSITY = 22.0;
 static const int    ATMOS_PRIMARY_STEPS = 16;
 static const int    ATMOS_LIGHT_STEPS   = 8;
+// How much of the multi-scatter table to let through. 1 is the table as derived; it is a named constant
+// rather than a bare 1.0 because it is the one dial that turns M10.2 off without a rebuild, and because
+// the failure mode if the bake is ever wrong by an order of magnitude is a milky white sky rather than
+// anything subtle. Not a config setting: the physical answer is 1, and anything else is a bug elsewhere.
+static const float  MULTI_SCATTER_STRENGTH = 1.0;
 
-float ozoneDensity(float h) { return max(0.0, 1.0 - abs(h - OZONE_CENTER_H) / OZONE_WIDTH_H); }
 
-// Smaller root of ray vs sphere of radius r centred at origin (no-hit handled by x > y).
-float2 raySphere(float3 o, float3 d, float r) {
-    float b = dot(o, d);
-    float c = dot(o, o) - r * r;
-    float disc = b * b - c;
-    if (disc < 0.0) return float2(1.0e9, -1.0e9);
-    disc = sqrt(disc);
-    return float2(-b - disc, -b + disc);
-}
 
 float3 atmosphere(float3 dir, float3 sunDir) {
     float3 orig = float3(0.0, PLANET_R + 2000.0, 0.0);
@@ -85,14 +69,28 @@ float3 atmosphere(float3 dir, float3 sunDir) {
                  / ((2.0 + g * g) * pow(max(1.0 + g * g - 2.0 * g * mu, 0.0), 1.5));
 
     float3 sumR = float3(0.0, 0.0, 0.0), sumM = float3(0.0, 0.0, 0.0);
+    float3 sumMs = float3(0.0, 0.0, 0.0);             // light that has already bounced more than once
     float odR = 0.0, odM = 0.0, odO = 0.0;            // view-ray optical depth accumulators
     float tCur = tStart;
     for (int i = 0; i < ATMOS_PRIMARY_STEPS; i++) {
         float3 p = orig + dir * (tCur + segLen * 0.5);
-        float h = length(p) - PLANET_R;
+        float pr = length(p);
+        float h = pr - PLANET_R;
         float hr = exp(-h / RAY_SCALE_H) * segLen;
         float hm = exp(-h / MIE_SCALE_H) * segLen;
         odR += hr; odM += hm; odO += ozoneDensity(h) * segLen;
+
+        // Multiple scattering, read from the table. Deliberately OUTSIDE the `blocked` test below: that
+        // test asks whether the sun is directly visible from this point, and light that has bounced twice
+        // does not need it to be. Excluding shadowed points is precisely what made single scattering
+        // switch twilight off instead of letting it glow.
+        //
+        // No phase function either — this term is isotropic by the table's construction, which is also
+        // why it has no dependence on the view direction beyond where the ray happens to pass.
+        float3 attenView = exp(-(RAY_BETA * odR + MIE_BETA * MIE_EXTINCTION_FACTOR * odM
+                               + OZONE_BETA * odO));
+        sumMs += attenView * (RAY_BETA * hr + MIE_BETA * hm)
+               * sampleMultiScatter(pr, dot(p / pr, sunDir));
 
         // March toward the sun to accumulate the light-ray optical depth (transmittance to space).
         float2 tl = raySphere(p, sunDir, ATMOS_R);
@@ -117,28 +115,10 @@ float3 atmosphere(float3 dir, float3 sunDir) {
         }
         tCur += segLen;
     }
-    return SUN_INTENSITY * (sumR * RAY_BETA * phaseR + sumM * MIE_BETA * phaseM);
-}
-
-// Extinction from the camera to space along `dir` (Rayleigh + Mie + ozone; the sun-below-horizon case
-// needs no explicit planet test — a grazing/downward path picks up enormous optical depth, so the
-// transmittance rolls to zero smoothly on its own). Tints the sun/moon discs at draw time, and is ported
-// verbatim to RtComposite.writeSky so the NEE sunlight on terrain follows the identical sunset curve —
-// the disc, the sky, and the light can never disagree.
-float3 transmittanceToSpace(float3 dir) {
-    float3 orig = float3(0.0, PLANET_R + 2000.0, 0.0);
-    float2 t = raySphere(orig, dir, ATMOS_R);
-    if (t.y <= 0.0) return float3(1.0, 1.0, 1.0);
-    float segLen = t.y / float(ATMOS_LIGHT_STEPS);
-    float odR = 0.0, odM = 0.0, odO = 0.0;
-    for (int i = 0; i < ATMOS_LIGHT_STEPS; i++) {
-        float3 p = orig + dir * (segLen * (float(i) + 0.5));
-        float h = length(p) - PLANET_R;
-        odR += exp(-h / RAY_SCALE_H) * segLen;
-        odM += exp(-h / MIE_SCALE_H) * segLen;
-        odO += ozoneDensity(h) * segLen;
-    }
-    return exp(-(RAY_BETA * odR + MIE_BETA * 1.1 * odM + OZONE_BETA * odO));
+    // sumMs already carries its own scattering coefficient (the table is per unit sigma_s and per unit
+    // solar irradiance), which is why it is not multiplied by a beta here the way the other two are.
+    return SUN_INTENSITY * (sumR * RAY_BETA * phaseR + sumM * MIE_BETA * phaseM
+                          + sumMs * MULTI_SCATTER_STRENGTH);
 }
 
 // Build the celestial body's square tangent frame: `right` along the arc-travel direction, `up`
@@ -222,6 +202,11 @@ float3 stars(float3 dir, float starBrightness, float VdotS, float4 celestial) {
 [shader("miss")]
 void main(inout Payload payload) {
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+    // The analytic light below is the MIS partner of raygen's sun NEE — the same emitter reached the
+    // other way — so it has to be dyed by the same atmosphere, from the same table, or the two estimators
+    // disagree and the weighting stops cancelling. (This stage has its own local worldPush: it does not
+    // import world_core, so it does not share raygen's global.)
+    dyeCelestialLight(worldPush);
     float3 dir = normalize(WorldRayDirection());
     float day = worldPush.sunDir.w;
     float3 sd = worldPush.sunDir.xyz;
@@ -272,7 +257,7 @@ void main(inout Payload payload) {
             // survives, the halo collapses to ~0.
             float core = pow(clamp(dot(t, t) * 0.45, 0.0, 1.0), 6.0);
             // transmittanceToSpace reddens+dims the disc through the sunset on the sky's own curve.
-            disc += SUN_DISC_RADIANCE * transmittanceToSpace(dir) * core * sunUp;
+            disc += SUN_DISC_RADIANCE * sampleTransmittanceToSpace(dir) * core * sunUp;
         }
         // Same horizon gate as the sun: with the soft-horizon change, below-horizon rays no longer clip
         // at the planet, so without this the moon disc would stay visible after it set.
@@ -284,7 +269,7 @@ void main(inout Payload payload) {
             // Moon: a smoothstep contrast ramp suppresses the faint halo while keeping the lit phase
             // shape from the texture. The transmittance tint gives a warm amber moon at moonrise/set.
             float m = smoothstep(0.0, 1.0, min(length(t), 1.0)) * 1.3;
-            disc += MOON_DISC_RADIANCE * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp;
+            disc += MOON_DISC_RADIANCE * sampleTransmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp;
         }
     }
 

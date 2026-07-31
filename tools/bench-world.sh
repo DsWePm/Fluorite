@@ -12,19 +12,33 @@
 # again: same world, same spawn, same look direction, every time.
 #
 # Usage:
-#   tools/bench-world.sh                 restore run/saves/bench from run/bench-master/bench
-#   tools/bench-world.sh --adopt         make the CURRENT run/saves/bench the new master
+#   tools/bench-world.sh [name]          restore run/saves/<name> from run/bench-master/<name>
+#   tools/bench-world.sh --adopt [name]  make the CURRENT run/saves/<name> the new master
+#
+# `name` defaults to "bench".
 #
 # Then capture with:
-#   ./gradlew :fabric:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=bench
+#   ./gradlew :fabric:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=<name>
+#
+# WHY THE NAME IS A PARAMETER: a capture only measures code that the scene actually runs. The original
+# "bench" world has no significant body of water, so it says nothing about the water medium — the
+# enclosed-scattering path is gated on being inside water and simply never executes there. A feature
+# needs a world that exercises it, and pretending otherwise produces a number that looks like evidence
+# of no regression. Keep one world per thing being measured; "bench-water" is the one for M9.
 #
 # The master lives under run/, which is not tracked: a 20 MB world does not belong in git, and it is
 # per-machine anyway. Create it once with --adopt.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-master="$here/run/bench-master/bench"
-live="$here/run/saves/bench"
+
+if [ "${1:-}" = "--adopt" ]; then
+    name="${2:-bench}"
+else
+    name="${1:-bench}"
+fi
+master="$here/run/bench-master/$name"
+live="$here/run/saves/$name"
 
 if [ "${1:-}" = "--adopt" ]; then
     if [ ! -d "$live" ]; then

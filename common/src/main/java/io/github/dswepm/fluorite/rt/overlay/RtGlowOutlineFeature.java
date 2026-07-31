@@ -64,7 +64,7 @@ final class RtGlowOutlineFeature implements RtOverlayFeature {
         if (batches.isEmpty()) {
             return false;
         }
-        ensureResources(ctx, width, height);
+        ensureResources(ctx, graphicsUse, width, height);
 
         // Merge every glowing entity's mesh into one vertex/index pair (indices rebased onto the merged
         // vertex buffer); one draw per entity so each can push its own outline colour.
@@ -117,7 +117,8 @@ final class RtGlowOutlineFeature implements RtOverlayFeature {
         return true;
     }
 
-    private void ensureResources(RtContext ctx, int width, int height) {
+    private void ensureResources(RtContext ctx, RtGpuExecutor.GraphicsUse graphicsUse,
+                                 int width, int height) {
         this.ctx = ctx;
         if (maskPipeline == null) {
             maskPipeline = new RtOverlayPipelines.Spec("entity_glow.vert.spv", "entity_glow.frag.spv")
@@ -134,7 +135,14 @@ final class RtGlowOutlineFeature implements RtOverlayFeature {
         }
         if (maskImage == null || maskImage.width != width || maskImage.height != height) {
             if (maskImage != null) {
-                maskImage.destroy();
+                // Retired against graphics completion, NOT destroyed here. RtImage.destroy() is an
+                // immediate vkDestroyImageView + vmaDestroyImage, and compositeSet still holds this view
+                // for frames that may not have executed yet — destroying a resource an in-flight command
+                // buffer references is undefined behaviour, and its usual shape is a fullscreen quad
+                // sampling whatever texture landed in the freed memory. The one moment this can happen is
+                // a size change, which is to say the moment the window is resized or F11 is pressed.
+                RtImage retired = maskImage;
+                ctx.gpuExecutor().retireAfterGraphics(graphicsUse, retired::destroy);
             }
             maskImage = ctx.createStorageImage(width, height, MASK_FORMAT,
                     "glow outline mask " + width + "x" + height, VK10.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);

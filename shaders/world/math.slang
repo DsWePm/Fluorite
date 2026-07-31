@@ -140,6 +140,33 @@ public float3 fresnelSchlick(float cosT, float3 f0) {
 // g=0 → isotropic; g>0 → forward-scatter peak at cosT=1 (light and view aligned through a thin slab).
 public static const float SSS_G        = 0.6; // forward-scatter anisotropy; leaves/grass are quite directional
 public static const float SSS_STRENGTH = 1.0; // 1.0 ≈ 2.5× the Lambertian at peak (sss=1, cosT=1, backNdl=1)
+
+/**
+ * The thin shell's modelled thickness, from worldPush.fogAmbient.w. 1 reproduces the two constants
+ * above exactly, so the default changes nothing.
+ *
+ * One control rather than separate strength and anisotropy sliders, because thickness drives both and
+ * driving them independently lets a user build a slab that is physically impossible — very thick and
+ * still sharply forward-scattering, which reads as a material that glows through without diffusing.
+ *
+ *   strength ∝ 1/thickness   a thicker slab transmits less
+ *   g_eff = g^thickness      each scattering event multiplies the mean cosine by g, and a thicker slab
+ *                            takes proportionally more of them, so directionality decays geometrically
+ *
+ * The second is the same similarity argument the water's phase function uses (see volume.slang's
+ * effectiveAnisotropy) — worth recognising as the same shape rather than two coincidences.
+ */
+public float sssThickness() {
+    return max(worldPush.fogAmbient.w, 0.05);
+}
+
+public float sssStrength() {
+    return SSS_STRENGTH / sssThickness();
+}
+
+public float sssPhase(float cosT) {
+    return hg(cosT, pow(SSS_G, sssThickness()));
+}
 // Keep SSS on the first two Pass B hits. Pass A's primary/interface prefix is outside this local depth.
 public static const int   MAX_SSS_INDIRECT_DEPTH = 1;
 public float hg(float cosT, float g) {

@@ -217,37 +217,140 @@ public struct SegmentIntegral {
  */
 public static const float ENCLOSED_RAYLEIGH_FRACTION = 0.05;
 
-public float enclosedPhase(float cosT, float g) {
+/**
+ * Effective anisotropy after the scattering the single-scattering integral does not model.
+ *
+ * A strongly forward phase function is right for ONE scattering event. Light that reaches the eye from
+ * deep in a highly scattering medium has been redirected many times, and each event multiplies the mean
+ * cosine of the distribution by g — so after n events the surviving directionality is g^n. A medium with
+ * single-scattering albedo w scatters on average 1/(1-w) times before absorption ends the walk, which
+ * gives an effective anisotropy of
+ *
+ *   g_eff = g^(1/(1 - w))
+ *
+ * and that is the whole term: one pow, no marching, no new rays. It falls out of the same similarity
+ * argument that underlies reduced scattering coefficients, so it costs nothing to justify either.
+ *
+ * What it fixes is the look the water had while the albedo sat near 1: a medium that scatters almost
+ * everything and yet keeps a sharp forward lobe reads as a glossy sheet rather than as depth, because
+ * every ray leaving a point agrees about where the light came from. At w = 0.95 this drives g = 0.75
+ * down to 0.75^20, which is 0.003 — isotropic, which is what a nearly conservative medium actually is.
+ *
+ * HPWater blends toward isotropic on the same reasoning and reaches it through a fitted smoothstep on
+ * the albedo; this is derived instead, and shares no constants with it.
+ */
+float effectiveAnisotropy(float g, float3 scatterAlbedo) {
+    float w = clamp(luminance(scatterAlbedo), 0.0, 0.98);
+    return sign(g) * pow(abs(g), 1.0 / (1.0 - w));
+}
+
+public float enclosedPhase(float cosT, float g, float3 scatterAlbedo) {
     float rayleigh = (3.0 / (16.0 * PI)) * (1.0 + cosT * cosT);
-    return lerp(hg(cosT, g), rayleigh, ENCLOSED_RAYLEIGH_FRACTION);
+    return lerp(hg(cosT, effectiveAnisotropy(g, scatterAlbedo)), rayleigh, ENCLOSED_RAYLEIGH_FRACTION);
 }
 
 /**
- * integral of exp(-sigma_t * (d0 - rd_y_over_sun * t) * pathScale) * exp(-sigma_t * t) dt over [0, T].
+ * integral of exp(-sigma_t * max(d0 - descentPerT * t, 0) * pathScale) * exp(-sigma_t * t) dt over [0, T].
  *
  * Split out because the sun and the sky differ only in how long their path to a given depth is: the sun
  * arrives at an angle and travels depth / sin(elevation), the sky arrives overhead and travels depth.
- * Same closed form, one parameter apart.
+ * Same closed form, one parameter apart. `descentPerT` is how fast DEPTH falls per unit t, which is the
+ * ray's own rd.y for both of them; the light's slant is entirely in `pathScale`.
+ *
+ * The `max(..., 0)` on depth is the whole reason this has two pieces. Without it a climbing ray's depth
+ * goes negative past the surface and exp(-sigma d) silently becomes exp(+sigma |d|), amplifying the
+ * source without bound. That was previously headed off by clamping the exponent `a` to zero instead —
+ * which stopped the growth but replaced it with something worse and quieter: a clamped `a` is exactly
+ * zero, the 0/0 branch then returns the SEGMENT LENGTH, and for a ray that hit nothing that length is
+ * RAY_FAR = 10000. So the case meant to be capped became thousands of times the source instead. Clamping
+ * the depth caps it at the cause and is also the more correct model: above the surface there is no water
+ * left to attenuate the light, so it arrives whole and only the view path is still attenuating.
  */
 float3 depthAttenuatedIntegral(float3 sigmaT, float d0, float descentPerT, float pathScale, float tEnd) {
+    // Where the ray reaches depth 0. Only a climbing ray gets there; a level or descending one never
+    // does, and its whole segment takes the submerged branch.
+    float tSurface = descentPerT > 1.0e-6 ? d0 / descentPerT : 1.0e30;
+    float tSub = clamp(tSurface, 0.0, tEnd);
+
+    // Submerged stretch. Both exponents are linear in t, so the product stays closed form. `a` may be
+    // positive here (climbing faster than the light descends) but only over [0, tSurface], where the
+    // growth is exactly cancelled by `head` — at t = tSurface the two collapse to exp(-sigma_t*tSurface),
+    // the plain view attenuation, which is also where the second piece picks up. Continuous, and bounded.
     float3 head = exp(-sigmaT * (d0 * pathScale));
-    // Clamped at zero, and this is load-bearing rather than defensive. `a` combines the light getting
-    // BRIGHTER as the ray rises toward the surface with the view path attenuating as it goes; when a ray
-    // climbs faster than the light descends the first wins and exp(a T) grows without bound. The
-    // underlying error is that depth is allowed to go negative — above the surface there is no water
-    // left to attenuate the light, so exp(-sigma d) quietly becomes exp(+sigma |d|) and the source is
-    // amplified instead. It showed up as water sparkling at grazing angles, where segments are longest,
-    // and on any upward look from below the surface.
-    float3 a = min(sigmaT * (descentPerT * pathScale - 1.0), float3(0.0, 0.0, 0.0));
+    float3 a = sigmaT * (descentPerT * pathScale - 1.0);
     float3 span;
     // a -> 0 is a ray climbing at exactly the rate the light descends, where the exponential is flat and
-    // the closed form is 0/0. The limit is T.
+    // the closed form is 0/0. The limit is the length of the stretch.
     [unroll]
     for (int c = 0; c < 3; ++c) {
         float ac = a[c];
-        span[c] = abs(ac) < 1.0e-5 ? tEnd : (exp(ac * tEnd) - 1.0) / ac;
+        span[c] = abs(ac) < 1.0e-5 ? tSub : (exp(ac * tSub) - 1.0) / ac;
     }
-    return head * span;
+    float3 total = head * span;
+
+    // Above the surface: source unattenuated, view path still attenuating.
+    if (tEnd > tSub) {
+        float3 safeSigma = max(sigmaT, float3(1.0e-6, 1.0e-6, 1.0e-6));
+        total += (exp(-safeSigma * tSub) - exp(-safeSigma * tEnd)) / safeSigma;
+    }
+    return total;
+}
+
+// Sun-visibility strata for the enclosed single-scattering estimator: shadow rays at view-path optical
+// depths 0, TAU_STEP, 2*TAU_STEP. Three cover 1 - exp(-3.75) = 97.6% of the integrand's mass; strata
+// beyond the segment's end cast nothing, so only long segments through murky water pay all three.
+public static const int WATER_SUN_VIS_STRATA = 3;
+public static const float WATER_SUN_VIS_TAU_STEP = 1.25;
+
+/**
+ * How open to the sky the water at `p` is, from the coarse CPU-built grid: 0 sealed cave, 1 open ocean.
+ *
+ * The value is vanilla's own sky light, averaged over the water blocks of an 8-block cell (see
+ * RtSkyLightGrid). Two properties make that the right quantity for the ambient source and are worth
+ * naming because neither is obvious:
+ *
+ *   - Sky light is a property of the COLUMN above a point, not of the sun's direction. A hill's shadow
+ *     leaves it at 15 while a cave roof zeroes it — which is exactly the split the ambient term needs,
+ *     and exactly the one its shadowless constant source could not express: any constant is
+ *     simultaneously too bright for the cave and too dark for the shadowed pond.
+ *
+ *   - Vanilla attenuates sky light through water block by block, so it fades over ~15 blocks of depth
+ *     on its own. That overlaps with the analytic exp(-sigma*depth) this term already carries, and the
+ *     overlap is ACCEPTED deliberately rather than corrected for: the doubled falloff errs darker with
+ *     depth, deep water reading dark is the behaviour the murk rework was asked for, and the correction
+ *     (dividing one falloff back out) would put a division between two nearly-zero quantities in every
+ *     deep pixel.
+ *
+ * Trilinear over the byte cells: the grid is 8-block-coarse, and nearest sampling would draw its cell
+ * boundaries as visible brightness steps in the water — this whole line of work exists because a step
+ * where a gradient belongs reads as a bug.
+ */
+float skyLightCell(int3 c, int3 dims) {
+    c = clamp(c, int3(0, 0, 0), dims - int3(1, 1, 1));
+    uint idx = (uint(c.z) * uint(dims.y) + uint(c.y)) * uint(dims.x) + uint(c.x);
+    uint word = ConstPtr<uint>(pc.skyLightAddr)[idx >> 2];
+    return float((word >> ((idx & 3u) * 8u)) & 0xFFu) * (1.0 / 255.0);
+}
+
+public float skyLightFactor(float3 p) {
+    if (pc.skyLightAddr == 0) {
+        return 1.0; // no grid published (menu worlds, first frames): keep the constant-source behaviour
+    }
+    int3 dims = worldPush.skyLightDims.xyz;
+    float3 g = (p - worldPush.skyLightOrigin.xyz) / max(worldPush.skyLightOrigin.w, 1.0e-3)
+            - float3(0.5, 0.5, 0.5);
+    float3 fl = floor(g);
+    float3 f = g - fl;
+    int3 base = int3(fl);
+    float c00 = lerp(skyLightCell(base, dims),
+                     skyLightCell(base + int3(1, 0, 0), dims), f.x);
+    float c10 = lerp(skyLightCell(base + int3(0, 1, 0), dims),
+                     skyLightCell(base + int3(1, 1, 0), dims), f.x);
+    float c01 = lerp(skyLightCell(base + int3(0, 0, 1), dims),
+                     skyLightCell(base + int3(1, 0, 1), dims), f.x);
+    float c11 = lerp(skyLightCell(base + int3(0, 1, 1), dims),
+                     skyLightCell(base + int3(1, 1, 1), dims), f.x);
+    return lerp(lerp(c00, c10, f.y), lerp(c01, c11, f.y), f.z);
 }
 
 /**
@@ -287,30 +390,105 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
 
     float3 total = float3(0.0, 0.0, 0.0);
 
-    // The sun, reaching depth d after travelling d / sin(elevation) through the water.
+    // Which sources are live. A measurement switch (worldPush.flags bits 13-14, Rt.Water.SCATTER_SOURCE):
+    // the two terms have independent occlusion models, so isolating one is the only way to attribute a
+    // misbehaviour to it rather than to their sum.
+    uint scatterSource = (worldPush.flags >> 13u) & 3u;
+    bool sunSourceOn = scatterSource == 0u || scatterSource == 1u;
+    bool skySourceOn = scatterSource == 0u || scatterSource == 2u;
+
+    // The sun, reaching depth d after travelling d / cos(refracted zenith angle) through the water.
+    //
+    // NOT d / sin(elevation). That is the path through AIR, and light entering water bends toward the
+    // vertical: Snell with n = 1.333 maps the whole sky onto a cone of half-angle 48.6 degrees inside
+    // the water (the same critical angle that makes Snell's window), so the in-water path is at most
+    // 1/cos(48.6) = 1.51 times the depth NO MATTER how low the sun sits. The air form is unbounded — at
+    // sin(elevation) = 0.2 it claimed 5x the depth against a true 1.48x, and it diverges at sunset — so
+    // the sun term died within a block or two of the surface and left a bright band hugging the surface
+    // with darkness immediately under it. A bounded path is what turns that edge into a falloff.
     float sunY = worldPush.lightDir.y;
-    if (sunY > 1.0e-3) {
-        // One shadow ray, and it is what turns this from a wash into a volume. Without it the sun
-        // reaches every point in the water regardless of what is above it, so the lit side stays lit
-        // through any amount of terrain and the scattering has no structure to it — it varies only with
-        // distance to whatever the ray ends on, which is why it read as paint on the surfaces rather
-        // than as light in the water. Shafts, shadowed water and a dark side are all this term.
+    if (sunSourceOn && sunY > 1.0e-3) {
+        float sinAir = sqrt(max(0.0, 1.0 - sunY * sunY));
+        float sinWater = sinAir / WATER_IOR;
+        // The 1e-4 floor is unreachable given the critical angle bounds cosWater below at ~0.66; it is
+        // there so a future IOR change cannot turn this into a division by zero silently.
+        float cosWater = sqrt(max(1.0e-4, 1.0 - sinWater * sinWater));
+        float sunPathScale = 1.0 / cosWater;
+        // The PHASE still uses the unrefracted direction. The scattering angle ought to be measured
+        // against the refracted beam too, but that would move the underwater sun halo, which currently
+        // reads correctly — a separate change to make deliberately rather than as a side effect of
+        // fixing the path length.
+        float cosT = dot(rd, worldPush.lightDir.xyz);
+        // rd.y, not rd.y/sunY. `descentPerT` is how fast the ray's DEPTH falls per unit t, which is the
+        // ray's own vertical component and has nothing to do with where the sun is; the sun's slant is
+        // `pathScale`, and depthAttenuatedIntegral already multiplies the two. Passing rd.y/sunY divided
+        // by sin(elevation) twice, so a low sun squared its own slant. The sky term below always passed
+        // rd.y; the two never agreed.
+        float3 phaseGain = worldPush.lightRadiance.xyz
+                * (4.0 * PI * enclosedPhase(cosT, worldPush.waterScatter.w, albedo));
+
+        // Shadow rays at FIXED OPTICAL DEPTHS along the segment, weighting each stratum by exactly the
+        // share of the closed-form integral it covers — F(edge[i+1]) - F(edge[i]) with F the same
+        // depthAttenuatedIntegral the one-ray version used, so the total is unchanged where visibility
+        // is uniform and the estimator stays exact, not an approximation of the old one.
         //
-        // Cast from the segment's ORIGIN rather than from a point inside it. Sampling the middle makes
-        // the answer depend on segment length, and segment length is whatever the ray happened to hit:
-        // neighbours disagreeing that way is what made the fog's sun halo blotchy and unstable, and the
-        // fix there was the same one. Every ray leaving a point now agrees about that point.
-        float3 sunVis = visibility(ro, worldPush.lightDir.xyz, RAY_FAR).transmittance;
-        if (any(sunVis > 0.0)) {
-            float cosT = dot(rd, worldPush.lightDir.xyz);
-            float3 source = worldPush.lightRadiance.xyz * sunVis
-                    * (4.0 * PI * enclosedPhase(cosT, worldPush.waterScatter.w));
-            total += source * depthAttenuatedIntegral(sigmaT, d0, rd.y / sunY, 1.0 / sunY, tEnd);
+        // Why more than one ray: a single ray from the segment origin makes sun visibility ONE value for
+        // the whole segment — and for the camera segment, one value for the whole screen. Any occlusion
+        // boundary the camera crosses then flips the entire screen's scattering at once, which is
+        // exactly what was observed: swimming above/below one precise height toggled the murk
+        // everywhere, in every direction, as a step. Occlusion now varies along each ray, so it varies
+        // across the screen, and the camera crossing a shadow boundary moves through it in stages.
+        //
+        // Why the strata sit at fixed optical depths (tau = 0, 1.25, 2.5 along the view path) rather
+        // than at fractions of the segment: fractions of tEnd would make the sample POSITIONS depend on
+        // segment length, and segment length is whatever the ray happened to hit — neighbours
+        // disagreeing that way is what made the fog's sun halo blotchy, and is why the one-ray version
+        // deliberately cast from the origin. Fixed depths keep neighbouring pixels sampling the same
+        // world locations. The first stratum's ray still leaves from `ro` itself, preserving the old
+        // behaviour as the first term. Strata past the segment's end carry zero weight and cast no ray,
+        // so short segments still pay one ray; only long segments through murky water pay all three.
+        //
+        // Still CULL_SECONDARY_NO_SELF: the first ray's origin IS the camera for the camera segment,
+        // which sits inside the first-person head mesh, and this remains the only shadow ray in the
+        // renderer cast from the eye.
+        float sigmaBar = max(luminance(sigmaT), 1.0e-4);
+        float3 sunTerm = float3(0.0, 0.0, 0.0);
+        float3 integralToPrevEdge = float3(0.0, 0.0, 0.0);
+        for (int s = 0; s < WATER_SUN_VIS_STRATA; ++s) {
+            float edgeNear = (WATER_SUN_VIS_TAU_STEP * float(s)) / sigmaBar;
+            if (edgeNear >= tEnd) {
+                break;
+            }
+            float edgeFar = s == WATER_SUN_VIS_STRATA - 1
+                    ? tEnd
+                    : min((WATER_SUN_VIS_TAU_STEP * float(s + 1)) / sigmaBar, tEnd);
+            float3 integralToFarEdge = depthAttenuatedIntegral(sigmaT, d0, rd.y, sunPathScale, edgeFar);
+            float3 weight = max(integralToFarEdge - integralToPrevEdge, float3(0.0, 0.0, 0.0));
+            integralToPrevEdge = integralToFarEdge;
+            if (all(weight <= 1.0e-8)) {
+                continue;
+            }
+            // Bit 15: skip the shadow ray and take the sun as unoccluded. Splits this term into its two
+            // moving parts — occlusion, and the depth integral weighting it — so which one misbehaves is
+            // measured rather than argued.
+            float3 vis = (worldPush.flags & 32768u) != 0u
+                    ? float3(1.0, 1.0, 1.0)
+                    : visibilityMasked(CULL_SECONDARY_NO_SELF, ro + rd * edgeNear,
+                                       worldPush.lightDir.xyz, RAY_FAR).transmittance;
+            sunTerm += vis * weight;
         }
+        total += phaseGain * sunTerm;
     }
 
-    // Sky light, arriving from overhead, so its path to depth d is d.
-    total += worldPush.fogAmbient.xyz * depthAttenuatedIntegral(sigmaT, d0, rd.y, 1.0, tEnd);
+    // Sky light, arriving from overhead, so its path to depth d is d. The water's own source, not the
+    // fog's (see worldPush.waterAmbient) — and gated by the sky-light grid, which is what makes an
+    // underwater cave dark while shadowed surface water keeps its glow: vanilla sky light is a property
+    // of the column above a point, not of the sun's direction, so a hill's shadow does not remove it but
+    // a cave roof does. That split is exactly the one a constant source could not express.
+    if (skySourceOn) {
+        total += worldPush.waterAmbient.xyz * skyLightFactor(ro)
+                * depthAttenuatedIntegral(sigmaT, d0, rd.y, 1.0, tEnd);
+    }
 
     return albedo * sigmaT * total;
 }
