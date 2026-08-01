@@ -27,6 +27,8 @@ import java.nio.LongBuffer;
 
 import io.github.dswepm.fluorite.rt.RtContext;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
+import io.github.dswepm.fluorite.rt.RtGpuExecutor;
+import io.github.dswepm.fluorite.rt.overlay.RtOverlayPipelines;
 import io.github.dswepm.fluorite.rt.accel.RtImage;
 
 import static io.github.dswepm.fluorite.rt.RtContext.check;
@@ -60,11 +62,11 @@ public final class RtSky {
     public static final int SKY_VIEW_H = 128;
     private static final int SKY_VIEW_PUSH_BYTES = 32; // float4 sun direction + float4 art tint
     /** Must match FROXEL_W/H/D in shaders/world/sky_froxel.comp.slang. */
-    public static final int FROXEL_W = 32;
-    public static final int FROXEL_H = 32;
-    public static final int FROXEL_D = 32;
-    private static final int FROXEL_GROUP = 4; // matches [numthreads(4, 4, 4)]
-    private static final int FROXEL_PUSH_BYTES = 8; // the WorldPush device address
+    public static final int FROXEL_W = 64;
+    public static final int FROXEL_H = 36;
+    public static final int FROXEL_D = 64;
+    private static final int FROXEL_GROUP = 8; // matches [numthreads(8, 8, 1)]
+    private static final int FROXEL_PUSH_BYTES = 16; // WorldPush + sky-light grid device addresses
     private static final int BAKE_GROUP = 8; // matches [numthreads(8, 8, 1)] in both bake shaders
 
     /** One compute bake: its layout, its set, and the pipeline that writes one table. */
@@ -83,6 +85,7 @@ public final class RtSky {
     private final Bake multiScatterBake;
     private final Bake skyViewBake;
     private final Bake froxelBake;
+    private final RtOverlayPipelines.AccelStructureSet froxelTlas;
     private final long lutSampler;
     private RtImage transmittance;
     private RtImage multiScatter;
@@ -93,12 +96,13 @@ public final class RtSky {
     private boolean baked;
 
     private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
-                  Bake froxelBake, long lutSampler) {
+                  Bake froxelBake, RtOverlayPipelines.AccelStructureSet froxelTlas, long lutSampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
         this.multiScatterBake = multiScatterBake;
         this.skyViewBake = skyViewBake;
         this.froxelBake = froxelBake;
+        this.froxelTlas = froxelTlas;
         this.lutSampler = lutSampler;
     }
 
@@ -123,10 +127,17 @@ public final class RtSky {
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, SKY_VIEW_PUSH_BYTES);
             // Aerial perspective: the same two tables in, one 3D image out, and the WorldPush address so
             // the camera matrix and the fog's parameters are read rather than restated.
+            // Set 1 is a ring of TLAS-only descriptor sets, borrowed from the overlay passes rather than
+            // rebuilt: the handle changes almost every frame, and rewriting one set while an earlier
+            // frame may still be reading it is a hazard that already has exactly one correct solution in
+            // this codebase.
+            RtOverlayPipelines.AccelStructureSet froxelTlas = RtOverlayPipelines.accelStructureSet(
+                    ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "sky froxel TLAS");
             Bake froxelBake = createBake(ctx, stack, "sky_froxel.comp.spv", "sky froxel",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, FROXEL_PUSH_BYTES);
+                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, FROXEL_PUSH_BYTES,
+                    froxelTlas.layout);
 
             // LINEAR + CLAMP_TO_EDGE. The multi-scatter bake reads the transmittance table off the
             // horizon-crowded end of its u axis, where nearest sampling shows the texel grid as banding
@@ -143,7 +154,7 @@ public final class RtSky {
             long sampler = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, sampler, "sky LUT chain sampler");
 
-            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake, froxelBake, sampler);
+            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake, froxelBake, froxelTlas, sampler);
             // The images are allocated HERE rather than lazily inside the bake, so the views exist from
             // the moment this object does. Creating them in the bake made a view's availability depend on
             // whether the bake had run, which in turn made the ray-tracing pipeline's binding depend on
@@ -216,19 +227,24 @@ public final class RtSky {
      * parameter vectors, and a froxel column that disagreed with the pixels above it — by half a tile, or
      * by a stale density — would read as the fog sliding over the geometry as the camera turns.
      */
-    public void recordFroxelBake(VkCommandBuffer cmd, long worldPushAddr) {
+    public void recordFroxelBake(VkCommandBuffer cmd, long worldPushAddr, long skyLightAddr, long tlas,
+                                 RtGpuExecutor.GraphicsUse graphicsUse) {
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "aerial perspective bake")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, froxelBake.pipeline());
+            long tlasSet = froxelTlas.bind(ctx, tlas, graphicsUse);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
-                    froxelBake.pipelineLayout(), 0, stack.longs(froxelBake.descriptorSet()), null);
+                    froxelBake.pipelineLayout(), 0,
+                    stack.longs(froxelBake.descriptorSet(), tlasSet), null);
             ByteBuffer pushData = stack.malloc(FROXEL_PUSH_BYTES);
-            pushData.putLong(0, worldPushAddr);
+            pushData.putLong(0, worldPushAddr).putLong(8, skyLightAddr);
             VK10.vkCmdPushConstants(cmd, froxelBake.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
+            // One thread per COLUMN, not per froxel: each walks all 32 slices and writes them as it goes.
+            // With a shadow ray at every step, the per-froxel shape would trace the same ray once for
+            // every cell behind it.
             VK10.vkCmdDispatch(cmd, (FROXEL_W + FROXEL_GROUP - 1) / FROXEL_GROUP,
-                    (FROXEL_H + FROXEL_GROUP - 1) / FROXEL_GROUP,
-                    (FROXEL_D + FROXEL_GROUP - 1) / FROXEL_GROUP);
+                    (FROXEL_H + FROXEL_GROUP - 1) / FROXEL_GROUP, 1);
         }
     }
 
@@ -331,6 +347,7 @@ public final class RtSky {
         if (lutSampler != 0L) {
             VK10.vkDestroySampler(vk, lutSampler, null);
         }
+        froxelTlas.destroy(vk);
         froxelBake.destroy(vk);
         skyViewBake.destroy(vk);
         multiScatterBake.destroy(vk);
@@ -347,6 +364,12 @@ public final class RtSky {
     /** Build one bake's layout/pool/set/pipeline. {@code types} is the set-0 binding list, in order. */
     private static Bake createBake(RtContext ctx, MemoryStack stack, String shader, String label,
                                    int[] types, int pushBytes) {
+        return createBake(ctx, stack, shader, label, types, pushBytes, 0L);
+    }
+
+    /** {@code extraSetLayout} adds a second descriptor set to the pipeline layout; 0 for none. */
+    private static Bake createBake(RtContext ctx, MemoryStack stack, String shader, String label,
+                                   int[] types, int pushBytes, long extraSetLayout) {
         VkDevice vk = ctx.vk();
         LongBuffer p = stack.mallocLong(1);
         VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(types.length, stack);
@@ -379,7 +402,7 @@ public final class RtSky {
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, set, label + " descriptor set");
 
         VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
-                .pSetLayouts(stack.longs(dsl));
+                .pSetLayouts(extraSetLayout == 0L ? stack.longs(dsl) : stack.longs(dsl, extraSetLayout));
         if (pushBytes > 0) {
             VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
             pcr.get(0).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(pushBytes);

@@ -23,23 +23,43 @@
 import atmosphere;
 import world_common;
 
-// 32^3 as the plan specifies. The depth axis is the one that matters and 32 slices over the fog's cull
-// distance is coarse, which is why the slices are distributed quadratically rather than evenly: the near
-// field is where a slice boundary would be visible as a band, and where the density is highest.
-public static const int FROXEL_W = 32;
-public static const int FROXEL_H = 32;
-public static const int FROXEL_D = 32;
+// 64x36x64, up from the plan's 32^3, and the reason is a light shaft through a two-block window.
+//
+// At 32 columns across a 1600-wide frame each one owns fifty pixels, so a window that occupies a hundred
+// spans two columns and its shaft can have no edge — it reads as the screen brightening as you walk past,
+// which is exactly what it was reported as. Sharpness in a froxel is angular resolution and nothing else;
+// no amount of care in the integral recovers an edge the grid cannot represent.
+//
+// 64x36 keeps the frame's aspect so a column is roughly square in angle, and the depth axis doubles
+// because a shaft is long and thin — the direction it needs resolution in is the one it travels along.
+// Cost scales as W*H*D in rays: 147k against the previous 32k, on a dispatch measured at 0.137 ms.
+public static const int FROXEL_W = 64;
+public static const int FROXEL_H = 36;
+public static const int FROXEL_D = 64;
 
 struct FroxelPush {
     uint64_t worldPushAddr;
+    uint64_t skyLightAddr; // byte-per-cell sky-openness grid; 0 = none published
 };
 [[vk::push_constant]] FroxelPush froxelPush;
 
 [[vk::binding(0, 0)]] Sampler2D transmittanceLut;
 [[vk::binding(1, 0)]] Sampler2D multiScatterLut;
 [[vk::binding(2, 0)]] RWTexture3D<float4> aerialPerspective;
+// Set 1, its own ring: the TLAS handle changes almost every frame, and rewriting one set's binding while
+// an earlier frame's command buffer may still be reading it is the hazard RtPipeline.setTlas exists to
+// guard against. Reusing RtOverlayPipelines.AccelStructureSet rather than growing set 0 is what keeps
+// that discipline in one place instead of two.
+[[vk::binding(0, 1)]] RaytracingAccelerationStructure tlas;
 
 static const float PI_F = 3.14159265359;
+
+// Must equal CULL_SECONDARY_NO_SELF in trace.slang. Restated rather than imported: that module pulls in
+// world_core, which declares the ray-tracing pipeline's set-0 bindings, and this compute shader's set is
+// its own. The first-person player is excluded deliberately — the camera sits inside its head mesh, and
+// letting it occlude the cells directly in front of the eye would put a shadow across the whole near
+// field, which is the same trap the water's shadow rays fell into.
+static const uint FROXEL_SHADOW_MASK = 0x01u;
 
 /**
  * Depth this slice's value describes, quadratic so the near slices are thin.
@@ -54,6 +74,25 @@ float sliceDepth(int z, float maxDist) {
     return maxDist * t * t;
 }
 
+/**
+ * Whether this cell can see the sky, asked with a ray rather than read from the grid.
+ *
+ * The grid was tried first and is the wrong instrument, which M9 predicted in the sentence that shipped
+ * with it: its cells are eight blocks on a side, it "cannot tell three blocks outside a cave mouth from
+ * deep inside one", and the note ends by saying fine volumetric occlusion is M13's job. A house is
+ * shorter than one cell, so the cell holding a sealed room also holds the open sky above its roof and
+ * averages to open — measured exactly that way, red everywhere indoors and out, with the terrain
+ * silhouette visible at the horizon because the grid IS working, just not at a useful scale.
+ *
+ * A froxel already resolves what a room needs, so it answers for itself. Straight up rather than a
+ * hemisphere: the ambient really is an integral over directions, but the question a ceiling asks is
+ * binary and one ray settles it, where a proper hemisphere would cost as many rays per cell as the whole
+ * grid costs now.
+ */
+float skyReachable(float3 p) {
+    return sunOccluded(p, float3(0.0, 1.0, 0.0)) ? 0.0 : 1.0;
+}
+
 /** Henyey-Greenstein, normalised over the sphere. Matches what volume.slang uses for the fog's sun lobe. */
 float fogPhase(float cosT, float g) {
     float g2 = g * g;
@@ -61,10 +100,33 @@ float fogPhase(float cosT, float g) {
     return (1.0 - g2) / (4.0 * PI_F * max(d * sqrt(max(d, 0.0)), 1.0e-6));
 }
 
+/** One shadow ray. Opaque-only and first-hit: this asks whether the sun is blocked, not by what. */
+bool sunOccluded(float3 p, float3 sunDir) {
+    RayDesc ray;
+    ray.Origin = p;
+    ray.Direction = sunDir;
+    ray.TMin = 0.05;
+    ray.TMax = 4096.0;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    q.TraceRayInline(tlas, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                     FROXEL_SHADOW_MASK, ray);
+    while (q.Proceed()) {
+        // FORCE_OPAQUE leaves nothing to arbitrate; the loop is here because the API is specified around
+        // it and an implementation may return true once.
+    }
+    return q.CommittedStatus() != COMMITTED_NOTHING;
+}
+
+// ONE THREAD PER COLUMN, marching all 32 slices and writing each as it passes.
+//
+// The first version gave every froxel its own thread and had each redo the stretch its predecessors
+// covered — 528 steps per column instead of 32, which was a fair trade when a step was an exp and a
+// texture fetch. It stops being one the moment a step casts a ray: the same shadow ray would be traced
+// by every cell behind it, sixteen times over, for an answer that does not change.
 [shader("compute")]
-[numthreads(4, 4, 4)]
+[numthreads(8, 8, 1)]
 void main(uint3 id: SV_DispatchThreadID) {
-    if (id.x >= uint(FROXEL_W) || id.y >= uint(FROXEL_H) || id.z >= uint(FROXEL_D)) {
+    if (id.x >= uint(FROXEL_W) || id.y >= uint(FROXEL_H)) {
         return;
     }
     WorldPush wp = ConstPtr<WorldPush>(froxelPush.worldPushAddr)[0];
@@ -99,59 +161,88 @@ void main(uint3 id: SV_DispatchThreadID) {
     // future visibility term can be added per cell without a second pass to prefix-sum it.
     float3 transmittance = float3(1.0, 1.0, 1.0);
     float3 inScatter = float3(0.0, 0.0, 0.0);
-    int steps = int(id.z) + 1;
 
-    for (int s = 0; s < steps; ++s) {
+    for (int s = 0; s < FROXEL_D; ++s) {
         float tNear = s == 0 ? 0.0 : sliceDepth(s - 1, maxDist);
         float tFar = sliceDepth(s, maxDist);
         // The fog has a start distance so the near field stays readable; nothing before it contributes.
+        //
+        // A slice entirely inside that dead zone still has to be WRITTEN, with the accumulator as it
+        // stands — which is zero in-scatter and full transmittance. Skipping the iteration outright is
+        // what the first version of this loop did, and it left those near slices holding the zeros they
+        // were created with, alpha included. The camera's prefix segment reads that alpha as its
+        // transmittance, so the entire picture was multiplied by zero: a black screen, from a change that
+        // only meant to add shadows.
         tNear = max(tNear, startDist);
-        if (tFar <= tNear) {
-            continue;
+        float dt = max(tFar - tNear, 0.0);
+        if (dt > 0.0) {
+            float3 p = ro + rd * (tNear + dt * 0.5);
+
+            // The world's fog: exponential in height, tinted per channel, with a single-scattering albedo.
+            float fogDensity = sigma0 * exp(-(p.y - heightBase) / heightScale);
+            float3 fogSigmaT = wp.fogExtinction.xyz * max(fogDensity, 0.0);
+
+            // The atmosphere, at this point's altitude. Two orders of magnitude smaller than the fog at this
+            // scale and kept anyway: it costs one exp and it is the term that makes a very long sightline over
+            // open ground pick up the sky's own colour rather than only the fog's tint.
+            float3 atmoSigmaS;
+            float3 atmoSigmaT;
+            atmosphereMedium(ATMOS_VIEW_ALTITUDE, atmoSigmaS, atmoSigmaT);
+
+            float3 sigmaT = fogSigmaT + atmoSigmaT;
+            float3 sigmaS = wp.fogScatter.xyz * max(fogDensity, 0.0) + atmoSigmaS;
+
+            // Sunlight reaching this point, dimmed by the atmosphere it crossed. No occlusion test — that is
+            // M13's half of this grid, and leaving it out here rather than approximating it with one ray is
+            // the whole reason the grid exists.
+            float r = PLANET_R + ATMOS_VIEW_ALTITUDE;
+            float muS = clamp(sunDir.y, -1.0, 1.0);
+            float3 sunT = muS < horizonMu(r)
+                    ? float3(0.0, 0.0, 0.0)
+                    : transmittanceLut.SampleLevel(transmittanceLutUv(r, muS), 0.0).rgb;
+
+            // fogAmbient is dyed here by the same transmittance the sun term gets. Everywhere else that dye
+        // is applied once to the push constant by dyeCelestialLight, but that runs in the ray-tracing
+        // stages on their own copies — this shader reads the BUFFER, which still holds the undyed peak.
+        // Left raw it would have made the fog's ambient the only thing in the renderer that does not
+        // redden at sunset, which is exactly the sort of divergence M10.1 existed to make impossible.
+        //
+        // M13: the visibility this grid was built to hold. One ray per CELL rather than per pixel, which
+            // is the entire difference between volumetric shadows and what a path tracer can afford to do
+            // inline — the water work measured what a handful of per-segment rays gives instead, and it was
+            // one coin flip near the camera applied to a whole segment, flipping the screen at once whenever
+            // the camera crossed an occlusion boundary. A cell's answer is shared by every pixel that reads it
+            // and interpolated between neighbours, so it varies smoothly in space and in time.
+            float sunVis = sunOccluded(p, sunDir) ? 0.0 : 1.0;
+
+            // Two occlusion tests for two different quantities: a ray at the sun for the directional
+            // term, a ray at the zenith for the isotropic ones. Gating the ambient on the SUN would be
+            // wrong in the other direction — a hillside shadow would drain the sky out of the fog, when
+            // what removes ambient light is a roof, not a hill.
+            float skyOpen = skyReachable(p);
+            float3 source = (wp.lightRadiance.xyz * sunT * sunPhase * sunVis
+                          + (wp.fogAmbient.xyz * sunT
+                             + multiScatterLut.SampleLevel(multiScatterLutUv(r, muS), 0.0).rgb
+                               * SUN_INTENSITY) * skyOpen);
+
+            // Closed form over the step, for the same reason as the other two bakes: near the ground a step
+            // can span a whole optical depth, and the midpoint rule overshoots exactly there.
+            float3 stepT = exp(-sigmaT * dt);
+            float3 gathered = transmittance * sigmaS * source
+                            * (float3(1.0, 1.0, 1.0) - stepT)
+                            / max(sigmaT, float3(1.0e-9, 1.0e-9, 1.0e-9));
+            inScatter += gathered;
+            transmittance *= stepT;
         }
-        float dt = tFar - tNear;
-        float3 p = ro + rd * (tNear + dt * 0.5);
 
-        // The world's fog: exponential in height, tinted per channel, with a single-scattering albedo.
-        float fogDensity = sigma0 * exp(-(p.y - heightBase) / heightScale);
-        float3 fogSigmaT = wp.fogExtinction.xyz * max(fogDensity, 0.0);
-
-        // The atmosphere, at this point's altitude. Two orders of magnitude smaller than the fog at this
-        // scale and kept anyway: it costs one exp and it is the term that makes a very long sightline over
-        // open ground pick up the sky's own colour rather than only the fog's tint.
-        float3 atmoSigmaS;
-        float3 atmoSigmaT;
-        atmosphereMedium(ATMOS_VIEW_ALTITUDE, atmoSigmaS, atmoSigmaT);
-
-        float3 sigmaT = fogSigmaT + atmoSigmaT;
-        float3 sigmaS = wp.fogScatter.xyz * max(fogDensity, 0.0) + atmoSigmaS;
-
-        // Sunlight reaching this point, dimmed by the atmosphere it crossed. No occlusion test — that is
-        // M13's half of this grid, and leaving it out here rather than approximating it with one ray is
-        // the whole reason the grid exists.
-        float r = PLANET_R + ATMOS_VIEW_ALTITUDE;
-        float muS = clamp(sunDir.y, -1.0, 1.0);
-        float3 sunT = muS < horizonMu(r)
-                ? float3(0.0, 0.0, 0.0)
-                : transmittanceLut.SampleLevel(transmittanceLutUv(r, muS), 0.0).rgb;
-
-        float3 source = wp.lightRadiance.xyz * sunT * sunPhase
-                      + wp.fogAmbient.xyz
-                      + multiScatterLut.SampleLevel(multiScatterLutUv(r, muS), 0.0).rgb * SUN_INTENSITY;
-
-        // Closed form over the step, for the same reason as the other two bakes: near the ground a step
-        // can span a whole optical depth, and the midpoint rule overshoots exactly there.
-        float3 stepT = exp(-sigmaT * dt);
-        float3 gathered = transmittance * sigmaS * source
-                        * (float3(1.0, 1.0, 1.0) - stepT)
-                        / max(sigmaT, float3(1.0e-9, 1.0e-9, 1.0e-9));
-        inScatter += gathered;
-        transmittance *= stepT;
+        // Written as the march passes, rather than once at the end: this thread owns the whole column, so
+        // every slice's prefix integral is simply the accumulator's value at that point.
+        //
+        // Alpha carries transmittance as a single channel. The three are close enough at this scale that a
+        // per-channel copy would cost a second texture to save a difference nothing can see; if a coloured
+        // extinction ever matters here, that is the change to make and this comment is where to start.
+        float meanT = (transmittance.r + transmittance.g + transmittance.b) * (1.0 / 3.0);
+        aerialPerspective[int3(int(id.x), int(id.y), s)] = float4(inScatter, meanT);
     }
-
-    // Alpha carries transmittance as a single channel. The three are close enough at this scale that a
-    // per-channel copy would cost a second texture to save a difference nothing can see; if a coloured
-    // extinction ever matters here, that is the change to make and this comment is where to start.
-    float meanT = (transmittance.r + transmittance.g + transmittance.b) * (1.0 / 3.0);
-    aerialPerspective[int3(id)] = float4(inScatter, meanT);
 }
+

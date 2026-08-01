@@ -719,7 +719,10 @@ static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there 
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
     // view that resampled it through anything else would be testing the resampling.
-    float3 p = float3(uv.x < 0.5 ? uv.x * 2.0 : (uv.x - 0.5) * 2.0, 1.0 - uv.y, FROXEL_DEBUG_SLICE);
+    // No vertical flip: the froxel's y comes from the same ndc the primary rays use, so screen up
+    // is grid up. The 1.0 - uv.y that was here is the third time that flip has been copied from a view
+    // whose axis meant something else.
+    float3 p = float3(uv.x < 0.5 ? uv.x * 2.0 : (uv.x - 0.5) * 2.0, uv.y, FROXEL_DEBUG_SLICE);
     float4 f = aerialPerspectiveLut.SampleLevel(p, 0.0);
     if (uv.x < 0.5) {
         return f.rgb;

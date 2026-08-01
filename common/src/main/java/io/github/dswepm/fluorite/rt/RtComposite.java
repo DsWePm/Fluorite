@@ -1323,7 +1323,9 @@ public final class RtComposite {
                     FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value());
             // The froxel, after the sky-view table and after the push buffer it reads has been written.
             // It follows the CAMERA as well as the sun, so per-frame is not a choice here at all.
-            skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress);
+            skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress,
+                    skyLightGrid.ready() ? selectedPushSlot.skyLight.deviceAddress : 0L,
+                    frameTlas.accel.handle, graphicsUse);
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
             }
