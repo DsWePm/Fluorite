@@ -484,6 +484,12 @@ public final class RtComposite {
     // froxel's own growth to 64x36x64 with two rays a cell -- two changes that landed without a reading
     // between them. Deciding whether to spend more rays here needs the two numbers apart.
     private static final int GPU_ZONE_VIS_BAKE = 3;
+    // The froxel, split out of GPU_ZONE_SKY_BAKE. That zone held the three sky tables AND the froxel, and
+    // the combined 1.34 ms could not say which of them to spend effort on -- the froxel runs one thread
+    // per COLUMN (2304 of them) while the visibility grid runs one per cell (131k) for a comparable ray
+    // count and costs 0.072 ms. Eighteen times is a number worth acting on, but not before it is
+    // attributed.
+    private static final int GPU_ZONE_FROXEL_BAKE = 4;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
@@ -858,7 +864,7 @@ public final class RtComposite {
             }
             if (gpuTimers == null) {
                 gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect",
-                        "gpu.skyBake", "gpu.visBake");
+                        "gpu.skyBake", "gpu.visBake", "gpu.froxelBake");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -1395,13 +1401,17 @@ public final class RtComposite {
             // lagging the sun, which is exactly the kind of fault nobody attributes correctly later.
             skyLuts.recordSkyViewBake(cmd, sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(),
                     FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value());
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);
+            }
             // The froxel, after the sky-view table and after the push buffer it reads has been written.
             // It follows the CAMERA as well as the sun, so per-frame is not a choice here at all.
             skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress,
                     skyLightGrid.ready() ? selectedPushSlot.skyLight.deviceAddress : 0L,
                     frameTlas.accel.handle, graphicsUse);
             if (gpuTimers != null) {
-                gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
             }
             // The volumetric visibility grid (M13.2), which the froxel does NOT read — it casts its own

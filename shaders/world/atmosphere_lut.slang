@@ -32,12 +32,15 @@ import world_common; // WorldPush, for dyeCelestialLight
 [[vk::binding(15, 0)]] public Sampler3D aerialPerspectiveLut;
 
 /**
- * Where a distance lands on the froxel's depth axis. The exact inverse of the bake's sliceDepth, which is
- * quadratic — so this is a square root, and getting it wrong shows up as the fog sitting at the wrong
- * distance rather than as anything that looks like a bug in the fog.
+ * Where a distance lands on the froxel's depth axis.
+ *
+ * Delegates to froxelDepthFraction, which is the exact inverse of the curve the bake writes with, and
+ * which lives beside that curve rather than opposite it. Getting an inverse wrong shows up as the fog
+ * sitting at the wrong distance rather than as anything that looks like a bug in the fog, so the two
+ * halves are kept where a single edit changes both.
  */
 public float froxelDepthCoord(float dist, float maxDist) {
-    return sqrt(clamp(dist / max(maxDist, 1.0), 0.0, 1.0));
+    return froxelDepthFraction(dist, maxDist);
 }
 
 /**

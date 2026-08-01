@@ -291,3 +291,36 @@ public float3 atmosphereReferenceSky(float3 dir, float3 sunDir) {
     }
     return SUN_INTENSITY * (sumR * RAY_BETA * phaseR + sumM * MIE_BETA * phaseM);
 }
+
+// ---- The aerial-perspective froxel's depth axis.
+//
+// BOTH DIRECTIONS LIVE HERE, and that is the whole reason this is not two constants in two files. The
+// bake writes slice z at froxelSliceDepth(t) and every consumer reads it back through
+// froxelDepthFraction(dist); the two must be exact inverses, and a pair of exact inverses maintained by
+// hand in separate modules is a bug waiting for whoever edits one of them. Derived from one expression
+// they cannot drift.
+//
+// EXPONENTIAL, not the quadratic this replaced, and the reason is a room. The quadratic put slice z at
+// maxDist*t^2, and maxDist is the fog's cull distance -- 515 blocks by default. Reaching five blocks
+// needed z = 64*sqrt(5/515) = 6.3, so a player standing in a five-block room got SIX of sixty-four
+// slices inside it and fifty-eight stacked up behind a wall that hides them all. That is measured
+// arithmetic, and it matches what the froxel does indoors: with SEGMENT_SOURCE on froxel-only, a light
+// shaft in a room vanished.
+//
+// An exponential axis is scene-independent, which is why it is preferred over adapting maxDist to the
+// frame's own depth. Adapting would need the previous frame's depths -- this bake runs BEFORE the traces
+// -- and would remap the whole axis whenever the camera turned. This costs one log and one exp and never
+// moves.
+public static const float FROXEL_NEAR = 0.25;
+
+/** Depth of the froxel axis at normalized position `t`, in blocks. */
+public float froxelSliceDepth(float t, float maxDist) {
+    float far = max(maxDist, FROXEL_NEAR * 4.0);
+    return FROXEL_NEAR * pow(far / FROXEL_NEAR, clamp(t, 0.0, 1.0));
+}
+
+/** Exact inverse of froxelSliceDepth: where `dist` lands on the froxel's normalized depth axis. */
+public float froxelDepthFraction(float dist, float maxDist) {
+    float far = max(maxDist, FROXEL_NEAR * 4.0);
+    return clamp(log(max(dist, FROXEL_NEAR) / FROXEL_NEAR) / log(far / FROXEL_NEAR), 0.0, 1.0);
+}

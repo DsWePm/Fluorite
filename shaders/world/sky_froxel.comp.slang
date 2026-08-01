@@ -62,16 +62,18 @@ static const float PI_F = 3.14159265359;
 static const uint FROXEL_SHADOW_MASK = 0x01u;
 
 /**
- * Depth this slice's value describes, quadratic so the near slices are thin.
+ * Depth this slice's value describes.
  *
  * Texel CENTRES, matching the two 2D bakes and for the same reason: a consumer samples this grid with a
  * filtered fetch, which interpolates between centres, so writing the value for a slice's far EDGE would
  * shift the whole depth axis half a texel and put the fog nearer than the geometry it belongs to.
- * froxelDepthCoord in atmosphere_lut is the exact inverse of this and has to stay so.
+ *
+ * The curve itself is froxelSliceDepth in atmosphere.slang, shared with the consumer's inverse rather
+ * than restated here — see that function for why an exponential axis, and for the arithmetic that
+ * condemned the quadratic one it replaced.
  */
 float sliceDepth(int z, float maxDist) {
-    float t = (float(z) + 0.5) / float(FROXEL_D);
-    return maxDist * t * t;
+    return froxelSliceDepth((float(z) + 0.5) / float(FROXEL_D), maxDist);
 }
 
 /**

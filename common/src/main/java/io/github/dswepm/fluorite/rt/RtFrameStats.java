@@ -81,6 +81,7 @@ public final class RtFrameStats {
                     // hands the frame back to vanilla — which is how this one announced itself.
                     "gpu.skyBake",
                     "gpu.visBake",
+                    "gpu.froxelBake",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",
