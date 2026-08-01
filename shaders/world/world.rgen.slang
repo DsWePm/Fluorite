@@ -653,6 +653,82 @@ static const float SKY_LUT_BAND_PX = 48.0; // wide enough to see, narrow enough 
 static const uint DEBUG_VIEW_SKY_MULTISCATTER = 13u;
 static const float MULTISCATTER_DEBUG_GAIN = 8.0; // it is small on purpose; this makes it readable
 
+// The three sky-view tables, side by side over their own uv domain: Rayleigh | Mie | multi-scatter.
+// Left to right within each band is azimuth, 0 = toward the sun, 1 = away; UP IS UP — screen top is the
+// zenith, the middle row is the horizon, the bottom is straight down. The first version of this copied
+// the vertical flip from the transmittance view, whose v axis is altitude rather than elevation, and so
+// drew the sky upside down; the first reading taken from it put the bright region at the zenith when it
+// was at the horizon all along.
+//
+// HUE, not magnitude: each texel is divided by its own largest channel. These values run over orders of
+// magnitude between noon and dusk, so any fixed gain either clips the bright end to white or leaves the
+// dim end black, and both destroy the one thing worth reading here — whether the horizon reddens toward
+// the sun. A gain of 4 did exactly that on the first attempt and turned a legible sunset into a white
+// blob. Brightness is what the actual sky is for; this view answers colour.
+//
+// Split rather than composed, because the report — a sky that is wrong overall, with no visible sun halo
+// — does not say WHICH of the three is at fault, and the three fail in distinguishable ways. Rayleigh
+// carries the blue and the sunset gradient; Mie carries the halo and should be a bright spot at the
+// bottom-left of its band and nearly nothing elsewhere; multi-scatter should be a smooth dim wash with no
+// feature at all. A band that is black, flat, or shaped like its neighbour names the bug on sight.
+static const uint DEBUG_VIEW_SKY_VIEW = 14u;
+
+// The sky-view lookup against the march it replaced, at the SAME direction, in alternating bands.
+//
+// Neither is a reference for the other by authority — the march is simply the thing that was on screen
+// before and looked right, so a disagreement localises the milestone. Equal directions and equal bands
+// means agreement is literally invisible, which is the only judgement call worth asking anyone to make.
+//
+// The screen is the sky, not the table: a direction is reconstructed for each pixel from the sky-view
+// parameterisation, so left is toward the sun, the middle row is the horizon, up is the zenith.
+//
+//   no visible bands              -> the table reproduces the march; look downstream of it
+//   bands differing in BRIGHTNESS -> a magnitude error in the bake (a coefficient, SUN_INTENSITY, a step)
+//   bands differing in HUE        -> the sun transmittance is not reaching the bake correctly
+//   bands only near the horizon   -> the elevation axis is too coarse where it matters most
+static const uint DEBUG_VIEW_SKY_VIEW_REFERENCE = 15u;
+
+// The dye actually applied to this frame's celestial light, as a flat colour, beside the sky it is
+// supposed to match.
+//
+// The report that separates these two is precise and cannot be explained by them sharing a multiplier:
+// the WATER reads redder than the LIGHT, yet dyeCelestialLight multiplies lightRadiance and waterAmbient
+// by the same transmittance. So either the dye is not red — which this view answers directly — or the
+// direct light is red and something else is diluting it on the way to the eye.
+//
+//   left  : sampleTransmittanceToSpace(lightDir), flat — the dye, nothing else
+//   right : the sky toward the light direction, for scale
+//
+// If the left half is red at dusk, the dye is doing its job and the dilution is downstream; if it is
+// yellow, the transmittance lookup is what to chase.
+static const uint DEBUG_VIEW_LIGHT_DYE = 16u;
+
+float3 lightDyeDebug(float2 uv) {
+    float3 lightDir = worldPush.lightDir.xyz;
+    if (uv.x < 0.5) {
+        return sampleTransmittanceToSpace(lightDir);
+    }
+    return sampleSkyView(lightDir, worldPush.sunDir.xyz);
+}
+
+float3 skyViewReferenceDebug(float2 uv, uint2 pix) {
+    float3 sunDir = worldPush.sunDir.xyz;
+    float3 dir = skyViewLutDir(float2(uv.x, uv.y), sunDir);
+    if ((uint(float(pix.x) / SKY_LUT_BAND_PX) & 1u) == 0u) {
+        return sampleSkyView(dir, sunDir);
+    }
+    return atmosphereReferenceSky(dir, sunDir);
+}
+
+float3 skyViewDebug(float2 uv) {
+    float2 lutUv = float2(frac(uv.x * 3.0), uv.y);
+    uint band = uint(uv.x * 3.0);
+    float3 v = band == 0u ? skyViewRayleighLut.SampleLevel(lutUv, 0.0).rgb
+             : band == 1u ? skyViewMieLut.SampleLevel(lutUv, 0.0).rgb
+             : skyViewMultiLut.SampleLevel(lutUv, 0.0).rgb;
+    return v / max(max(max(v.r, v.g), v.b), 1.0e-9);
+}
+
 float3 skyMultiScatterDebug(float2 uv, uint2 pix) {
     float2 lutUv = float2(uv.x, 1.0 - uv.y);
     float r;
@@ -734,12 +810,18 @@ void main() {
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
     if (pc.debugView != 0u) {
-        if (pc.debugView == DEBUG_VIEW_SKY_TRANSMITTANCE || pc.debugView == DEBUG_VIEW_SKY_MULTISCATTER) {
+        if (pc.debugView >= DEBUG_VIEW_SKY_TRANSMITTANCE) {
             // Screen-space, not a path property, so these take the pixel rather than the queued record.
             float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
             float3 table = pc.debugView == DEBUG_VIEW_SKY_TRANSMITTANCE
                     ? skyTransmittanceDebug(screenUv, dispatchIndex)
-                    : skyMultiScatterDebug(screenUv, dispatchIndex);
+                    : pc.debugView == DEBUG_VIEW_SKY_MULTISCATTER
+                    ? skyMultiScatterDebug(screenUv, dispatchIndex)
+                    : pc.debugView == DEBUG_VIEW_SKY_VIEW
+                    ? skyViewDebug(screenUv)
+                    : pc.debugView == DEBUG_VIEW_SKY_VIEW_REFERENCE
+                    ? skyViewReferenceDebug(screenUv, dispatchIndex)
+                    : lightDyeDebug(screenUv);
             outImage[pix] = float4(table, 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_VOLUME_INSCATTER) {
             outImage[pix] = float4(volumeDebug(queue[pixelIndex]), 1.0);

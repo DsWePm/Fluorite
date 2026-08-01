@@ -60,6 +60,7 @@ public final class RtVideoOptions {
         TRACING("tracing"),
         EXPOSURE("exposure"),
         MATERIAL("material"),
+        SKY("sky"),
         WATER("water"),
         FOG("fog"),
         UPSCALING("upscaling"),
@@ -89,6 +90,11 @@ public final class RtVideoOptions {
                         Section.of(sunMis(), anisotropy()),
                         Section.titled("fluorite.options.rt.section.subsurface",
                                 subsurfaceMode(), subsurfaceThickness(), subsurfaceMaxEvents()));
+                case SKY -> List.of(
+                        Section.titled("fluorite.options.rt.section.sunArt",
+                                sunIntensity(), sunTemperature()),
+                        Section.titled("fluorite.options.rt.section.skyArt",
+                                skyIntensity(), skyTemperature()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
@@ -513,6 +519,55 @@ public final class RtVideoOptions {
             nits -> setting.set(nits.floatValue()));
     }
 
+    // The four art-direction knobs. Every default is the identity, so the slider that reads "physical"
+    // or "1.00x" is not a preset among others — it is the renderer with nothing added.
+    private static OptionInstance<Integer> sunIntensity() {
+        return intensity("fluorite.options.rt.sunIntensity", FluoriteConfig.Rt.Sky.SUN_INTENSITY);
+    }
+
+    private static OptionInstance<Integer> skyIntensity() {
+        return intensity("fluorite.options.rt.skyIntensity", FluoriteConfig.Rt.Sky.SKY_INTENSITY);
+    }
+
+    private static OptionInstance<Integer> sunTemperature() {
+        return temperature("fluorite.options.rt.sunTemperature", FluoriteConfig.Rt.Sky.SUN_TEMPERATURE);
+    }
+
+    private static OptionInstance<Integer> skyTemperature() {
+        return temperature("fluorite.options.rt.skyTemperature", FluoriteConfig.Rt.Sky.SKY_TEMPERATURE);
+    }
+
+    /** A 0..8x multiplier, carried in hundredths because OptionInstance sliders are integer-valued. */
+    private static OptionInstance<Integer> intensity(String captionKey, FloatSetting setting) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2fx", hundredths / 100.0f))),
+            new OptionInstance.IntRange(0, 800),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 800),
+            hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    /**
+     * A colour temperature in kelvin, with 0 reading as "physical" rather than as a very cold black.
+     *
+     * <p>The step is 100 K and the range starts at 1500: below that the Planckian fit this is drawn from
+     * stops being meaningful, and a slider that can be dragged into a region where the number lies is
+     * worse than one that cannot reach it.
+     */
+    private static OptionInstance<Integer> temperature(String captionKey, IntSetting setting) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, steps) -> Options.genericValueLabel(caption, steps == 0
+                    ? Component.translatable("fluorite.options.rt.temperature.physical")
+                    : Component.literal((1500 + (steps - 1) * 100) + " K")),
+            new OptionInstance.IntRange(0, 186),
+            setting.value() <= 0 ? 0 : Math.clamp((setting.value() - 1500) / 100 + 1, 1, 186),
+            steps -> setting.set(steps == 0 ? 0 : 1500 + (steps - 1) * 100));
+    }
+
     private static OptionInstance<Integer> debugView() {
         IntSetting setting = FluoriteConfig.Rt.Composite.DEBUG_VIEW;
         return new OptionInstance<>(
@@ -524,8 +579,8 @@ public final class RtVideoOptions {
             // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
             // between hits rather than the hits themselves. See world.rgen's volumeDebug. 12 is neither —
             // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13), Codec.INT),
-            Math.clamp(setting.value(), 0, 13),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16), Codec.INT),
+            Math.clamp(setting.value(), 0, 16),
             setting::set);
     }
 

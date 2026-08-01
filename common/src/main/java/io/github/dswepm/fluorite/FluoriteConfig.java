@@ -174,6 +174,24 @@ public final class FluoriteConfig {
         return FILE.contains(tomlPath) ? FILE.<String>get(tomlPath) : null;
     }
 
+    /**
+     * Put every setting back to the value the code ships with.
+     *
+     * <p>Generic over the whole registry rather than a method on each setting class, because the
+     * interface already exposes both halves of the operation. A {@code -Dfluorite.*} override is
+     * deliberately NOT consulted: this is the button a player presses after an evening of tuning, and it
+     * should land somewhere predictable rather than somewhere that depends on how the game was launched.
+     */
+    public static void resetAllToDefaults() {
+        for (RuntimeSetting<?> setting : SETTINGS) {
+            resetOne(setting);
+        }
+    }
+
+    private static <T> void resetOne(RuntimeSetting<T> setting) {
+        setting.set(setting.defaultValue());
+    }
+
     public interface RuntimeSetting<T> {
         /** The {@code -Dfluorite.*} system property name that overrides this setting. */
         String key();
@@ -1199,8 +1217,100 @@ public final class FluoriteConfig {
             }
         }
 
+        /**
+         * Art direction over the celestial light and the sky, on top of the physics rather than instead of
+         * it. <b>Every default here is the identity</b> — a fresh install renders exactly what the
+         * atmosphere model says, and any deviation is something a person chose.
+         *
+         * <p>Intensity and temperature are separate knobs on purpose: the temperature tint is normalised
+         * to unit luminance, so turning the sun warmer does not also turn it dimmer, and the two can be
+         * dialled without fighting each other.
+         *
+         * <p>Sun and sky are also separate. Physically one temperature governs both, but the two are
+         * being tuned against different things — the sun against how lit surfaces read, the sky against
+         * how the backdrop reads — and a single control would make every adjustment to one a regression
+         * in the other.
+         */
+        public static final class Sky {
+            /** Multiplies the celestial light: sun/moon NEE, and the water and fog ambient derived from it. */
+            public static final FloatSetting SUN_INTENSITY =
+                    clampedFloat("fluorite.rt.sunIntensity", "sky.sun-intensity", 1.0f, 0.0f, 8.0f);
+            /** Colour temperature of that light in kelvin. 0 leaves the atmosphere's own colour alone. */
+            public static final IntSetting SUN_TEMPERATURE =
+                    clampedInt("fluorite.rt.sunTemperature", "sky.sun-temperature", 0, 0, 20000);
+            /** Multiplies the sky's in-scatter. Applied in the sky-view bake, so it costs nothing per pixel. */
+            public static final FloatSetting SKY_INTENSITY =
+                    clampedFloat("fluorite.rt.skyIntensity", "sky.sky-intensity", 1.0f, 0.0f, 8.0f);
+            /** Colour temperature of the sky in kelvin. 0 leaves it alone. */
+            public static final IntSetting SKY_TEMPERATURE =
+                    clampedInt("fluorite.rt.skyTemperature", "sky.sky-temperature", 0, 0, 20000);
+
+            private Sky() {
+            }
+
+            /** The sun's tint: unit-luminance blackbody colour, or white when the knob is off. */
+            public static float[] sunTint() {
+                return blackbodyTint(SUN_TEMPERATURE.value());
+            }
+
+            /** The sky's tint, same convention. */
+            public static float[] skyTint() {
+                return blackbodyTint(SKY_TEMPERATURE.value());
+            }
+
+            /**
+             * Linear sRGB for a blackbody at {@code kelvin}, normalised so its luminance is 1.
+             *
+             * <p>Via the Planckian locus in CIE xy and the standard D65 matrix rather than a hand-made
+             * warm-to-cool ramp: a ramp would put "6500 K" wherever it was drawn, and the whole point of
+             * naming the control in kelvin is that the number means something outside this file.
+             *
+             * <p>The normalisation is what keeps this orthogonal to {@link #SUN_INTENSITY}. Without it a
+             * warm setting would also be a dim one, since a blackbody's blue channel falls off fastest,
+             * and every temperature change would need an intensity change to undo the brightness it
+             * brought with it.
+             */
+            public static float[] blackbodyTint(int kelvin) {
+                if (kelvin <= 0) {
+                    return new float[]{1.0f, 1.0f, 1.0f};
+                }
+                double t = Math.clamp(kelvin, 1667, 25000);
+                double x;
+                if (t < 4000.0) {
+                    x = -0.2661239e9 / (t * t * t) - 0.2343589e6 / (t * t) + 0.8776956e3 / t + 0.179910;
+                } else {
+                    x = -3.0258469e9 / (t * t * t) + 2.1070379e6 / (t * t) + 0.2226347e3 / t + 0.240390;
+                }
+                double y;
+                if (t < 2222.0) {
+                    y = -1.1063814 * x * x * x - 1.34811020 * x * x + 2.18555832 * x - 0.20219683;
+                } else if (t < 4000.0) {
+                    y = -0.9549476 * x * x * x - 1.37418593 * x * x + 2.09137015 * x - 0.16748867;
+                } else {
+                    y = 3.0817580 * x * x * x - 5.87338670 * x * x + 3.75112997 * x - 0.37001483;
+                }
+                if (y <= 1.0e-6) {
+                    return new float[]{1.0f, 1.0f, 1.0f};
+                }
+                double bigX = x / y;
+                double bigZ = (1.0 - x - y) / y;
+                double r = 3.2406 * bigX - 1.5372 - 0.4986 * bigZ;
+                double g = -0.9689 * bigX + 1.8758 + 0.0415 * bigZ;
+                double b = 0.0557 * bigX - 0.2040 + 1.0570 * bigZ;
+                r = Math.max(r, 0.0);
+                g = Math.max(g, 0.0);
+                b = Math.max(b, 0.0);
+                double lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                if (lum <= 1.0e-6) {
+                    return new float[]{1.0f, 1.0f, 1.0f};
+                }
+                return new float[]{(float) (r / lum), (float) (g / lum), (float) (b / lum)};
+            }
+        }
+
         /** Startup Vulkan inventory + {@code VK_EXT_device_fault} reporting on device loss. See {@code VulkanDiagnostics}. */
         public static final class Diagnostics {
+
             /** Heavy driver-side crash diagnostics: vendor diagnostics-config extensions (shader debug
              * info, resource tracking, automatic checkpoints, shader error reporting) and the
              * {@code deviceFaultVendorBinary} feature (vendor-format crash dump on device loss). Off by

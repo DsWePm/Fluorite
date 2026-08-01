@@ -155,3 +155,139 @@ public void multiScatterLutParams(float2 uv, out float r, out float muS) {
     muS = clamp(uv.x * 2.0 - 1.0, -1.0, 1.0);
     r = PLANET_R + uv.y * (ATMOS_R - PLANET_R);
 }
+
+// ---- Sky-view LUT parameterisation.
+//
+// The whole sky at the camera's altitude, so a miss shader can look up what it currently marches with 16
+// steps and an 8-step inner loop per step — 128 extinction evaluations per pixel, for a picture that
+// varies smoothly over the entire hemisphere.
+//
+// Two axes with opposite needs. AZIMUTH only has to resolve the sun's halo and is otherwise almost flat,
+// and the sky is symmetric about the sun's own meridian, so half a turn is stored and the other half
+// mirrors onto it — the symmetry is exact for a horizontally uniform atmosphere and buys a factor of two
+// in resolution rather than in memory. ELEVATION is the opposite: nearly all of the variation is packed
+// against the horizon, so the axis is warped by a square root centred there, which spends texels where
+// the gradient is instead of spreading them evenly over a sky that is mostly one colour.
+// Not `public`, and not imported from world_core: that module declares the TLAS and the guide images as
+// set-0 bindings, and the bake compute shaders import this one. A module-private constant keeps the name
+// from colliding in the raygens, which see both.
+static const float ATMOS_PI = 3.14159265359;
+
+public static const int SKY_VIEW_W = 192;
+public static const int SKY_VIEW_H = 128;
+
+/** Horizontal component of a direction, normalised; a stable fallback when it points straight up. */
+public float3 horizontalDir(float3 d) {
+    float2 flat = float2(d.x, d.z);
+    float len = length(flat);
+    return len > 1.0e-5 ? float3(flat.x / len, 0.0, flat.y / len) : float3(1.0, 0.0, 0.0);
+}
+
+/** (view dir, sun dir) -> uv. */
+public float2 skyViewLutUv(float3 dir, float3 sunDir) {
+    float r = PLANET_R + ATMOS_VIEW_ALTITUDE;
+    float muH = horizonMu(r);
+    float mu = clamp(dir.y, -1.0, 1.0);
+
+    // Elevation: sqrt on each side of the horizon, so v = 0.5 IS the horizon and texel density rises into
+    // it from both directions. A linear axis puts almost every texel in sky that barely changes.
+    float v;
+    if (mu > muH) {
+        v = 0.5 + 0.5 * sqrt(clamp((mu - muH) / max(1.0 - muH, 1.0e-5), 0.0, 1.0));
+    } else {
+        v = 0.5 - 0.5 * sqrt(clamp((muH - mu) / max(muH + 1.0, 1.0e-5), 0.0, 1.0));
+    }
+
+    // Azimuth: the angle to the sun's meridian, folded to [0, pi]. Sign is discarded deliberately — that
+    // is the mirror symmetry, and it is why the halo gets twice the texels it otherwise would.
+    float3 sunFlat = horizontalDir(sunDir);
+    float3 dirFlat = horizontalDir(dir);
+    float cosAz = clamp(dot(dirFlat, sunFlat), -1.0, 1.0);
+    return float2(acos(cosAz) * (1.0 / ATMOS_PI), v);
+}
+
+/** uv -> view direction, given the sun. The inverse of skyViewLutUv, used by the bake. */
+public float3 skyViewLutDir(float2 uv, float3 sunDir) {
+    float r = PLANET_R + ATMOS_VIEW_ALTITUDE;
+    float muH = horizonMu(r);
+    float mu;
+    if (uv.y > 0.5) {
+        float t = (uv.y - 0.5) * 2.0;
+        mu = muH + t * t * (1.0 - muH);
+    } else {
+        float t = (0.5 - uv.y) * 2.0;
+        mu = muH - t * t * (muH + 1.0);
+    }
+    float az = uv.x * ATMOS_PI;
+    float3 sunFlat = horizontalDir(sunDir);
+    float3 side = float3(-sunFlat.z, 0.0, sunFlat.x); // sunFlat rotated a quarter turn in the ground plane
+    float horiz = sqrt(max(0.0, 1.0 - mu * mu));
+    return normalize(float3(0.0, mu, 0.0) + horiz * (cos(az) * sunFlat + sin(az) * side));
+}
+
+/**
+ * The sky by brute force: the Nishita/O'Neil march this milestone replaced, kept as a REFERENCE.
+ *
+ * Self-contained on purpose — it samples no table and declares no binding, so it can be evaluated
+ * anywhere the parameters are visible and compared against the sky-view lookup at the same direction.
+ * That comparison is the only unambiguous statement available about whether the table is right: reading
+ * the three baked channels by eye means guessing what they ought to look like, and the first two guesses
+ * offered for them were both wrong — a Mie band was predicted to hold a halo it cannot hold, and a
+ * near-zero multi-scatter band read as "structured" only because a hue normalisation was dividing noise
+ * by noise.
+ *
+ * Slow. It exists to be run at a handful of pixels in a debug view, never in a frame that ships.
+ */
+public float3 atmosphereReferenceSky(float3 dir, float3 sunDir) {
+    const int PRIMARY_STEPS = 16;
+    const int LIGHT_STEPS = 8;
+    float3 orig = float3(0.0, PLANET_R + ATMOS_VIEW_ALTITUDE, 0.0);
+    float2 t = raySphere(orig, dir, ATMOS_R);
+    if (t.x > t.y) return float3(0.0, 0.0, 0.0);
+    float tStart = max(t.x, 0.0);
+    float tEnd = t.y;
+    float2 tGround = raySphere(orig, dir, PLANET_R);
+    if (tGround.x > 0.0) tEnd = min(tEnd, tGround.x);
+    float segLen = (tEnd - tStart) / float(PRIMARY_STEPS);
+
+    float mu = dot(dir, sunDir);
+    float phaseR = (3.0 / (16.0 * ATMOS_PI)) * (1.0 + mu * mu);
+    float g = MIE_G;
+    float g2 = g * g;
+    float d = 1.0 + g2 - 2.0 * g * mu;
+    float phaseM = (1.0 - g2) / (4.0 * ATMOS_PI * max(d * sqrt(max(d, 0.0)), 1.0e-6));
+
+    float3 sumR = float3(0.0, 0.0, 0.0), sumM = float3(0.0, 0.0, 0.0);
+    float odR = 0.0, odM = 0.0, odO = 0.0;
+    float tCur = tStart;
+    for (int i = 0; i < PRIMARY_STEPS; i++) {
+        float3 p = orig + dir * (tCur + segLen * 0.5);
+        float h = length(p) - PLANET_R;
+        float hr = exp(-h / RAY_SCALE_H) * segLen;
+        float hm = exp(-h / MIE_SCALE_H) * segLen;
+        odR += hr; odM += hm; odO += ozoneDensity(h) * segLen;
+
+        float2 tl = raySphere(p, sunDir, ATMOS_R);
+        float segLenL = tl.y / float(LIGHT_STEPS);
+        float tlCur = 0.0, odRL = 0.0, odML = 0.0, odOL = 0.0;
+        bool blocked = false;
+        for (int j = 0; j < LIGHT_STEPS; j++) {
+            float3 pl = p + sunDir * (tlCur + segLenL * 0.5);
+            float hl = length(pl) - PLANET_R;
+            if (hl < 0.0) { blocked = true; break; }
+            odRL += exp(-hl / RAY_SCALE_H) * segLenL;
+            odML += exp(-hl / MIE_SCALE_H) * segLenL;
+            odOL += ozoneDensity(hl) * segLenL;
+            tlCur += segLenL;
+        }
+        if (!blocked) {
+            float3 atten = exp(-(RAY_BETA * (odR + odRL)
+                               + MIE_BETA * MIE_EXTINCTION_FACTOR * (odM + odML)
+                               + OZONE_BETA * (odO + odOL)));
+            sumR += hr * atten;
+            sumM += hm * atten;
+        }
+        tCur += segLen;
+    }
+    return SUN_INTENSITY * (sumR * RAY_BETA * phaseR + sumM * MIE_BETA * phaseM);
+}

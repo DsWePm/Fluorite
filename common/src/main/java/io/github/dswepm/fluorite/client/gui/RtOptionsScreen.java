@@ -45,6 +45,21 @@ public class RtOptionsScreen extends OptionsSubScreen {
                     .build());
         }
         this.list.addSmall(buttons);
+        // A full-width row of its own, below the pairs. Deliberately not paired with a category: it is the
+        // one button here that changes settings rather than navigating to them, and putting it in the grid
+        // would make it look like a ninth place to go rather than a thing that happens.
+        this.list.addSmall(List.of(Button.builder(
+                        Component.translatable("fluorite.options.rt.resetDefaults"),
+                        button -> {
+                            FluoriteConfig.resetAllToDefaults();
+                            FluoriteConfig.save();
+                            // Rebuild so every category button's screen is constructed fresh: an
+                            // OptionInstance captures its setting's value when it is built, so any screen
+                            // made before this point would still be showing the old numbers.
+                            this.minecraft.gui.setScreen(new RtOptionsScreen(this.lastScreen, this.options));
+                        })
+                .tooltip(Tooltip.create(Component.translatable("fluorite.options.rt.resetDefaults.tooltip")))
+                .build()));
     }
 
     @Override

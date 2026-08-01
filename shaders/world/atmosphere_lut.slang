@@ -15,6 +15,15 @@ import world_common; // WorldPush, for dyeCelestialLight
 /** Bound by RtPipeline.setMultiScatterLut; visible to MISS, which is the only stage that builds sky. */
 [[vk::binding(11, 0)]] public Sampler2D skyMultiScatterLut;
 
+// The sky-view tables (M10.3). Three, because the phase functions are applied HERE rather than baked in:
+// Mie's forward spike is far narrower than a 192-wide azimuth axis can hold, so baking it would replace
+// the sun's halo with a smear. Both phases depend only on the view-sun angle, which is constant along a
+// ray, so pulling them out is exact. Multiple scattering is isotropic and has no phase, which is why it
+// needs a table of its own rather than a ride in either of the others.
+[[vk::binding(12, 0)]] public Sampler2D skyViewRayleighLut;
+[[vk::binding(13, 0)]] public Sampler2D skyViewMieLut;
+[[vk::binding(14, 0)]] public Sampler2D skyViewMultiLut;
+
 /**
  * Transmittance from the camera's altitude toward `dir`, read from the table.
  *
@@ -66,6 +75,40 @@ public float3 sampleTransmittance(float r, float muIn) {
  */
 public float3 sampleMultiScatter(float r, float muS) {
     return skyMultiScatterLut.SampleLevel(multiScatterLutUv(r, muS), 0.0).rgb;
+}
+
+// The two phase functions, kept here beside the only thing that uses them. Rayleigh is the classic
+// (1 + cos^2) lobe; Mie is Henyey-Greenstein, normalised over the sphere — the 1/(4*pi) is written out
+// rather than folded into a tuned constant, because a phase function missing it is an energy error that
+// then has to be cancelled by every parameter downstream.
+float rayleighPhase(float cosT) {
+    return (3.0 / (16.0 * ATMOS_LUT_PI)) * (1.0 + cosT * cosT);
+}
+
+float miePhase(float cosT) {
+    float g = MIE_G;
+    float g2 = g * g;
+    float d = 1.0 + g2 - 2.0 * g * cosT;
+    return (1.0 - g2) / (4.0 * ATMOS_LUT_PI * max(d * sqrt(max(d, 0.0)), 1.0e-6));
+}
+
+static const float ATMOS_LUT_PI = 3.14159265359;
+
+/**
+ * The sky along `dir`, from the tables — what world.rmiss used to build with a 16-step march wrapping an
+ * 8-step march, 128 extinction evaluations for every escaping ray.
+ *
+ * The three tables are summed here rather than in the bake because two of them are waiting for a phase
+ * function that depends on where the ray is pointing relative to the sun. That is the whole reason there
+ * are three.
+ */
+public float3 sampleSkyView(float3 dir, float3 sunDir) {
+    float2 uv = skyViewLutUv(dir, sunDir);
+    float cosT = clamp(dot(dir, sunDir), -1.0, 1.0);
+    float3 rayleigh = skyViewRayleighLut.SampleLevel(uv, 0.0).rgb;
+    float3 mie = skyViewMieLut.SampleLevel(uv, 0.0).rgb;
+    float3 multi = skyViewMultiLut.SampleLevel(uv, 0.0).rgb;
+    return rayleigh * rayleighPhase(cosT) + mie * miePhase(cosT) + multi;
 }
 
 /**

@@ -97,11 +97,12 @@ public final class RtPipeline {
     private final int skyAtlasBinding;
     private final int transmittanceBinding;
     private final int multiScatterBinding;
+    private final int skyViewBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
                        long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
-                       int transmittanceBinding, int multiScatterBinding) {
+                       int transmittanceBinding, int multiScatterBinding, int skyViewBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -127,6 +128,7 @@ public final class RtPipeline {
         this.skyAtlasBinding = skyAtlasBinding;
         this.transmittanceBinding = transmittanceBinding;
         this.multiScatterBinding = multiScatterBinding;
+        this.skyViewBinding = skyViewBinding;
     }
 
     /**
@@ -175,8 +177,13 @@ public final class RtPipeline {
             // light, and light that has bounced twice in the air is by definition not that.
             int multiScatterBinding = skyAtlas ? materialBase + skySamplers + transmittanceSamplers : -1;
             int multiScatterSamplers = skyAtlas ? 1 : 0;
+            // The three sky-view tables (M10.3), bindings 12..14. Three rather than one because the phase
+            // functions are applied at lookup: Rayleigh's lobe, Mie's forward spike, and the isotropic
+            // multiple-scattering term cannot share a texel and still let the halo stay sharp.
+            int skyViewBinding = skyAtlas ? multiScatterBinding + 1 : -1;
+            int skyViewSamplers = skyAtlas ? 3 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
-                    + multiScatterSamplers;
+                    + multiScatterSamplers + skyViewSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -200,6 +207,11 @@ public final class RtPipeline {
                 binds.get(multiScatterBinding).binding(multiScatterBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                for (int i = 0; i < skyViewSamplers; i++) {
+                    binds.get(skyViewBinding + i).binding(skyViewBinding + i)
+                            .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                            .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                }
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -208,7 +220,7 @@ public final class RtPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, label + " descriptor set layout");
 
             int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers + transmittanceSamplers
-                    + multiScatterSamplers;
+                    + multiScatterSamplers + skyViewSamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -394,7 +406,7 @@ public final class RtPipeline {
             sbt.flush();
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
                     bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
-                    multiScatterBinding);
+                    multiScatterBinding, skyViewBinding);
         }
     }
 
@@ -491,6 +503,16 @@ public final class RtPipeline {
     /** Bind the atmosphere's multi-scatter table (M10.2), sampled by world.rmiss. */
     public void setMultiScatterLut(long imageView, long sampler) {
         writeAtlasBinding(multiScatterBinding, imageView, sampler);
+    }
+
+    /** Bind the three sky-view tables (M10.3) in Rayleigh / Mie / multi-scatter order. */
+    public void setSkyViewLuts(long rayleighView, long mieView, long multiView, long sampler) {
+        if (skyViewBinding < 0) {
+            return;
+        }
+        writeAtlasBinding(skyViewBinding, rayleighView, sampler);
+        writeAtlasBinding(skyViewBinding + 1, mieView, sampler);
+        writeAtlasBinding(skyViewBinding + 2, multiView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

@@ -14,6 +14,7 @@ import org.lwjgl.vulkan.VkDescriptorSetLayoutCreateInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkMemoryBarrier;
 import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
+import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
 import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
@@ -54,6 +55,10 @@ public final class RtSky {
     public static final int TRANSMITTANCE_H = 64;
     /** Must match SKY_MULTISCATTER_N in shaders/world/atmosphere.slang. */
     public static final int MULTISCATTER_N = 32;
+    /** Must match SKY_VIEW_W/H in shaders/world/atmosphere.slang. */
+    public static final int SKY_VIEW_W = 192;
+    public static final int SKY_VIEW_H = 128;
+    private static final int SKY_VIEW_PUSH_BYTES = 32; // float4 sun direction + float4 art tint
     private static final int BAKE_GROUP = 8; // matches [numthreads(8, 8, 1)] in both bake shaders
 
     /** One compute bake: its layout, its set, and the pipeline that writes one table. */
@@ -70,15 +75,21 @@ public final class RtSky {
     private final RtContext ctx;
     private final Bake transmittanceBake;
     private final Bake multiScatterBake;
+    private final Bake skyViewBake;
     private final long lutSampler;
     private RtImage transmittance;
     private RtImage multiScatter;
+    private RtImage skyViewRayleigh;
+    private RtImage skyViewMie;
+    private RtImage skyViewMulti;
     private boolean baked;
 
-    private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, long lutSampler) {
+    private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
+                  long lutSampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
         this.multiScatterBake = multiScatterBake;
+        this.skyViewBake = skyViewBake;
         this.lutSampler = lutSampler;
     }
 
@@ -87,12 +98,20 @@ public final class RtSky {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             // Transmittance: one storage image out, nothing in.
             Bake transmittanceBake = createBake(ctx, stack, "sky_transmittance.comp.spv",
-                    "sky transmittance", new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+                    "sky transmittance", new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
             // Multi-scatter: the transmittance table in, one storage image out. Binding order matches
             // sky_multiscatter.comp.slang.
             Bake multiScatterBake = createBake(ctx, stack, "sky_multiscatter.comp.spv",
                     "sky multi-scatter", new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
+            // Sky view: both earlier tables in, three storage images out, and a push constant for the sun
+            // — the field that makes this one a per-frame bake rather than a once-ever one.
+            Bake skyViewBake = createBake(ctx, stack, "sky_view.comp.spv", "sky view",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, SKY_VIEW_PUSH_BYTES);
 
             // LINEAR + CLAMP_TO_EDGE. The multi-scatter bake reads the transmittance table off the
             // horizon-crowded end of its u axis, where nearest sampling shows the texel grid as banding
@@ -109,7 +128,7 @@ public final class RtSky {
             long sampler = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, sampler, "sky LUT chain sampler");
 
-            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, sampler);
+            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake, sampler);
             // The images are allocated HERE rather than lazily inside the bake, so the views exist from
             // the moment this object does. Creating them in the bake made a view's availability depend on
             // whether the bake had run, which in turn made the ray-tracing pipeline's binding depend on
@@ -124,7 +143,19 @@ public final class RtSky {
             writeStorageImage(vk, stack, transmittanceBake.descriptorSet(), 0, sky.transmittance.view);
             writeSampledImage(vk, stack, multiScatterBake.descriptorSet(), 0, sky.transmittance.view,
                     sampler);
+            sky.skyViewRayleigh = ctx.createStorageImage(SKY_VIEW_W, SKY_VIEW_H,
+                    VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "sky view Rayleigh LUT");
+            sky.skyViewMie = ctx.createStorageImage(SKY_VIEW_W, SKY_VIEW_H,
+                    VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "sky view Mie LUT");
+            sky.skyViewMulti = ctx.createStorageImage(SKY_VIEW_W, SKY_VIEW_H,
+                    VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "sky view multi-scatter LUT");
+
             writeStorageImage(vk, stack, multiScatterBake.descriptorSet(), 1, sky.multiScatter.view);
+            writeSampledImage(vk, stack, skyViewBake.descriptorSet(), 0, sky.transmittance.view, sampler);
+            writeSampledImage(vk, stack, skyViewBake.descriptorSet(), 1, sky.multiScatter.view, sampler);
+            writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 2, sky.skyViewRayleigh.view);
+            writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 3, sky.skyViewMie.view);
+            writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 4, sky.skyViewMulti.view);
             return sky;
         }
     }
@@ -137,6 +168,48 @@ public final class RtSky {
     /** The multi-scatter table's view. Valid from construction; contents defined after the first bake. */
     public long multiScatterView() {
         return multiScatter == null ? 0L : multiScatter.view;
+    }
+
+    public long skyViewRayleighView() {
+        return skyViewRayleigh == null ? 0L : skyViewRayleigh.view;
+    }
+
+    public long skyViewMieView() {
+        return skyViewMie == null ? 0L : skyViewMie.view;
+    }
+
+    public long skyViewMultiView() {
+        return skyViewMulti == null ? 0L : skyViewMulti.view;
+    }
+
+    /**
+     * Record the sky-view bake. Unlike everything else here this runs EVERY FRAME, and the distinction is
+     * the point rather than an inconsistency: the sun's direction enters this integral where the table is
+     * baked, not where it is sampled, so a once-ever bake would freeze the sky at whatever time the world
+     * happened to load. The two tables it reads genuinely do not depend on the time of day, which is why
+     * they are baked once and this one cannot be.
+     *
+     * <p>Cheap enough to leave unconditional: 24576 texels of a 32-step march, against a full-resolution
+     * screen of rays that each used to march 16 steps with an 8-step inner loop.
+     */
+    public void recordSkyViewBake(VkCommandBuffer cmd, float sunX, float sunY, float sunZ,
+                                  float[] tint, float intensity) {
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "sky view bake")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, skyViewBake.pipeline());
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    skyViewBake.pipelineLayout(), 0, stack.longs(skyViewBake.descriptorSet()), null);
+            ByteBuffer pushData = stack.malloc(SKY_VIEW_PUSH_BYTES);
+            pushData.putFloat(0, sunX).putFloat(4, sunY).putFloat(8, sunZ).putFloat(12, 0.0f);
+            // The sky's art tint rides the bake rather than the sample: 24576 texels once per frame
+            // instead of one multiply per escaping ray, and rmiss does not have to know it exists.
+            pushData.putFloat(16, tint[0] * intensity).putFloat(20, tint[1] * intensity)
+                    .putFloat(24, tint[2] * intensity).putFloat(28, 0.0f);
+            VK10.vkCmdPushConstants(cmd, skyViewBake.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
+            VK10.vkCmdDispatch(cmd, (SKY_VIEW_W + BAKE_GROUP - 1) / BAKE_GROUP,
+                    (SKY_VIEW_H + BAKE_GROUP - 1) / BAKE_GROUP, 1);
+        }
     }
 
     /**
@@ -189,9 +262,22 @@ public final class RtSky {
             multiScatter.destroy();
             multiScatter = null;
         }
+        if (skyViewRayleigh != null) {
+            skyViewRayleigh.destroy();
+            skyViewRayleigh = null;
+        }
+        if (skyViewMie != null) {
+            skyViewMie.destroy();
+            skyViewMie = null;
+        }
+        if (skyViewMulti != null) {
+            skyViewMulti.destroy();
+            skyViewMulti = null;
+        }
         if (lutSampler != 0L) {
             VK10.vkDestroySampler(vk, lutSampler, null);
         }
+        skyViewBake.destroy(vk);
         multiScatterBake.destroy(vk);
         transmittanceBake.destroy(vk);
     }
@@ -205,7 +291,7 @@ public final class RtSky {
 
     /** Build one bake's layout/pool/set/pipeline. {@code types} is the set-0 binding list, in order. */
     private static Bake createBake(RtContext ctx, MemoryStack stack, String shader, String label,
-                                   int[] types) {
+                                   int[] types, int pushBytes) {
         VkDevice vk = ctx.vk();
         LongBuffer p = stack.mallocLong(1);
         VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(types.length, stack);
@@ -239,6 +325,11 @@ public final class RtSky {
 
         VkPipelineLayoutCreateInfo plci = VkPipelineLayoutCreateInfo.calloc(stack).sType$Default()
                 .pSetLayouts(stack.longs(dsl));
+        if (pushBytes > 0) {
+            VkPushConstantRange.Buffer pcr = VkPushConstantRange.calloc(1, stack);
+            pcr.get(0).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT).offset(0).size(pushBytes);
+            plci.pPushConstantRanges(pcr);
+        }
         check(VK10.vkCreatePipelineLayout(vk, plci, null, p), "vkCreatePipelineLayout(rt " + label + ")");
         long pipelineLayout = p.get(0);
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, pipelineLayout, label + " pipeline layout");

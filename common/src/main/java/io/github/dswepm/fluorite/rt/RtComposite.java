@@ -856,6 +856,8 @@ public final class RtComposite {
             }
             worldPipeline.setTransmittanceLut(skyLuts.transmittanceView(), lutSampler(ctx));
             worldPipeline.setMultiScatterLut(skyLuts.multiScatterView(), lutSampler(ctx));
+            worldPipeline.setSkyViewLuts(skyLuts.skyViewRayleighView(), skyLuts.skyViewMieView(),
+                    skyLuts.skyViewMultiView(), lutSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1295,8 +1297,20 @@ public final class RtComposite {
                 skyLuts = RtSky.create(ctx);
             }
             if (skyLuts.recordBakeIfNeeded(cmd)) {
-                VulkanCommandEncoder.memoryBarrier(cmd, stack); // bake visible to the trace's sampling
+                // The sky-view bake below SAMPLES both tables the call above may have just written. On
+                // every frame after the first it is a no-op and this costs nothing; on the first frame it
+                // is the difference between reading the atmosphere and reading undefined memory, for one
+                // frame, which is exactly the kind of fault that gets attributed to the wrong milestone.
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
             }
+            // The sky-view table, every frame. Its two inputs do not depend on the time of day and are
+            // baked once; this one does, because the sun's direction enters where it is BAKED rather than
+            // where it is sampled. Recorded unconditionally rather than on a change test: the sun moves
+            // every tick anyway, and a test that let one stale frame through would show as the sky
+            // lagging the sun, which is exactly the kind of fault nobody attributes correctly later.
+            skyLuts.recordSkyViewBake(cmd, sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(),
+                    FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value());
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
 
             // Push the BDA ring slot's address plus the small hot subset used directly by the shaders.
             // Every 64-bit device address the trace needs lives here, not behind worldPushAddr: the
@@ -1492,6 +1506,15 @@ public final class RtComposite {
             rb = 0.55f * moonPeak * moonStrength;
             lightRadius = FluoriteConfig.Rt.Composite.MOON_ANGULAR_RADIUS.value();
         }
+        // Art direction on the celestial light, applied to the peak before the GPU dyes it with the
+        // atmosphere. Both defaults are the identity, so a fresh install is the physics and nothing else.
+        // Here rather than in the shader because this is exactly the quantity the shader is handed: put it
+        // downstream and it would have to be applied at all eight sites that read lightRadiance.
+        float[] tint = FluoriteConfig.Rt.Sky.sunTint();
+        float artScale = FluoriteConfig.Rt.Sky.SUN_INTENSITY.value();
+        rr *= artScale * tint[0];
+        rg *= artScale * tint[1];
+        rb *= artScale * tint[2];
         CelestialUv uv = celestialUv(moonPhase);
         return new SkyPush(
                 new Float4(sunX, sunY, sunZ, dayFactor),
