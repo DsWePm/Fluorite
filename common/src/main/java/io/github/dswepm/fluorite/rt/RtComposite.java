@@ -349,7 +349,27 @@ public final class RtComposite {
     }
 
     private static final float BASE_FOG_DENSITY = 0.0016f;   // extinction per block at the reference height
-    private static final float AMBIENT_FOG_FRACTION = 0.25f; // sky's share of what lights the fog
+    /**
+     * The sky's radiance as a share of the sun's, for the fog's isotropic source.
+     *
+     * <p><b>Was 0.25, which this codebase had already recorded as wrong in two separate places</b> —
+     * {@link #waterAmbient}'s javadoc calls it "far too large to be a sky radiance", and
+     * Rt.Water.AMBIENT_SCALE's calls it "about five times too large; it goes unnoticed there only because
+     * fog's optical depth is ~0.0016 per block". Both notes end with the same escape clause: it never
+     * showed because fog's {@code 1 - T} stayed near zero. Raise the density to 10 and it stops being
+     * near zero, and then it shows all at once.
+     *
+     * <p>0.05 is not a new guess. It is the value water settled on for the SAME physical quantity
+     * (Rt.Water.AMBIENT_SCALE), tuned in the one place whose optical depth is high enough for the
+     * magnitude to be visible on screen. The two terms differing by 5x was never a decision; it was the
+     * fog's copy never being revisited after water's was measured.
+     *
+     * <p>What this changes: at density 10 the isotropic source falls from 0.6x the sun's radiance (0.25
+     * ambient + 0.35 returned) to 0.05x. Sideways, the sun's own lobe is 0.16x — so the shaft goes from
+     * being outnumbered four to one by a flat glow to standing above it, which is what makes a light
+     * shaft visible from the side at all. See volume.slang for why the returned term is gone entirely.
+     */
+    private static final float AMBIENT_FOG_FRACTION = 0.05f;
 
     /**
      * Shading switches the closest-hit reads. Inline in the push constant rather than in WorldPush
@@ -458,6 +478,12 @@ public final class RtComposite {
     // that made it possible had cost. A saving measured against an unmeasured cost is not a net figure,
     // and M13 grows this dispatch rather than the traces, so the zone has to exist before then.
     private static final int GPU_ZONE_SKY_BAKE = 2;
+    // The volumetric visibility grid, timed SEPARATELY from the bakes above it rather than inside them.
+    // The combined zone measured 1.258 ms at 1080p once the grid was added, against 0.106 ms before it,
+    // and there was no way to say how much of that twelvefold rise was the grid and how much was the
+    // froxel's own growth to 64x36x64 with two rays a cell -- two changes that landed without a reading
+    // between them. Deciding whether to spend more rays here needs the two numbers apart.
+    private static final int GPU_ZONE_VIS_BAKE = 3;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
@@ -832,7 +858,7 @@ public final class RtComposite {
             }
             if (gpuTimers == null) {
                 gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect",
-                        "gpu.skyBake");
+                        "gpu.skyBake", "gpu.visBake");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -1218,6 +1244,8 @@ public final class RtComposite {
             // this is the only way to ask which of them a brightness came from. See
             // FluoriteConfig.Rt.Volumetrics.SEGMENT_SOURCE.
             flags |= (FluoriteConfig.Rt.Volumetrics.segmentSourceId() & 0b11) << 16;
+            // Bits 18-22: the cap on how many visibility sub-steps a marched segment may take.
+            flags |= (FluoriteConfig.Rt.Volumetrics.visibilityMaxSteps() & 0b11111) << 18;
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
@@ -1370,15 +1398,21 @@ public final class RtComposite {
             skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress,
                     skyLightGrid.ready() ? selectedPushSlot.skyLight.deviceAddress : 0L,
                     frameTlas.accel.handle, graphicsUse);
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
+            }
             // The volumetric visibility grid (M13.2), which the froxel does NOT read — it casts its own
             // rays, at its own view-adaptive sample positions, and is far denser near the eye than any
             // uniform world grid could be. This one exists for the segments the froxel cannot cover: every
-            // bounce, whose fog was completely unshadowed until now. Inside the same timing zone because
-            // both are the fog's per-frame preparation and splitting them would only make the number
-            // harder to compare against the one already recorded.
+            // bounce, whose fog was completely unshadowed until now.
+            //
+            // Its own timing zone. Sharing the froxel's would keep the one question this dispatch raises
+            // unanswerable: it and the froxel each cast a few hundred thousand rays a frame, they can be
+            // resized independently, and a single number covering both cannot say which resize to make.
             skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
             if (gpuTimers != null) {
-                gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
 

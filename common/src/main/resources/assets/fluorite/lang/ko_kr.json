@@ -103,6 +103,7 @@
   "fluorite.options.rt.debugView.16": "천체광 염색",
   "fluorite.options.rt.debugView.17": "대기 원근 프록셀",
   "fluorite.options.rt.debugView.18": "Volume visibility grid",
+  "fluorite.options.rt.debugView.19": "Visibility profile (grid vs ray)",
   "fluorite.options.rt.fog": "Volumetric Fog",
   "fluorite.options.rt.fog.tooltip": "The world's ambient participating medium. Integrated per path segment, so it appears in reflections and refractions, not just the direct view.",
   "fluorite.options.rt.fogDensity": "Fog Density",

@@ -103,6 +103,7 @@
   "fluorite.options.rt.debugView.16": "天體光染色",
   "fluorite.options.rt.debugView.17": "空氣透視 froxel",
   "fluorite.options.rt.debugView.18": "體積可見性網格",
+  "fluorite.options.rt.debugView.19": "可見性剖面（網格 vs 真實光線）",
   "fluorite.options.rt.fog": "体积雾",
   "fluorite.options.rt.fog.tooltip": "世界的环境介质。按路径分段积分，因此反射和折射里同样会出现，而不只是直接视野。",
   "fluorite.options.rt.fogDensity": "雾浓度",

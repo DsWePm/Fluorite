@@ -179,7 +179,19 @@ void main(uint3 id: SV_DispatchThreadID) {
             float3 p = ro + rd * (tNear + dt * 0.5);
 
             // The world's fog: exponential in height, tinted per channel, with a single-scattering albedo.
-            float fogDensity = sigma0 * exp(-(p.y - heightBase) / heightScale);
+            //
+            // SATURATING below the reference height — max(h, 0) — and that is not a refinement, it is the
+            // same correction volume.slang's ambientProfileIntegral already carries and this shader never
+            // received. Its comment records what the unbounded form did there: "from 200 blocks up, a ray
+            // that misses geometry and runs the full cull distance downward reached tau ~ 186, and the
+            // whole view went opaque the moment the camera climbed. Real fog has a bottom."
+            //
+            // Here it was quieter and therefore worse: the froxel covers the camera's prefix segment and
+            // the marched path covers every other segment, so the two disagreed about the density of the
+            // SAME air — by 1.6x at y=40 and 3.6x at y=0, growing the deeper you go. Two machines added
+            // together on screen must not disagree about their inputs; that is the whole reason M10.1
+            // deleted the CPU atmosphere port.
+            float fogDensity = sigma0 * exp(-max(p.y - heightBase, 0.0) / heightScale);
             float3 fogSigmaT = wp.fogExtinction.xyz * max(fogDensity, 0.0);
 
             // The atmosphere, at this point's altitude. Two orders of magnitude smaller than the fog at this

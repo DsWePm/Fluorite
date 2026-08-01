@@ -16,6 +16,8 @@
 
 import math;
 import medium;
+import atmosphere;      // PLANET_R, ATMOS_VIEW_ALTITUDE, SUN_INTENSITY
+import atmosphere_lut;  // sampleMultiScatter: the fog's isotropic source, same table the froxel reads
 import trace;
 import volume_visibility;
 import world_common;
@@ -170,16 +172,6 @@ public VisibilityResult visibilityThroughAmbient(MediumStack stack, float3 origi
     return result;
 }
 
-/**
- * Share of the light the fog removes from the sun's direct lobe that is returned as isotropic glow.
- *
- * A single-scattering model has nowhere for extinguished light to go, so a dense layer simply loses the
- * sun. Real fog scatters it many times and it comes back spread across the sky. This is not that
- * calculation — the froxel pass is — but it keeps the energy roughly where it belongs and removes a
- * visible discontinuity.
- */
-static const float MULTI_SCATTER_RETURN = 0.35;
-
 /** What a segment did to the path: what survives it, and what it added. */
 public struct SegmentIntegral {
     public float3 transmittance;
@@ -187,15 +179,29 @@ public struct SegmentIntegral {
 };
 
 /**
- * Sub-steps the ambient in-scatter is split into over the stretch the visibility grid can answer for.
- *
- * Six, and the number is bounded by geometry rather than chosen for looks: the stretch is clipped to the
- * grid's own box first, so these steps span at most the box's diagonal however long the segment is. A
- * segment running the full cull distance gets six samples across the grid and one closed form for
- * everything beyond it, rather than six samples spread over five hundred blocks with five of them landing
- * where there is nothing to sample.
+ * Hard ceiling on the sub-steps a segment may split its ambient in-scatter into. The live cap is
+ * worldPush.flags bits 18-22 (Rt.Volumetrics.VISIBILITY_MAX_STEPS); this only bounds the loop so the
+ * compiler has a constant trip count to work with and a bad config cannot unroll a raygen into oblivion.
  */
-static const int AMBIENT_VIS_STEPS = 6;
+static const int AMBIENT_VIS_STEP_LIMIT = 31;
+
+/**
+ * How many sub-steps to take across `span` blocks of grid, and it is derived rather than fixed.
+ *
+ * The step length wants to be the grid's CELL SIZE. Finer tells you nothing the grid can represent —
+ * every value in it is an interpolation between cell centres — and coarser throws away resolution the
+ * bake's rays already paid for. A fixed count could only be right at one span: six steps is finer than a
+ * cell across a room and five blocks a step across a long escape through a window, and it is the long one
+ * that carries a light shaft.
+ *
+ * So short segments get fewer steps than the old fixed six, not more, and only long ones cost anything —
+ * which is the opposite of what raising a fixed count would have done.
+ */
+int ambientVisSteps(float span, float cell) {
+    int cap = int(max((worldPush.flags >> 18u) & 31u, 1u));
+    float wanted = ceil(span / max(cell, 0.25));
+    return int(clamp(wanted, 1.0, float(min(cap, AMBIENT_VIS_STEP_LIMIT))));
+}
 
 /** In-flight state of the ambient integral: what it has gathered, and what survives to the next step. */
 struct AmbientAccum {
@@ -610,12 +616,6 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // transmittance an order of magnitude apart, so the halo came out blotchy across neighbouring
             // pixels and unstable as the camera moved. Every ray leaving one point now agrees.
             float3 sunTransmittance = ambientTransmittance(ro, worldPush.lightDir.xyz, RAY_FAR);
-            // Light taken out of the forward lobe does not vanish — in real fog it comes back as the
-            // diffuse glow that multiple scattering spreads over the whole sky. Returning a fraction of
-            // it isotropically is a cheap stand-in, and it is what stops a dense layer from switching
-            // between a sharp halo and no halo at all as the sun's path through it changes.
-            float3 extinguished = worldPush.lightRadiance.xyz
-                    * (float3(1.0, 1.0, 1.0) - sunTransmittance) * MULTI_SCATTER_RETURN;
             // 4*PI undoes hg()'s sphere normalisation: the phase function is a density over directions,
             // and what is wanted here is its gain relative to isotropic.
             // The source, split into the two halves the visibility grid answers for SEPARATELY.
@@ -627,13 +627,27 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // — they are added together on screen, so a disagreement between them would show up as a seam
             // at whatever depth the camera's prefix segment happens to end.
             //
-            // `extinguished` rides with the sky rather than the sun although it comes FROM the sun's beam:
-            // it is light that has been scattered out of that beam and returned isotropically, which is by
-            // construction light arriving from every direction rather than from the sun. Gating it on sun
-            // visibility would make it vanish in exactly the shadows it exists to keep from going black.
+            // <b>Character for character the froxel's source</b> (sky_froxel.comp.slang), and that is the
+            // point rather than a coincidence: the two are ADDED on screen, one covering the camera's
+            // prefix segment and the other covering every bounce, so any difference between them appears
+            // as a seam at whatever depth the primary ray happened to stop.
+            //
+            // The ad-hoc "extinguished light returns as glow" term that used to sit here is gone. It
+            // returned 0.35x the sun's RADIANCE isotropically and grew with density, so at density 10 it
+            // reached 0.35x while the sun's own sideways lobe was 0.16x — a flat wash twice as bright as
+            // the thing it was supposed to be softening, which is why the light shaft vanished from the
+            // side and the water blew out. What replaces it is the multiple-scattering table, which is
+            // the same quantity computed rather than guessed.
+            //
+            // Named limitation, so it is not rediscovered as a bug: that table is the ATMOSPHERE's
+            // multiple scattering, over kilometres. The local fog's own multiple scattering — what makes
+            // real pea soup glow white — is not modelled by anything here now. A single-scattering
+            // renderer cannot have it, and a constant standing in for it is what this change removed.
             float3 sunSource = worldPush.lightRadiance.xyz * sunTransmittance
                     * (4.0 * PI * evalPhase(dot(rd, worldPush.lightDir.xyz), worldPush.fogScatter.w));
-            float3 skySource = worldPush.fogAmbient.xyz + extinguished;
+            float atmosR = PLANET_R + ATMOS_VIEW_ALTITUDE;
+            float3 skySource = worldPush.fogAmbient.xyz * sunTransmittance
+                    + sampleMultiScatter(atmosR, clamp(worldPush.lightDir.y, -1.0, 1.0)) * SUN_INTENSITY;
             // Bit 16 (Rt.Volumetrics.SEGMENT_SOURCE): silence the fog in-scatter on MARCHED segments.
             //
             // Gating here rather than at the call sites is what makes the switch mean exactly "every
@@ -662,9 +676,10 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                 // texture fetches to be told six times that it is outside. Most bounce segments in an open
                 // scene are exactly that.
                 if (tExit > tEnter) {
-                    for (int i = 0; i < AMBIENT_VIS_STEPS; ++i) {
-                        float tA = lerp(tEnter, tExit, float(i) / float(AMBIENT_VIS_STEPS));
-                        float tB = lerp(tEnter, tExit, float(i + 1) / float(AMBIENT_VIS_STEPS));
+                    int steps = ambientVisSteps(tExit - tEnter, worldPush.visGridOrigin.w);
+                    for (int i = 0; i < steps; ++i) {
+                        float tA = lerp(tEnter, tExit, float(i) / float(steps));
+                        float tB = lerp(tEnter, tExit, float(i + 1) / float(steps));
                         // Sampled at the sub-step's MIDPOINT, so the value describes the stretch it weights
                         // rather than one of its ends. Sampling an end biases the whole segment toward
                         // whichever side of a shadow boundary that end happened to fall on, which is the

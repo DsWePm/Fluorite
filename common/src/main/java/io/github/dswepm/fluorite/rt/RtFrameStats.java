@@ -80,6 +80,7 @@ public final class RtFrameStats {
                     // it is an IllegalArgumentException out of indexOf that fails the whole composite and
                     // hands the frame back to vanilla — which is how this one announced itself.
                     "gpu.skyBake",
+                    "gpu.visBake",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",

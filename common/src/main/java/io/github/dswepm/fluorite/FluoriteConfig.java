@@ -744,6 +744,29 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.visibilityCellSize", "volumetrics.visibility-cell-size",
                             1.0f, 0.0f, 16.0f);
 
+            /**
+             * Most sub-steps a marched segment may split its ambient in-scatter into, one visibility
+             * sample each.
+             *
+             * <p>A CAP, not a count. The step length is the grid's cell size, because sampling a grid
+             * finer than its cells tells you nothing it can represent and sampling it coarser throws away
+             * resolution the rays already paid for. A short segment therefore takes as many steps as it
+             * has cells to cross and stops; only a long one reaches this limit, and past it the steps
+             * grow rather than the count.
+             *
+             * <p>This exists as a dial because it is the one candidate for soft light shafts that can be
+             * separated from the other two by moving it. Grid resolution and the denoiser also blur a
+             * shaft, and all three arguments are equally plausible written down — raising this and seeing
+             * nothing change rules it out in one look, which no amount of reasoning about it does.
+             */
+            public static final IntSetting VISIBILITY_MAX_STEPS =
+                    intValue("fluorite.rt.fog.visibilityMaxSteps", "volumetrics.visibility-max-steps", 6);
+
+            /** Bits 18-22 of worldPush.flags. Clamped so a bad config cannot unroll a raygen loop. */
+            public static int visibilityMaxSteps() {
+                return Math.clamp(VISIBILITY_MAX_STEPS.value(), 1, 31);
+            }
+
             /** Bits 16-17 of worldPush.flags: 0 both, 1 froxel only, 2 marched only, 3 neither. */
             public static int segmentSourceId() {
                 return switch (SEGMENT_SOURCE.get()) {
