@@ -750,6 +750,9 @@ static const float VIS_PROFILE_GRID_LINE = 0.008;
 // Probe range in blocks. Walk toward or away from the shaft to sweep it; a knob would be a second thing
 // to keep in step with a view that exists to settle one question.
 static const float VIS_PROFILE_DIST = 4.0;
+// Full scale of the two DISTANCE curves, in blocks. 16 puts a room's walls in the readable middle of the
+// axis and pins anything that escaped at the top.
+static const float VIS_PROFILE_RANGE = 8.0;
 
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
@@ -799,7 +802,27 @@ float3 visProfileDebug(uint2 dispatchIndex, uint2 dimensions, ConstPtr<PackedPat
     uint centreRow = dimensions.y / 2u;
     uint2 probePix = uint2(dispatchIndex.x, centreRow);
     CameraRay cam = cameraRay(probePix, dimensions);
-    float3 hitPos = queue[centreRow * dimensions.x + dispatchIndex.x].ro;
+    // The wall's distance, cast HERE rather than read from the queue's terminal record.
+    //
+    // The queue was the first version and its reading could not be reconciled with the scene: it put the
+    // wall past this view's whole scale in every column, inside a room whose walls are a few blocks away.
+    // Rather than argue about what `ro` means for a terminal segment — a split record, an escaped ray, a
+    // dielectric interface all put something different there — this measures the one thing it needs. Same
+    // reasoning that already replaced visibilityMasked with a RayQuery in this function: a view that
+    // depends on another stage's convention is testing that convention, not the thing it was built for.
+    RayDesc wallRay;
+    wallRay.Origin = cam.origin;
+    wallRay.Direction = cam.dir;
+    wallRay.TMin = 0.0;
+    wallRay.TMax = 4096.0;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> wq;
+    wq.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                      CULL_SECONDARY_NO_SELF, wallRay);
+    while (wq.Proceed()) {
+    }
+    float wallDist = wq.CommittedStatus() != COMMITTED_NOTHING
+            ? wq.CommittedRayT()
+            : VIS_PROFILE_RANGE;
 
     // A FIXED distance along each column's ray, not the camera segment's midpoint.
     //
@@ -810,16 +833,32 @@ float3 visProfileDebug(uint2 dispatchIndex, uint2 dimensions, ConstPtr<PackedPat
     //
     // Clamped just short of the hit so the probe never lands inside or behind geometry, which would
     // report the visibility of a point no ray of this pixel ever travelled through.
-    float hitDist = length(hitPos - cam.origin);
-    float probeDist = min(VIS_PROFILE_DIST, max(hitDist * 0.9, 0.05));
+    float probeDist = min(VIS_PROFILE_DIST, max(wallDist * 0.9, 0.05));
     float3 p = cam.origin + cam.dir * probeDist;
 
     float gridVis = sampleVolumeVisibility(p).x;
-    // Ground truth at the SAME point. CULL_SECONDARY_NO_SELF matches what the bake casts, so any
-    // difference between the curves is the grid's resolution and not a difference in what counts as an
-    // occluder.
-    float trueVis = visibilityMasked(CULL_SECONDARY_NO_SELF, p,
-                                     worldPush.lightDir.xyz, RAY_FAR).transmittance.x;
+
+    // Ground truth at the SAME point, cast with a RayQuery rather than through visibilityMasked, so this
+    // is CHARACTER FOR CHARACTER what volume_visibility.comp does: same flags, same mask, same tmin. A
+    // debug view that asks the question a different way cannot confirm or refute the bake, and this view
+    // exists because the bake's two channels disagree in a way nothing in the code explains — a sealed
+    // room reads "roof overhead" on the zenith ray and "sun reachable" on the sun ray.
+    //
+    // It also reports the DISTANCE, which the binary answer cannot: "the sun ray escaped" and "the sun
+    // ray was never traced" produce the same 1, and telling them apart is the whole question.
+    RayDesc probe;
+    probe.Origin = p;
+    probe.Direction = worldPush.lightDir.xyz;
+    probe.TMin = 0.05;
+    probe.TMax = 4096.0;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                     CULL_SECONDARY_NO_SELF, probe);
+    while (q.Proceed()) {
+    }
+    bool hit = q.CommittedStatus() != COMMITTED_NOTHING;
+    float trueVis = hit ? 0.0 : 1.0;
+    float sunHitDist = hit ? q.CommittedRayT() : VIS_PROFILE_RANGE;
 
     // Value 0 at the bottom of the frame, 1 at the top, inset so both ends are fully drawn. No vertical
     // flip: this is a plot, its axis is its own, and copying a flip from a view whose axis meant something
@@ -834,11 +873,29 @@ float3 visProfileDebug(uint2 dispatchIndex, uint2 dimensions, ConstPtr<PackedPat
             || abs(v - (VIS_PROFILE_LO + VIS_PROFILE_HI) * 0.5) < 0.0015) {
         col = float3(0.10, 0.10, 0.14);
     }
+    // The two DISTANCE curves, under the visibility ones: where the wall is, and how far the sun ray got.
+    // Both scaled by VIS_PROFILE_RANGE, so a curve at the top means "further than that, or escaped".
+    float wallY = lerp(VIS_PROFILE_LO, VIS_PROFILE_HI,
+                       saturate(wallDist / VIS_PROFILE_RANGE));
+    float sunDistY = lerp(VIS_PROFILE_LO, VIS_PROFILE_HI,
+                          saturate(sunHitDist / VIS_PROFILE_RANGE));
+    float probeY = lerp(VIS_PROFILE_LO, VIS_PROFILE_HI, VIS_PROFILE_DIST / VIS_PROFILE_RANGE);
+    if (abs(v - probeY) < 0.002) {
+        col = float3(0.35, 0.28, 0.0);  // dull yellow: where the probe sits on the distance scale
+    }
+    if (abs(v - sunDistY) < VIS_PROFILE_GRID_LINE) {
+        col = float3(0.1, 0.8, 0.9);    // cyan: how far the sun ray travelled before hitting anything
+    }
     if (abs(v - trueY) < VIS_PROFILE_TRUE_LINE) {
-        col = float3(1.0, 1.0, 1.0); // ground truth, thick
+        col = float3(1.0, 1.0, 1.0);    // ground truth, thick
     }
     if (abs(v - gridY) < VIS_PROFILE_GRID_LINE) {
-        col = float3(1.0, 0.1, 0.1);  // the grid, thin, on top
+        col = float3(1.0, 0.1, 0.1);    // the grid, thin
+    }
+    // The wall LAST, so nothing can hide it. Its absence under the truth band was read as "not drawn"
+    // once already, and that reading sent a whole round chasing the wrong thing.
+    if (abs(v - wallY) < VIS_PROFILE_GRID_LINE) {
+        col = float3(0.9, 0.8, 0.1);    // yellow: where the camera ray hits geometry
     }
     if (dispatchIndex.x == dimensions.x / 2u) {
         col = max(col, float3(0.30, 0.30, 0.30)); // the crosshair's column
