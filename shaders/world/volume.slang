@@ -17,6 +17,7 @@
 import math;
 import medium;
 import trace;
+import volume_visibility;
 import world_common;
 import world_core;
 
@@ -186,6 +187,82 @@ public struct SegmentIntegral {
 };
 
 /**
+ * Sub-steps the ambient in-scatter is split into over the stretch the visibility grid can answer for.
+ *
+ * Six, and the number is bounded by geometry rather than chosen for looks: the stretch is clipped to the
+ * grid's own box first, so these steps span at most the box's diagonal however long the segment is. A
+ * segment running the full cull distance gets six samples across the grid and one closed form for
+ * everything beyond it, rather than six samples spread over five hundred blocks with five of them landing
+ * where there is nothing to sample.
+ */
+static const int AMBIENT_VIS_STEPS = 6;
+
+/** In-flight state of the ambient integral: what it has gathered, and what survives to the next step. */
+struct AmbientAccum {
+    float3 inScatter;
+    float3 transmittance;
+};
+
+/**
+ * One sub-step of the ambient in-scatter, with a fixed visibility over it.
+ *
+ * The same closed form the whole segment used to run, applied to a piece of it. That is what makes this
+ * split free of consequence where nothing is shadowed: with visibility 1 throughout, the pieces telescope
+ * — sum of T(i-1) * (1 - t(i)) is T(0) - T(n) — and the height integral is additive over abutting windows,
+ * so the total comes back to S * (1 - exp(-sigma * tau)) exactly. A change that is provably a no-op when
+ * the new input is absent is a change whose effect on screen can only be the new input.
+ */
+void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float tB,
+                 float3 sunSource, float3 skySource, float2 vis) {
+    if (tB <= tA) {
+        return;
+    }
+    float tau = ambientHeightIntegral(ro, rd, tA, tB);
+    if (tau <= 0.0) {
+        return;
+    }
+    float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
+    float3 source = sunSource * vis.x + skySource * vis.y;
+    acc.inScatter += acc.transmittance * worldPush.fogScatter.xyz * source
+            * (float3(1.0, 1.0, 1.0) - stepT);
+    acc.transmittance *= stepT;
+}
+
+/**
+ * Where this ray enters and leaves the visibility grid's box, as distances along it. An empty span
+ * (x >= y) when the ray misses the box or no grid is published.
+ *
+ * A slab test, and it is an optimisation rather than a correctness requirement — sampleVolumeVisibility
+ * already returns "lit" for a point outside the grid, so a span that is slightly wrong only wastes or
+ * misplaces samples. That property is deliberate: this is the kind of arithmetic that is easy to get
+ * subtly wrong, and it should not be able to put light where there is none.
+ */
+float2 visGridSpan(float3 ro, float3 rd) {
+    float cell = worldPush.visGridOrigin.w;
+    if (cell <= 0.0) {
+        return float2(0.0, -1.0);
+    }
+    float3 lo = worldPush.visGridOrigin.xyz;
+    float3 hi = lo + cell * float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
+    // Near-zero components are floored rather than divided by. The branchless slab test's usual argument
+    // is that 1/0 gives an infinity the min/max handle correctly — true, right up until the ray origin
+    // lies exactly in a slab's plane, where the infinity meets a zero numerator and produces a NaN that
+    // then propagates silently through every min and max downstream. Flooring the direction instead gives
+    // a very large finite t of the correct sign, which is what the infinity was standing in for anyway:
+    // a ray parallel to a slab either never leaves it or is never in it, and both come out right.
+    float3 safeRd = select(abs(rd) < float3(1.0e-8, 1.0e-8, 1.0e-8),
+                           float3(1.0e-8, 1.0e-8, 1.0e-8), rd);
+    float3 invD = float3(1.0, 1.0, 1.0) / safeRd;
+    float3 t0 = (lo - ro) * invD;
+    float3 t1 = (hi - ro) * invD;
+    float3 tMin = min(t0, t1);
+    float3 tMax = max(t0, t1);
+    float enter = max(max(tMin.x, tMin.y), max(tMin.z, 0.0));
+    float exit = min(min(tMax.x, tMax.y), tMax.z);
+    return float2(enter, exit);
+}
+
+/**
  * Integrates both media over one segment. This is the single hook that replaces
  * `throughput *= exp(-extinction * t)` in the raygens. Callers do:
  *
@@ -195,13 +272,19 @@ public struct SegmentIntegral {
  * in that order. The in-scatter is what the segment added to the radiance arriving along it, so it is
  * weighted by the throughput reaching the segment, not by the throughput leaving it.
  *
- * Analytic and unshadowed. For a source radiance that is constant along the segment, the
- * single-scattering integral collapses exactly to albedo * Ls * (1 - T) — and height fog keeps that
- * identity, because all the height variation lives inside the optical depth. So this costs no marching,
- * no extra rays and no new path vertices.
+ * Analytic. For a source radiance that is constant along the segment, the single-scattering integral
+ * collapses exactly to albedo * Ls * (1 - T) — and height fog keeps that identity, because all the height
+ * variation lives inside the optical depth. So this costs no marching, no extra rays and no new path
+ * vertices.
  *
- * What it gives up is occlusion: the fog is lit as though nothing shadowed it. That is the price of not
- * spending a ray here, and it is why god rays need the froxel pass rather than this function.
+ * <p><b>Occlusion arrives as a lookup, not as a ray.</b> The ambient source is no longer constant along
+ * the segment: it is scaled by the visibility grid, which is sampled at a few points over the stretch the
+ * grid covers and left at 1 everywhere else. Still no rays here — the rays were spent once per world-space
+ * cell in volume_visibility.comp, which is the whole reason a grid was built instead of a shadow ray being
+ * added to this function. See that shader for what the three cheaper alternatives were and why each fails.
+ *
+ * <p>The transmittance is untouched by any of it and is still one closed form over the whole window. What
+ * a segment HIDES was never in question.
  */
 /**
  * Phase function for an enclosed medium: mostly forward Mie, with a small Rayleigh component.
@@ -535,11 +618,65 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                     * (float3(1.0, 1.0, 1.0) - sunTransmittance) * MULTI_SCATTER_RETURN;
             // 4*PI undoes hg()'s sphere normalisation: the phase function is a density over directions,
             // and what is wanted here is its gain relative to isotropic.
-            float3 source = worldPush.lightRadiance.xyz * sunTransmittance
-                    * (4.0 * PI * evalPhase(dot(rd, worldPush.lightDir.xyz), worldPush.fogScatter.w))
-                    + worldPush.fogAmbient.xyz + extinguished;
-            seg.inScatter = worldPush.fogScatter.xyz * source
-                    * (float3(1.0, 1.0, 1.0) - fogT);
+            // The source, split into the two halves the visibility grid answers for SEPARATELY.
+            //
+            // The sun's lobe is gated by whether the sun is reachable. The other two are gated by whether
+            // the SKY is, which is a different question and deliberately so: a hillside's shadow must not
+            // drain the ambient light out of the fog standing in it, because what removes ambient light is
+            // a roof, not a hill. The froxel splits its source the same way, and the two agreeing matters
+            // — they are added together on screen, so a disagreement between them would show up as a seam
+            // at whatever depth the camera's prefix segment happens to end.
+            //
+            // `extinguished` rides with the sky rather than the sun although it comes FROM the sun's beam:
+            // it is light that has been scattered out of that beam and returned isotropically, which is by
+            // construction light arriving from every direction rather than from the sun. Gating it on sun
+            // visibility would make it vanish in exactly the shadows it exists to keep from going black.
+            float3 sunSource = worldPush.lightRadiance.xyz * sunTransmittance
+                    * (4.0 * PI * evalPhase(dot(rd, worldPush.lightDir.xyz), worldPush.fogScatter.w));
+            float3 skySource = worldPush.fogAmbient.xyz + extinguished;
+            // Bit 16 (Rt.Volumetrics.SEGMENT_SOURCE): silence the fog in-scatter on MARCHED segments.
+            //
+            // Gating here rather than at the call sites is what makes the switch mean exactly "every
+            // segment the froxel does not cover". The camera prefix takes the froxel whenever this branch
+            // would have run at all — the one case it does not, a submerged camera, has ambient false and
+            // never reaches this line — so the segments left running it are precisely the bounces.
+            //
+            // Only the emission moves. seg.transmittance was set above and stays, so this separates "the
+            // fog is too bright" from "the fog is too thick" instead of confusing the two.
+            if (((worldPush.flags >> 16u) & 1u) == 0u) {
+                // Three regions, because the grid has a boundary and pretending otherwise is what puts a
+                // shell around the camera: the stretch before the ray enters the grid, the stretch inside
+                // it where visibility is sampled, and the stretch beyond. The two outer ones run the
+                // closed form with visibility 1 — exactly what this line did before the grid existed —
+                // and the inner one is the only place anything new happens.
+                float2 span = visGridSpan(ro, rd);
+                float tEnter = clamp(span.x, window.x, window.y);
+                float tExit = clamp(max(span.y, span.x), tEnter, window.y);
+
+                AmbientAccum acc;
+                acc.inScatter = float3(0.0, 0.0, 0.0);
+                acc.transmittance = float3(1.0, 1.0, 1.0);
+                ambientStep(acc, ro, rd, window.x, tEnter, sunSource, skySource, float2(1.0, 1.0));
+                // Guarded, not just relying on ambientStep's own zero-length early-out: the SAMPLE happens
+                // before that check, so a segment that never touches the grid would still pay six 3D
+                // texture fetches to be told six times that it is outside. Most bounce segments in an open
+                // scene are exactly that.
+                if (tExit > tEnter) {
+                    for (int i = 0; i < AMBIENT_VIS_STEPS; ++i) {
+                        float tA = lerp(tEnter, tExit, float(i) / float(AMBIENT_VIS_STEPS));
+                        float tB = lerp(tEnter, tExit, float(i + 1) / float(AMBIENT_VIS_STEPS));
+                        // Sampled at the sub-step's MIDPOINT, so the value describes the stretch it weights
+                        // rather than one of its ends. Sampling an end biases the whole segment toward
+                        // whichever side of a shadow boundary that end happened to fall on, which is the
+                        // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
+                        // shape.
+                        float2 vis = sampleVolumeVisibility(ro + rd * ((tA + tB) * 0.5));
+                        ambientStep(acc, ro, rd, tA, tB, sunSource, skySource, vis);
+                    }
+                }
+                ambientStep(acc, ro, rd, tExit, window.y, sunSource, skySource, float2(1.0, 1.0));
+                seg.inScatter = acc.inScatter;
+            }
         }
     }
     return seg;

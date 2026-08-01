@@ -24,6 +24,7 @@ import math;
 import bsdf;
 import medium;
 import volume;
+import volume_visibility; // debug view 18 reads the grid directly
 import segment;
 import water;
 import trace;
@@ -716,6 +717,9 @@ static const uint DEBUG_VIEW_LIGHT_DYE = 16u;
 static const uint DEBUG_VIEW_FROXEL = 17u;
 static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
 
+// The volumetric visibility grid, at this pixel's own camera segment. See volumeVisibilityDebug.
+static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 18u;
+
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
     // view that resampled it through anything else would be testing the resampling.
@@ -728,6 +732,29 @@ float3 froxelDebug(float2 uv) {
         return f.rgb;
     }
     return float3(f.a, f.a, f.a);
+}
+
+// The volumetric visibility grid (M13.2), sampled at the MIDPOINT of this pixel's camera segment.
+//
+//   R : sun visibility     G : sky openness     B : always zero, so the two never blend into a grey
+//
+// Read it as four colours rather than as a gradient. Yellow is open ground in daylight. Green is a point
+// the sun cannot reach but the sky can — a hillside's shadow, which must stay green, because draining the
+// ambient light out of a shadow is the specific error the two-ray split exists to prevent. Red is the
+// opposite and is rare: roofed, with a line to the sun through a gap. Black is indoors.
+//
+// The midpoint of the camera segment rather than a fixed distance: a fixed distance would report the air
+// on the far side of a wall while the player stands in a room looking at that wall, which is the exact
+// case this grid was built for and the exact case a fixed distance answers wrongly.
+//
+// This is the grid ITSELF, with no fog arithmetic anywhere in it. If the room reads black here and its fog
+// is still lit, the grid is right and the consumer is wrong; if it reads yellow here, the grid is wrong and
+// nothing downstream can fix it.
+float3 volumeVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
+    CameraRay cam = cameraRay(dispatchIndex, dimensions);
+    float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
+    float2 vis = sampleVolumeVisibility(p);
+    return float3(vis.x, vis.y, 0.0);
 }
 
 float3 lightDyeDebug(float2 uv) {
@@ -850,6 +877,11 @@ void main() {
                     ? skyViewReferenceDebug(screenUv, dispatchIndex)
                     : pc.debugView == DEBUG_VIEW_LIGHT_DYE
                     ? lightDyeDebug(screenUv)
+                    : pc.debugView == DEBUG_VIEW_VOLUME_VISIBILITY
+                    // The queued record's origin is where the primary pass stopped, which is this pixel's
+                    // camera segment's far end. Taken from the queue rather than re-traced: a debug view
+                    // that traces its own ray is testing its own ray.
+                    ? volumeVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
                     : froxelDebug(screenUv);
             outImage[pix] = float4(table, 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_VOLUME_INSCATTER) {
@@ -894,7 +926,11 @@ void main() {
         // closed form is still here to compare against.
         float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
         float4 aerial = sampleAerialPerspective(screenUv, prefixLength, worldPush.fogParams.w);
-        prefix.inScatter = aerial.rgb;
+        // Bit 17 (Rt.Volumetrics.SEGMENT_SOURCE): silence the froxel's half of the fog. The alpha is
+        // kept — what this stretch of air HIDES is not in question, only what it emits.
+        prefix.inScatter = ((worldPush.flags >> 17u) & 1u) != 0u
+                ? float3(0.0, 0.0, 0.0)
+                : aerial.rgb;
         prefix.transmittance = float3(aerial.a, aerial.a, aerial.a);
     } else {
         // Submerged: the camera is inside water, not inside the world's air, so the ambient field is not

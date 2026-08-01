@@ -682,6 +682,78 @@ public final class FluoriteConfig {
             public static final FloatSetting PHASE_G =
                     clampedFloat("fluorite.rt.fog.phaseG", "volumetrics.phase-g", 0.55f, -0.9f, 0.9f);
 
+            /**
+             * Which segments of a path are allowed to add fog in-scatter: {@code both}, {@code froxel},
+             * {@code marched}, {@code none}.
+             *
+             * <p>A measurement switch, like {@link Water#SCATTER_SOURCE}, and it exists because the fog's
+             * in-scatter now comes from two machines with two different occlusion models. The camera's
+             * prefix segment reads the froxel, which resolves sun and sky visibility per world-space cell.
+             * Every other segment — every bounce — still runs the closed form in {@code integrateSegment},
+             * which has no occlusion at all. The two are added together on screen, so "the fog indoors is
+             * too bright" cannot be attributed to either by looking at it.
+             *
+             * <p>{@code froxel} silences the marched half and {@code marched} silences the froxel half.
+             * Neither touches extinction, so what a segment hides stays exactly as it was and only what it
+             * emits moves — the same separation of "too bright" from "too opaque" the water switch makes.
+             */
+            public static final StringSetting SEGMENT_SOURCE =
+                    string("fluorite.rt.fog.segmentSource", "volumetrics.segment-source", "both",
+                            Volumetrics::sanitizeSegmentSource);
+
+            private static String sanitizeSegmentSource(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "froxel", "marched", "none" -> v;
+                    default -> "both";
+                };
+            }
+
+            /**
+             * Cell size of the volumetric visibility grid, in blocks. 0 turns the grid off entirely and
+             * restores the unshadowed fog exactly.
+             *
+             * <p>The grid's CELL COUNT is fixed (it is a texture's dimensions, 64x32x64), so this is the
+             * one dial and it trades reach against leakage: at 1 block the grid reaches 32 blocks
+             * horizontally and 16 vertically from the camera, at 2 blocks twice that in each axis. Beyond
+             * it the fog falls back to unshadowed, faded in rather than cut, so the choice is where the
+             * shadowing stops rather than whether it looks wrong somewhere.
+             *
+             * <p><b>One is the default, and the step from 2 to 1 is a change in kind rather than in
+             * degree.</b> Trilinear filtering blends the eight nearest cells, so light leaks inward from
+             * outside a wall unless a cell of its own sits in the way. At 2 blocks a one-block wall is
+             * thinner than a cell and cannot hold one, so the interpolation runs straight from "inside the
+             * room" to "outside the house" — measured exactly that way: a shell of single dirt blocks lit
+             * the fog inside it, and doubling the wall to two blocks (one cell) stopped it dead.
+             *
+             * <p>At 1 block the lattice lands on block CENTRES rather than block corners, which is the
+             * property that does the work: every solid block then holds a cell of its own, that cell's
+             * rays leave from inside the block and hit its own faces, and it reads occluded. A sample
+             * point in the room blends room cells and wall cells and can never reach an outside one. Even
+             * cell sizes cannot have this property at all — their centres fall on block boundaries by
+             * construction, which is the worst place to sample a one-block wall from.
+             *
+             * <p>Eight was measured and is useless, which is where this line of work started: that was the
+             * coarse CPU sky-light grid, whose cells are taller than a house, so the cell holding a sealed
+             * room also held the open sky above its roof and averaged to open.
+             *
+             * <p>Turning it off is not the same as turning fog scattering off: extinction is untouched, so
+             * what the fog HIDES is identical either way and only the shadowing moves.
+             */
+            public static final FloatSetting VISIBILITY_CELL_SIZE =
+                    clampedFloat("fluorite.rt.fog.visibilityCellSize", "volumetrics.visibility-cell-size",
+                            1.0f, 0.0f, 16.0f);
+
+            /** Bits 16-17 of worldPush.flags: 0 both, 1 froxel only, 2 marched only, 3 neither. */
+            public static int segmentSourceId() {
+                return switch (SEGMENT_SOURCE.get()) {
+                    case "froxel" -> 1;
+                    case "marched" -> 2;
+                    case "none" -> 3;
+                    default -> 0;
+                };
+            }
+
             private static String sanitizeTint(String value) {
                 String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
                 return switch (v) {

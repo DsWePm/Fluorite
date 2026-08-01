@@ -123,6 +123,17 @@ public struct WorldPush {
     // around the camera. Origin is in the terrain's rebased coordinates like every other position here.
     public float4   skyLightOrigin;   // xyz grid origin (rebased), w cell size in blocks
     public int4     skyLightDims;     // xyz cell counts, w unused
+    // The volumetric visibility grid (M13.2), baked on the GPU with two rays per cell: R sun visibility,
+    // G sky openness. Read by the BAKE that fills it and by every segment that samples it, which is why
+    // the placement lives here rather than in either one's push constants — a grid origin that two shaders
+    // disagree about by one cell is a bug that presents as light leaking through walls.
+    //
+    // Snapped to whole cells in ABSOLUTE world coordinates before rebasing, so the sample lattice stays
+    // put as the camera moves and as the terrain rebases. Unsnapped, every step the player takes would
+    // reshuffle where the rays are cast and the fog would boil. w is the cell size; 0 means no grid, and
+    // sampleVolumeVisibility then reports everything lit, which is what the renderer did before this
+    // existed.
+    public float4   visGridOrigin;    // xyz snapped minimum corner (rebased), w cell size in blocks
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

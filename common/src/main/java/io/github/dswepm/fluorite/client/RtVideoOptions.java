@@ -109,7 +109,7 @@ public final class RtVideoOptions {
                         fogPhaseG(), fogScatterTint()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
-                case DIAGNOSTICS -> List.of(Section.of(debugView()));
+                case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource()));
             };
         }
     }
@@ -362,6 +362,24 @@ public final class RtVideoOptions {
             setting::set);
     }
 
+    /**
+     * Which of the fog's two in-scatter machines are live. A diagnostic rather than a look, which is why
+     * it sits beside the debug views instead of under Fog: the froxel covers the camera's prefix segment
+     * and resolves visibility per world-space cell, every bounce segment runs the unshadowed closed form,
+     * and on screen the two are added. Silencing one is the only way to say which produced a brightness.
+     */
+    private static OptionInstance<String> fogSegmentSource() {
+        StringSetting setting = FluoriteConfig.Rt.Volumetrics.SEGMENT_SOURCE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogSegmentSource",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.fogSegmentSource.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.fogSegmentSource." + value),
+            new OptionInstance.Enum<>(List.of("both", "froxel", "marched", "none"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
     /** A 0.0-10.0 multiplier, stepped in tenths. IntRange is the only slider vanilla exposes. */
     private static OptionInstance<Integer> scaleSlider(String key, FloatSetting setting) {
         int initial = Math.clamp(Math.round(setting.value() * 10.0f), 0, 100);
@@ -579,8 +597,9 @@ public final class RtVideoOptions {
             // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
             // between hits rather than the hits themselves. See world.rgen's volumeDebug. 12 is neither —
             // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17), Codec.INT),
-            Math.clamp(setting.value(), 0, 17),
+            new OptionInstance.Enum<>(
+                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18), Codec.INT),
+            Math.clamp(setting.value(), 0, 18),
             setting::set);
     }
 

@@ -99,11 +99,13 @@ public final class RtPipeline {
     private final int multiScatterBinding;
     private final int skyViewBinding;
     private final int froxelBinding;
+    private final int visibilityGridBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
                        long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
-                       int transmittanceBinding, int multiScatterBinding, int skyViewBinding, int froxelBinding) {
+                       int transmittanceBinding, int multiScatterBinding, int skyViewBinding,
+                       int froxelBinding, int visibilityGridBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -131,6 +133,7 @@ public final class RtPipeline {
         this.multiScatterBinding = multiScatterBinding;
         this.skyViewBinding = skyViewBinding;
         this.froxelBinding = froxelBinding;
+        this.visibilityGridBinding = visibilityGridBinding;
     }
 
     /**
@@ -189,8 +192,15 @@ public final class RtPipeline {
             // grid's 32 depth steps on screen as visible shells around the camera.
             int froxelBinding = skyAtlas ? skyViewBinding + skyViewSamplers : -1;
             int froxelSamplers = skyAtlas ? 1 : 0;
+            // The volumetric visibility grid (M13.2), binding 16. A 3D sampled image and RAYGEN-only:
+            // volume.slang is the sole importer of the module that declares it, and both raygens are its
+            // only importers in turn. Filtering is not an optimisation here — every value the grid holds
+            // is exactly 0 or 1, so a nearest fetch would put its cell boundaries on screen as hard steps
+            // in the fog, and the smooth field the trilinear blend produces IS the product.
+            int visibilityGridBinding = skyAtlas ? froxelBinding + froxelSamplers : -1;
+            int visibilityGridSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
-                    + multiScatterSamplers + skyViewSamplers + froxelSamplers;
+                    + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -222,6 +232,9 @@ public final class RtPipeline {
                 binds.get(froxelBinding).binding(froxelBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(visibilityGridBinding).binding(visibilityGridBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -416,7 +429,7 @@ public final class RtPipeline {
             sbt.flush();
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
                     bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
-                    multiScatterBinding, skyViewBinding, froxelBinding);
+                    multiScatterBinding, skyViewBinding, froxelBinding, visibilityGridBinding);
         }
     }
 
@@ -528,6 +541,11 @@ public final class RtPipeline {
     /** Bind the aerial-perspective froxel (M10.4). */
     public void setAerialPerspectiveLut(long imageView, long sampler) {
         writeAtlasBinding(froxelBinding, imageView, sampler);
+    }
+
+    /** Bind the volumetric visibility grid (M13.2), sampled by the fog on every marched segment. */
+    public void setVolumeVisibilityGrid(long imageView, long sampler) {
+        writeAtlasBinding(visibilityGridBinding, imageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

@@ -67,6 +67,12 @@ public final class RtSky {
     public static final int FROXEL_D = 64;
     private static final int FROXEL_GROUP = 8; // matches [numthreads(8, 8, 1)]
     private static final int FROXEL_PUSH_BYTES = 16; // WorldPush + sky-light grid device addresses
+    /** Must match VIS_GRID_W/H/D in shaders/world/volume_visibility{,.comp}.slang. */
+    public static final int VIS_GRID_W = 64;
+    public static final int VIS_GRID_H = 32;
+    public static final int VIS_GRID_D = 64;
+    private static final int VIS_GROUP = 4; // matches [numthreads(4, 4, 4)]
+    private static final int VIS_PUSH_BYTES = 8; // WorldPush address; the grid's placement is a field in it
     private static final int BAKE_GROUP = 8; // matches [numthreads(8, 8, 1)] in both bake shaders
 
     /** One compute bake: its layout, its set, and the pipeline that writes one table. */
@@ -85,7 +91,9 @@ public final class RtSky {
     private final Bake multiScatterBake;
     private final Bake skyViewBake;
     private final Bake froxelBake;
+    private final Bake visibilityBake;
     private final RtOverlayPipelines.AccelStructureSet froxelTlas;
+    private final RtOverlayPipelines.AccelStructureSet visibilityTlas;
     private final long lutSampler;
     private RtImage transmittance;
     private RtImage multiScatter;
@@ -93,16 +101,21 @@ public final class RtSky {
     private RtImage skyViewMie;
     private RtImage skyViewMulti;
     private RtImage aerialPerspective;
+    private RtImage visibilityGrid;
     private boolean baked;
 
     private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
-                  Bake froxelBake, RtOverlayPipelines.AccelStructureSet froxelTlas, long lutSampler) {
+                  Bake froxelBake, RtOverlayPipelines.AccelStructureSet froxelTlas,
+                  Bake visibilityBake, RtOverlayPipelines.AccelStructureSet visibilityTlas,
+                  long lutSampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
         this.multiScatterBake = multiScatterBake;
         this.skyViewBake = skyViewBake;
         this.froxelBake = froxelBake;
         this.froxelTlas = froxelTlas;
+        this.visibilityBake = visibilityBake;
+        this.visibilityTlas = visibilityTlas;
         this.lutSampler = lutSampler;
     }
 
@@ -154,7 +167,17 @@ public final class RtSky {
             long sampler = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, sampler, "sky LUT chain sampler");
 
-            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake, froxelBake, froxelTlas, sampler);
+            // The volumetric visibility grid (M13.2). Its own TLAS ring rather than a second bind of the
+            // froxel's: a ring slot is claimed per bind, and binding one ring twice a frame is exactly the
+            // kind of arithmetic that works right up until the ring wraps.
+            RtOverlayPipelines.AccelStructureSet visibilityTlas = RtOverlayPipelines.accelStructureSet(
+                    ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "volume visibility TLAS");
+            Bake visibilityBake = createBake(ctx, stack, "volume_visibility.comp.spv", "volume visibility",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, VIS_PUSH_BYTES,
+                    visibilityTlas.layout);
+
+            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake, froxelBake,
+                    froxelTlas, visibilityBake, visibilityTlas, sampler);
             // The images are allocated HERE rather than lazily inside the bake, so the views exist from
             // the moment this object does. Creating them in the bake made a view's availability depend on
             // whether the bake had run, which in turn made the ray-tracing pipeline's binding depend on
@@ -188,6 +211,20 @@ public final class RtSky {
             writeSampledImage(vk, stack, froxelBake.descriptorSet(), 0, sky.transmittance.view, sampler);
             writeSampledImage(vk, stack, froxelBake.descriptorSet(), 1, sky.multiScatter.view, sampler);
             writeStorageImage(vk, stack, froxelBake.descriptorSet(), 2, sky.aerialPerspective.view);
+
+            // Eight bits per channel, because every exact value this grid holds is 0 or 1 — all the
+            // precision that matters is in the FILTERING between them, and a float format would spend four
+            // times the bandwidth storing the same information.
+            //
+            // R8G8B8A8 rather than the R8G8 the data actually needs. Vulkan's list of formats a device
+            // MUST support as a storage image contains R8G8B8A8_UNORM and does not contain R8G8_UNORM, so
+            // the tighter format would work on the machine it was written on and be a format-support
+            // failure somewhere else — the kind of portability bug that never reproduces locally. 512 KB
+            // against 256 KB is not worth that, and the two spare channels are somewhere for a future
+            // third visibility to go without a second image.
+            sky.visibilityGrid = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
+                    VK10.VK_FORMAT_R8G8B8A8_UNORM, "volume visibility grid");
+            writeStorageImage(vk, stack, visibilityBake.descriptorSet(), 0, sky.visibilityGrid.view);
             return sky;
         }
     }
@@ -216,6 +253,42 @@ public final class RtSky {
 
     public long aerialPerspectiveView() {
         return aerialPerspective == null ? 0L : aerialPerspective.view;
+    }
+
+    /** The volumetric visibility grid's view (M13.2). R sun visibility, G sky openness. */
+    public long visibilityGridView() {
+        return visibilityGrid == null ? 0L : visibilityGrid.view;
+    }
+
+    /**
+     * Record the volumetric visibility grid. Per frame, and unlike the froxel it does not follow the
+     * camera's ORIENTATION — only its position, snapped to whole cells — so turning on the spot rebakes an
+     * identical field. That stability under rotation is something a view-space structure cannot have, and
+     * it is why the bounce segments get a grid of their own rather than a second read of the froxel.
+     *
+     * <p>Takes only the WorldPush address. The grid's origin and cell size are fields in that buffer
+     * because the consumers read them too, and the one thing that must not drift between the shader that
+     * writes a cell and the shader that reads it is where the cell IS.
+     */
+    public void recordVisibilityBake(VkCommandBuffer cmd, long worldPushAddr, long tlas,
+                                     RtGpuExecutor.GraphicsUse graphicsUse) {
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volume visibility bake")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, visibilityBake.pipeline());
+            long tlasSet = visibilityTlas.bind(ctx, tlas, graphicsUse);
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    visibilityBake.pipelineLayout(), 0,
+                    stack.longs(visibilityBake.descriptorSet(), tlasSet), null);
+            ByteBuffer pushData = stack.malloc(VIS_PUSH_BYTES);
+            pushData.putLong(0, worldPushAddr);
+            VK10.vkCmdPushConstants(cmd, visibilityBake.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
+            // One thread per CELL. Unlike the froxel there is nothing to accumulate along an axis, so no
+            // thread owns a column and a flat 3D dispatch is the honest shape.
+            VK10.vkCmdDispatch(cmd, (VIS_GRID_W + VIS_GROUP - 1) / VIS_GROUP,
+                    (VIS_GRID_H + VIS_GROUP - 1) / VIS_GROUP,
+                    (VIS_GRID_D + VIS_GROUP - 1) / VIS_GROUP);
+        }
     }
 
     /**
@@ -344,9 +417,15 @@ public final class RtSky {
             aerialPerspective.destroy();
             aerialPerspective = null;
         }
+        if (visibilityGrid != null) {
+            visibilityGrid.destroy();
+            visibilityGrid = null;
+        }
         if (lutSampler != 0L) {
             VK10.vkDestroySampler(vk, lutSampler, null);
         }
+        visibilityTlas.destroy(vk);
+        visibilityBake.destroy(vk);
         froxelTlas.destroy(vk);
         froxelBake.destroy(vk);
         skyViewBake.destroy(vk);

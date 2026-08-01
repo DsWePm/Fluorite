@@ -132,6 +132,43 @@ public final class RtComposite {
                 FluoriteConfig.Rt.Volumetrics.START_DISTANCE.value());
     }
 
+    /**
+     * Where the volumetric visibility grid sits this frame: its minimum corner in rebased blocks, and its
+     * cell size in w. A cell size of zero is the disable path — sampleVolumeVisibility reports everything
+     * lit, which reproduces the unshadowed fog exactly rather than approximately.
+     *
+     * <p><b>Snapped in ABSOLUTE world coordinates, then rebased.</b> Both halves of that matter. Snapping
+     * is what keeps the sample lattice still while the player walks: an unsnapped grid would move
+     * continuously with the camera, so every cell would cast its ray from a slightly different place each
+     * frame and the fog would boil. Doing the snap before the rebase is what keeps the lattice still
+     * across a terrain rebase too — rebasing first would snap to a grid that jumps whenever the origin
+     * moves, which is a rare, large, and very hard-to-attribute flicker.
+     *
+     * <p>Centred on the camera, so the grid reaches half its extent in every direction. The camera sitting
+     * at the centre rather than at a corner is what makes a turn free: the field behind the player is
+     * already baked when they turn around.
+     *
+     * <p><b>The snap is to whole cells, which at the default cell size of 1 puts every cell centre at a
+     * block centre.</b> That alignment is not incidental — it is what stops light leaking through a
+     * one-block wall, because a cell that sits inside a solid block casts its rays from inside that block
+     * and reads occluded, so it blocks the interpolation the way the block blocks the light. See
+     * VISIBILITY_CELL_SIZE for the measurement that established it.
+     */
+    private static Float4 visibilityGridOrigin(double camX, double camY, double camZ, RtTerrain terrain) {
+        float cell = FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value();
+        if (cell <= 0f || !FluoriteConfig.Rt.Volumetrics.ENABLED.value()) {
+            return new Float4(0f, 0f, 0f, 0f);
+        }
+        double halfX = RtSky.VIS_GRID_W * 0.5 * cell;
+        double halfY = RtSky.VIS_GRID_H * 0.5 * cell;
+        double halfZ = RtSky.VIS_GRID_D * 0.5 * cell;
+        double ox = Math.floor(camX / cell) * cell - halfX;
+        double oy = Math.floor(camY / cell) * cell - halfY;
+        double oz = Math.floor(camZ / cell) * cell - halfZ;
+        return new Float4((float) (ox - terrain.blockX), (float) (oy - terrain.blockY),
+                (float) (oz - terrain.blockZ), cell);
+    }
+
     /** Single-scattering albedo and the sun lobe's anisotropy. */
     private static Float4 fogScatter() {
         float[] tint = FluoriteConfig.Rt.Volumetrics.scatterTintRgb();
@@ -866,6 +903,7 @@ public final class RtComposite {
             worldPipeline.setSkyViewLuts(skyLuts.skyViewRayleighView(), skyLuts.skyViewMieView(),
                     skyLuts.skyViewMultiView(), lutSampler(ctx));
             worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
+            worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1175,6 +1213,11 @@ public final class RtComposite {
             if (!FluoriteConfig.Rt.Water.SUN_SHADOW.value()) {
                 flags |= 0b1000000000000000; // bit 15: take the sun as unoccluded (isolation switch)
             }
+            // Bits 16-17: which of the fog's two in-scatter machines are live. The froxel answers for the
+            // camera prefix and the closed form answers for every bounce; they are summed on screen, so
+            // this is the only way to ask which of them a brightness came from. See
+            // FluoriteConfig.Rt.Volumetrics.SEGMENT_SOURCE.
+            flags |= (FluoriteConfig.Rt.Volumetrics.segmentSourceId() & 0b11) << 16;
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
@@ -1266,7 +1309,8 @@ public final class RtComposite {
                     new Float4(skyLightGrid.originX() - terrain.blockX,
                             skyLightGrid.originY() - terrain.blockY,
                             skyLightGrid.originZ() - terrain.blockZ, RtSkyLightGrid.CELL_SIZE),
-                    new Int4(RtSkyLightGrid.DIM_X, RtSkyLightGrid.DIM_Y, RtSkyLightGrid.DIM_Z, 0)
+                    new Int4(RtSkyLightGrid.DIM_X, RtSkyLightGrid.DIM_Y, RtSkyLightGrid.DIM_Z, 0),
+                    visibilityGridOrigin(camX, camY, camZ, terrain)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Whole grid, every frame, into this slot's buffer: a few KB, and rewriting it whole under
@@ -1326,6 +1370,13 @@ public final class RtComposite {
             skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress,
                     skyLightGrid.ready() ? selectedPushSlot.skyLight.deviceAddress : 0L,
                     frameTlas.accel.handle, graphicsUse);
+            // The volumetric visibility grid (M13.2), which the froxel does NOT read — it casts its own
+            // rays, at its own view-adaptive sample positions, and is far denser near the eye than any
+            // uniform world grid could be. This one exists for the segments the froxel cannot cover: every
+            // bounce, whose fog was completely unshadowed until now. Inside the same timing zone because
+            // both are the fog's per-frame preparation and splitting them would only make the number
+            // harder to compare against the one already recorded.
+            skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
             }
