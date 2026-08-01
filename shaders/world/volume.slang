@@ -516,7 +516,8 @@ public float skyLightFactor(float3 p) {
  * one filling the screen. When the camera is not in water at all, the segment's own start is the
  * surface crossing, which is exactly right for looking down into a pond.
  */
-float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd, float tEnd) {
+float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd, float tEnd,
+                             inout uint seed) {
     float3 sigmaT = medium.extinction;
     float surfaceY = worldPush.waterAnchor.w;
     // Submerged: depth is measured from the pushed surface. Otherwise this segment began where the ray
@@ -606,9 +607,29 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             // Bit 15: skip the shadow ray and take the sun as unoccluded. Splits this term into its two
             // moving parts — occlusion, and the depth integral weighting it — so which one misbehaves is
             // measured rather than argued.
+            // JITTERED inside the stratum, not pinned to its near edge.
+            //
+            // The edge was deterministic, so every frame asked the same question at the same place and got
+            // the same binary answer; walking an occlusion boundary past it flipped a whole stratum at
+            // once, and that is what read as the water's scattering flickering with movement. Confirmed
+            // not to be the fog before this was touched: silencing BOTH of the fog's in-scatter machines
+            // (SEGMENT_SOURCE = none) left the flicker exactly as it was, and water media are never
+            // ambient so they never sample the visibility grid at all.
+            //
+            // This does NOT undo the reason the edges were fixed. That reason was that sample positions
+            // must not depend on SEGMENT LENGTH -- a ray stopping at 30 blocks and its neighbour running
+            // to the cull distance would sample different world locations, which came out as blotches
+            // correlated with the geometry. A jitter depends on a random number instead, so it produces
+            // uncorrelated noise rather than structure, and noise is what the denoiser is for.
+            //
+            // Same shape M13.3 measured and shipped for the fog's sun term (see sunInScatterStochastic),
+            // including its falsification test: with the denoiser off this must look NOISY, not blocky.
+            // The stratum weights were already exact, so this changes where the question is asked and
+            // nothing about what the answer is worth.
             float3 vis = (worldPush.flags & 32768u) != 0u
                     ? float3(1.0, 1.0, 1.0)
-                    : visibilityMasked(CULL_SECONDARY_NO_SELF, ro + rd * edgeNear,
+                    : visibilityMasked(CULL_SECONDARY_NO_SELF,
+                                       ro + rd * lerp(edgeNear, edgeFar, rndf(seed)),
                                        worldPush.lightDir.xyz, RAY_FAR).transmittance;
             sunTerm += vis * weight;
         }
@@ -642,7 +663,12 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
 
         float3 scatterAlbedo = mediumScatterAlbedo(stack.current);
         if (any(scatterAlbedo > 0.0)) {
-            seg.inScatter += enclosedSingleScatter(stack.current, scatterAlbedo, ro, rd, tEnd);
+            // Its own rehash of the caller's seed, distinct from the fog's below, so the water's
+            // stratum jitter and the fog's cannot draw the same numbers on the same pixel.
+            uint waterSeed = seed ^ 0x85EBCA6Bu;
+            waterSeed = pcg(waterSeed);
+            seg.inScatter += enclosedSingleScatter(stack.current, scatterAlbedo, ro, rd, tEnd,
+                                                   waterSeed);
         }
     }
 
