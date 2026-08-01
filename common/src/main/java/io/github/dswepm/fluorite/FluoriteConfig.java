@@ -762,6 +762,41 @@ public final class FluoriteConfig {
             public static final IntSetting VISIBILITY_MAX_STEPS =
                     intValue("fluorite.rt.fog.visibilityMaxSteps", "volumetrics.visibility-max-steps", 6);
 
+            /**
+             * Jittered shadow rays the fog's SUN term gets per marched segment. 0 keeps it on the
+             * visibility grid.
+             *
+             * <p>The grid cannot carry a light shaft and this is measured, not assumed: debug view 19
+             * plots sun visibility along a scanline from the grid and from a ray at the same points, and
+             * indoors the grid reaches 0 in shadow but only 0.5 where the truth is 1, with a ramp where
+             * the truth is a step. Trilinear blends the eight nearest cells and every indoor sample is
+             * within one cell of a wall, so the lit peak is averaged down whatever the cell size.
+             *
+             * <p>The SKY term stays on the grid regardless. It is genuinely low frequency — a room is
+             * dark, a hillside is not — so it needs no edge, and it is 0.072 ms for the whole field.
+             * Splitting the two by their frequency content is the point.
+             *
+             * <p><b>Default 1, and both halves of that are measured.</b> Cost, from flipping this knob at
+             * a fixed camera position inside one session: 2 rays cost 2.0 +/- 0.2 ms of
+             * {@code gpu.traceIndirect} (17.5 against 15.5, +13%), and the reading is trustworthy because
+             * the third plateau returned to the first within 0.2 ms. Benefit: 1 and 2 are hard to tell
+             * apart, and both are visibly better than the grid. So 1 buys the whole visible difference for
+             * about half the cost.
+             *
+             * <p>One sample per pixel per frame is not a compromise here, it is the regime this kind of
+             * renderer is built for: the estimator is unbiased and DLSS-RR already accumulates temporally,
+             * which is exactly how production path tracers shade volumetrics. The falsification test for
+             * that claim is in sunInScatterStochastic and it has been run — with the denoiser off the
+             * result is noise, not the blocky bias M9 measured.
+             */
+            public static final IntSetting SUN_SHADOW_RAYS =
+                    intValue("fluorite.rt.fog.sunShadowRays", "volumetrics.sun-shadow-rays", 1);
+
+            /** Bits 23-25 of worldPush.flags. */
+            public static int sunShadowRays() {
+                return Math.clamp(SUN_SHADOW_RAYS.value(), 0, 7);
+            }
+
             /** Bits 18-22 of worldPush.flags. Clamped so a bad config cannot unroll a raygen loop. */
             public static int visibilityMaxSteps() {
                 return Math.clamp(VISIBILITY_MAX_STEPS.value(), 1, 31);

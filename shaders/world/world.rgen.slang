@@ -137,7 +137,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // environment medium has the most of, so any volumetric term added here has to sit on this side of
         // the break or it will be missing from precisely the direction it is most visible in.
         float segmentEnd = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
-        SegmentIntegral segIntegral = integrateSegment(medium, ro, rd, segmentEnd);
+        SegmentIntegral segIntegral = integrateSegment(medium, ro, rd, segmentEnd, seed);
         // In-scatter first: it is what the segment added to the radiance arriving along it, so it is
         // weighted by the throughput reaching the segment rather than the throughput leaving it.
         L += throughput * segIntegral.inScatter;
@@ -995,7 +995,9 @@ float3 volumeDebug(PackedPathSegment packed) {
     }
     // What the segment added, with nothing the path did afterwards. A water medium is never ambient, so
     // for a submerged view this is the enclosed single-scattering term alone.
-    return integrateSegment(seg.medium, seg.ro, seg.rd, segmentEnd).inScatter;
+    uint debugSeed = uint(pc.debugView) * 2654435761u + worldPush.frameIndex;
+    debugSeed = pcg(debugSeed);
+    return integrateSegment(seg.medium, seg.ro, seg.rd, segmentEnd, debugSeed).inScatter;
 }
 
 [shader("raygeneration")]
@@ -1083,7 +1085,11 @@ void main() {
     } else {
         // Submerged: the camera is inside water, not inside the world's air, so the ambient field is not
         // what this segment travels through and the froxel has nothing to say about it.
-        prefix = integrateSegment(prefixMedium, prefixOrigin, camera.dir, prefixLength);
+        // The prefix runs outside tracePath and so has no path seed of its own. Derived from the pixel
+        // and the frame so it decorrelates the same way every other sample in the renderer does.
+        uint prefixSeed = pixelIndex ^ (worldPush.frameIndex * 2654435761u);
+        prefixSeed = pcg(prefixSeed);
+        prefix = integrateSegment(prefixMedium, prefixOrigin, camera.dir, prefixLength, prefixSeed);
     }
 
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {

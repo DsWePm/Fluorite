@@ -235,6 +235,52 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
 }
 
 /**
+ * The sun's contribution to a marched segment, with visibility from RAYS instead of from the grid.
+ *
+ * <p><b>Why the grid is not enough, measured rather than argued.</b> Debug view 19 plots sun visibility
+ * along a scanline twice, once from the grid and once from a ray. Inside a room the grid reaches zero in
+ * shadow correctly but only reaches 0.5 where the truth is 1 — the peak is halved — and its edge is a
+ * ramp where the truth is a step. The mechanism is structural, not a tuning failure: trilinear blends the
+ * eight nearest cells, and indoors every sample is within one cell of a wall cell whose value is zero, so
+ * the lit peak is averaged down no matter how the grid is tuned. A voxel grid's visibility is band-limited
+ * to its cell size, and a light shaft is exactly the high-frequency part it cannot carry.
+ *
+ * <p><b>Why this is not the estimator M9 measured and rejected.</b> That one cast rays at FIXED optical
+ * depths with no per-frame decorrelation, so every frame produced the same wrong binary answer and applied
+ * it to a whole segment — a BIAS, and a visible one: an occlusion boundary flipped the screen at once.
+ * This one jitters within each stratum from the path's own RNG, so the error is zero-mean noise that
+ * converges, which is the signal DLSS-RR is built to remove. The difference is falsifiable rather than
+ * rhetorical: freeze temporal accumulation and this must look NOISY, not blocky. If it looks blocky, the
+ * jitter is not reaching it and this is M9 again.
+ *
+ * <p>Stratified over the segment with each stratum carrying its exact closed-form weight, so the total
+ * matches the unshadowed integral wherever visibility is uniform — the same property that made the grid
+ * path a provable no-op when the grid was absent.
+ */
+float3 sunInScatterStochastic(float3 ro, float3 rd, float2 window, float3 sunSource,
+                              int rays, inout uint seed) {
+    float3 gathered = float3(0.0, 0.0, 0.0);
+    float3 transmittance = float3(1.0, 1.0, 1.0);
+    for (int i = 0; i < rays; ++i) {
+        float tA = lerp(window.x, window.y, float(i) / float(rays));
+        float tB = lerp(window.x, window.y, float(i + 1) / float(rays));
+        float tau = ambientHeightIntegral(ro, rd, tA, tB);
+        if (tau <= 0.0) {
+            continue;
+        }
+        float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
+        // Jittered inside the stratum. This one line is the whole difference from M9's estimator.
+        float3 p = ro + rd * lerp(tA, tB, rndf(seed));
+        float3 vis = visibilityMasked(CULL_SECONDARY_NO_SELF, p,
+                                      worldPush.lightDir.xyz, RAY_FAR).transmittance;
+        gathered += transmittance * worldPush.fogScatter.xyz * sunSource * vis
+                * (float3(1.0, 1.0, 1.0) - stepT);
+        transmittance *= stepT;
+    }
+    return gathered;
+}
+
+/**
  * Where this ray enters and leaves the visibility grid's box, as distances along it. An empty span
  * (x >= y) when the ray misses the box or no grid is published.
  *
@@ -582,7 +628,8 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
     return albedo * sigmaT * total;
 }
 
-public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd, float tEnd) {
+public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd, float tEnd,
+                                        uint seed) {
     SegmentIntegral seg;
     seg.transmittance = float3(1.0, 1.0, 1.0);
     seg.inScatter = float3(0.0, 0.0, 0.0);
@@ -657,6 +704,11 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             //
             // Only the emission moves. seg.transmittance was set above and stays, so this separates "the
             // fog is too bright" from "the fog is too thick" instead of confusing the two.
+            // Bits 23-25: how many jittered shadow rays the SUN term gets. Zero keeps it on the grid.
+            // The sky term stays on the grid either way — it is genuinely low frequency (a room is dark,
+            // a hillside is not) and needs no edge, which is the whole reason the two are split.
+            uint sunRays = (worldPush.flags >> 23u) & 7u;
+            float3 gridSunSource = sunRays > 0u ? float3(0.0, 0.0, 0.0) : sunSource;
             if (((worldPush.flags >> 16u) & 1u) == 0u) {
                 // Three regions, because the grid has a boundary and pretending otherwise is what puts a
                 // shell around the camera: the stretch before the ray enters the grid, the stretch inside
@@ -670,7 +722,7 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                 AmbientAccum acc;
                 acc.inScatter = float3(0.0, 0.0, 0.0);
                 acc.transmittance = float3(1.0, 1.0, 1.0);
-                ambientStep(acc, ro, rd, window.x, tEnter, sunSource, skySource, float2(1.0, 1.0));
+                ambientStep(acc, ro, rd, window.x, tEnter, gridSunSource, skySource, float2(1.0, 1.0));
                 // Guarded, not just relying on ambientStep's own zero-length early-out: the SAMPLE happens
                 // before that check, so a segment that never touches the grid would still pay six 3D
                 // texture fetches to be told six times that it is outside. Most bounce segments in an open
@@ -686,11 +738,22 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                         // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
                         // shape.
                         float2 vis = sampleVolumeVisibility(ro + rd * ((tA + tB) * 0.5));
-                        ambientStep(acc, ro, rd, tA, tB, sunSource, skySource, vis);
+                        ambientStep(acc, ro, rd, tA, tB, gridSunSource, skySource, vis);
                     }
                 }
-                ambientStep(acc, ro, rd, tExit, window.y, sunSource, skySource, float2(1.0, 1.0));
+                ambientStep(acc, ro, rd, tExit, window.y, gridSunSource, skySource, float2(1.0, 1.0));
                 seg.inScatter = acc.inScatter;
+                if (sunRays > 0u) {
+                    // Taken BY VALUE and rehashed rather than advanced in place. The callers include the
+                    // camera prefix and the debug views, which have no path RNG stream to advance, and
+                    // threading an inout through them would make every future caller carry one. The
+                    // rehash is what keeps this sample from correlating with whatever the path draws next
+                    // from the same seed.
+                    uint fogSeed = seed ^ 0x9E3779B9u; // pcg takes an inout, so it needs a variable
+                    fogSeed = pcg(fogSeed);
+                    seg.inScatter += sunInScatterStochastic(ro, rd, window, sunSource,
+                                                            int(sunRays), fogSeed);
+                }
             }
         }
     }

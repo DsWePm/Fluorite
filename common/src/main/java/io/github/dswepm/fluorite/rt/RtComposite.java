@@ -1246,6 +1246,8 @@ public final class RtComposite {
             flags |= (FluoriteConfig.Rt.Volumetrics.segmentSourceId() & 0b11) << 16;
             // Bits 18-22: the cap on how many visibility sub-steps a marched segment may take.
             flags |= (FluoriteConfig.Rt.Volumetrics.visibilityMaxSteps() & 0b11111) << 18;
+            // Bits 23-25: jittered shadow rays for the fog's sun term (0 = read the grid instead).
+            flags |= (FluoriteConfig.Rt.Volumetrics.sunShadowRays() & 0b111) << 23;
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.

@@ -106,7 +106,7 @@ public final class RtVideoOptions {
                                 waterAbsorbOverride(), waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
                 case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogIntensity(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                        fogPhaseG(), fogScatterTint()));
+                        fogPhaseG(), fogScatterTint(), fogSunShadowRays()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource()));
@@ -359,6 +359,28 @@ public final class RtVideoOptions {
             (caption, value) -> Component.translatable("fluorite.options.rt.fogTint." + value),
             new OptionInstance.Enum<>(List.of("neutral", "warm", "cool", "green", "violet"), Codec.STRING),
             setting.get(),
+            setting::set);
+    }
+
+    /**
+     * Jittered shadow rays for the fog's sun term, 0 to 4.
+     *
+     * <p>In the UI rather than the config file because its cost has to be measured by flipping it at a
+     * FIXED camera position inside one session. Two sessions in two places produce two numbers that
+     * cannot be subtracted, which is exactly the trap the first attempt at this measurement fell into.
+     */
+    private static OptionInstance<Integer> fogSunShadowRays() {
+        IntSetting setting = FluoriteConfig.Rt.Volumetrics.SUN_SHADOW_RAYS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogSunShadowRays",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.fogSunShadowRays.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.translatable(v == 0 ? "fluorite.options.rt.fogSunShadowRays.grid"
+                                                  : "fluorite.options.rt.fogSunShadowRays.rays",
+                                           String.valueOf(v))),
+            new OptionInstance.IntRange(0, 4),
+            Math.clamp(setting.value(), 0, 4),
             setting::set);
     }
 
