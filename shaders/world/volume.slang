@@ -550,11 +550,32 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // there so a future IOR change cannot turn this into a division by zero silently.
         float cosWater = sqrt(max(1.0e-4, 1.0 - sinWater * sinWater));
         float sunPathScale = 1.0 / cosWater;
-        // The PHASE still uses the unrefracted direction. The scattering angle ought to be measured
-        // against the refracted beam too, but that would move the underwater sun halo, which currently
-        // reads correctly — a separate change to make deliberately rather than as a side effect of
-        // fixing the path length.
-        float cosT = dot(rd, worldPush.lightDir.xyz);
+
+        // THE DIRECTION THE SUN ACTUALLY COMES FROM, INSIDE THE WATER.
+        //
+        // The path length has used the refracted angle for a while; the direction had not, and the
+        // comment that stood here said so and deferred it. It has a symptom now: at sunrise the shafts
+        // ran almost horizontally and read as light arriving from somewhere far away underwater, because
+        // the shadow ray was being fired at the true sun, which is nearly horizontal then.
+        //
+        // Snell with n = 1.333 folds the entire sky into a cone of half-angle 48.6 degrees, so the sun
+        // seen from under the surface is NEVER lower than about 41.6 degrees of elevation however low it
+        // sits in the air. That is the same critical angle that makes Snell's window, and the same one
+        // already bounding sunPathScale two lines up — this is that fact applied to the direction rather
+        // than only to the length.
+        //
+        // Built by keeping the azimuth and swapping the zenith angle, which is what refraction at a flat
+        // surface does: the bend happens in the plane of incidence, so only the tilt changes. The
+        // horizontal part has length sinAir by construction, so normalising it and rescaling to sinWater
+        // gives a unit vector without a normalize().
+        //
+        // The surface is taken as FLAT here, matching waterAnchor.w and the depth d0 measured against it.
+        // Wave normals perturb what the surface looks like, not where this integral thinks it is.
+        float3 sunHoriz = float3(worldPush.lightDir.x, 0.0, worldPush.lightDir.z);
+        float horizLen = max(length(sunHoriz), 1.0e-6);
+        float3 refractedSun = (sunHoriz / horizLen) * sinWater + float3(0.0, cosWater, 0.0);
+
+        float cosT = dot(rd, refractedSun);
         // rd.y, not rd.y/sunY. `descentPerT` is how fast the ray's DEPTH falls per unit t, which is the
         // ray's own vertical component and has nothing to do with where the sun is; the sun's slant is
         // `pathScale`, and depthAttenuatedIntegral already multiplies the two. Passing rd.y/sunY divided
@@ -630,7 +651,7 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
                     ? float3(1.0, 1.0, 1.0)
                     : visibilityMasked(CULL_SECONDARY_NO_SELF,
                                        ro + rd * lerp(edgeNear, edgeFar, rndf(seed)),
-                                       worldPush.lightDir.xyz, RAY_FAR).transmittance;
+                                       refractedSun, RAY_FAR).transmittance;
             sunTerm += vis * weight;
         }
         total += phaseGain * sunTerm;
