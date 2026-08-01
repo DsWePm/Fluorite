@@ -101,6 +101,7 @@
   "fluorite.options.rt.debugView.14": "空ビューLUT",
   "fluorite.options.rt.debugView.15": "空LUT対レイマーチ",
   "fluorite.options.rt.debugView.16": "天体光の着色",
+  "fluorite.options.rt.debugView.17": "空気遠近フロクセル",
   "fluorite.options.rt.fog": "Volumetric Fog",
   "fluorite.options.rt.fog.tooltip": "The world's ambient participating medium. Integrated per path segment, so it appears in reflections and refractions, not just the direct view.",
   "fluorite.options.rt.fogDensity": "Fog Density",

@@ -101,6 +101,7 @@
   "fluorite.options.rt.debugView.14": "LUT de vue du ciel",
   "fluorite.options.rt.debugView.15": "LUT ciel vs marche",
   "fluorite.options.rt.debugView.16": "Teinte lumiere celeste",
+  "fluorite.options.rt.debugView.17": "Froxel de perspective aerienne",
   "fluorite.options.rt.fog": "Volumetric Fog",
   "fluorite.options.rt.fog.tooltip": "The world's ambient participating medium. Integrated per path segment, so it appears in reflections and refractions, not just the direct view.",
   "fluorite.options.rt.fogDensity": "Fog Density",

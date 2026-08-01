@@ -415,6 +415,12 @@ public final class RtComposite {
     // wait, so a slot is only read once the work that wrote it has completed and the read never blocks.
     private static final int GPU_ZONE_TRACE_PRIMARY = 0;
     private static final int GPU_ZONE_TRACE_INDIRECT = 1;
+    // The atmosphere's bakes, which sit BEFORE both traces and so fell inside neither zone. M10.4's
+    // capture is what exposed the gap: gpu.traceIndirect fell 0.575 ms when the camera's prefix segment
+    // stopped integrating analytically, and there was no number anywhere for what the froxel dispatch
+    // that made it possible had cost. A saving measured against an unmeasured cost is not a net figure,
+    // and M13 grows this dispatch rather than the traces, so the zone has to exist before then.
+    private static final int GPU_ZONE_SKY_BAKE = 2;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
@@ -788,7 +794,8 @@ public final class RtComposite {
                 }
             }
             if (gpuTimers == null) {
-                gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect");
+                gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect",
+                        "gpu.skyBake");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -858,6 +865,7 @@ public final class RtComposite {
             worldPipeline.setMultiScatterLut(skyLuts.multiScatterView(), lutSampler(ctx));
             worldPipeline.setSkyViewLuts(skyLuts.skyViewRayleighView(), skyLuts.skyViewMieView(),
                     skyLuts.skyViewMultiView(), lutSampler(ctx));
+            worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1296,6 +1304,9 @@ public final class RtComposite {
             if (skyLuts == null) {
                 skyLuts = RtSky.create(ctx);
             }
+            if (gpuTimers != null) {
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+            }
             if (skyLuts.recordBakeIfNeeded(cmd)) {
                 // The sky-view bake below SAMPLES both tables the call above may have just written. On
                 // every frame after the first it is a no-op and this costs nothing; on the first frame it
@@ -1310,6 +1321,12 @@ public final class RtComposite {
             // lagging the sun, which is exactly the kind of fault nobody attributes correctly later.
             skyLuts.recordSkyViewBake(cmd, sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(),
                     FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value());
+            // The froxel, after the sky-view table and after the push buffer it reads has been written.
+            // It follows the CAMERA as well as the sun, so per-frame is not a choice here at all.
+            skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress);
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+            }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
 
             // Push the BDA ring slot's address plus the small hot subset used directly by the shaders.

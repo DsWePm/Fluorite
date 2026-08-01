@@ -25,6 +25,34 @@ import world_common; // WorldPush, for dyeCelestialLight
 [[vk::binding(14, 0)]] public Sampler2D skyViewMultiLut;
 
 /**
+ * The aerial-perspective froxel (M10.4): rgb is the in-scatter gathered from the eye to this depth, a is
+ * the transmittance over the same stretch. Laid over the view frustum, so its x and y are screen and its
+ * z is distance — which is why it is the one table here that cannot be shared with a reflection.
+ */
+[[vk::binding(15, 0)]] public Sampler3D aerialPerspectiveLut;
+
+/**
+ * Where a distance lands on the froxel's depth axis. The exact inverse of the bake's sliceDepth, which is
+ * quadratic — so this is a square root, and getting it wrong shows up as the fog sitting at the wrong
+ * distance rather than as anything that looks like a bug in the fog.
+ */
+public float froxelDepthCoord(float dist, float maxDist) {
+    return sqrt(clamp(dist / max(maxDist, 1.0), 0.0, 1.0));
+}
+
+/**
+ * The air between the eye and `dist` along this pixel's ray: rgb added, a left of what is behind.
+ *
+ * <p>Screen-space, and the one table here a reflection cannot use. A froxel is indexed by where a pixel
+ * is on the screen; a reflected ray is not on the screen at all, so anything seen in a mirror keeps
+ * marching the analytic fog. That is not a limitation to fix later — it is what froxels are.
+ */
+public float4 sampleAerialPerspective(float2 screenUv, float dist, float maxDist) {
+    return aerialPerspectiveLut.SampleLevel(
+            float3(screenUv, froxelDepthCoord(dist, maxDist)), 0.0);
+}
+
+/**
  * Transmittance from the camera's altitude toward `dir`, read from the table.
  *
  * Every consumer should go through this rather than reconstructing the uv itself. The Bruneton/Hillaire

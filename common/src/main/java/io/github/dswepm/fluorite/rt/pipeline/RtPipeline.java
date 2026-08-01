@@ -98,11 +98,12 @@ public final class RtPipeline {
     private final int transmittanceBinding;
     private final int multiScatterBinding;
     private final int skyViewBinding;
+    private final int froxelBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
                        long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
-                       int transmittanceBinding, int multiScatterBinding, int skyViewBinding) {
+                       int transmittanceBinding, int multiScatterBinding, int skyViewBinding, int froxelBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -129,6 +130,7 @@ public final class RtPipeline {
         this.transmittanceBinding = transmittanceBinding;
         this.multiScatterBinding = multiScatterBinding;
         this.skyViewBinding = skyViewBinding;
+        this.froxelBinding = froxelBinding;
     }
 
     /**
@@ -182,8 +184,13 @@ public final class RtPipeline {
             // multiple-scattering term cannot share a texel and still let the halo stay sharp.
             int skyViewBinding = skyAtlas ? multiScatterBinding + 1 : -1;
             int skyViewSamplers = skyAtlas ? 3 : 0;
+            // The aerial-perspective froxel (M10.4), binding 15. A 3D sampled image: raygen reads it at a
+            // hit's own depth, so it has to filter across slices, and unfiltered fetches would put the
+            // grid's 32 depth steps on screen as visible shells around the camera.
+            int froxelBinding = skyAtlas ? skyViewBinding + skyViewSamplers : -1;
+            int froxelSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
-                    + multiScatterSamplers + skyViewSamplers;
+                    + multiScatterSamplers + skyViewSamplers + froxelSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -212,6 +219,9 @@ public final class RtPipeline {
                             .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                             .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
                 }
+                binds.get(froxelBinding).binding(froxelBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -220,7 +230,7 @@ public final class RtPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, label + " descriptor set layout");
 
             int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers + transmittanceSamplers
-                    + multiScatterSamplers + skyViewSamplers;
+                    + multiScatterSamplers + skyViewSamplers + froxelSamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -406,7 +416,7 @@ public final class RtPipeline {
             sbt.flush();
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
                     bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
-                    multiScatterBinding, skyViewBinding);
+                    multiScatterBinding, skyViewBinding, froxelBinding);
         }
     }
 
@@ -513,6 +523,11 @@ public final class RtPipeline {
         writeAtlasBinding(skyViewBinding, rayleighView, sampler);
         writeAtlasBinding(skyViewBinding + 1, mieView, sampler);
         writeAtlasBinding(skyViewBinding + 2, multiView, sampler);
+    }
+
+    /** Bind the aerial-perspective froxel (M10.4). */
+    public void setAerialPerspectiveLut(long imageView, long sampler) {
+        writeAtlasBinding(froxelBinding, imageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

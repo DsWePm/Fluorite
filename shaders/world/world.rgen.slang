@@ -703,6 +703,30 @@ static const uint DEBUG_VIEW_SKY_VIEW_REFERENCE = 15u;
 // yellow, the transmittance lookup is what to chase.
 static const uint DEBUG_VIEW_LIGHT_DYE = 16u;
 
+// The aerial-perspective froxel, read at the depth the slider is parked on, across the whole screen.
+//
+// Left is what the air ADDS between the eye and that depth, right is what it LEAVES of whatever is behind
+// it — the two halves of the same integral, and the pair a consumer will multiply and add with. Split so
+// a grid that is all in-scatter and no extinction, or the reverse, is obvious before anything downstream
+// starts using it.
+//
+// Expected at the far slice: a faint wash that follows the fog's height profile, brighter toward the sun,
+// with the transmittance darkest where the sightline is longest and lowest. Expected at the NEAR slices:
+// almost nothing, which is the point of distributing the depth axis quadratically.
+static const uint DEBUG_VIEW_FROXEL = 17u;
+static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
+
+float3 froxelDebug(float2 uv) {
+    // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
+    // view that resampled it through anything else would be testing the resampling.
+    float3 p = float3(uv.x < 0.5 ? uv.x * 2.0 : (uv.x - 0.5) * 2.0, 1.0 - uv.y, FROXEL_DEBUG_SLICE);
+    float4 f = aerialPerspectiveLut.SampleLevel(p, 0.0);
+    if (uv.x < 0.5) {
+        return f.rgb;
+    }
+    return float3(f.a, f.a, f.a);
+}
+
 float3 lightDyeDebug(float2 uv) {
     float3 lightDir = worldPush.lightDir.xyz;
     if (uv.x < 0.5) {
@@ -821,7 +845,9 @@ void main() {
                     ? skyViewDebug(screenUv)
                     : pc.debugView == DEBUG_VIEW_SKY_VIEW_REFERENCE
                     ? skyViewReferenceDebug(screenUv, dispatchIndex)
-                    : lightDyeDebug(screenUv);
+                    : pc.debugView == DEBUG_VIEW_LIGHT_DYE
+                    ? lightDyeDebug(screenUv)
+                    : froxelDebug(screenUv);
             outImage[pix] = float4(table, 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_VOLUME_INSCATTER) {
             outImage[pix] = float4(volumeDebug(queue[pixelIndex]), 1.0);
@@ -851,7 +877,27 @@ void main() {
     Medium prefixAir = airMedium();
     prefixAir.ambient = (worldPush.flags & 1u) == 0u;
     MediumStack prefixMedium = makeMediumStack(prefixAir);
-    SegmentIntegral prefix = integrateSegment(prefixMedium, prefixOrigin, camera.dir, prefixLength);
+    SegmentIntegral prefix;
+    if (prefixAir.ambient) {
+        // The froxel answers for this stretch, because this stretch is exactly what it covers: the eye,
+        // this pixel's ray, out to a distance. Everything else in the renderer still marches, and has to —
+        // a bounce ray is not on the screen, so it has no column here to read.
+        //
+        // A lateral move on its own. The closed form it replaces is an exact integral of the same
+        // unshadowed medium, and 32 interpolated slices are not more accurate than exact. What the grid
+        // has that the closed form cannot is a place to put VISIBILITY, resolved in world-space cells and
+        // interpolated, which is the whole of M13 and the reason this is wired now rather than then: if 32
+        // slices band, or the quadratic axis shows shells in the near field, that has to surface while the
+        // closed form is still here to compare against.
+        float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
+        float4 aerial = sampleAerialPerspective(screenUv, prefixLength, worldPush.fogParams.w);
+        prefix.inScatter = aerial.rgb;
+        prefix.transmittance = float3(aerial.a, aerial.a, aerial.a);
+    } else {
+        // Submerged: the camera is inside water, not inside the world's air, so the ambient field is not
+        // what this segment travels through and the froxel has nothing to say about it.
+        prefix = integrateSegment(prefixMedium, prefixOrigin, camera.dir, prefixLength);
+    }
 
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];

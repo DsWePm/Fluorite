@@ -76,6 +76,10 @@ public final class RtFrameStats {
                     // commands. For a trace dispatch those differ by three orders of magnitude.
                     "gpu.tracePrimary",
                     "gpu.traceIndirect",
+                    // The atmosphere's bakes. A zone name absent from this list is not a missing column,
+                    // it is an IllegalArgumentException out of indexOf that fails the whole composite and
+                    // hands the frame back to vanilla — which is how this one announced itself.
+                    "gpu.skyBake",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",

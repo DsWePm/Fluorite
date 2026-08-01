@@ -101,6 +101,7 @@
   "fluorite.options.rt.debugView.14": "Himmelsansichtstabelle",
   "fluorite.options.rt.debugView.15": "Himmel: Tabelle vs Marsch",
   "fluorite.options.rt.debugView.16": "Lichtfaerbung",
+  "fluorite.options.rt.debugView.17": "Luftperspektive-Froxel",
   "fluorite.options.rt.fog": "Volumetric Fog",
   "fluorite.options.rt.fog.tooltip": "The world's ambient participating medium. Integrated per path segment, so it appears in reflections and refractions, not just the direct view.",
   "fluorite.options.rt.fogDensity": "Fog Density",

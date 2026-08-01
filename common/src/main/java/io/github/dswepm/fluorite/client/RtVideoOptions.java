@@ -579,8 +579,8 @@ public final class RtVideoOptions {
             // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
             // between hits rather than the hits themselves. See world.rgen's volumeDebug. 12 is neither —
             // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
-            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16), Codec.INT),
-            Math.clamp(setting.value(), 0, 16),
+            new OptionInstance.Enum<>(List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17), Codec.INT),
+            Math.clamp(setting.value(), 0, 17),
             setting::set);
     }
 

@@ -59,6 +59,12 @@ public final class RtSky {
     public static final int SKY_VIEW_W = 192;
     public static final int SKY_VIEW_H = 128;
     private static final int SKY_VIEW_PUSH_BYTES = 32; // float4 sun direction + float4 art tint
+    /** Must match FROXEL_W/H/D in shaders/world/sky_froxel.comp.slang. */
+    public static final int FROXEL_W = 32;
+    public static final int FROXEL_H = 32;
+    public static final int FROXEL_D = 32;
+    private static final int FROXEL_GROUP = 4; // matches [numthreads(4, 4, 4)]
+    private static final int FROXEL_PUSH_BYTES = 8; // the WorldPush device address
     private static final int BAKE_GROUP = 8; // matches [numthreads(8, 8, 1)] in both bake shaders
 
     /** One compute bake: its layout, its set, and the pipeline that writes one table. */
@@ -76,20 +82,23 @@ public final class RtSky {
     private final Bake transmittanceBake;
     private final Bake multiScatterBake;
     private final Bake skyViewBake;
+    private final Bake froxelBake;
     private final long lutSampler;
     private RtImage transmittance;
     private RtImage multiScatter;
     private RtImage skyViewRayleigh;
     private RtImage skyViewMie;
     private RtImage skyViewMulti;
+    private RtImage aerialPerspective;
     private boolean baked;
 
     private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
-                  long lutSampler) {
+                  Bake froxelBake, long lutSampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
         this.multiScatterBake = multiScatterBake;
         this.skyViewBake = skyViewBake;
+        this.froxelBake = froxelBake;
         this.lutSampler = lutSampler;
     }
 
@@ -112,6 +121,12 @@ public final class RtSky {
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, SKY_VIEW_PUSH_BYTES);
+            // Aerial perspective: the same two tables in, one 3D image out, and the WorldPush address so
+            // the camera matrix and the fog's parameters are read rather than restated.
+            Bake froxelBake = createBake(ctx, stack, "sky_froxel.comp.spv", "sky froxel",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, FROXEL_PUSH_BYTES);
 
             // LINEAR + CLAMP_TO_EDGE. The multi-scatter bake reads the transmittance table off the
             // horizon-crowded end of its u axis, where nearest sampling shows the texel grid as banding
@@ -128,7 +143,7 @@ public final class RtSky {
             long sampler = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, sampler, "sky LUT chain sampler");
 
-            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake, sampler);
+            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake, froxelBake, sampler);
             // The images are allocated HERE rather than lazily inside the bake, so the views exist from
             // the moment this object does. Creating them in the bake made a view's availability depend on
             // whether the bake had run, which in turn made the ray-tracing pipeline's binding depend on
@@ -156,6 +171,12 @@ public final class RtSky {
             writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 2, sky.skyViewRayleigh.view);
             writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 3, sky.skyViewMie.view);
             writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 4, sky.skyViewMulti.view);
+
+            sky.aerialPerspective = ctx.createStorageImage3D(FROXEL_W, FROXEL_H, FROXEL_D,
+                    VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "aerial perspective froxel");
+            writeSampledImage(vk, stack, froxelBake.descriptorSet(), 0, sky.transmittance.view, sampler);
+            writeSampledImage(vk, stack, froxelBake.descriptorSet(), 1, sky.multiScatter.view, sampler);
+            writeStorageImage(vk, stack, froxelBake.descriptorSet(), 2, sky.aerialPerspective.view);
             return sky;
         }
     }
@@ -180,6 +201,35 @@ public final class RtSky {
 
     public long skyViewMultiView() {
         return skyViewMulti == null ? 0L : skyViewMulti.view;
+    }
+
+    public long aerialPerspectiveView() {
+        return aerialPerspective == null ? 0L : aerialPerspective.view;
+    }
+
+    /**
+     * Record the aerial-perspective froxel. Per frame, like the sky-view table and for a stronger reason:
+     * this one follows the camera, not just the sun.
+     *
+     * <p>Takes the WorldPush device address rather than a wall of camera and fog parameters. That buffer
+     * already holds the inverse view-projection the primary rays are built from and all four of the fog's
+     * parameter vectors, and a froxel column that disagreed with the pixels above it — by half a tile, or
+     * by a stale density — would read as the fog sliding over the geometry as the camera turns.
+     */
+    public void recordFroxelBake(VkCommandBuffer cmd, long worldPushAddr) {
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "aerial perspective bake")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, froxelBake.pipeline());
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    froxelBake.pipelineLayout(), 0, stack.longs(froxelBake.descriptorSet()), null);
+            ByteBuffer pushData = stack.malloc(FROXEL_PUSH_BYTES);
+            pushData.putLong(0, worldPushAddr);
+            VK10.vkCmdPushConstants(cmd, froxelBake.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
+            VK10.vkCmdDispatch(cmd, (FROXEL_W + FROXEL_GROUP - 1) / FROXEL_GROUP,
+                    (FROXEL_H + FROXEL_GROUP - 1) / FROXEL_GROUP,
+                    (FROXEL_D + FROXEL_GROUP - 1) / FROXEL_GROUP);
+        }
     }
 
     /**
@@ -274,9 +324,14 @@ public final class RtSky {
             skyViewMulti.destroy();
             skyViewMulti = null;
         }
+        if (aerialPerspective != null) {
+            aerialPerspective.destroy();
+            aerialPerspective = null;
+        }
         if (lutSampler != 0L) {
             VK10.vkDestroySampler(vk, lutSampler, null);
         }
+        froxelBake.destroy(vk);
         skyViewBake.destroy(vk);
         multiScatterBake.destroy(vk);
         transmittanceBake.destroy(vk);
