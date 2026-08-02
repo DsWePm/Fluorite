@@ -129,6 +129,8 @@
   "fluorite.options.rt.fogSunShadowRays.tooltip": "每個步進段給太陽項打幾條抖動陰影線。0 = 改讀可見性網格（便宜但光柱糊）。",
   "fluorite.options.rt.fogSunShadowRays.grid": "網格",
   "fluorite.options.rt.fogSunShadowRays.rays": "%s 條",
+  "fluorite.options.rt.fogMultiScatter": "多次散射（擴散衰減）",
+  "fluorite.options.rt.fogMultiScatter.tooltip": "讓到達散射點的光按擴散率而非光束消光率衰減。修正濃霧變黑、深水變黑——散射把光移出光束，卻沒有移出介質。關閉精確回到舊行為。",
   "fluorite.options.rt.fogSegmentSource": "霧內散射來源",
   "fluorite.options.rt.fogSegmentSource.tooltip": "診斷項：路徑的哪些段可以貢獻霧的內散射。Froxel 負責相機段，彈射段走的是無遮擋的解析式。",
   "fluorite.options.rt.fogSegmentSource.both": "全部",

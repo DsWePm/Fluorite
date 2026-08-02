@@ -792,6 +792,24 @@ public final class FluoriteConfig {
             public static final IntSetting SUN_SHADOW_RAYS =
                     intValue("fluorite.rt.fog.sunShadowRays", "volumetrics.sun-shadow-rays", 1);
 
+            /**
+             * Let light reaching a scattering point decay at the DIFFUSION rate instead of the beam's.
+             *
+             * <p>Fixes two symptoms that look unrelated and are one bug. Dense fog goes black instead of
+             * turning into a bright formless glow, and deep water goes black instead of settling to a
+             * water colour. Both come from single scattering treating every scattering event as a loss
+             * to the source -- but scattering removes light from the BEAM, not from the MEDIUM.
+             *
+             * <p>The coefficient is the diffusion approximation's K, derived rather than fitted (see
+             * volume.slang diffuseAttenuation). At the water's default turbidity that is about 0.39 times
+             * the extinction, so the source reaches two and a half times deeper than the beam.
+             *
+             * <p>Off reproduces the previous behaviour exactly, which is what makes it an A/B rather than
+             * a tuning dial.
+             */
+            public static final BooleanSetting MULTI_SCATTER =
+                    bool("fluorite.rt.fog.multiScatter", "volumetrics.multi-scatter", true);
+
             /** Bits 23-25 of worldPush.flags. */
             public static int sunShadowRays() {
                 return Math.clamp(SUN_SHADOW_RAYS.value(), 0, 7);

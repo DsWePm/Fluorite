@@ -106,7 +106,7 @@ public final class RtVideoOptions {
                                 waterAbsorbOverride(), waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
                 case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogIntensity(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                        fogPhaseG(), fogScatterTint(), fogSunShadowRays()));
+                        fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource()));
@@ -360,6 +360,17 @@ public final class RtVideoOptions {
             new OptionInstance.Enum<>(List.of("neutral", "warm", "cool", "green", "violet"), Codec.STRING),
             setting.get(),
             setting::set);
+    }
+
+    /**
+     * Let light reaching a scattering point decay at the diffusion rate instead of the beam's.
+     *
+     * <p>In the UI for the same reason the ray count is: off must reproduce the old behaviour exactly, so
+     * this is an A/B rather than a dial, and an A/B is only worth anything flipped at a fixed camera
+     * position inside one session.
+     */
+    private static OptionInstance<Boolean> fogMultiScatter() {
+        return bool("fluorite.options.rt.fogMultiScatter", FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER);
     }
 
     /**

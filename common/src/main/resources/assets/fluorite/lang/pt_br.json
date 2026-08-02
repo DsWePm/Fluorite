@@ -129,6 +129,8 @@
   "fluorite.options.rt.fogSunShadowRays.tooltip": "Jittered shadow rays per marched segment for the fog's sun term. 0 reads the visibility grid instead: cheaper, but a grid cannot carry a sharp light shaft.",
   "fluorite.options.rt.fogSunShadowRays.grid": "Grid",
   "fluorite.options.rt.fogSunShadowRays.rays": "%s",
+  "fluorite.options.rt.fogMultiScatter": "Multiple Scattering",
+  "fluorite.options.rt.fogMultiScatter.tooltip": "Light reaching a scattering point decays at the diffusion rate rather than the beam's. Fixes dense fog and deep water going black: scattering removes light from the beam, not from the medium. Off reproduces the old behaviour exactly.",
   "fluorite.options.rt.fogSegmentSource": "Fog Segment Source",
   "fluorite.options.rt.fogSegmentSource.tooltip": "Diagnostic: which segments of a path may add fog in-scatter. The froxel covers the camera segment; every bounce runs the unshadowed closed form.",
   "fluorite.options.rt.fogSegmentSource.both": "Both",

@@ -142,14 +142,26 @@ public float2 ambientWindow(float tEnd) {
     return float2(start, max(start, end));
 }
 
-/** Transmittance of the ambient medium over a segment. Shadow rays go through visibilityThroughAmbient. */
-public float3 ambientTransmittance(float3 ro, float3 rd, float dist) {
+/**
+ * Transmittance of the ambient medium over a segment, at a caller-chosen extinction.
+ *
+ * <p>Split out because the fog's SOURCE and the fog's VIEW path decay at different rates once multiple
+ * scattering is accounted for — see diffuseAttenuation. Everything that asks "what does this ray lose on
+ * its way here" wants the full extinction and should call ambientTransmittance; only the sun's own path
+ * to a scattering point wants the diffusion rate.
+ */
+public float3 ambientTransmittanceWith(float3 sigma, float3 ro, float3 rd, float dist) {
     float2 window = ambientWindow(dist);
     float tau = ambientHeightIntegral(ro, rd, window.x, window.y);
     if (tau <= 0.0) {
         return float3(1.0, 1.0, 1.0);
     }
-    return exp(-worldPush.fogExtinction.xyz * tau);
+    return exp(-sigma * tau);
+}
+
+/** Transmittance of the ambient medium over a segment. Shadow rays go through visibilityThroughAmbient. */
+public float3 ambientTransmittance(float3 ro, float3 rd, float dist) {
+    return ambientTransmittanceWith(worldPush.fogExtinction.xyz, ro, rd, dist);
 }
 
 /**
@@ -401,7 +413,79 @@ public float enclosedPhase(float cosT, float g, float3 scatterAlbedo) {
  * the depth caps it at the cause and is also the more correct model: above the surface there is no water
  * left to attenuate the light, so it arrives whole and only the view path is still attenuating.
  */
-float3 depthAttenuatedIntegral(float3 sigmaT, float d0, float descentPerT, float pathScale, float tEnd) {
+/**
+ * How fast light REALLY dims on its way into a scattering medium, as opposed to how fast a beam dims.
+ *
+ * <p>Single scattering treats every scattering event as a loss to the source, and that is the error
+ * behind two symptoms that looked unrelated: dense fog going black instead of glowing, and deep water
+ * going black instead of settling to a water colour. Scattering takes light out of the BEAM, but it does
+ * not take light out of the MEDIUM — the photon keeps going, just not in a straight line. So the light
+ * arriving at depth decays at a rate driven by ABSORPTION, not by extinction.
+ *
+ * <p>This is the diffusion approximation's K, a textbook result and deliberately not a fitted one:
+ *
+ *   sigma_a = (1 - w) * sigma_t          absorption
+ *   sigma_s' = w * (1 - g) * sigma_t     reduced scattering, forward scattering discounted
+ *   K = sqrt(3 * sigma_a * (sigma_a + sigma_s'))
+ *
+ * <p>The alternative considered first was the multi-octave approximation the cloud literature uses
+ * (Wrenninge 2013, Schneider 2017), summing N single-scattering evaluations with extinction, scattering
+ * and eccentricity each scaled by a constant per octave. It models one thing this does not — the beam
+ * broadening angularly — but its three constants are fitted with no derivation behind them, and picking
+ * them here would be inventing numbers in the one place this project has been most careful not to. This
+ * costs no constants at all. If the angular half turns out to be missed, that is the change to make then.
+ *
+ * <p>At the water's turbidity of 10 the albedo is about 0.95 and the effective phase is nearly isotropic,
+ * which puts K near 0.39 * sigma_t: the source reaches two and a half times deeper than the beam does.
+ * At albedo 0.99 it is 0.17, nearly six times.
+ *
+ * <p>A conservative medium (w = 1) gives K = 0, which is the correct answer rather than a degenerate one —
+ * with nothing absorbing, light that scatters is never lost. Real media never reach it.
+ */
+float3 diffuseAttenuation(float3 sigmaT, float3 albedo, float g) {
+    float3 w = clamp(albedo, float3(0.0, 0.0, 0.0), float3(1.0, 1.0, 1.0));
+    float3 sigmaA = sigmaT * (float3(1.0, 1.0, 1.0) - w);
+    float3 sigmaSReduced = sigmaT * w * max(1.0 - g, 0.0);
+    float3 k = sqrt(max(3.0 * sigmaA * (sigmaA + sigmaSReduced), float3(0.0, 0.0, 0.0)));
+    // CLAMPED into [sigma_a, sigma_t], and the clamp is not defensive dressing -- it is the domain of
+    // validity. Diffusion assumes scattering dominates. Feed it an absorbing medium and it returns MORE
+    // than the extinction: at sigma_s = 0 the formula gives sqrt(3)*sigma_a where the right answer is
+    // sigma_a exactly, because a purely absorbing medium has no diffusion to speak of and Beer-Lambert is
+    // already the whole story. Applied unclamped it made water DARKER, which is how it was caught -- the
+    // switch was expected to brighten deep water and visibly did nothing.
+    //
+    // Both bounds are physical rather than chosen. Light cannot reach deeper than a medium that only
+    // absorbs (so K >= sigma_a), and it cannot decay faster than the beam it arrives in (so K <= sigma_t).
+    // Between them the diffusion estimate is the useful part, and outside them it is out of its domain.
+    //
+    // The consequence is worth stating plainly: in an absorption-dominated medium this correctly does
+    // NOTHING. Deep water going dark is then the right answer, not a missing feature.
+    return clamp(k, sigmaA, sigmaT);
+}
+
+/** Bit 26: let the source decay at the diffusion rate instead of the beam's. Off reproduces exactly. */
+bool multiScatterOn() {
+    return (worldPush.flags & (1u << 26u)) != 0u;
+}
+
+/**
+ * Integral of the VIEW path's attenuation alone over [a, b]: what survives the trip from a scattering
+ * point back to the eye, with nothing said about how the light got to that point in the first place.
+ *
+ * <p>The sun term weights its strata with this and measures the source's own path with a ray instead of
+ * deriving it, so the two halves of the old combined integrand are now answered by two different things:
+ * this one by arithmetic, the other by the geometry itself.
+ */
+float3 viewPathIntegral(float3 sigmaView, float a, float b) {
+    if (b <= a) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 safe = max(sigmaView, float3(1.0e-6, 1.0e-6, 1.0e-6));
+    return (exp(-safe * a) - exp(-safe * b)) / safe;
+}
+
+float3 depthAttenuatedIntegral(float3 sigmaSource, float3 sigmaView, float d0, float descentPerT,
+                               float pathScale, float tEnd) {
     // Where the ray reaches depth 0. Only a climbing ray gets there; a level or descending one never
     // does, and its whole segment takes the submerged branch.
     float tSurface = descentPerT > 1.0e-6 ? d0 / descentPerT : 1.0e30;
@@ -411,8 +495,12 @@ float3 depthAttenuatedIntegral(float3 sigmaT, float d0, float descentPerT, float
     // positive here (climbing faster than the light descends) but only over [0, tSurface], where the
     // growth is exactly cancelled by `head` — at t = tSurface the two collapse to exp(-sigma_t*tSurface),
     // the plain view attenuation, which is also where the second piece picks up. Continuous, and bounded.
-    float3 head = exp(-sigmaT * (d0 * pathScale));
-    float3 a = sigmaT * (descentPerT * pathScale - 1.0);
+    // TWO coefficients, and which goes where is the whole point. `head` and the growth inside `a` are
+    // the SOURCE's own path down to this depth, so they take sigmaSource — light that scatters on the way
+    // down is still on its way down. The -1 term is the VIEW path from the scattering point to the eye,
+    // which takes sigmaView, because a photon scattered out of that straight line does not arrive.
+    float3 head = exp(-sigmaSource * (d0 * pathScale));
+    float3 a = sigmaSource * (descentPerT * pathScale) - sigmaView;
     float3 span;
     // a -> 0 is a ray climbing at exactly the rate the light descends, where the exponential is flat and
     // the closed form is 0/0. The limit is the length of the stretch.
@@ -425,7 +513,7 @@ float3 depthAttenuatedIntegral(float3 sigmaT, float d0, float descentPerT, float
 
     // Above the surface: source unattenuated, view path still attenuating.
     if (tEnd > tSub) {
-        float3 safeSigma = max(sigmaT, float3(1.0e-6, 1.0e-6, 1.0e-6));
+        float3 safeSigma = max(sigmaView, float3(1.0e-6, 1.0e-6, 1.0e-6));
         total += (exp(-safeSigma * tSub) - exp(-safeSigma * tEnd)) / safeSigma;
     }
     return total;
@@ -519,9 +607,15 @@ public float skyLightFactor(float3 p) {
 float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd, float tEnd,
                              inout uint seed) {
     float3 sigmaT = medium.extinction;
+    // FALLBACK ONLY. Both scattering terms measure the light's path through the water with a ray now
+    // (see below); this stands in for the cases where a ray found no surface to measure against, which is
+    // rare and always means the geometry did not agree that this point is under water.
+    //
+    // It is kept rather than deleted because "the ray saw no water surface" and "there is no water above
+    // this point" are not the same statement -- a missing or degenerate surface quad would otherwise
+    // report zero attenuation and blow the term out, and erring toward the old estimate errs toward the
+    // picture that shipped.
     float surfaceY = worldPush.waterAnchor.w;
-    // Submerged: depth is measured from the pushed surface. Otherwise this segment began where the ray
-    // crossed into the water, so it starts at the surface by construction.
     float d0 = surfaceY > -1.0e8 ? max(0.0, surfaceY - ro.y) : 0.0;
 
     float3 total = float3(0.0, 0.0, 0.0);
@@ -608,9 +702,12 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // Still CULL_SECONDARY_NO_SELF: the first ray's origin IS the camera for the camera segment,
         // which sits inside the first-person head mesh, and this remains the only shadow ray in the
         // renderer cast from the eye.
+        // The source's coefficient. Equal to sigmaT with the switch off, so that path is unchanged.
+        float3 sigmaSource = multiScatterOn()
+                ? diffuseAttenuation(sigmaT, albedo, worldPush.waterScatter.w)
+                : sigmaT;
         float sigmaBar = max(luminance(sigmaT), 1.0e-4);
         float3 sunTerm = float3(0.0, 0.0, 0.0);
-        float3 integralToPrevEdge = float3(0.0, 0.0, 0.0);
         for (int s = 0; s < WATER_SUN_VIS_STRATA; ++s) {
             float edgeNear = (WATER_SUN_VIS_TAU_STEP * float(s)) / sigmaBar;
             if (edgeNear >= tEnd) {
@@ -619,9 +716,9 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             float edgeFar = s == WATER_SUN_VIS_STRATA - 1
                     ? tEnd
                     : min((WATER_SUN_VIS_TAU_STEP * float(s + 1)) / sigmaBar, tEnd);
-            float3 integralToFarEdge = depthAttenuatedIntegral(sigmaT, d0, rd.y, sunPathScale, edgeFar);
-            float3 weight = max(integralToFarEdge - integralToPrevEdge, float3(0.0, 0.0, 0.0));
-            integralToPrevEdge = integralToFarEdge;
+            // The stratum's weight is now the VIEW path alone. How much sunlight ever reached the
+            // sampled point is no longer computed here at all -- it is measured below, by the ray.
+            float3 weight = viewPathIntegral(sigmaT, edgeNear, edgeFar);
             if (all(weight <= 1.0e-8)) {
                 continue;
             }
@@ -647,12 +744,31 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             // including its falsification test: with the denoiser off this must look NOISY, not blocky.
             // The stratum weights were already exact, so this changes where the question is asked and
             // nothing about what the answer is worth.
-            float3 vis = (worldPush.flags & 32768u) != 0u
-                    ? float3(1.0, 1.0, 1.0)
-                    : visibilityMasked(CULL_SECONDARY_NO_SELF,
-                                       ro + rd * lerp(edgeNear, edgeFar, rndf(seed)),
-                                       refractedSun, RAY_FAR).transmittance;
-            sunTerm += vis * weight;
+            float3 samplePos = ro + rd * lerp(edgeNear, edgeFar, rndf(seed));
+            VisibilityResult sh = visibilityMasked(CULL_SECONDARY_NO_SELF, samplePos,
+                                                   refractedSun, RAY_FAR);
+            float3 vis = (worldPush.flags & 32768u) != 0u ? float3(1.0, 1.0, 1.0) : sh.transmittance;
+
+            // HOW MUCH WATER THE SUNLIGHT ACTUALLY CROSSED, measured by the ray that just crossed it.
+            //
+            // waterHitT is the distance from this sample to where its sun ray leaves the water, recorded
+            // by the shadow any-hit that lets water tint a ray and pass it through rather than stopping
+            // it. The renderer has been computing this all along and spending it only on caustics.
+            //
+            // It replaces three separate proxies at once, and each of them was wrong in a way the others
+            // could not fix. waterAnchor.w is ONE scalar for the whole frame, describing the camera's own
+            // water body, so a second pool at another height got the camera's depth. sunPathScale is an
+            // analytic guess at the slant. And neither knows about a cave roof, an overhang, or the fact
+            // that the surface above a point may not be the surface the camera is under. A ray knows all
+            // of it, because it is the thing that travelled.
+            //
+            // Only when the ray found no surface at all does the old geometric estimate stand in --
+            // that means nothing above this point along the sun's direction is water, so falling back
+            // beats reporting zero attenuation and blowing the term out.
+            float sunWaterPath = sh.waterHitT > 0.0
+                    ? sh.waterHitT
+                    : max(d0 - (samplePos.y - ro.y), 0.0) * sunPathScale;
+            sunTerm += vis * exp(-sigmaSource * sunWaterPath) * weight;
         }
         total += phaseGain * sunTerm;
     }
@@ -663,8 +779,53 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
     // of the column above a point, not of the sun's direction, so a hill's shadow does not remove it but
     // a cave roof does. That split is exactly the one a constant source could not express.
     if (skySourceOn) {
-        total += worldPush.waterAmbient.xyz * skyLightFactor(ro)
-                * depthAttenuatedIntegral(sigmaT, d0, rd.y, 1.0, tEnd);
+        // The sky arrives from overhead and diffuses down through the same water, so it gets the same
+        // treatment as the sun's source path. Without it the two sources would disagree about how deep
+        // light reaches, which would show as the sky term dying at a different depth from the sun's.
+        float3 skySigmaSource = multiScatterOn()
+                ? diffuseAttenuation(sigmaT, albedo, worldPush.waterScatter.w)
+                : sigmaT;
+        // ONE RAY STRAIGHT UP, and it answers both questions the sky term has.
+        //
+        // How deep is this point: waterHitT is the distance to where the column of water above it ends,
+        // measured rather than derived, so a second pool at another height and the camera's own body no
+        // longer share one number.
+        //
+        // Is there sky up there at all: the same ray's transmittance. Water tints it and passes it
+        // through; rock stops it. So a flooded cave under an overhang goes dark because the ray says so,
+        // which is what settles the question the CPU's upward surface scan could not answer -- that scan
+        // only finds where the water stops, not whether anything is above it.
+        //
+        // This replaces skyLightFactor, whose grid carried a second depth falloff of its own: vanilla
+        // attenuates sky light one step per block of water, so it hit zero around fifteen blocks down and
+        // stayed there. M9 accepted the doubled falloff deliberately, but the half it contributed was not
+        // a falloff at all, it was a CLIFF, and it was measured as one -- with the surface at y=60 the
+        // scattering vanished entirely below y=41, in water that continues down to y=33.
+        //
+        // The depth still VARIES along the segment analytically, which is why depthAttenuatedIntegral
+        // stays: the ray anchors d0 at the segment's origin and the descent rate carries it from there.
+        // One ray per segment, not per stratum, because the sky arrives from every direction and has no
+        // single path to measure -- the vertical is its representative, not its whole story.
+        VisibilityResult up = visibilityMasked(CULL_SECONDARY_NO_SELF, ro,
+                                               float3(0.0, 1.0, 0.0), RAY_FAR);
+        float skyDepth = up.waterHitT > 0.0 ? up.waterHitT : d0;
+
+        // The OPENNESS comes from the interpolated grid, not from that ray's own transmittance.
+        //
+        // Using the ray for both was the previous attempt and it traded one artifact for another: a ray
+        // is binary, so one block of rock overhead dropped the sky term from full to nothing and the
+        // cliff this work removed came back as a step. Depth wants a ray because a ray measures a length;
+        // openness wants the grid because the grid interpolates, and "how much sky is up there" is a
+        // quantity that should never step.
+        //
+        // Sampled just above the surface, whose height the ray has now told us exactly. The grid's zenith
+        // ray treats the water surface as an occluder like any other geometry, so asked from underwater it
+        // would answer "roofed" everywhere; asked from a hand's breadth above the surface it answers the
+        // question actually being posed. That is also why this needs no instance mask for water.
+        float3 gateP = float3(ro.x, ro.y + skyDepth + 0.5, ro.z);
+        float skyOpen = sampleVolumeVisibility(gateP).y;
+        total += worldPush.waterAmbient.xyz * skyOpen
+                * depthAttenuatedIntegral(skySigmaSource, sigmaT, skyDepth, rd.y, 1.0, tEnd);
     }
 
     return albedo * sigmaT * total;
@@ -709,7 +870,17 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // ray stopping at 30 blocks and its neighbour escaping to the cull distance sampled the sun's
             // transmittance an order of magnitude apart, so the halo came out blotchy across neighbouring
             // pixels and unstable as the camera moved. Every ray leaving one point now agrees.
-            float3 sunTransmittance = ambientTransmittance(ro, worldPush.lightDir.xyz, RAY_FAR);
+            // The sun's own path THROUGH the fog to this segment, and the coefficient it decays at is
+            // not the one the view path uses. See diffuseAttenuation: scattering removes light from the
+            // beam without removing it from the air, so at density 10 the old form extinguished the sun
+            // roughly three times too fast and the fog went black exactly where real fog turns into a
+            // bright formless glow. The view path below still uses the full extinction.
+            float3 sunSigma = multiScatterOn()
+                    ? diffuseAttenuation(worldPush.fogExtinction.xyz, worldPush.fogScatter.xyz,
+                                         worldPush.fogScatter.w)
+                    : worldPush.fogExtinction.xyz;
+            float3 sunTransmittance = ambientTransmittanceWith(sunSigma, ro,
+                                                               worldPush.lightDir.xyz, RAY_FAR);
             // 4*PI undoes hg()'s sphere normalisation: the phase function is a density over directions,
             // and what is wanted here is its gain relative to isotropic.
             // The source, split into the two halves the visibility grid answers for SEPARATELY.
