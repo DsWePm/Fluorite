@@ -39,7 +39,6 @@ public static const int FROXEL_D = 64;
 
 struct FroxelPush {
     uint64_t worldPushAddr;
-    uint64_t skyLightAddr; // byte-per-cell sky-openness grid; 0 = none published
 };
 [[vk::push_constant]] FroxelPush froxelPush;
 
@@ -119,7 +118,7 @@ bool sunOccluded(float3 p, float3 sunDir) {
     return q.CommittedStatus() != COMMITTED_NOTHING;
 }
 
-// ONE THREAD PER COLUMN, marching all 32 slices and writing each as it passes.
+// ONE THREAD PER COLUMN, marching all FROXEL_D (64) slices and writing each as it passes.
 //
 // The first version gave every froxel its own thread and had each redo the stretch its predecessors
 // covered — 528 steps per column instead of 32, which was a fair trade when a step was an exp and a
@@ -158,7 +157,7 @@ void main(uint3 id: SV_DispatchThreadID) {
 
     // March from the eye to this froxel's far edge, accumulating as we go. Each thread redoes the stretch
     // its predecessors covered, which is deliberate: the alternative is a serial scan down the column with
-    // shared memory, and 32 threads each walking at most 32 steps of a cheap integrand is not worth the
+    // shared memory, and FROXEL_D threads each walking at most FROXEL_D steps of a cheap integrand is not worth the
     // synchronisation or the loss of a flat dispatch. It also means every froxel is self-contained, so a
     // future visibility term can be added per cell without a second pass to prefix-sum it.
     float3 transmittance = float3(1.0, 1.0, 1.0);

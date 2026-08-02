@@ -1037,25 +1037,26 @@ public final class FluoriteConfig {
             }
 
             /**
-             * Cast the sun term's shadow rays, or take the sun as unoccluded.
+             * Apply the sun-visibility shadow rays' transmittance to the water's sun term, or take the
+             * sun as unoccluded.
              *
-             * <p>DEFAULT OFF, and that is a considered retreat rather than a gap. One to three point
-             * samples of "can this spot see the sun" is not a volumetric shadow, it is a coin flip
-             * evaluated near the camera and then applied to the whole segment — so crossing any occlusion
-             * boundary toggled the murk across the entire screen at once, in every view direction, at one
-             * precise height. Measured by isolation, not argued: with this off the step disappears.
+             * <p>DEFAULT OFF, which is older than the current estimator and due a re-measure. The off
+             * default was chosen when the strata were deterministic: one binary answer evaluated near
+             * the camera and applied to the whole segment, so crossing any occlusion boundary toggled
+             * the murk across the entire screen at once — measured by isolation, and the reason this
+             * switch exists. The strata have since been jittered per frame from the path's own RNG (the
+             * M13.3 shape; see enclosedSingleScatter), which turns that bias into zero-mean noise the
+             * denoiser can converge — and the fog's sun term made the same move and ships with its
+             * stochastic ray ON (Volumetrics.SUN_SHADOW_RAYS, default 1). The two media now differ only
+             * by this default; M15.1's unified volume shadow sampler is where their estimators merge,
+             * and re-deciding this default belongs to that measurement.
              *
-             * <p>Shafts of light underwater are the same computation as the fog's god rays — in-scatter
-             * modulated by per-point light visibility — and they want the same answer: M13's froxel,
-             * where visibility is solved once per frame in world-space voxels and interpolated, so
-             * neighbouring pixels and neighbouring camera positions get continuous values instead of
-             * independent binary ones. Sampling harder here (8-16 rays a segment) would soften the step
-             * at several times the cost, and every line of it would be deleted when the froxel lands.
-             * The fog already made this trade — see integrateSegment, which is unshadowed for exactly
-             * this reason — and water has no claim to volumetric shadows the fog does not have.
+             * <p>The rays are traced whether or not this is on — the sun term's depth attenuation reads
+             * their measured water column (sh.waterHitT) either way — so ON changes which answers are
+             * USED, not which rays are cast.
              *
-             * <p>Kept as a switch because it is still the isolation tool that found this, and because it
-             * is how the froxel will be A/B'd against the thing it replaces.
+             * <p>Kept as a switch because it is the isolation tool that found the original artifact, and
+             * the A/B lever for the re-measure.
              */
             public static final BooleanSetting SUN_SHADOW =
                     bool("fluorite.rt.water.sunShadow", "water.sun-shadow", false);

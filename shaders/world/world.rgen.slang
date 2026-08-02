@@ -713,7 +713,7 @@ static const uint DEBUG_VIEW_LIGHT_DYE = 16u;
 //
 // Expected at the far slice: a faint wash that follows the fog's height profile, brighter toward the sun,
 // with the transmittance darkest where the sightline is longest and lowest. Expected at the NEAR slices:
-// almost nothing, which is the point of distributing the depth axis quadratically.
+// almost nothing, which is the point of distributing the depth axis exponentially (see froxelSliceDepth).
 static const uint DEBUG_VIEW_FROXEL = 17u;
 static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
 
@@ -1071,9 +1071,9 @@ void main() {
         // A lateral move on its own. The closed form it replaces is an exact integral of the same
         // unshadowed medium, and 32 interpolated slices are not more accurate than exact. What the grid
         // has that the closed form cannot is a place to put VISIBILITY, resolved in world-space cells and
-        // interpolated, which is the whole of M13 and the reason this is wired now rather than then: if 32
-        // slices band, or the quadratic axis shows shells in the near field, that has to surface while the
-        // closed form is still here to compare against.
+        // interpolated, which is the whole of M13 and the reason this is wired now rather than then: if 64
+        // slices band, or the exponential axis shows shells in the near field, that has to surface while
+        // the closed form is still here to compare against.
         float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
         float4 aerial = sampleAerialPerspective(screenUv, prefixLength, worldPush.fogParams.w);
         // Bit 17 (Rt.Volumetrics.SEGMENT_SOURCE): silence the froxel's half of the fog. The alpha is

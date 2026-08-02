@@ -66,7 +66,7 @@ public final class RtSky {
     public static final int FROXEL_H = 36;
     public static final int FROXEL_D = 64;
     private static final int FROXEL_GROUP = 8; // matches [numthreads(8, 8, 1)]
-    private static final int FROXEL_PUSH_BYTES = 16; // WorldPush + sky-light grid device addresses
+    private static final int FROXEL_PUSH_BYTES = 8; // WorldPush device address
     /** Must match VIS_GRID_W/H/D in shaders/world/volume_visibility{,.comp}.slang. */
     public static final int VIS_GRID_W = 64;
     public static final int VIS_GRID_H = 32;
@@ -300,7 +300,7 @@ public final class RtSky {
      * parameter vectors, and a froxel column that disagreed with the pixels above it — by half a tile, or
      * by a stale density — would read as the fog sliding over the geometry as the camera turns.
      */
-    public void recordFroxelBake(VkCommandBuffer cmd, long worldPushAddr, long skyLightAddr, long tlas,
+    public void recordFroxelBake(VkCommandBuffer cmd, long worldPushAddr, long tlas,
                                  RtGpuExecutor.GraphicsUse graphicsUse) {
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "aerial perspective bake")) {
@@ -310,10 +310,10 @@ public final class RtSky {
                     froxelBake.pipelineLayout(), 0,
                     stack.longs(froxelBake.descriptorSet(), tlasSet), null);
             ByteBuffer pushData = stack.malloc(FROXEL_PUSH_BYTES);
-            pushData.putLong(0, worldPushAddr).putLong(8, skyLightAddr);
+            pushData.putLong(0, worldPushAddr);
             VK10.vkCmdPushConstants(cmd, froxelBake.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
-            // One thread per COLUMN, not per froxel: each walks all 32 slices and writes them as it goes.
+            // One thread per COLUMN, not per froxel: each walks all 64 (FROXEL_D) slices and writes them as it goes.
             // With a shadow ray at every step, the per-froxel shape would trace the same ray once for
             // every cell behind it.
             VK10.vkCmdDispatch(cmd, (FROXEL_W + FROXEL_GROUP - 1) / FROXEL_GROUP,

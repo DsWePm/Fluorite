@@ -526,57 +526,6 @@ public static const int WATER_SUN_VIS_STRATA = 3;
 public static const float WATER_SUN_VIS_TAU_STEP = 1.25;
 
 /**
- * How open to the sky the water at `p` is, from the coarse CPU-built grid: 0 sealed cave, 1 open ocean.
- *
- * The value is vanilla's own sky light, averaged over the water blocks of an 8-block cell (see
- * RtSkyLightGrid). Two properties make that the right quantity for the ambient source and are worth
- * naming because neither is obvious:
- *
- *   - Sky light is a property of the COLUMN above a point, not of the sun's direction. A hill's shadow
- *     leaves it at 15 while a cave roof zeroes it — which is exactly the split the ambient term needs,
- *     and exactly the one its shadowless constant source could not express: any constant is
- *     simultaneously too bright for the cave and too dark for the shadowed pond.
- *
- *   - Vanilla attenuates sky light through water block by block, so it fades over ~15 blocks of depth
- *     on its own. That overlaps with the analytic exp(-sigma*depth) this term already carries, and the
- *     overlap is ACCEPTED deliberately rather than corrected for: the doubled falloff errs darker with
- *     depth, deep water reading dark is the behaviour the murk rework was asked for, and the correction
- *     (dividing one falloff back out) would put a division between two nearly-zero quantities in every
- *     deep pixel.
- *
- * Trilinear over the byte cells: the grid is 8-block-coarse, and nearest sampling would draw its cell
- * boundaries as visible brightness steps in the water — this whole line of work exists because a step
- * where a gradient belongs reads as a bug.
- */
-float skyLightCell(int3 c, int3 dims) {
-    c = clamp(c, int3(0, 0, 0), dims - int3(1, 1, 1));
-    uint idx = (uint(c.z) * uint(dims.y) + uint(c.y)) * uint(dims.x) + uint(c.x);
-    uint word = ConstPtr<uint>(pc.skyLightAddr)[idx >> 2];
-    return float((word >> ((idx & 3u) * 8u)) & 0xFFu) * (1.0 / 255.0);
-}
-
-public float skyLightFactor(float3 p) {
-    if (pc.skyLightAddr == 0) {
-        return 1.0; // no grid published (menu worlds, first frames): keep the constant-source behaviour
-    }
-    int3 dims = worldPush.skyLightDims.xyz;
-    float3 g = (p - worldPush.skyLightOrigin.xyz) / max(worldPush.skyLightOrigin.w, 1.0e-3)
-            - float3(0.5, 0.5, 0.5);
-    float3 fl = floor(g);
-    float3 f = g - fl;
-    int3 base = int3(fl);
-    float c00 = lerp(skyLightCell(base, dims),
-                     skyLightCell(base + int3(1, 0, 0), dims), f.x);
-    float c10 = lerp(skyLightCell(base + int3(0, 1, 0), dims),
-                     skyLightCell(base + int3(1, 1, 0), dims), f.x);
-    float c01 = lerp(skyLightCell(base + int3(0, 0, 1), dims),
-                     skyLightCell(base + int3(1, 0, 1), dims), f.x);
-    float c11 = lerp(skyLightCell(base + int3(0, 1, 1), dims),
-                     skyLightCell(base + int3(1, 1, 1), dims), f.x);
-    return lerp(lerp(c00, c10, f.y), lerp(c01, c11, f.y), f.z);
-}
-
-/**
  * Single scattering inside an enclosed medium, with the source attenuated by the medium above it.
  *
  * The attenuation of the SOURCE is the whole difference between a volume and a coat of paint. Integrate
@@ -722,9 +671,11 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             if (all(weight <= 1.0e-8)) {
                 continue;
             }
-            // Bit 15: skip the shadow ray and take the sun as unoccluded. Splits this term into its two
-            // moving parts — occlusion, and the depth integral weighting it — so which one misbehaves is
-            // measured rather than argued.
+            // Bit 15: DISCARD the shadow ray's transmittance and take the sun as unoccluded. The ray is
+            // still traced either way — sh.waterHitT below is what measures the sun's real water column,
+            // and the depth integral needs that answer whether or not the occlusion half is used. So the
+            // switch splits this term into its two moving parts — occlusion, and the depth integral
+            // weighting it — without changing which rays are cast.
             // JITTERED inside the stratum, not pinned to its near edge.
             //
             // The edge was deterministic, so every frame asked the same question at the same place and got
@@ -774,10 +725,12 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
     }
 
     // Sky light, arriving from overhead, so its path to depth d is d. The water's own source, not the
-    // fog's (see worldPush.waterAmbient) — and gated by the sky-light grid, which is what makes an
-    // underwater cave dark while shadowed surface water keeps its glow: vanilla sky light is a property
-    // of the column above a point, not of the sun's direction, so a hill's shadow does not remove it but
-    // a cave roof does. That split is exactly the one a constant source could not express.
+    // fog's (see worldPush.waterAmbient) — and gated by OPENNESS (the volumetric visibility grid's
+    // zenith channel, sampled just above the measured surface below), which is what makes an underwater
+    // cave dark while shadowed surface water keeps its glow: openness is a property of the column above
+    // a point, not of the sun's direction, so a hill's shadow does not remove it but a cave roof does.
+    // That split is exactly the one a constant source could not express. (M9's CPU sky-light grid
+    // answered the same question more coarsely; removed in M15.0.)
     if (skySourceOn) {
         // The sky arrives from overhead and diffuses down through the same water, so it gets the same
         // treatment as the sun's source path. Without it the two sources would disagree about how deep
@@ -796,7 +749,8 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // which is what settles the question the CPU's upward surface scan could not answer -- that scan
         // only finds where the water stops, not whether anything is above it.
         //
-        // This replaces skyLightFactor, whose grid carried a second depth falloff of its own: vanilla
+        // This replaced M9's CPU sky-light grid factor (removed in M15.0), whose grid carried a second
+        // depth falloff of its own: vanilla
         // attenuates sky light one step per block of water, so it hit zero around fifteen blocks down and
         // stayed there. M9 accepted the doubled falloff deliberately, but the half it contributed was not
         // a falloff at all, it was a CLIFF, and it was measured as one -- with the surface at y=60 the
@@ -892,10 +846,11 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // — they are added together on screen, so a disagreement between them would show up as a seam
             // at whatever depth the camera's prefix segment happens to end.
             //
-            // <b>Character for character the froxel's source</b> (sky_froxel.comp.slang), and that is the
-            // point rather than a coincidence: the two are ADDED on screen, one covering the camera's
-            // prefix segment and the other covering every bounce, so any difference between them appears
-            // as a seam at whatever depth the primary ray happened to stop.
+            // MEANT to be the froxel's source (sky_froxel.comp.slang) character for character, one
+            // covering the camera's prefix segment and the other covering every bounce. Today the two
+            // have DRIFTED — the froxel skips the sun path's fog self-attenuation, derives its albedo as
+            // sigma_s/sigma_t with the atmosphere's sigma_t folded in, and adds the atmosphere's own
+            // in-scatter — and M15.2 exists to collapse both back onto one shared source function.
             //
             // The ad-hoc "extinguished light returns as glow" term that used to sit here is gone. It
             // returned 0.35x the sun's RADIANCE isotropically and grew with density, so at density 10 it
@@ -960,7 +915,11 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                     }
                 }
                 ambientStep(acc, ro, rd, tExit, window.y, gridSunSource, skySource, float2(1.0, 1.0));
-                seg.inScatter = acc.inScatter;
+                // += rather than =: the enclosed branch above may already have deposited in-scatter.
+                // Unreachable today (every enclosed medium has ambient false), but the first medium
+                // that is both absorbing and ambient -- a cloud layer on the stack is exactly what
+                // the ambient bit's comment reserves -- would have silently discarded it.
+                seg.inScatter += acc.inScatter;
                 if (sunRays > 0u) {
                     // Taken BY VALUE and rehashed rather than advanced in place. The callers include the
                     // camera prefix and the debug views, which have no path RNG stream to advance, and

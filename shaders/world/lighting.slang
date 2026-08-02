@@ -235,7 +235,7 @@ public void selectLightGridSpanLight(LightGridCell cell, inout uint proposalSeed
 // by emitted power and section distance, then its section-local power alias. Every light in
 // the neighborhood is represented without a fixed cap; qGlobal gives distant lights full support.
 // Alias spans make weighted local selection O(1). The mixture PDF is reconstructed after the single
-// Light48 load: section power cancels with the section-local light PDF.
+// 32-byte Light load: section power cancels with the section-local light PDF.
 public void selectLightGridLight(LightGridCell cell, bool useLocal, inout uint proposalSeed,
                           out uint lightIndex) {
     if (useLocal) {

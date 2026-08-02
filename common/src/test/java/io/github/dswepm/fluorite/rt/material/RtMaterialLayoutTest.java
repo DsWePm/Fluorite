@@ -34,24 +34,24 @@ final class RtMaterialLayoutTest {
 
     @Test
     void reflectedWorldPushConstantsIncludeLightBuffersAndDebugView() {
-        // 12 uint64_t addresses (world/table/material/material-extension, 5 light buffers, path
-        // queue, sky-light grid) + 3 uint, tail-padded to the struct's 8-byte alignment. Still under
-        // Vulkan's guaranteed 128, but the headroom is now 16 bytes: the next address added here spends
-        // 8 of them, and whoever adds it should redo this arithmetic rather than trust this comment.
-        // Every uint added here is paid by the closest-hit shader, which reads pc on every hit and
-        // never dereferences WorldPush — that is why shading switches land here rather than there.
-        assertEquals(112, WorldPushConstantsData.BYTE_SIZE);
+        // 11 uint64_t addresses (world/table/material/material-extension, 5 light buffers, path
+        // queue) + 3 uint, tail-padded to the struct's 8-byte alignment. Still under Vulkan's
+        // guaranteed 128, but the headroom is now 24 bytes: the next address added here spends 8 of
+        // them, and whoever adds it should redo this arithmetic rather than trust this comment.
+        // (The 12th address, M9's sky-light grid, was retired in M15.0 with the CPU grid it pointed
+        // at.) Every uint added here is paid by the closest-hit shader, which reads pc on every hit
+        // and never dereferences WorldPush — that is why shading switches land here rather than there.
+        assertEquals(104, WorldPushConstantsData.BYTE_SIZE);
         ByteBuffer data = ByteBuffer.allocateDirect(WorldPushConstantsData.BYTE_SIZE)
                 .order(ByteOrder.nativeOrder());
-        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13, 14, 15).write(data);
+        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12, 13, 14).write(data);
         assertEquals(4L, data.getLong(24));  // materialTableAddr
         assertEquals(5L, data.getLong(32));  // materialExtensionAddr
         assertEquals(6L, data.getLong(40));  // lightBufAddr
         assertEquals(10L, data.getLong(72)); // lightGridSpanAddr (last of the light-buffer addresses)
         assertEquals(11L, data.getLong(80)); // pathQueueAddr
-        assertEquals(12L, data.getLong(88)); // skyLightAddr
-        assertEquals(13, data.getInt(96));   // frameIndex
-        assertEquals(14, data.getInt(100));  // debugView
-        assertEquals(15, data.getInt(104));  // shadeFlags
+        assertEquals(12, data.getInt(88));   // frameIndex
+        assertEquals(13, data.getInt(92));   // debugView
+        assertEquals(14, data.getInt(96));   // shadeFlags
     }
 }

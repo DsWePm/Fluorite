@@ -28,7 +28,6 @@ public struct WorldPushConstants {
     public uint64_t lightGridCellAddr;   // dense light grid cell headers (0 = global proposals only)
     public uint64_t lightGridSpanAddr;   // packed weighted section spans referenced by cell headers
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
-    public uint64_t skyLightAddr;        // byte-per-cell sky-openness grid (0 = none published, factor 1)
     public uint frameIndex;
     public uint debugView;
     // Shading switches the CLOSEST-HIT needs. They live here rather than in WorldPush because the hit
@@ -118,11 +117,6 @@ public struct WorldPush {
     // fog because fog's 1-T never leaves the neighbourhood of zero. Water saturates within a few blocks
     // and puts the whole albedo*source product on screen, so the same constant arrives ~5x too bright.
     public float4   waterAmbient;     // xyz sky source radiance inside water, w unused
-    // Coarse sky-openness grid the ambient term above is gated by (volume.slang skyLightFactor): vanilla
-    // sky light averaged over each cell's water blocks, byte per cell, built incrementally on the CPU
-    // around the camera. Origin is in the terrain's rebased coordinates like every other position here.
-    public float4   skyLightOrigin;   // xyz grid origin (rebased), w cell size in blocks
-    public int4     skyLightDims;     // xyz cell counts, w unused
     // The volumetric visibility grid (M13.2), baked on the GPU with two rays per cell: R sun visibility,
     // G sky openness. Read by the BAKE that fills it and by every segment that samples it, which is why
     // the placement lives here rather than in either one's push constants — a grid origin that two shaders
@@ -447,7 +441,8 @@ public float2 unpackHalf2(uint p) {
 // and the last four are tail padding. That padding is the only room there is — a tenth uint fills it, an
 // eleventh rounds the stride to 64, and at 1440p with two records per pixel that step costs +118 MB
 // rather than the +29 MB one uint suggests. See RtPathSegmentLayoutTest before spending it; pathFlags
-// has spare bits above 11 and those are free.
+// has spare bits above 13 and those are free (11 is PATH_HAS_NEXT; 9/10 and 12/13 carry the medium's
+// water and ambient bits — see segment.slang).
 public struct PackedPathSegment {
     public float3 ro;
     public uint rd;

@@ -67,7 +67,6 @@ import io.github.dswepm.fluorite.rt.pipeline.RtSdrPresentPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
 import io.github.dswepm.fluorite.rt.sky.RtSky;
-import io.github.dswepm.fluorite.rt.terrain.RtSkyLightGrid;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
@@ -348,6 +347,15 @@ public final class RtComposite {
                 FluoriteConfig.Rt.Bsdf.SUBSURFACE_THICKNESS.value());
     }
 
+    /**
+     * How far up the water column the reference-surface scan will walk before giving up.
+     *
+     * <p>Generous rather than tuned: the loop stops at the first non-water block, so it only runs to this
+     * limit for a camera genuinely that deep under water, and each step is one fluid-state lookup on the
+     * client's own chunk cache. A camera in an ocean exits after a couple of steps.
+     */
+    private static final int WATER_SURFACE_SCAN_LIMIT = 512;
+
     private static final float BASE_FOG_DENSITY = 0.0016f;   // extinction per block at the reference height
     /**
      * The sky's radiance as a share of the sun's, for the fog's isotropic source.
@@ -466,8 +474,6 @@ public final class RtComposite {
     private static final int PUSH_RING = 6;
     private PushSlot[] pushRing;
     private int pushSlot;
-    // Sky-openness field for the water's ambient scattering term; see RtSkyLightGrid.
-    private final RtSkyLightGrid skyLightGrid = new RtSkyLightGrid();
     // Device-side timing for the two trace dispatches. Shares the push ring's slot index and its graphics-use
     // wait, so a slot is only read once the work that wrote it has completed and the read never blocks.
     private static final int GPU_ZONE_TRACE_PRIMARY = 0;
@@ -520,14 +526,10 @@ public final class RtComposite {
 
     private static final class PushSlot {
         final RtBuffer buffer;
-        // The sky-openness grid rides the same slot: it is rewritten whole each frame (a few KB), and
-        // sharing the slot's graphics-use wait is what makes the host write safe without a fence of its own.
-        final RtBuffer skyLight;
         final RtGpuExecutor.TrackedGraphicsUse graphicsUse = new RtGpuExecutor.TrackedGraphicsUse();
 
-        PushSlot(RtBuffer buffer, RtBuffer skyLight) {
+        PushSlot(RtBuffer buffer) {
             this.buffer = buffer;
-            this.skyLight = skyLight;
         }
     }
     // Menu/non-RT present: converts the SDR main target (sRGB) to PQ-encoded at paper white so menus,
@@ -577,6 +579,8 @@ public final class RtComposite {
     private final Matrix4f mvPushMatrix = new Matrix4f();
     private final Matrix4f frameInvViewProj = new Matrix4f();
     private final BlockPos.MutableBlockPos cameraBlockPos = new BlockPos.MutableBlockPos();
+    /** Scratch for the reference-surface walk; never escapes the frame that uses it. */
+    private final BlockPos.MutableBlockPos surfaceScan = new BlockPos.MutableBlockPos();
     private double mvPrevCamX;
     private double mvPrevCamY;
     private double mvPrevCamZ;
@@ -857,9 +861,7 @@ public final class RtComposite {
                 for (int i = 0; i < PUSH_RING; i++) {
                     pushRing[i] = new PushSlot(
                             ctx.createBuffer(WORLD_PUSH_SIZE,
-                                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i),
-                            ctx.createBuffer(RtSkyLightGrid.CELL_COUNT,
-                                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt sky light grid " + i));
+                                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i));
                 }
             }
             if (gpuTimers == null) {
@@ -1190,9 +1192,37 @@ public final class RtComposite {
                 // source block).
                 FluidState fs = level.getFluidState(cameraBlockPos);
                 if (fs.is(FluidTags.WATER)) {
-                    float surface = cameraBlockPos.getY() + fs.getHeight(level, cameraBlockPos);
-                    if (camY < surface) {
+                    // The SUBMERGED test uses the camera's own block, which is what vanilla's
+                    // Camera.getFluidInCamera does and is right for "which medium does the camera ray
+                    // start in".
+                    float ownTop = cameraBlockPos.getY() + fs.getHeight(level, cameraBlockPos);
+                    if (camY < ownTop) {
                         flags |= 0b01;
+                    }
+                    // The REFERENCE SURFACE is a different question and used to be answered with the same
+                    // number, which was wrong in a way that hid behind the shape of the bug it caused.
+                    //
+                    // getHeight returns 1.0 for a water block with more water above it, so deep under an
+                    // ocean the "surface" came out as floor(camY) + 1 -- pinned one block over the
+                    // camera's head, wherever the camera went. Two consequences, both observed: water
+                    // thirty blocks down was lit as though it sat at the surface, because its depth came
+                    // out as about one block; and floor(camY) steps by one every time the camera crosses a
+                    // block boundary, so the whole volume's brightness jumped in one-block layers as the
+                    // player swam up or down. That was reported as layered flicker on vertical movement,
+                    // and it survived silencing the sky term, which correctly ruled out the sky-light grid.
+                    //
+                    // Walk up to the real top of the column instead. Depth is a property of the water
+                    // body, so the answer must not move when the camera does -- that stillness is the
+                    // whole fix, and it is why a scan is worth a few dozen block lookups a frame.
+                    surfaceScan.set(cameraBlockPos);
+                    float surface = ownTop;
+                    for (int step = 0; step < WATER_SURFACE_SCAN_LIMIT; step++) {
+                        surfaceScan.setY(surfaceScan.getY() + 1);
+                        FluidState above = level.getFluidState(surfaceScan);
+                        if (!above.is(FluidTags.WATER)) {
+                            break;
+                        }
+                        surface = surfaceScan.getY() + above.getHeight(level, surfaceScan);
                     }
                     // Written whether or not the EYE is under it, and that separation is the whole point.
                     //
@@ -1207,10 +1237,6 @@ public final class RtComposite {
                     // starts in. Depth is a property of the water, not of where the eye happens to be.
                     waterSurfaceY = surface - terrain.blockY;
                 }
-                // Advance the sky-openness field the water's ambient term is gated by. CPU-side and
-                // amortized (a fixed cell budget per frame); the whole grid is copied into this frame's
-                // ring slot below.
-                skyLightGrid.update(level, camX, camY, camZ);
             }
             // Hide the first-person body from secondary rays while its owner is in the water at all
             // (trace.slang FLAG_HIDE_SELF).
@@ -1254,6 +1280,10 @@ public final class RtComposite {
             flags |= (FluoriteConfig.Rt.Volumetrics.visibilityMaxSteps() & 0b11111) << 18;
             // Bits 23-25: jittered shadow rays for the fog's sun term (0 = read the grid instead).
             flags |= (FluoriteConfig.Rt.Volumetrics.sunShadowRays() & 0b111) << 23;
+            if (FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER.value()) {
+                // Bit 26: the source decays at the diffusion rate rather than the beam's.
+                flags |= 1 << 26;
+            }
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
@@ -1342,19 +1372,9 @@ public final class RtComposite {
                     waterScatter(),
                     waterAbsorbOverride(),
                     waterAmbient(sky),
-                    new Float4(skyLightGrid.originX() - terrain.blockX,
-                            skyLightGrid.originY() - terrain.blockY,
-                            skyLightGrid.originZ() - terrain.blockZ, RtSkyLightGrid.CELL_SIZE),
-                    new Int4(RtSkyLightGrid.DIM_X, RtSkyLightGrid.DIM_Y, RtSkyLightGrid.DIM_Z, 0),
                     visibilityGridOrigin(camX, camY, camZ, terrain)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
-            // Whole grid, every frame, into this slot's buffer: a few KB, and rewriting it whole under
-            // the slot's already-awaited graphics use is simpler than tracking partial dirtiness.
-            ByteBuffer skyLightBytes = MemoryUtil.memByteBuffer(
-                    selectedPushSlot.skyLight.mapped, RtSkyLightGrid.CELL_COUNT);
-            skyLightGrid.copyInto(skyLightBytes);
-            selectedPushSlot.skyLight.flush(0L, RtSkyLightGrid.CELL_COUNT);
             // Upload any entity textures registered this frame into the bindless set before the trace.
             RtEntityTextures.INSTANCE.uploadPending(active, atlasSampler(ctx));
             // Build the entity BLAS, the TLAS that references it and the terrain BLAS, then the trace.
@@ -1407,9 +1427,7 @@ public final class RtComposite {
             }
             // The froxel, after the sky-view table and after the push buffer it reads has been written.
             // It follows the CAMERA as well as the sun, so per-frame is not a choice here at all.
-            skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress,
-                    skyLightGrid.ready() ? selectedPushSlot.skyLight.deviceAddress : 0L,
-                    frameTlas.accel.handle, graphicsUse);
+            skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
@@ -1422,7 +1440,15 @@ public final class RtComposite {
             // Its own timing zone. Sharing the froxel's would keep the one question this dispatch raises
             // unanswerable: it and the froxel each cast a few hundred thousand rays a frame, they can be
             // resized independently, and a single number covering both cannot say which resize to make.
-            skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
+            //
+            // Gated on the same condition visibilityGridOrigin() publishes: with cell size 0 the origin's
+            // w is 0, every sampler returns unoccluded, and the bake used to run anyway — 131k rays all
+            // cast from the degenerate origin, paid every frame to fill a grid nobody would read. The
+            // timer zone stays unconditional so gpu.visBake reads ~0 rather than going stale.
+            if (FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
+                    && FluoriteConfig.Rt.Volumetrics.ENABLED.value()) {
+                skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
+            }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
             }
@@ -1440,7 +1466,6 @@ public final class RtComposite {
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
-                    skyLightGrid.ready() ? selectedPushSlot.skyLight.deviceAddress : 0L,
                     (int) frameCounter, debugView, shadeFlags()).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {

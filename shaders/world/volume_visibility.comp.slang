@@ -8,7 +8,8 @@
 // removing it. Measured rather than argued: Rt.Volumetrics.SEGMENT_SOURCE silences either machine, and
 // silencing the marched half is what emptied the room.
 //
-// WHY NOT THE OTHER THREE FIXES. The coarse CPU sky-light grid (RtSkyLightGrid) was tried and its cells
+// WHY NOT THE OTHER THREE FIXES. The coarse CPU sky-light grid (RtSkyLightGrid, retired and removed in
+// M15.0) was tried and its cells
 // are eight blocks on a side — a house is shorter than one cell, so the cell holding a sealed room also
 // holds the open sky above its roof and averages to open. Casting a shadow ray per bounce segment is the
 // shape M9 measured and rejected: one binary answer near the segment's start applied to its whole length,
