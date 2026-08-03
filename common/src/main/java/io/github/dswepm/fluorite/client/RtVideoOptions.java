@@ -101,9 +101,10 @@ public final class RtVideoOptions {
                                         FluoriteConfig.Rt.Water.SUN_SHADOW),
                                 waterAmbientScale(), waterPhaseG()),
                         Section.titled("fluorite.options.rt.section.waterScatter",
-                                waterScatterR(), waterScatterG(), waterScatterB()),
+                                waterScatterStrength(), waterScatterR(), waterScatterG(), waterScatterB()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
-                                waterAbsorbOverride(), waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
+                                waterAbsorbOverride(), waterAbsorbStrength(),
+                                waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
                 case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
                         fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter()));
@@ -202,6 +203,12 @@ public final class RtVideoOptions {
      * dark, which is what suspended matter really does and what could not be expressed at all while a
      * single turbidity multiplier drove scattering by itself.
      */
+    private static OptionInstance<Integer> waterScatterStrength() {
+        return coefficientSlider("fluorite.options.rt.waterScatterStrength",
+                FluoriteConfig.Rt.Water.SCATTER_STRENGTH,
+                Math.round(FluoriteConfig.Rt.Water.SCATTER_FULL_SCALE * 1000.0f));
+    }
+
     private static OptionInstance<Integer> waterScatterR() {
         return byteSlider("fluorite.options.rt.waterScatterR", FluoriteConfig.Rt.Water.SCATTER_R);
     }
@@ -216,6 +223,12 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterAbsorbOverride() {
         return bool("fluorite.options.rt.waterAbsorbOverride", FluoriteConfig.Rt.Water.ABSORB_OVERRIDE);
+    }
+
+    private static OptionInstance<Integer> waterAbsorbStrength() {
+        return coefficientSlider("fluorite.options.rt.waterAbsorbStrength",
+                FluoriteConfig.Rt.Water.ABSORB_STRENGTH,
+                Math.round(FluoriteConfig.Rt.Water.ABSORB_FULL_SCALE * 1000.0f));
     }
 
     private static OptionInstance<Integer> waterAbsorbR() {
@@ -300,6 +313,18 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 255),
             Math.clamp(setting.value(), 0, 255),
             setting::set);
+    }
+
+    /** A physical mean coefficient in inverse blocks, exposed in thousandths for useful water steps. */
+    private static OptionInstance<Integer> coefficientSlider(String key, FloatSetting setting, int maxMilli) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f / block", v / 1000.0))),
+            new OptionInstance.IntRange(0, maxMilli),
+            Math.clamp(Math.round(setting.value() * 1000.0f), 0, maxMilli),
+            v -> setting.set(v / 1000.0f));
     }
 
     // ---- Ambient participating medium. Every one of these is re-read per frame straight into the world

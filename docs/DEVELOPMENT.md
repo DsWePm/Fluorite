@@ -43,7 +43,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 代码完成、待游戏内/性能验收（2026-08-03） | §7，决策依据 §10 D1–D12 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；水天空开放度结构性缺陷记入 M17（2026-08-03） | §7，决策依据 §10 D1–D16 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -324,7 +324,7 @@ MC 相机是**点**，不存在「半潜」机位。两机位分开采：(a) 完
 
 | 议题 | HPWater | Fluorite 定案 |
 |---|---|---|
-| 介质参数化 | `absorptionColor`/`scatterColor` 两个独立光谱创作量（逐水面画进 GBuffer） | **采纳思路**：σa（群系色调驱动+`absorb-override` 逐通道）与 σs（全局创作量 `scatter-r/g/b`）独立；「浑浊度」单旋钮已废（它数学上只能把水推白） |
+| 介质参数化 | `absorptionColor`/`scatterColor` 两个独立光谱创作量（逐水面画进 GBuffer） | **采纳思路**：σa（群系色调驱动，手动覆盖为强度 × mean-normalized RGB shape）与 σs（强度 × mean-normalized RGB shape）独立；「浑浊度」单旋钮已废（它数学上只能把水推白） |
 | 积分 | 6 步指数分布行进 + 逐采样点 shadow lookup | 闭式深度衰减积分 + 3 条分层**抖动**阴影线（RT 的解法，不是光栅的） |
 | 多次散射 | `lerp(phase, 1, smoothstep(0,0.5,albedo))` | **重推导**：`g_eff = g^(1/(1−ω))` + 扩散衰减（教科书 K，钳物理域） |
 | 环境项 | 烘焙间接光 × 强度 | 上射线深度 + 可见性网格开阔度 + 深度衰减（M16 起源换 LUT 辐射，D1-A） |
@@ -363,20 +363,23 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - `visibility-cell-size=0` 时跳过可见性烘焙 dispatch（现在无条件 131k 条射线打一个点）。
 - 注释与行为对齐批处理：bit15 「skip the shadow ray」措辞（实际只弃透射率、射线仍发——`waterHitT` 要用）；`volume.slang` 「Character for character the froxel's source」（已不真）；`world_primary.rgen` 「this pass integrates the camera prefix segment」；froxel 各处「32 slices」陈旧数字；`world_common.slang` 「bits above 11 free」（12/13 已用）；`lighting.slang` 「Light48」；`FluoriteConfig` `Water.SUN_SHADOW` 整段陈旧文档。
 
-**15.1 Medium 采样接口 + 统一体积阴影采样器（2026-08-03 已实现，待游戏内验收）**
+**15.1 Medium 采样接口 + 统一体积阴影采样器（2026-08-03 已实现，空气雾视觉验收通过）**
 - `medium.slang` 收拢为 `mediumSigmaT` / `mediumScatterAlbedo` / `mediumPhaseG` / `mediumProfile`；一个 profile 同时选择 estimator 与 source adapter，避免两组浅查询产生一致性负担。`mediumDensityAt` 留在 Implementation 内部。`integrateSegment` 仍是唯一外部 Interface：**均质封闭介质走精确闭式路径**，非均质 ambient 走解析高度 march。
 - **统一体积阴影采样器**：水与雾共享固定光学深度分层（τ 步长 1.25）、段内 jitter、`CULL_SECONDARY_NO_SELF`、shadow trace 与按用途 rehash 的 seed 纪律；均质 τ→distance 与 ambient τ→distance 是两个内部 adapter。
 - D9 明确：这是分层近似，不宣称严格无偏。层内按距离均匀采样、使用闭式 view-path 权重；严格 `f/pdf` 修正留到 M17，因为它会改变亮度与噪声。ambient 边界用 8 次二分反演并复用相邻边界；默认 1 ray 不反演。
 - D12 审计结论：水的 sun-shadow 关时仍保留最多 3 条。每层的 `waterHitT` 都在测自己的 source path；压成 1 条会在不平水面、洞顶与不同水体高度下引入衰减误差，不属于中性重构。
 
-**15.2 froxel/marched 源对齐（2026-08-03 已实现，待游戏内验收）**
+**15.2 froxel/marched 源对齐（2026-08-03 已实现，空气雾视觉验收通过）**
 - 新建纯数学 Module `volume_source.slang`（无 bindings/globals/rays），两种 shader stage 共用高度积分、扩散衰减、HG 与 `evaluateAmbientRadianceSource`，避免 descriptor layout 相互污染。
 - 按 D10 把 marched 已有的局部雾太阳自衰减补进 froxel；froxel 的 direct path = atmosphere LUT × local fog，raygen 的 `WorldPush` 已经 atmosphere-dyed，所以只乘 local fog。无新增射线，增加解析 ALU/exp。
 - `fogScatter` 两边统一解释为 single-scattering albedo：froxel 改为 `σs=fogAlbedo×fogSigmaT`；行星大气仍作为 froxel-only 的附加介质项，理由是它覆盖相机前缀的 aerial perspective，注释明确。
 - **临时运行时烟测（非性能验收）**：1920×1080、`bench`、当前配置下稳定区间 `gpu.froxelBake` 中位数约 0.17–0.18 ms；仅证明新增解析衰减未出现数量级异常。没有同位姿、同会话的改前 A/B，禁止据此声称“无回归”或计算倍率。
 - **D13 能量守恒收口（用户选 5A）**：`volumetrics.intensity-scale` 为兼容旧配置保留路径名，但值域改为 0–1 的 physical-albedo multiplier；CPU 在写入 `fogScatter.rgb` 时再逐通道钳到 `[0,1]`。UI 政名“雾散射反照率”，高于 1 的旧配置加载时钳到 1。GPU 无新增 ALU/射线，代价是旧的非物理过亮档不再保留。
+- **D14/D16 设置语义收口（用户选 6A、8A）**：空气雾太阳可见性与水体太阳遮挡保持独立实现并在 UI 明确命名，任何一个旋钮都不宣称控制另一介质。水体散射与手动吸收覆盖均拆成“强度 × RGB 颜色形状”；颜色用算术均值归一化，旧配置自动迁移为逐通道系数完全相同的结果。仅 CPU 配置换算，无 shader ABI、ALU 或射线成本。
 
-**验收**：`segment-source` froxel/marched A/B 在前缀深度处无缝；`visibility-cell-size=0` 的 telescoping 归零测试仍成立；`RtPathSegmentLayoutTest` 仍 48；同会话比值 `bench` ≈1.0×（重构应中性）；**顺带偿还 M9 欠账：`bench-water` 两机位首采**，数字进 §4.2 作 M16/M17 的基线；水观感与 M9 收尾一致。
+**2026-08-03 游戏内视觉验收记录**：用户确认能量响应、froxel/marched 接缝、低太阳角与阴影三项“非常完美”。水下另发现结构性问题：当前天空源只从封闭水段起点发一条竖直探测，并以单个 `skyOpen` 标量门控整段；相机浸水时各主射线共享起点，因此头顶一块方块可让整屏水天空散射归零。可见性网格原点按 cell 取整又会把该单标量放大成深水洞口的一方块横向跳变。这不是空气雾 shadow-ray 配置位直接控制水，而是独立水体天空门控与最终画面合成造成的歧义。按 D15 不做临时逐层/网格补丁，留到 M17 在真实散射顶点采样局部天空可见性。
+
+**剩余验收**：`visibility-cell-size=0` 的 telescoping 归零测试仍成立；`RtPathSegmentLayoutTest` 仍 48；同会话比值 `bench` ≈1.0×（重构应中性）；**顺带偿还 M9 欠账：`bench-water` 两机位首采**，数字进 §4.2 作 M16/M17 的基线。水天空开放度的视觉出口改由 M17 条目定义，M15 不用临时补丁伪装通过。
 
 ### M16 散射源 Radiance 化 — LUT 档（D1-A）
 
@@ -390,10 +393,11 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 - 新开关（如 `volumetrics.scatter-vertex`，默认关）：每段按 τ 均匀逆采样一个散射距离（雾的高度积分解析可逆——采样 τ 均匀即按 σt·T 重要性；水均质更简单），在散射点做：
   - 太阳 NEE：1 条阴影线，相位加权（与 15.1 采样器共用纪律）；
+  - 水天空开放度（D15）：在实际水体散射顶点采样天空方向与该点局部可见性，删除“段起点单标量门控整段”的依赖；天空方向与相位/光源方向之间是否 MIS，合并进下方既有请示点，不预先决定；
   - **volumeNee**（发光方块首次照亮水与雾）：M=1，复用 `findLightGridCell`/`selectLightGridLight`/`proposalPdf`/`lightRadiance` 等选择机制，目标函数换相位——这是 M6 就预留的设计，**不违反 ReSTIR 前向约束**（无复用、无解析 MIS 权重、不动 `evalSampleContrib` 热路径）。挂独立开关默认关。
 - ⚖ **请示点**：相位采样 vs 光源方向采样之间是否加 MIS——按落地后的实测噪声带图请示；默认档位（关/仅太阳/太阳+发光体）按实测成本请示。
-- **成本闸门**：`bench` + `bench-water` 两机位实测（粗估 traceIndirect +2~5ms），数字报用户后定默认档与质量分级。
-- **验收**：岩浆/火把旁的水与雾出现带遮挡的光晕；关档逐位回到 M16 行为；RR 关时误差表现为噪点非块状（§3.2 判据）。
+- **成本闸门**：`bench` + `bench-water` 两机位实测（粗估 traceIndirect +2~5ms）；水天空可见性至少增加 1 条 visibility ray/散射顶点，计入同一成本闸门。数字报用户后定默认档与质量分级。
+- **验收**：岩浆/火把旁的水与雾出现带遮挡的光晕；关档逐位回到 M16 行为；RR 关时误差表现为噪点非块状（§3.2 判据）；头顶方块只遮挡其实际占据的天空立体角，不再使整屏水散射归零；深水洞口横移不再出现整屏一方块级跳变。
 
 ### M18 光源收集层（D3：只收集不采样）
 
@@ -569,7 +573,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | D7 | 文档形态 | **repo 主文档（本文件）+ CLAUDE.md 入口**；四份专题文档保留并被索引 | 编号在 repo 内可解析；专题文档服务特定读者（资源包作者等）不吞并 |
 | D8 | 文档语言 | **中文正文+英文术语/符号名** | 阅读顺畅且符号可 grep |
 
-### 2026-08-03 M15 估计器与性能裁决（D9–D12，用户逐项选定）
+### 2026-08-03 M15 估计器、设置语义与性能裁决（D9–D16，用户逐项选定）
 
 | # | 议题 | 决策 | 物理与性能理由 |
 |---|---|---|---|
@@ -578,6 +582,9 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | D11 | Medium Interface 形状 | **单一 `mediumProfile` 分类；`mediumDensityAt` 私有** | 一个查询同时决定 estimator/source adapter，删除 `mediumSource` + `mediumIsHomogeneous` 两个浅 Module 的隐含一致性；画面不变 |
 | D12 | 水在 sun-shadow 关闭时的射线预算 | **仍保留最多 3 条** | 每层 `waterHitT` 测量自己的 source path；只留 1 条虽最多省 2 ray/长水段，但会在不平水面、洞顶和不同水体高度下产生衰减误差 |
 | D13 | fog intensity/反照率守恒（用户选 5A） | **有效反照率逐通道钳到 `[0,1]`；UI 变为 0–1 physical-albedo multiplier** | 严格保证 `σs≤σt`，GPU 额外成本≈0；兼容保留旧 config key，但旧值 >1 加载为 1，放弃非物理过亮档 |
+| D14 | 空气雾/水体阴影设置归属（用户选 6A） | **保持两个独立实现；UI 分别命名“空气雾太阳可见性”与“水体太阳遮挡”** | 避免一个全局旋钮暗示错误耦合；物理模型与 GPU 工作量均不变 |
+| D15 | 水天空开放度跳变（用户选 7C） | **不做逐层网格临时修补；M17 在真实散射顶点求局部天空方向与可见性，并把 MIS 方向纳入请示** | 现状以段起点单标量门控整段，物理误差可整屏放大；临时多格采样会花射线但仍采错位置。M17 预计至少 +1 visibility ray/散射顶点，纳入 +2~5 ms 成本闸门后再决定档位 |
+| D16 | 水体散射/吸收颜色与强度（用户选 8A） | **算术均值强度 × mean-normalized RGB shape；旧配置自动迁移且最终 RGB 系数逐位等价** | 颜色只控制光谱形状、强度单独控制平均系数；CPU-only、shader ABI/GPU 成本为零。全黑 shape 采用中性灰，强度 0 才是关闭，避免除零与“颜色暗度偷偷改强度” |
 
 **同日确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 

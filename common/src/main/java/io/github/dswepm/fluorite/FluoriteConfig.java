@@ -127,11 +127,10 @@ public final class FluoriteConfig {
                         + " costs one traversal per scattering event. subsurface-max-events bounds that\n"
                         + " walk — running out falls back to a diffuse bounce rather than losing energy.");
         FILE.setComment("water",
-                " Enclosed participating media. Absorption is what the biome tint has always driven;\n"
-                        + " turbidity adds the scattered part, which is what separates water from a pane of\n"
-                        + " coloured glass. 0 reproduces the absorption-only water exactly and is the A/B\n"
-                        + " for the rest. phase-g is forward-scattering anisotropy: positive puts a halo\n"
-                        + " around the sun seen from underwater.");
+                " Enclosed participating media. Scattering and optional absorption overrides each have\n"
+                        + " a strength (the arithmetic-mean coefficient per block) and an RGB colour shape;\n"
+                        + " changing colour does not change strength. phase-g is forward-scattering\n"
+                        + " anisotropy: positive puts a halo around the sun seen from underwater.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -1133,14 +1132,16 @@ public final class FluoriteConfig {
             public static final IntSetting ABSORB_B =
                     clampedInt("fluorite.rt.water.absorbB", "water.absorb-b", 12, 0, 255);
 
-            /** 0-255 maps onto 0..ABSORB_FULL_SCALE per block, which covers clear ocean to opaque silt. */
+            /** Mean absorption coefficient range, per block. Individual colour-shaped channels may exceed it. */
             public static final float ABSORB_FULL_SCALE = 0.4f;
+            public static final FloatSetting ABSORB_STRENGTH =
+                    clampedFloat("fluorite.rt.water.absorbStrength", "water.absorb-strength",
+                            legacyCoefficientStrength(60, 42, 12, ABSORB_FULL_SCALE),
+                            0.0f, ABSORB_FULL_SCALE);
 
             public static float[] absorptionRgb() {
-                return new float[] {
-                        ABSORB_R.value() / 255f * ABSORB_FULL_SCALE,
-                        ABSORB_G.value() / 255f * ABSORB_FULL_SCALE,
-                        ABSORB_B.value() / 255f * ABSORB_FULL_SCALE};
+                return coefficientRgb(ABSORB_R.value(), ABSORB_G.value(), ABSORB_B.value(),
+                        ABSORB_STRENGTH.value());
             }
 
             /**
@@ -1174,19 +1175,60 @@ public final class FluoriteConfig {
                     clampedInt("fluorite.rt.water.scatterB", "water.scatter-b", 28, 0, 255);
 
             /**
-             * 0-255 maps onto 0..SCATTER_FULL_SCALE per block.
+             * Mean scattering coefficient range, per block. Individual colour-shaped channels may exceed it.
              *
              * <p>Half of {@link #ABSORB_FULL_SCALE} deliberately. Water whose scattering rivals its
              * absorption has a single-scattering albedo near 1, and that is the pale-grey failure this
              * replaced; the ceiling being lower makes the well-behaved range the easy one to land in.
              */
             public static final float SCATTER_FULL_SCALE = 0.2f;
+            public static final FloatSetting SCATTER_STRENGTH =
+                    clampedFloat("fluorite.rt.water.scatterStrength", "water.scatter-strength",
+                            legacyCoefficientStrength(24, 26, 28, SCATTER_FULL_SCALE),
+                            0.0f, SCATTER_FULL_SCALE);
+
+            static {
+                // One-time compatibility path. Before D16 the RGB sliders were coefficients, so their
+                // arithmetic mean was also their hidden strength. If the new scalar is absent, recover
+                // that mean from the already-resolved legacy values. The next save writes the scalar;
+                // reset-to-default still uses the authored defaults above rather than this migrated value.
+                if (System.getProperty("fluorite.rt.water.absorbStrength") == null
+                        && !FILE.contains("water.absorb-strength")) {
+                    ABSORB_STRENGTH.set(legacyCoefficientStrength(
+                            ABSORB_R.value(), ABSORB_G.value(), ABSORB_B.value(), ABSORB_FULL_SCALE));
+                }
+                if (System.getProperty("fluorite.rt.water.scatterStrength") == null
+                        && !FILE.contains("water.scatter-strength")) {
+                    SCATTER_STRENGTH.set(legacyCoefficientStrength(
+                            SCATTER_R.value(), SCATTER_G.value(), SCATTER_B.value(), SCATTER_FULL_SCALE));
+                }
+            }
 
             public static float[] scatteringRgb() {
-                return new float[] {
-                        SCATTER_R.value() / 255f * SCATTER_FULL_SCALE,
-                        SCATTER_G.value() / 255f * SCATTER_FULL_SCALE,
-                        SCATTER_B.value() / 255f * SCATTER_FULL_SCALE};
+                return coefficientRgb(SCATTER_R.value(), SCATTER_G.value(), SCATTER_B.value(),
+                        SCATTER_STRENGTH.value());
+            }
+
+            private static float legacyCoefficientStrength(int r, int g, int b, float fullScale) {
+                return ((r + g + b) / 3.0f) / 255.0f * fullScale;
+            }
+
+            /**
+             * Resolve a coefficient from an RGB shape and its independent arithmetic-mean strength.
+             * An all-zero shape has no chromaticity, so it resolves to neutral rather than secretly
+             * disabling a non-zero strength; strength zero is the one unambiguous off control.
+             */
+            static float[] coefficientRgb(int r, int g, int b, float strength) {
+                float cr = Math.clamp(r, 0, 255);
+                float cg = Math.clamp(g, 0, 255);
+                float cb = Math.clamp(b, 0, 255);
+                float mean = (cr + cg + cb) / 3.0f;
+                float safeStrength = Math.max(strength, 0.0f);
+                if (mean <= 1.0e-6f) {
+                    return new float[] {safeStrength, safeStrength, safeStrength};
+                }
+                float scale = safeStrength / mean;
+                return new float[] {cr * scale, cg * scale, cb * scale};
             }
 
             private Water() {
