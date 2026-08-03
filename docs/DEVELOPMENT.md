@@ -43,7 +43,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 卫生批次 ✅（2026-08-02），其余未开始 | §7，决策依据 §10 D1–D8 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 代码完成、待游戏内/性能验收（2026-08-03） | §7，决策依据 §10 D1–D12 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -76,7 +76,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | `volume_visibility.comp.slang` | 64×32×64 世界空间可见性网格（R=太阳、G=天顶，各一条光线/cell，cell 中心写入） |
 | `world_layout_probe.slang` | 仅构建期反射探针，不打包 |
 
-**模块（import）**：`world_common.slang`（ABI：`WorldPush(Constants)`、`MaterialHeader/Extension`、`PackedPathSegment`、`Light`）· `world_core.slang`（bindings、payload、常量）· `math.slang` · `bsdf.slang` · `volume.slang`（体积积分器）· `medium.slang`（Medium/栈/系数映射）· `water.slang`（波谱/法线/焦散）· `subsurface.slang` · `lighting.slang`（光网格+RIS）· `atmosphere.slang` · `atmosphere_lut.slang`（LUT bindings+读法）· `volume_visibility.slang` · `guides.slang`（仅 Pass A）· `segment.slang` · `trace.slang` / `trace_ser.slang`。
+**模块（import）**：`world_common.slang`（ABI：`WorldPush(Constants)`、`MaterialHeader/Extension`、`PackedPathSegment`、`Light`）· `world_core.slang`（bindings、payload、常量）· `math.slang` · `bsdf.slang` · `volume.slang`（体积积分器）· `volume_source.slang`（跨 stage 的纯高度积分/扩散/source 数学）· `medium.slang`（Medium/栈/参数/profile）· `water.slang`（波谱/法线/焦散）· `subsurface.slang` · `lighting.slang`（光网格+RIS）· `atmosphere.slang` · `atmosphere_lut.slang`（LUT bindings+读法）· `volume_visibility.slang` · `guides.slang`（仅 Pass A）· `segment.slang` · `trace.slang` / `trace_ser.slang`。
 
 另有 `shaders/display/`（tonemap、直方图曝光、HDR UI 合成、SDR present）与 `shaders/overlay/`（方块轮廓、glow 轮廓、名牌——**光栅、display 分辨率**，因为「nothing thin/crisp survives DLSS-RR」）。
 
@@ -119,7 +119,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | 相位 | HG×95% + Rayleigh×5%（`enclosedPhase`） | HG（`fogScatter.w`，默认 0.55） |
 | 相机前缀 | Pass B 零消光积分（Pass A 已扣吸收） | **froxel**（64×36×64，指数深度轴，含大气项） |
 
-已知分叉（M15.2 靶点）：froxel 与 marched 的源表达式三处不一致（太阳路径雾自衰减、反照率口径 `fogScatter` vs `σs/σt`、froxel 独有大气项——前两者必须同源，大气项是有意口径差）。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐（bit15 措辞、froxel「32 slices」、「Character for character」改为 DRIFTED 声明等）。
+**M15.2（2026-08-03）已收口的分叉**：froxel 与 marched 共用 `volume_source.slang`；局部雾太阳自衰减补进 froxel，`fogScatter` 两边统一为 albedo。froxel 独有的行星大气项是有意口径差。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐。
 
 ---
 
@@ -149,7 +149,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | `medium.slang` `mediumScatterAlbedo` | σs 保持全局、反照率由 `σs/σt` 反推——48B 记录保住最后一个空 lane 的原因。σs∝σa 的灰色反照率教训写在原地 |
 | `volume.slang` 透射率包装器 | **阴影 payload 不许增长**（SER 在 `ReorderThread` 溢出全部存活值）；透射率乘法只存在于唯一包装器里，「第四条阴影线不会悄悄漏掉」 |
 | `volume.slang` 体积采样 | 采样位置**不得依赖段长**（否则相邻像素按命中距离读出量级不同的答案 = 斑块） |
-| `volume.slang` 抖动分层 | 与 M9 被否估计器的区别是**逐帧逐像素抖动**（零均值噪声可收敛）。可证伪判据：冻结时域累积必须看到**噪点而非块状** |
+| `volume.slang` 抖动分层 | 与 M9 被否估计器的区别是**逐帧逐像素抖动**：把稳定块状误差转成时域可滤噪声；但层内 uniform-distance + 闭式权重是**分层近似，不宣称严格无偏**（D9，`f/pdf` 留 M17）。可证伪判据：冻结时域累积必须看到**噪点而非块状** |
 | `volume.slang` 源的分频 | 太阳项按太阳可达性门控、环境项按**天顶**可达性——山坡阴影不许抽走雾里的环境光（移除环境光的是屋顶不是山） |
 | `volume.slang` telescoping | 可见性=1 时子步分段精确望远镜化回闭式。「新输入缺席时可证明是 no-op 的改动，屏幕上的差异只能来自新输入」 |
 | `volume_visibility.slang` | 网格**采样不 storage**（nearest 会把 cell 边界画进雾里）；cell=1 对齐方块中心是一格墙不漏光的机制，cell=2 必然漏光 |
@@ -363,13 +363,18 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - `visibility-cell-size=0` 时跳过可见性烘焙 dispatch（现在无条件 131k 条射线打一个点）。
 - 注释与行为对齐批处理：bit15 「skip the shadow ray」措辞（实际只弃透射率、射线仍发——`waterHitT` 要用）；`volume.slang` 「Character for character the froxel's source」（已不真）；`world_primary.rgen` 「this pass integrates the camera prefix segment」；froxel 各处「32 slices」陈旧数字；`world_common.slang` 「bits above 11 free」（12/13 已用）；`lighting.slang` 「Light48」；`FluoriteConfig` `Water.SUN_SHADOW` 整段陈旧文档。
 
-**15.1 Medium 采样接口 + 统一体积阴影采样器**
-- `medium.slang` 收拢接口：`mediumSigmaT` / `mediumScatterAlbedo`（已有）/ `mediumPhaseG` / 源查询；`integrateSegment` 单入口分派——**均质封闭介质走闭式路径**（文档立场：闭式是精确解不是偷懒，是统一框架里的快速路径），非均质 ambient 走共享 march（雾今天、云将来）。
-- **统一体积阴影采样器**：水的 3 分层（`WATER_SUN_VIS_STRATA`，τ 步长 1.25）与雾的 `sunRays` 收敛为同一实现的参数化——同一套「按光学深度分层 + 段内 jitter + seed 纪律（按用途 rehash，互不相关）」，水与雾不再各养一台。参数（层数/τ 步长）按介质配置。
-- 水段射线预算顺带审计：sun-shadow 关时是否仍需全部 3 条测深射线（`waterHitT` 只需 1 条）。
+**15.1 Medium 采样接口 + 统一体积阴影采样器（2026-08-03 已实现，待游戏内验收）**
+- `medium.slang` 收拢为 `mediumSigmaT` / `mediumScatterAlbedo` / `mediumPhaseG` / `mediumProfile`；一个 profile 同时选择 estimator 与 source adapter，避免两组浅查询产生一致性负担。`mediumDensityAt` 留在 Implementation 内部。`integrateSegment` 仍是唯一外部 Interface：**均质封闭介质走精确闭式路径**，非均质 ambient 走解析高度 march。
+- **统一体积阴影采样器**：水与雾共享固定光学深度分层（τ 步长 1.25）、段内 jitter、`CULL_SECONDARY_NO_SELF`、shadow trace 与按用途 rehash 的 seed 纪律；均质 τ→distance 与 ambient τ→distance 是两个内部 adapter。
+- D9 明确：这是分层近似，不宣称严格无偏。层内按距离均匀采样、使用闭式 view-path 权重；严格 `f/pdf` 修正留到 M17，因为它会改变亮度与噪声。ambient 边界用 8 次二分反演并复用相邻边界；默认 1 ray 不反演。
+- D12 审计结论：水的 sun-shadow 关时仍保留最多 3 条。每层的 `waterHitT` 都在测自己的 source path；压成 1 条会在不平水面、洞顶与不同水体高度下引入衰减误差，不属于中性重构。
 
-**15.2 froxel/marched 源对齐**
-- 太阳/天空源表达式提取为共享函数（`volume.slang` 或 `atmosphere_lut.slang`），froxel 与 marched 调同一函数。现状三处不一致：太阳路径的雾自衰减（marched 有 froxel 无）、反照率口径（marched 用 `fogScatter` 直接作反照率，froxel 算 `σs/σt` 且混入大气 σt）、froxel 独有大气项。前两者必须同源；大气项是有意的口径差（froxel 覆盖相机前缀该带空气透视），注释写明。
+**15.2 froxel/marched 源对齐（2026-08-03 已实现，待游戏内验收）**
+- 新建纯数学 Module `volume_source.slang`（无 bindings/globals/rays），两种 shader stage 共用高度积分、扩散衰减、HG 与 `evaluateAmbientRadianceSource`，避免 descriptor layout 相互污染。
+- 按 D10 把 marched 已有的局部雾太阳自衰减补进 froxel；froxel 的 direct path = atmosphere LUT × local fog，raygen 的 `WorldPush` 已经 atmosphere-dyed，所以只乘 local fog。无新增射线，增加解析 ALU/exp。
+- `fogScatter` 两边统一解释为 single-scattering albedo：froxel 改为 `σs=fogAlbedo×fogSigmaT`；行星大气仍作为 froxel-only 的附加介质项，理由是它覆盖相机前缀的 aerial perspective，注释明确。
+- **临时运行时烟测（非性能验收）**：1920×1080、`bench`、当前配置下稳定区间 `gpu.froxelBake` 中位数约 0.17–0.18 ms；仅证明新增解析衰减未出现数量级异常。没有同位姿、同会话的改前 A/B，禁止据此声称“无回归”或计算倍率。
+- ⚖ **M15 完成前请示：`volumetrics.intensity-scale` 的物理语义。** 它仍允许 0–10，而 M15.2 后 `fogScatter.rgb = tint × intensity` 已是反照率；任一通道超过 1 就违反能量守恒。默认 1.0 在当前 tint 下有效，但高档不有效。候选：**A** 将有效反照率逐通道钳到 `[0,1]`，并把 UI/tooltip 改成物理反照率倍率（严格守恒、GPU 额外成本≈0；高档会饱和，旧的过亮观感不能保留）；**B** 把 intensity 从反照率移到 source-radiance gain（介质系数合法、GPU 约多一次 source 乘法，但总辐射仍是艺术性增益，不满足严格能量守恒）；**C** 拆成受限 physical-albedo 与显式 `artistic-gain` 两个旋钮（默认路径守恒、非物理档诚实标名；需配置/UI/lang 与一个标量通路，射线成本不变）；**D** 删除 intensity 旋钮（最严格、最少维护，失去用户亮度控制）。若“确保能量守恒”是硬约束，推荐 A；尚未获用户裁决，代码保持现状。
 
 **验收**：`segment-source` froxel/marched A/B 在前缀深度处无缝；`visibility-cell-size=0` 的 telescoping 归零测试仍成立；`RtPathSegmentLayoutTest` 仍 48；同会话比值 `bench` ≈1.0×（重构应中性）；**顺带偿还 M9 欠账：`bench-water` 两机位首采**，数字进 §4.2 作 M16/M17 的基线；水观感与 M9 收尾一致。
 
@@ -564,6 +569,15 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | D7 | 文档形态 | **repo 主文档（本文件）+ CLAUDE.md 入口**；四份专题文档保留并被索引 | 编号在 repo 内可解析；专题文档服务特定读者（资源包作者等）不吞并 |
 | D8 | 文档语言 | **中文正文+英文术语/符号名** | 阅读顺畅且符号可 grep |
 
+### 2026-08-03 M15 估计器与性能裁决（D9–D12，用户逐项选定）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D9 | 统一阴影分层的统计口径 | **固定 τ 分层继续落地，但明确为分层近似；严格 `f/pdf` 延后 M17** | 当前层内按距离均匀 jitter、用闭式 view-path 权重，不严格无偏；现在修正会改变亮度/噪声并增加数学成本，超出 M15 中性重构。多射线雾需 ambient τ 反演；相邻边界复用后最坏约 48 次高度积分，默认 1 ray 为零次反演 |
+| D10 | froxel/marched 太阳自衰减对齐方向 | **把局部雾自衰减补进 froxel** | 保留物理正确项；删除 marched 自衰减会让低太阳/密雾产生过亮光晕。新增解析 ALU/exp，不新增射线 |
+| D11 | Medium Interface 形状 | **单一 `mediumProfile` 分类；`mediumDensityAt` 私有** | 一个查询同时决定 estimator/source adapter，删除 `mediumSource` + `mediumIsHomogeneous` 两个浅 Module 的隐含一致性；画面不变 |
+| D12 | 水在 sun-shadow 关闭时的射线预算 | **仍保留最多 3 条** | 每层 `waterHitT` 测量自己的 source path；只留 1 条虽最多省 2 ray/长水段，但会在不平水面、洞顶和不同水体高度下产生衰减误差 |
+
 **同日确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 
-**当前待请示清单**（动工时逐个触发）：M16 旋钮处置 · M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。
+**当前待请示清单**（动工时逐个触发）：M15 fog intensity/反照率守恒 · M16 旋钮处置 · M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。

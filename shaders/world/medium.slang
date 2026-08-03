@@ -82,6 +82,13 @@ public struct MediumStack {
     public Medium outer;
 };
 
+// One classification query drives estimator and source-adapter selection together. Separate
+// `isHomogeneous` and `sourceKind` queries were tried during M15.1; each merely restated the same two
+// booleans and introduced an invariant that the pair had to agree. This value is the whole profile.
+public static const uint MEDIUM_PROFILE_HOMOGENEOUS_PASSIVE = 0u;
+public static const uint MEDIUM_PROFILE_HOMOGENEOUS_ENCLOSED = 1u;
+public static const uint MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT = 2u;
+
 public Medium airMedium() {
     Medium m;
     m.ior = 1.0;
@@ -89,6 +96,20 @@ public Medium airMedium() {
     m.water = false;
     m.ambient = true;
     return m;
+}
+
+/** Local density implementation. Not part of the Medium interface; mediumSigmaT is its only consumer. */
+float mediumDensityAt(Medium m, float3 p) {
+    if (!m.ambient) {
+        return 1.0;
+    }
+    float scale = max(worldPush.fogParams.y, 1.0e-3);
+    return worldPush.fogParams.x * exp(-max(p.y - worldPush.fogParams.z, 0.0) / scale);
+}
+
+/** Local total extinction sigma_t. Integrated ambient optical depth uses volume_source's exact form. */
+public float3 mediumSigmaT(Medium m, float3 p) {
+    return m.ambient ? worldPush.fogExtinction.xyz * mediumDensityAt(m, p) : m.extinction;
 }
 
 /**
@@ -113,10 +134,28 @@ public Medium airMedium() {
  * absorbing swamp gets a low albedo and clear ocean a high one.
  */
 public float3 mediumScatterAlbedo(Medium m) {
-    if (!m.water) {
-        return float3(0.0, 0.0, 0.0);
+    if (m.ambient) {
+        return worldPush.fogScatter.xyz;
     }
-    return worldPush.waterScatter.xyz / max(m.extinction, float3(1.0e-6, 1.0e-6, 1.0e-6));
+    return m.water
+            ? worldPush.waterScatter.xyz
+                    / max(m.extinction, float3(1.0e-6, 1.0e-6, 1.0e-6))
+            : float3(0.0, 0.0, 0.0);
+}
+
+/** Henyey-Greenstein anisotropy used by this medium's direct-light source adapter. */
+public float mediumPhaseG(Medium m) {
+    return m.ambient ? worldPush.fogScatter.w : (m.water ? worldPush.waterScatter.w : 0.0);
+}
+
+/** Complete profile query used by integrateSegment's internal estimator seam. */
+public uint mediumProfile(Medium m) {
+    if (m.ambient) {
+        return MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT;
+    }
+    return m.water
+            ? MEDIUM_PROFILE_HOMOGENEOUS_ENCLOSED
+            : MEDIUM_PROFILE_HOMOGENEOUS_PASSIVE;
 }
 
 public MediumStack makeMediumStack(Medium start) {

@@ -21,6 +21,7 @@
 // here would be a second copy to keep in step — the exact debt M10.1 existed to pay off.
 
 import atmosphere;
+import volume_source;
 import world_common;
 
 // 64x36x64, up from the plan's 32^3, and the reason is a light shaft through a two-block window.
@@ -50,8 +51,6 @@ struct FroxelPush {
 // guard against. Reusing RtOverlayPipelines.AccelStructureSet rather than growing set 0 is what keeps
 // that discipline in one place instead of two.
 [[vk::binding(0, 1)]] RaytracingAccelerationStructure tlas;
-
-static const float PI_F = 3.14159265359;
 
 // Must equal CULL_SECONDARY_NO_SELF in trace.slang. Restated rather than imported: that module pulls in
 // world_core, which declares the ray-tracing pipeline's set-0 bindings, and this compute shader's set is
@@ -92,13 +91,6 @@ float sliceDepth(int z, float maxDist) {
  */
 float skyReachable(float3 p) {
     return sunOccluded(p, float3(0.0, 1.0, 0.0)) ? 0.0 : 1.0;
-}
-
-/** Henyey-Greenstein, normalised over the sphere. Matches what volume.slang uses for the fog's sun lobe. */
-float fogPhase(float cosT, float g) {
-    float g2 = g * g;
-    float d = 1.0 + g2 - 2.0 * g * cosT;
-    return (1.0 - g2) / (4.0 * PI_F * max(d * sqrt(max(d, 0.0)), 1.0e-6));
 }
 
 /** One shadow ray. Opaque-only and first-hit: this asks whether the sun is blocked, not by what. */
@@ -152,8 +144,6 @@ void main(uint3 id: SV_DispatchThreadID) {
     float startDist = wp.fogExtinction.w;
 
     float3 sunDir = wp.lightDir.xyz;
-    float cosT = dot(rd, sunDir);
-    float sunPhase = 4.0 * PI_F * fogPhase(cosT, wp.fogScatter.w);
 
     // March from the eye to this froxel's far edge, accumulating as we go. Each thread redoes the stretch
     // its predecessors covered, which is deliberate: the alternative is a serial scan down the column with
@@ -203,7 +193,12 @@ void main(uint3 id: SV_DispatchThreadID) {
             atmosphereMedium(ATMOS_VIEW_ALTITUDE, atmoSigmaS, atmoSigmaT);
 
             float3 sigmaT = fogSigmaT + atmoSigmaT;
-            float3 sigmaS = wp.fogScatter.xyz * max(fogDensity, 0.0) + atmoSigmaS;
+            // fogScatter is single-scattering ALBEDO in both estimators. The old froxel multiplied it by
+            // density alone, effectively dividing it by fogExtinction when sigmaS/sigmaT was formed and
+            // then mixing planetary-atmosphere extinction into that ratio. sigma_s = albedo * sigma_t is
+            // the shared definition; the tiny atmosphere contribution remains a separate additive medium.
+            float3 fogAlbedo = wp.fogScatter.xyz;
+            float3 sigmaS = fogAlbedo * fogSigmaT + atmoSigmaS;
 
             // Sunlight reaching this point, dimmed by the atmosphere it crossed. No occlusion test — that is
             // M13's half of this grid, and leaving it out here rather than approximating it with one ray is
@@ -213,6 +208,16 @@ void main(uint3 id: SV_DispatchThreadID) {
             float3 sunT = muS < horizonMu(r)
                     ? float3(0.0, 0.0, 0.0)
                     : transmittanceLut.SampleLevel(transmittanceLutUv(r, muS), 0.0).rgb;
+
+            // M15.2: the same local-fog source attenuation the marched estimator has always applied.
+            // This shader reads undyed WorldPush values, so its direct path is atmosphere LUT * local fog;
+            // raygen receives atmosphere-dyed values and passes only local fog to the same source module.
+            bool multiScatter = (wp.flags & (1u << 26u)) != 0u;
+            float3 fogSunSigma = multiScatter
+                    ? volumeDiffuseAttenuation(wp.fogExtinction.xyz, fogAlbedo, wp.fogScatter.w)
+                    : wp.fogExtinction.xyz;
+            float3 localFogSunT = volumeAmbientTransmittance(wp.fogParams, wp.fogExtinction,
+                                                              fogSunSigma, p, sunDir, maxDist);
 
             // fogAmbient is dyed here by the same transmittance the sun term gets. Everywhere else that dye
         // is applied once to the push constant by dyeCelestialLight, but that runs in the ray-tracing
@@ -233,15 +238,21 @@ void main(uint3 id: SV_DispatchThreadID) {
             // wrong in the other direction — a hillside shadow would drain the sky out of the fog, when
             // what removes ambient light is a roof, not a hill.
             float skyOpen = skyReachable(p);
-            float3 source = (wp.lightRadiance.xyz * sunT * sunPhase * sunVis
-                          + (wp.fogAmbient.xyz * sunT
-                             + multiScatterLut.SampleLevel(multiScatterLutUv(r, muS), 0.0).rgb
-                               * SUN_INTENSITY) * skyOpen);
+            float3 atmosphereMultiScatter = multiScatterLut.SampleLevel(
+                    multiScatterLutUv(r, muS), 0.0).rgb * SUN_INTENSITY;
+            AmbientRadianceSource source = evaluateAmbientRadianceSource(
+                    rd, sunDir, wp.fogScatter.w,
+                    wp.lightRadiance.xyz, sunT * localFogSunT,
+                    wp.fogAmbient.xyz, atmosphereMultiScatter);
+            float3 visibleSource = source.sun * sunVis + source.sky * skyOpen;
 
             // Closed form over the step, for the same reason as the other two bakes: near the ground a step
             // can span a whole optical depth, and the midpoint rule overshoots exactly there.
             float3 stepT = exp(-sigmaT * dt);
-            float3 gathered = transmittance * sigmaS * source
+            // Planetary atmosphere is intentionally froxel-only: it represents camera-prefix aerial
+            // perspective at kilometre scale. Bounce segments omit it; local fog source semantics above
+            // are nevertheless identical on both paths.
+            float3 gathered = transmittance * sigmaS * visibleSource
                             * (float3(1.0, 1.0, 1.0) - stepT)
                             / max(sigmaT, float3(1.0e-9, 1.0e-9, 1.0e-9));
             inScatter += gathered;

@@ -19,6 +19,7 @@ import medium;
 import atmosphere;      // PLANET_R, ATMOS_VIEW_ALTITUDE, SUN_INTENSITY
 import atmosphere_lut;  // sampleMultiScatter: the fog's isotropic source, same table the froxel reads
 import trace;
+import volume_source;
 import volume_visibility;
 import world_common;
 import world_core;
@@ -65,16 +66,6 @@ public float sampleFreeFlight(float sigmaT, inout uint seed, out float pdf) {
     return t;
 }
 
-/**
- * Phase function evaluation.
- *
- * Delegates to math.slang's hg() rather than restating it — the surface subsurface term already uses
- * that one, and two copies of a phase function drift apart.
- */
-public float evalPhase(float cosT, float g) {
-    return hg(cosT, g);
-}
-
 // ---- The ambient field.
 //
 // fogParams     x density at the reference height, y height scale, z reference height, w cull distance
@@ -83,56 +74,13 @@ public float evalPhase(float cosT, float g) {
 // fogAmbient    xyz isotropic source radiance (the sky's contribution to what the fog is lit by)
 
 /**
- * Integral of the height profile exp(-max(h,0)/H) over a segment, where h runs linearly from hA to hB.
- *
- * The profile SATURATES below the reference height rather than continuing to grow. That is not a
- * refinement, it is what makes this usable: an unbounded exp(-(y-y0)/H) integrated over a long downward
- * ray produces optical depths in the hundreds — from 200 blocks up, a ray that misses geometry and runs
- * the full cull distance downward reached tau ~ 186, and the whole view went opaque the moment the camera
- * climbed. Real fog has a bottom. With this, tau can never exceed sigma0 * cullDistance.
- *
- * Analytic in every case. exp(-h/H) integrates to (H/s)(exp(-hA/H) - exp(-hB/H)) for slope s, the
- * saturated part is just its length, and a segment that crosses the reference height is split at the
- * crossing.
- */
-float ambientProfileIntegral(float hA, float hB, float len, float H) {
-    if (len <= 0.0) {
-        return 0.0;
-    }
-    float dh = hB - hA;
-    if (abs(dh) < 1.0e-5) {
-        return exp(-max(hA, 0.0) / H) * len; // effectively level: one height for the whole segment
-    }
-    float s = dh / len;
-    if (hA >= 0.0 && hB >= 0.0) {
-        return (H / s) * (exp(-hA / H) - exp(-hB / H));
-    }
-    if (hA <= 0.0 && hB <= 0.0) {
-        return len; // entirely inside the saturated layer
-    }
-    float tCross = -hA / s; // distance along the segment where the reference height is crossed
-    if (hA < 0.0) {
-        return tCross + (H / s) * (1.0 - exp(-hB / H)); // saturated, then thinning
-    }
-    return (H / s) * (exp(-hA / H) - 1.0) + (len - tCross); // thinning, then saturated
-}
-
-/**
  * Optical depth of the ambient medium over [start, end] along a ray, before the per-channel tint.
  *
  * `start` is the near cutoff: fog does not begin at the eye, so a window of clear air in front of the
  * camera keeps the near field readable and stops the whole screen from being veiled at ground level.
  */
 public float ambientHeightIntegral(float3 ro, float3 rd, float start, float end) {
-    float sigma0 = worldPush.fogParams.x;
-    if (sigma0 <= 0.0 || end <= start) {
-        return 0.0;
-    }
-    float scale = max(worldPush.fogParams.y, 1.0e-3);
-    float y0 = worldPush.fogParams.z;
-    return sigma0 * ambientProfileIntegral(ro.y + rd.y * start - y0,
-                                           ro.y + rd.y * end - y0,
-                                           end - start, scale);
+    return volumeAmbientOpticalDepth(worldPush.fogParams, ro, rd, start, end);
 }
 
 /** The [start, end] window a segment of length `tEnd` actually accumulates fog over. */
@@ -151,12 +99,8 @@ public float2 ambientWindow(float tEnd) {
  * to a scattering point wants the diffusion rate.
  */
 public float3 ambientTransmittanceWith(float3 sigma, float3 ro, float3 rd, float dist) {
-    float2 window = ambientWindow(dist);
-    float tau = ambientHeightIntegral(ro, rd, window.x, window.y);
-    if (tau <= 0.0) {
-        return float3(1.0, 1.0, 1.0);
-    }
-    return exp(-sigma * tau);
+    return volumeAmbientTransmittance(worldPush.fogParams, worldPush.fogExtinction,
+                                      sigma, ro, rd, dist);
 }
 
 /** Transmittance of the ambient medium over a segment. Shadow rays go through visibilityThroughAmbient. */
@@ -189,6 +133,111 @@ public struct SegmentIntegral {
     public float3 transmittance;
     public float3 inScatter;
 };
+
+// ---- Shared volume sun-visibility sampler (M15.1).
+//
+// Both estimators ask the same question through this module: choose a jittered point in a stratum,
+// trace toward that medium's sun direction with the same cull mask, and return both surface
+// transmittance and the water distance carried by the shadow payload. The caller still owns the exact
+// integral weight because homogeneous water and exponential-height fog have different analytic forms.
+public static const float SUN_VIS_TAU_STEP = 1.25;
+
+struct VolumeSunShadowSample {
+    float t;
+    float3 transmittance;
+    float waterHitT;
+};
+
+/** Fixed-optical-depth stratum for a homogeneous segment. Empty once tNear reaches tEnd. */
+float2 homogeneousSunVisStratum(int index, int cap, float sigmaBar, float tEnd) {
+    float safeSigma = max(sigmaBar, 1.0e-4);
+    float tNear = (SUN_VIS_TAU_STEP * float(index)) / safeSigma;
+    if (tNear >= tEnd) {
+        return float2(tEnd, tEnd);
+    }
+    float tFar = index == cap - 1
+            ? tEnd
+            : min((SUN_VIS_TAU_STEP * float(index + 1)) / safeSigma, tEnd);
+    return float2(tNear, tFar);
+}
+
+/**
+ * Distance whose scalar ambient optical depth from window.x is targetTau.
+ *
+ * The height integral is analytic, but its inverse has three cases around the saturated lower layer.
+ * Eight bisection steps keep that case split out of the hot interface and locate the shadow sample to
+ * < 1/256 of the window. This runs only for optional extra rays: a one-ray setting takes the whole
+ * window directly and does no search.
+ */
+float ambientDistanceAtOpticalDepth(float3 ro, float3 rd, float2 window,
+                                    float sigmaBar, float targetTau) {
+    float lo = window.x;
+    float hi = window.y;
+    [unroll]
+    for (int i = 0; i < 8; ++i) {
+        float mid = (lo + hi) * 0.5;
+        float tau = sigmaBar * ambientHeightIntegral(ro, rd, window.x, mid);
+        if (tau < targetTau) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return (lo + hi) * 0.5;
+}
+
+/** Stateful schedule so one stratum's far boundary is reused as the next one's near boundary. */
+struct AmbientSunVisSchedule {
+    float sigmaBar;
+    float totalBaseTau;
+    float totalTau;
+    float tNear;
+};
+
+AmbientSunVisSchedule makeAmbientSunVisSchedule(float3 ro, float3 rd, float2 window) {
+    AmbientSunVisSchedule schedule;
+    schedule.sigmaBar = max(luminance(worldPush.fogExtinction.xyz), 1.0e-4);
+    schedule.totalBaseTau = ambientHeightIntegral(ro, rd, window.x, window.y);
+    schedule.totalTau = schedule.sigmaBar * schedule.totalBaseTau;
+    schedule.tNear = window.x;
+    return schedule;
+}
+
+/** Next fixed-optical-depth stratum for the exponential-height ambient field. */
+float2 nextAmbientSunVisStratum(int index, int cap, float3 ro, float3 rd, float2 window,
+                                inout AmbientSunVisSchedule schedule) {
+    float tauNear = SUN_VIS_TAU_STEP * float(index);
+    if (tauNear >= schedule.totalTau) {
+        return float2(window.y, window.y);
+    }
+    float tauFar = index == cap - 1
+            ? schedule.totalTau
+            : min(tauNear + SUN_VIS_TAU_STEP, schedule.totalTau);
+    float tFar = tauFar >= schedule.totalTau
+            ? window.y
+            : ambientDistanceAtOpticalDepth(ro, rd, window, schedule.sigmaBar, tauFar);
+    float2 stratum = float2(schedule.tNear, tFar);
+    schedule.tNear = tFar;
+    return stratum;
+}
+
+/**
+ * One shared jitter + shadow-ray operation. `useTransmittance=false` still traces: enclosed water needs
+ * waterHitT to measure source depth even when its diagnostic switch disables surface occlusion.
+ */
+VolumeSunShadowSample sampleVolumeSunShadow(float3 ro, float3 rd, float2 stratum,
+                                             float3 sunDir, bool useTransmittance,
+                                             inout uint seed) {
+    VolumeSunShadowSample sample;
+    sample.t = lerp(stratum.x, stratum.y, rndf(seed));
+    VisibilityResult shadow = visibilityMasked(CULL_SECONDARY_NO_SELF, ro + rd * sample.t,
+                                                sunDir, RAY_FAR);
+    sample.transmittance = useTransmittance
+            ? shadow.transmittance
+            : float3(1.0, 1.0, 1.0);
+    sample.waterHitT = shadow.waterHitT;
+    return sample;
+}
 
 /**
  * Hard ceiling on the sub-steps a segment may split its ambient in-scatter into. The live cap is
@@ -231,7 +280,7 @@ struct AmbientAccum {
  * the new input is absent is a change whose effect on screen can only be the new input.
  */
 void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float tB,
-                 float3 sunSource, float3 skySource, float2 vis) {
+                 float3 scatterAlbedo, float3 sunSource, float3 skySource, float2 vis) {
     if (tB <= tA) {
         return;
     }
@@ -241,7 +290,7 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
     }
     float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
     float3 source = sunSource * vis.x + skySource * vis.y;
-    acc.inScatter += acc.transmittance * worldPush.fogScatter.xyz * source
+    acc.inScatter += acc.transmittance * scatterAlbedo * source
             * (float3(1.0, 1.0, 1.0) - stepT);
     acc.transmittance *= stepT;
 }
@@ -260,32 +309,38 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
  * <p><b>Why this is not the estimator M9 measured and rejected.</b> That one cast rays at FIXED optical
  * depths with no per-frame decorrelation, so every frame produced the same wrong binary answer and applied
  * it to a whole segment — a BIAS, and a visible one: an occlusion boundary flipped the screen at once.
- * This one jitters within each stratum from the path's own RNG, so the error is zero-mean noise that
- * converges, which is the signal DLSS-RR is built to remove. The difference is falsifiable rather than
- * rhetorical: freeze temporal accumulation and this must look NOISY, not blocky. If it looks blocky, the
- * jitter is not reaching it and this is M9 again.
+ * This one jitters within each stratum from the path's own RNG, so the old coherent step becomes temporal
+ * noise that DLSS-RR can reduce. It is deliberately still a stratified approximation, not an unbiased
+ * Monte Carlo estimator: the sample is uniform in distance while the layer carries a closed-form optical
+ * weight. A strict f/pdf correction belongs to M17 because it changes brightness and noise, not to this
+ * neutral interface refactor. The useful falsification test survives: freeze temporal accumulation and
+ * this must look NOISY, not blocky. Blocky means the jitter is not reaching it and this is M9 again.
  *
- * <p>Stratified over the segment with each stratum carrying its exact closed-form weight, so the total
- * matches the unshadowed integral wherever visibility is uniform — the same property that made the grid
- * path a provable no-op when the grid was absent.
+ * <p>Stratified in optical depth; each layer carries its exact unoccluded view-path weight. The visibility
+ * sample stands in for that layer's weighted visibility, which is the named approximation above.
  */
-float3 sunInScatterStochastic(float3 ro, float3 rd, float2 window, float3 sunSource,
-                              int rays, inout uint seed) {
+float3 sunInScatterStochastic(float3 ro, float3 rd, float2 window, float3 scatterAlbedo,
+                              float3 sunSource, int rays, inout uint seed) {
     float3 gathered = float3(0.0, 0.0, 0.0);
     float3 transmittance = float3(1.0, 1.0, 1.0);
+    AmbientSunVisSchedule schedule = makeAmbientSunVisSchedule(ro, rd, window);
     for (int i = 0; i < rays; ++i) {
-        float tA = lerp(window.x, window.y, float(i) / float(rays));
-        float tB = lerp(window.x, window.y, float(i + 1) / float(rays));
-        float tau = ambientHeightIntegral(ro, rd, tA, tB);
+        float2 stratum = nextAmbientSunVisStratum(i, rays, ro, rd, window, schedule);
+        float tA = stratum.x;
+        float tB = stratum.y;
+        if (tB <= tA) {
+            break;
+        }
+        float tau = rays == 1
+                ? schedule.totalBaseTau
+                : ambientHeightIntegral(ro, rd, tA, tB);
         if (tau <= 0.0) {
             continue;
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
-        // Jittered inside the stratum. This one line is the whole difference from M9's estimator.
-        float3 p = ro + rd * lerp(tA, tB, rndf(seed));
-        float3 vis = visibilityMasked(CULL_SECONDARY_NO_SELF, p,
-                                      worldPush.lightDir.xyz, RAY_FAR).transmittance;
-        gathered += transmittance * worldPush.fogScatter.xyz * sunSource * vis
+        VolumeSunShadowSample shadow = sampleVolumeSunShadow(ro, rd, stratum,
+                worldPush.lightDir.xyz, true, seed);
+        gathered += transmittance * scatterAlbedo * sunSource * shadow.transmittance
                 * (float3(1.0, 1.0, 1.0) - stepT);
         transmittance *= stepT;
     }
@@ -326,30 +381,6 @@ float2 visGridSpan(float3 ro, float3 rd) {
     return float2(enter, exit);
 }
 
-/**
- * Integrates both media over one segment. This is the single hook that replaces
- * `throughput *= exp(-extinction * t)` in the raygens. Callers do:
- *
- *     L += throughput * seg.inScatter;
- *     throughput *= seg.transmittance;
- *
- * in that order. The in-scatter is what the segment added to the radiance arriving along it, so it is
- * weighted by the throughput reaching the segment, not by the throughput leaving it.
- *
- * Analytic. For a source radiance that is constant along the segment, the single-scattering integral
- * collapses exactly to albedo * Ls * (1 - T) — and height fog keeps that identity, because all the height
- * variation lives inside the optical depth. So this costs no marching, no extra rays and no new path
- * vertices.
- *
- * <p><b>Occlusion arrives as a lookup, not as a ray.</b> The ambient source is no longer constant along
- * the segment: it is scaled by the visibility grid, which is sampled at a few points over the stretch the
- * grid covers and left at 1 everywhere else. Still no rays here — the rays were spent once per world-space
- * cell in volume_visibility.comp, which is the whole reason a grid was built instead of a shadow ray being
- * added to this function. See that shader for what the three cheaper alternatives were and why each fails.
- *
- * <p>The transmittance is untouched by any of it and is still one closed form over the whole window. What
- * a segment HIDES was never in question.
- */
 /**
  * Phase function for an enclosed medium: mostly forward Mie, with a small Rayleigh component.
  *
@@ -396,73 +427,8 @@ public float enclosedPhase(float cosT, float g, float3 scatterAlbedo) {
     return lerp(hg(cosT, effectiveAnisotropy(g, scatterAlbedo)), rayleigh, ENCLOSED_RAYLEIGH_FRACTION);
 }
 
-/**
- * integral of exp(-sigma_t * max(d0 - descentPerT * t, 0) * pathScale) * exp(-sigma_t * t) dt over [0, T].
- *
- * Split out because the sun and the sky differ only in how long their path to a given depth is: the sun
- * arrives at an angle and travels depth / sin(elevation), the sky arrives overhead and travels depth.
- * Same closed form, one parameter apart. `descentPerT` is how fast DEPTH falls per unit t, which is the
- * ray's own rd.y for both of them; the light's slant is entirely in `pathScale`.
- *
- * The `max(..., 0)` on depth is the whole reason this has two pieces. Without it a climbing ray's depth
- * goes negative past the surface and exp(-sigma d) silently becomes exp(+sigma |d|), amplifying the
- * source without bound. That was previously headed off by clamping the exponent `a` to zero instead —
- * which stopped the growth but replaced it with something worse and quieter: a clamped `a` is exactly
- * zero, the 0/0 branch then returns the SEGMENT LENGTH, and for a ray that hit nothing that length is
- * RAY_FAR = 10000. So the case meant to be capped became thousands of times the source instead. Clamping
- * the depth caps it at the cause and is also the more correct model: above the surface there is no water
- * left to attenuate the light, so it arrives whole and only the view path is still attenuating.
- */
-/**
- * How fast light REALLY dims on its way into a scattering medium, as opposed to how fast a beam dims.
- *
- * <p>Single scattering treats every scattering event as a loss to the source, and that is the error
- * behind two symptoms that looked unrelated: dense fog going black instead of glowing, and deep water
- * going black instead of settling to a water colour. Scattering takes light out of the BEAM, but it does
- * not take light out of the MEDIUM — the photon keeps going, just not in a straight line. So the light
- * arriving at depth decays at a rate driven by ABSORPTION, not by extinction.
- *
- * <p>This is the diffusion approximation's K, a textbook result and deliberately not a fitted one:
- *
- *   sigma_a = (1 - w) * sigma_t          absorption
- *   sigma_s' = w * (1 - g) * sigma_t     reduced scattering, forward scattering discounted
- *   K = sqrt(3 * sigma_a * (sigma_a + sigma_s'))
- *
- * <p>The alternative considered first was the multi-octave approximation the cloud literature uses
- * (Wrenninge 2013, Schneider 2017), summing N single-scattering evaluations with extinction, scattering
- * and eccentricity each scaled by a constant per octave. It models one thing this does not — the beam
- * broadening angularly — but its three constants are fitted with no derivation behind them, and picking
- * them here would be inventing numbers in the one place this project has been most careful not to. This
- * costs no constants at all. If the angular half turns out to be missed, that is the change to make then.
- *
- * <p>At the water's turbidity of 10 the albedo is about 0.95 and the effective phase is nearly isotropic,
- * which puts K near 0.39 * sigma_t: the source reaches two and a half times deeper than the beam does.
- * At albedo 0.99 it is 0.17, nearly six times.
- *
- * <p>A conservative medium (w = 1) gives K = 0, which is the correct answer rather than a degenerate one —
- * with nothing absorbing, light that scatters is never lost. Real media never reach it.
- */
-float3 diffuseAttenuation(float3 sigmaT, float3 albedo, float g) {
-    float3 w = clamp(albedo, float3(0.0, 0.0, 0.0), float3(1.0, 1.0, 1.0));
-    float3 sigmaA = sigmaT * (float3(1.0, 1.0, 1.0) - w);
-    float3 sigmaSReduced = sigmaT * w * max(1.0 - g, 0.0);
-    float3 k = sqrt(max(3.0 * sigmaA * (sigmaA + sigmaSReduced), float3(0.0, 0.0, 0.0)));
-    // CLAMPED into [sigma_a, sigma_t], and the clamp is not defensive dressing -- it is the domain of
-    // validity. Diffusion assumes scattering dominates. Feed it an absorbing medium and it returns MORE
-    // than the extinction: at sigma_s = 0 the formula gives sqrt(3)*sigma_a where the right answer is
-    // sigma_a exactly, because a purely absorbing medium has no diffusion to speak of and Beer-Lambert is
-    // already the whole story. Applied unclamped it made water DARKER, which is how it was caught -- the
-    // switch was expected to brighten deep water and visibly did nothing.
-    //
-    // Both bounds are physical rather than chosen. Light cannot reach deeper than a medium that only
-    // absorbs (so K >= sigma_a), and it cannot decay faster than the beam it arrives in (so K <= sigma_t).
-    // Between them the diffusion estimate is the useful part, and outside them it is out of its domain.
-    //
-    // The consequence is worth stating plainly: in an absorption-dominated medium this correctly does
-    // NOTHING. Deep water going dark is then the right answer, not a missing feature.
-    return clamp(k, sigmaA, sigmaT);
-}
-
+// Diffusion attenuation and its physical-domain clamp live in volume_source.slang so the froxel and
+// marched estimators cannot drift. See that module for the derivation and rejected cloud-octave option.
 /** Bit 26: let the source decay at the diffusion rate instead of the beam's. Off reproduces exactly. */
 bool multiScatterOn() {
     return (worldPush.flags & (1u << 26u)) != 0u;
@@ -484,6 +450,23 @@ float3 viewPathIntegral(float3 sigmaView, float a, float b) {
     return (exp(-safe * a) - exp(-safe * b)) / safe;
 }
 
+/**
+ * integral of exp(-sigma_t * max(d0 - descentPerT * t, 0) * pathScale) * exp(-sigma_t * t) dt over [0, T].
+ *
+ * Split out because the sun and the sky differ only in how long their path to a given depth is: the sun
+ * arrives at an angle and travels depth / sin(elevation), the sky arrives overhead and travels depth.
+ * Same closed form, one parameter apart. `descentPerT` is how fast DEPTH falls per unit t, which is the
+ * ray's own rd.y for both of them; the light's slant is entirely in `pathScale`.
+ *
+ * The `max(..., 0)` on depth is the whole reason this has two pieces. Without it a climbing ray's depth
+ * goes negative past the surface and exp(-sigma d) silently becomes exp(+sigma |d|), amplifying the
+ * source without bound. That was previously headed off by clamping the exponent `a` to zero instead —
+ * which stopped the growth but replaced it with something worse and quieter: a clamped `a` is exactly
+ * zero, the 0/0 branch then returns the SEGMENT LENGTH, and for a ray that hit nothing that length is
+ * RAY_FAR = 10000. So the case meant to be capped became thousands of times the source instead. Clamping
+ * the depth caps it at the cause and is also the more correct model: above the surface there is no water
+ * left to attenuate the light, so it arrives whole and only the view path is still attenuating.
+ */
 float3 depthAttenuatedIntegral(float3 sigmaSource, float3 sigmaView, float d0, float descentPerT,
                                float pathScale, float tEnd) {
     // Where the ray reaches depth 0. Only a climbing ray gets there; a level or descending one never
@@ -519,11 +502,8 @@ float3 depthAttenuatedIntegral(float3 sigmaSource, float3 sigmaView, float d0, f
     return total;
 }
 
-// Sun-visibility strata for the enclosed single-scattering estimator: shadow rays at view-path optical
-// depths 0, TAU_STEP, 2*TAU_STEP. Three cover 1 - exp(-3.75) = 97.6% of the integrand's mass; strata
-// beyond the segment's end cast nothing, so only long segments through murky water pay all three.
+// Water's ray cap. The fog's cap is Rt.Volumetrics.SUN_SHADOW_RAYS; both use the shared sampler above.
 public static const int WATER_SUN_VIS_STRATA = 3;
-public static const float WATER_SUN_VIS_TAU_STEP = 1.25;
 
 /**
  * Single scattering inside an enclosed medium, with the source attenuated by the medium above it.
@@ -555,7 +535,7 @@ public static const float WATER_SUN_VIS_TAU_STEP = 1.25;
  */
 float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd, float tEnd,
                              inout uint seed) {
-    float3 sigmaT = medium.extinction;
+    float3 sigmaT = mediumSigmaT(medium, ro);
     // FALLBACK ONLY. Both scattering terms measure the light's path through the water with a ray now
     // (see below); this stands in for the cases where a ray found no surface to measure against, which is
     // rare and always means the geometry did not agree that this point is under water.
@@ -624,13 +604,15 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // `pathScale`, and depthAttenuatedIntegral already multiplies the two. Passing rd.y/sunY divided
         // by sin(elevation) twice, so a low sun squared its own slant. The sky term below always passed
         // rd.y; the two never agreed.
+        float phaseG = mediumPhaseG(medium);
         float3 phaseGain = worldPush.lightRadiance.xyz
-                * (4.0 * PI * enclosedPhase(cosT, worldPush.waterScatter.w, albedo));
+                * (4.0 * PI * enclosedPhase(cosT, phaseG, albedo));
 
-        // Shadow rays at FIXED OPTICAL DEPTHS along the segment, weighting each stratum by exactly the
-        // share of the closed-form integral it covers — F(edge[i+1]) - F(edge[i]) with F the same
-        // depthAttenuatedIntegral the one-ray version used, so the total is unchanged where visibility
-        // is uniform and the estimator stays exact, not an approximation of the old one.
+        // Shadow rays at FIXED OPTICAL DEPTHS along the segment. Each stratum carries the exact share of
+        // the VIEW-path closed form, F(edge[i+1]) - F(edge[i]); visibility and the source's measured water
+        // path are represented by one jittered sample inside it. That makes this a controlled stratified
+        // approximation, not a strict f/pdf Monte Carlo estimator (decision D9; correction deferred to
+        // M17 because it changes brightness/noise rather than only the interface).
         //
         // Why more than one ray: a single ray from the segment origin makes sun visibility ONE value for
         // the whole segment — and for the camera segment, one value for the whole screen. Any occlusion
@@ -640,31 +622,28 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // across the screen, and the camera crossing a shadow boundary moves through it in stages.
         //
         // Why the strata sit at fixed optical depths (tau = 0, 1.25, 2.5 along the view path) rather
-        // than at fractions of the segment: fractions of tEnd would make the sample POSITIONS depend on
-        // segment length, and segment length is whatever the ray happened to hit — neighbours
-        // disagreeing that way is what made the fog's sun halo blotchy, and is why the one-ray version
-        // deliberately cast from the origin. Fixed depths keep neighbouring pixels sampling the same
-        // world locations. The first stratum's ray still leaves from `ro` itself, preserving the old
-        // behaviour as the first term. Strata past the segment's end carry zero weight and cast no ray,
-        // so short segments still pay one ray; only long segments through murky water pay all three.
+        // than at equal fractions of the segment: every interior boundary is independent of tEnd, so
+        // neighbouring rays agree until the final tail stratum, which necessarily ends where the segment
+        // ends. The jitter therefore decorrelates the remaining tail error instead of stamping geometry-
+        // correlated blocks onto the image. Strata past the segment's end cast no ray, so short segments
+        // still pay one ray; only long segments through murky water pay all three.
         //
         // Still CULL_SECONDARY_NO_SELF: the first ray's origin IS the camera for the camera segment,
         // which sits inside the first-person head mesh, and this remains the only shadow ray in the
         // renderer cast from the eye.
         // The source's coefficient. Equal to sigmaT with the switch off, so that path is unchanged.
         float3 sigmaSource = multiScatterOn()
-                ? diffuseAttenuation(sigmaT, albedo, worldPush.waterScatter.w)
+                ? volumeDiffuseAttenuation(sigmaT, albedo, phaseG)
                 : sigmaT;
         float sigmaBar = max(luminance(sigmaT), 1.0e-4);
         float3 sunTerm = float3(0.0, 0.0, 0.0);
         for (int s = 0; s < WATER_SUN_VIS_STRATA; ++s) {
-            float edgeNear = (WATER_SUN_VIS_TAU_STEP * float(s)) / sigmaBar;
-            if (edgeNear >= tEnd) {
+            float2 stratum = homogeneousSunVisStratum(s, WATER_SUN_VIS_STRATA, sigmaBar, tEnd);
+            float edgeNear = stratum.x;
+            float edgeFar = stratum.y;
+            if (edgeFar <= edgeNear) {
                 break;
             }
-            float edgeFar = s == WATER_SUN_VIS_STRATA - 1
-                    ? tEnd
-                    : min((WATER_SUN_VIS_TAU_STEP * float(s + 1)) / sigmaBar, tEnd);
             // The stratum's weight is now the VIEW path alone. How much sunlight ever reached the
             // sampled point is no longer computed here at all -- it is measured below, by the ray.
             float3 weight = viewPathIntegral(sigmaT, edgeNear, edgeFar);
@@ -693,12 +672,11 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             //
             // Same shape M13.3 measured and shipped for the fog's sun term (see sunInScatterStochastic),
             // including its falsification test: with the denoiser off this must look NOISY, not blocky.
-            // The stratum weights were already exact, so this changes where the question is asked and
-            // nothing about what the answer is worth.
-            float3 samplePos = ro + rd * lerp(edgeNear, edgeFar, rndf(seed));
-            VisibilityResult sh = visibilityMasked(CULL_SECONDARY_NO_SELF, samplePos,
-                                                   refractedSun, RAY_FAR);
-            float3 vis = (worldPush.flags & 32768u) != 0u ? float3(1.0, 1.0, 1.0) : sh.transmittance;
+            // The view-path stratum weights remain closed-form; the one source/visibility sample standing
+            // in for the whole stratum is the explicit M15 approximation documented above.
+            bool useVisibility = (worldPush.flags & 32768u) == 0u;
+            VolumeSunShadowSample shadow = sampleVolumeSunShadow(ro, rd, stratum,
+                    refractedSun, useVisibility, seed);
 
             // HOW MUCH WATER THE SUNLIGHT ACTUALLY CROSSED, measured by the ray that just crossed it.
             //
@@ -716,10 +694,10 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             // Only when the ray found no surface at all does the old geometric estimate stand in --
             // that means nothing above this point along the sun's direction is water, so falling back
             // beats reporting zero attenuation and blowing the term out.
-            float sunWaterPath = sh.waterHitT > 0.0
-                    ? sh.waterHitT
-                    : max(d0 - (samplePos.y - ro.y), 0.0) * sunPathScale;
-            sunTerm += vis * exp(-sigmaSource * sunWaterPath) * weight;
+            float sunWaterPath = shadow.waterHitT > 0.0
+                    ? shadow.waterHitT
+                    : max(d0 - rd.y * shadow.t, 0.0) * sunPathScale;
+            sunTerm += shadow.transmittance * exp(-sigmaSource * sunWaterPath) * weight;
         }
         total += phaseGain * sunTerm;
     }
@@ -736,7 +714,7 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // treatment as the sun's source path. Without it the two sources would disagree about how deep
         // light reaches, which would show as the sky term dying at a different depth from the sun's.
         float3 skySigmaSource = multiScatterOn()
-                ? diffuseAttenuation(sigmaT, albedo, worldPush.waterScatter.w)
+                ? volumeDiffuseAttenuation(sigmaT, albedo, mediumPhaseG(medium))
                 : sigmaT;
         // ONE RAY STRAIGHT UP, and it answers both questions the sky term has.
         //
@@ -785,31 +763,54 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
     return albedo * sigmaT * total;
 }
 
+/**
+ * The only external Interface for participating media over a path segment.
+ *
+ * Callers must accumulate in this order:
+ *
+ *     radiance += throughput * segment.inScatter;
+ *     throughput *= segment.transmittance;
+ *
+ * The Implementation dispatches internally from mediumProfile: homogeneous enclosed media use an exact
+ * closed form; the spatially varying ambient field uses its analytic-height march. Both adapters share
+ * Medium parameter queries and the sun-visibility sampler. Keeping the estimator seam internal gives
+ * callers one contract without degrading a homogeneous exact solution into numerical marching.
+ */
 public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd, float tEnd,
                                         uint seed) {
     SegmentIntegral seg;
     seg.transmittance = float3(1.0, 1.0, 1.0);
     seg.inScatter = float3(0.0, 0.0, 0.0);
 
-    // Enclosed medium: homogeneous over the segment. Air's extinction is zero, so the ordinary case
-    // costs one comparison.
-    if (any(stack.current.extinction > 0.0)) {
-        float3 enclosedT = exp(-stack.current.extinction * tEnd);
-        seg.transmittance = enclosedT;
+    Medium current = stack.current;
+    uint profile = mediumProfile(current);
 
-        float3 scatterAlbedo = mediumScatterAlbedo(stack.current);
-        if (any(scatterAlbedo > 0.0)) {
-            // Its own rehash of the caller's seed, distinct from the fog's below, so the water's
-            // stratum jitter and the fog's cannot draw the same numbers on the same pixel.
-            uint waterSeed = seed ^ 0x85EBCA6Bu;
-            waterSeed = pcg(waterSeed);
-            seg.inScatter += enclosedSingleScatter(stack.current, scatterAlbedo, ro, rd, tEnd,
-                                                   waterSeed);
+    // Estimator dispatch behind the one segment interface. Homogeneous enclosed media retain their
+    // exact closed form; the spatially varying ambient field retains its analytic-height march. The
+    // shared parameter queries and shadow sampler are the seam -- forcing both through one numerical
+    // method would make the homogeneous path slower and less accurate merely to look uniform.
+    if (profile != MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT) {
+        float3 sigmaT = mediumSigmaT(current, ro);
+        if (any(sigmaT > 0.0)) {
+            seg.transmittance = exp(-sigmaT * tEnd);
+
+            float3 scatterAlbedo = mediumScatterAlbedo(current);
+            if (profile == MEDIUM_PROFILE_HOMOGENEOUS_ENCLOSED
+                    && any(scatterAlbedo > 0.0)) {
+                // Its own rehash of the caller's seed, distinct from the fog's below, so the water's
+                // stratum jitter and the fog's cannot draw the same numbers on the same pixel.
+                uint waterSeed = seed ^ 0x85EBCA6Bu;
+                waterSeed = pcg(waterSeed);
+                seg.inScatter += enclosedSingleScatter(current, scatterAlbedo, ro, rd, tEnd,
+                                                       waterSeed);
+            }
         }
     }
 
     // A path inside water is inside water — not inside water *and* the world's fog.
-    if (stack.current.ambient) {
+    if (profile == MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT) {
+        float3 scatterAlbedo = mediumScatterAlbedo(current);
+        float phaseG = mediumPhaseG(current);
         float2 window = ambientWindow(tEnd);
         float tau = ambientHeightIntegral(ro, rd, window.x, window.y);
         if (tau > 0.0) {
@@ -830,8 +831,7 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // roughly three times too fast and the fog went black exactly where real fog turns into a
             // bright formless glow. The view path below still uses the full extinction.
             float3 sunSigma = multiScatterOn()
-                    ? diffuseAttenuation(worldPush.fogExtinction.xyz, worldPush.fogScatter.xyz,
-                                         worldPush.fogScatter.w)
+                    ? volumeDiffuseAttenuation(worldPush.fogExtinction.xyz, scatterAlbedo, phaseG)
                     : worldPush.fogExtinction.xyz;
             float3 sunTransmittance = ambientTransmittanceWith(sunSigma, ro,
                                                                worldPush.lightDir.xyz, RAY_FAR);
@@ -846,11 +846,12 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // — they are added together on screen, so a disagreement between them would show up as a seam
             // at whatever depth the camera's prefix segment happens to end.
             //
-            // MEANT to be the froxel's source (sky_froxel.comp.slang) character for character, one
-            // covering the camera's prefix segment and the other covering every bounce. Today the two
-            // have DRIFTED — the froxel skips the sun path's fog self-attenuation, derives its albedo as
-            // sigma_s/sigma_t with the atmosphere's sigma_t folded in, and adds the atmosphere's own
-            // in-scatter — and M15.2 exists to collapse both back onto one shared source function.
+            // M15.2: both estimators call evaluateAmbientRadianceSource. This marched path passes local
+            // fog attenuation because dyeCelestialLight already applied the atmosphere to its private
+            // WorldPush copy; the froxel reads the undyed buffer and passes atmosphere LUT * local fog.
+            // The froxel additionally integrates the planetary atmosphere itself over the camera prefix.
+            // That extra medium is intentional; the local fog's albedo and radiance-source semantics are
+            // now identical on both paths.
             //
             // The ad-hoc "extinguished light returns as glow" term that used to sit here is gone. It
             // returned 0.35x the sun's RADIANCE isotropically and grew with density, so at density 10 it
@@ -863,11 +864,15 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // multiple scattering, over kilometres. The local fog's own multiple scattering — what makes
             // real pea soup glow white — is not modelled by anything here now. A single-scattering
             // renderer cannot have it, and a constant standing in for it is what this change removed.
-            float3 sunSource = worldPush.lightRadiance.xyz * sunTransmittance
-                    * (4.0 * PI * evalPhase(dot(rd, worldPush.lightDir.xyz), worldPush.fogScatter.w));
             float atmosR = PLANET_R + ATMOS_VIEW_ALTITUDE;
-            float3 skySource = worldPush.fogAmbient.xyz * sunTransmittance
-                    + sampleMultiScatter(atmosR, clamp(worldPush.lightDir.y, -1.0, 1.0)) * SUN_INTENSITY;
+            float3 atmosphereMultiScatter = sampleMultiScatter(
+                    atmosR, clamp(worldPush.lightDir.y, -1.0, 1.0)) * SUN_INTENSITY;
+            AmbientRadianceSource radianceSource = evaluateAmbientRadianceSource(
+                    rd, worldPush.lightDir.xyz, phaseG,
+                    worldPush.lightRadiance.xyz, sunTransmittance,
+                    worldPush.fogAmbient.xyz, atmosphereMultiScatter);
+            float3 sunSource = radianceSource.sun;
+            float3 skySource = radianceSource.sky;
             // Bit 16 (Rt.Volumetrics.SEGMENT_SOURCE): silence the fog in-scatter on MARCHED segments.
             //
             // Gating here rather than at the call sites is what makes the switch mean exactly "every
@@ -895,7 +900,8 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                 AmbientAccum acc;
                 acc.inScatter = float3(0.0, 0.0, 0.0);
                 acc.transmittance = float3(1.0, 1.0, 1.0);
-                ambientStep(acc, ro, rd, window.x, tEnter, gridSunSource, skySource, float2(1.0, 1.0));
+                ambientStep(acc, ro, rd, window.x, tEnter, scatterAlbedo,
+                            gridSunSource, skySource, float2(1.0, 1.0));
                 // Guarded, not just relying on ambientStep's own zero-length early-out: the SAMPLE happens
                 // before that check, so a segment that never touches the grid would still pay six 3D
                 // texture fetches to be told six times that it is outside. Most bounce segments in an open
@@ -911,14 +917,15 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                         // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
                         // shape.
                         float2 vis = sampleVolumeVisibility(ro + rd * ((tA + tB) * 0.5));
-                        ambientStep(acc, ro, rd, tA, tB, gridSunSource, skySource, vis);
+                        ambientStep(acc, ro, rd, tA, tB, scatterAlbedo,
+                                    gridSunSource, skySource, vis);
                     }
                 }
-                ambientStep(acc, ro, rd, tExit, window.y, gridSunSource, skySource, float2(1.0, 1.0));
+                ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,
+                            gridSunSource, skySource, float2(1.0, 1.0));
                 // += rather than =: the enclosed branch above may already have deposited in-scatter.
-                // Unreachable today (every enclosed medium has ambient false), but the first medium
-                // that is both absorbing and ambient -- a cloud layer on the stack is exactly what
-                // the ambient bit's comment reserves -- would have silently discarded it.
+                // Unreachable today (every enclosed medium has ambient false), but a future composite
+                // profile that deposits both enclosed and ambient source would otherwise lose the first.
                 seg.inScatter += acc.inScatter;
                 if (sunRays > 0u) {
                     // Taken BY VALUE and rehashed rather than advanced in place. The callers include the
@@ -928,8 +935,8 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                     // from the same seed.
                     uint fogSeed = seed ^ 0x9E3779B9u; // pcg takes an inout, so it needs a variable
                     fogSeed = pcg(fogSeed);
-                    seg.inScatter += sunInScatterStochastic(ro, rd, window, sunSource,
-                                                            int(sunRays), fogSeed);
+                    seg.inScatter += sunInScatterStochastic(ro, rd, window, scatterAlbedo,
+                                                            sunSource, int(sunRays), fogSeed);
                 }
             }
         }
