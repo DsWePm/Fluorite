@@ -109,9 +109,9 @@ public final class FluoriteConfig {
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
         FILE.setComment("volumetrics",
                 " The world's ambient participating medium — the fog every path is inside, as opposed\n"
-                        + " to the water and glass a path enters through geometry. density-scale and\n"
-                        + " intensity-scale are multipliers over the active dimension's preset rather\n"
-                        + " than absolute values; cull-distance bounds how far a segment keeps\n"
+                        + " to the water and glass a path enters through geometry. density-scale multiplies\n"
+                        + " the active dimension's density preset; the legacy-named intensity-scale is now\n"
+                        + " a 0..1 multiplier over its physical scattering albedo. cull-distance bounds how far a segment keeps\n"
                         + " accumulating fog. scatter-tint is one of: neutral, warm, cool, green, violet.");
         FILE.setComment("bsdf",
                 " Surface response. sun-mis weights the two ways the sun and moon are estimated —\n"
@@ -641,9 +641,12 @@ public final class FluoriteConfig {
             public static final FloatSetting DENSITY_SCALE =
                     clampedFloat("fluorite.rt.fog.densityScale", "volumetrics.density-scale", 1.0f, 0.0f, 10.0f);
 
-            /** Scales how brightly the fog scatters, without changing how much it occludes. */
-            public static final FloatSetting INTENSITY_SCALE =
-                    clampedFloat("fluorite.rt.fog.intensityScale", "volumetrics.intensity-scale", 1.0f, 0.0f, 10.0f);
+            /**
+             * Multiplies the preset's single-scattering albedo. The external keys retain their legacy
+             * intensity name so existing configs migrate by clamping instead of silently resetting.
+             */
+            public static final FloatSetting ALBEDO_SCALE =
+                    clampedFloat("fluorite.rt.fog.intensityScale", "volumetrics.intensity-scale", 1.0f, 0.0f, 1.0f);
 
             /**
              * Blocks in front of the eye that stay clear. Fog starts accumulating past this, which keeps

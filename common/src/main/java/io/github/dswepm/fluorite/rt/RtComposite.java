@@ -171,8 +171,13 @@ public final class RtComposite {
     /** Single-scattering albedo and the sun lobe's anisotropy. */
     private static Float4 fogScatter() {
         float[] tint = FluoriteConfig.Rt.Volumetrics.scatterTintRgb();
-        float gain = FluoriteConfig.Rt.Volumetrics.INTENSITY_SCALE.value();
-        return new Float4(tint[0] * gain, tint[1] * gain, tint[2] * gain,
+        float scale = FluoriteConfig.Rt.Volumetrics.ALBEDO_SCALE.value();
+        // D13: this value is sigma_s / sigma_t, not an artistic radiance gain. Clamp at the ABI
+        // boundary as well as in the setting so every shader consumer receives a conservative medium,
+        // including callers assembled from a future preset whose tint accidentally exceeds one.
+        return new Float4(Math.clamp(tint[0] * scale, 0.0f, 1.0f),
+                Math.clamp(tint[1] * scale, 0.0f, 1.0f),
+                Math.clamp(tint[2] * scale, 0.0f, 1.0f),
                 FluoriteConfig.Rt.Volumetrics.PHASE_G.value());
     }
 

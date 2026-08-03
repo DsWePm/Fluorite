@@ -104,7 +104,7 @@ public final class RtVideoOptions {
                                 waterScatterR(), waterScatterG(), waterScatterB()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
-                case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogIntensity(),
+                case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
                         fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
@@ -314,8 +314,17 @@ public final class RtVideoOptions {
         return scaleSlider("fluorite.options.rt.fogDensity", FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE);
     }
 
-    private static OptionInstance<Integer> fogIntensity() {
-        return scaleSlider("fluorite.options.rt.fogIntensity", FluoriteConfig.Rt.Volumetrics.INTENSITY_SCALE);
+    private static OptionInstance<Integer> fogAlbedoScale() {
+        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.ALBEDO_SCALE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogAlbedo",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.fogAlbedo.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 100),
+            v -> setting.set(v / 100.0f));
     }
 
     private static OptionInstance<Integer> fogHeightBase() {

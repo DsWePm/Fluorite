@@ -374,7 +374,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 按 D10 把 marched 已有的局部雾太阳自衰减补进 froxel；froxel 的 direct path = atmosphere LUT × local fog，raygen 的 `WorldPush` 已经 atmosphere-dyed，所以只乘 local fog。无新增射线，增加解析 ALU/exp。
 - `fogScatter` 两边统一解释为 single-scattering albedo：froxel 改为 `σs=fogAlbedo×fogSigmaT`；行星大气仍作为 froxel-only 的附加介质项，理由是它覆盖相机前缀的 aerial perspective，注释明确。
 - **临时运行时烟测（非性能验收）**：1920×1080、`bench`、当前配置下稳定区间 `gpu.froxelBake` 中位数约 0.17–0.18 ms；仅证明新增解析衰减未出现数量级异常。没有同位姿、同会话的改前 A/B，禁止据此声称“无回归”或计算倍率。
-- ⚖ **M15 完成前请示：`volumetrics.intensity-scale` 的物理语义。** 它仍允许 0–10，而 M15.2 后 `fogScatter.rgb = tint × intensity` 已是反照率；任一通道超过 1 就违反能量守恒。默认 1.0 在当前 tint 下有效，但高档不有效。候选：**A** 将有效反照率逐通道钳到 `[0,1]`，并把 UI/tooltip 改成物理反照率倍率（严格守恒、GPU 额外成本≈0；高档会饱和，旧的过亮观感不能保留）；**B** 把 intensity 从反照率移到 source-radiance gain（介质系数合法、GPU 约多一次 source 乘法，但总辐射仍是艺术性增益，不满足严格能量守恒）；**C** 拆成受限 physical-albedo 与显式 `artistic-gain` 两个旋钮（默认路径守恒、非物理档诚实标名；需配置/UI/lang 与一个标量通路，射线成本不变）；**D** 删除 intensity 旋钮（最严格、最少维护，失去用户亮度控制）。若“确保能量守恒”是硬约束，推荐 A；尚未获用户裁决，代码保持现状。
+- **D13 能量守恒收口（用户选 5A）**：`volumetrics.intensity-scale` 为兼容旧配置保留路径名，但值域改为 0–1 的 physical-albedo multiplier；CPU 在写入 `fogScatter.rgb` 时再逐通道钳到 `[0,1]`。UI 政名“雾散射反照率”，高于 1 的旧配置加载时钳到 1。GPU 无新增 ALU/射线，代价是旧的非物理过亮档不再保留。
 
 **验收**：`segment-source` froxel/marched A/B 在前缀深度处无缝；`visibility-cell-size=0` 的 telescoping 归零测试仍成立；`RtPathSegmentLayoutTest` 仍 48；同会话比值 `bench` ≈1.0×（重构应中性）；**顺带偿还 M9 欠账：`bench-water` 两机位首采**，数字进 §4.2 作 M16/M17 的基线；水观感与 M9 收尾一致。
 
@@ -577,7 +577,8 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | D10 | froxel/marched 太阳自衰减对齐方向 | **把局部雾自衰减补进 froxel** | 保留物理正确项；删除 marched 自衰减会让低太阳/密雾产生过亮光晕。新增解析 ALU/exp，不新增射线 |
 | D11 | Medium Interface 形状 | **单一 `mediumProfile` 分类；`mediumDensityAt` 私有** | 一个查询同时决定 estimator/source adapter，删除 `mediumSource` + `mediumIsHomogeneous` 两个浅 Module 的隐含一致性；画面不变 |
 | D12 | 水在 sun-shadow 关闭时的射线预算 | **仍保留最多 3 条** | 每层 `waterHitT` 测量自己的 source path；只留 1 条虽最多省 2 ray/长水段，但会在不平水面、洞顶和不同水体高度下产生衰减误差 |
+| D13 | fog intensity/反照率守恒（用户选 5A） | **有效反照率逐通道钳到 `[0,1]`；UI 变为 0–1 physical-albedo multiplier** | 严格保证 `σs≤σt`，GPU 额外成本≈0；兼容保留旧 config key，但旧值 >1 加载为 1，放弃非物理过亮档 |
 
 **同日确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 
-**当前待请示清单**（动工时逐个触发）：M15 fog intensity/反照率守恒 · M16 旋钮处置 · M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。
+**当前待请示清单**（动工时逐个触发）：M16 旋钮处置 · M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。
