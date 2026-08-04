@@ -1,0 +1,60 @@
+{
+	"fluorite.options.rt.header": "Lancer de rayons",
+
+	"fluorite.options.rt.exposureMode": "Exposition",
+	"fluorite.options.rt.exposureMode.tooltip": "Détermine comment l'image en lancer de rayons est convertie en luminosité d'affichage. Auto s'adapte à la luminance de la scène ; Manuel utilise directement la valeur d'exposition.",
+	"fluorite.options.rt.exposureMode.auto": "Auto",
+	"fluorite.options.rt.exposureMode.manual": "Manuel",
+
+	"fluorite.options.rt.manualEv": "Exposition EV",
+	"fluorite.options.rt.manualEv.tooltip": "Correction d'exposition en stops. En mode Manuel, c'est l'exposition fixe. En mode Auto, elle décale l'exposition automatique vers plus clair ou plus sombre.",
+
+	"fluorite.options.rt.spp": "Échantillons par pixel",
+	"fluorite.options.rt.spp.tooltip": "Échantillons de path tracing pris par pixel à chaque image. Une valeur plus élevée est plus propre, mais plus coûteuse.",
+
+	"fluorite.options.rt.maxBounces": "Rebonds de chemin",
+	"fluorite.options.rt.maxBounces.tooltip": "Nombre maximal de rebonds secondaires de path tracing après le premier impact. Une valeur plus élevée capture plus de lumière indirecte, mais coûte plus cher.",
+
+	"fluorite.options.rt.sunSize": "Taille du soleil",
+	"fluorite.options.rt.sunSize.tooltip": "Rayon angulaire du disque du soleil et de la lune. Des disques plus grands créent des pénombres plus douces.",
+
+	"fluorite.options.rt.entities": "Entités en lancer de rayons",
+	"fluorite.options.rt.entities.tooltip": "Inclut les entités et entités de bloc dans la scène en lancer de rayons.",
+
+	"fluorite.options.rt.particles": "Particules en lancer de rayons",
+	"fluorite.options.rt.particles.tooltip": "Dessine les particules comme des billboards alignés sur les rayons de caméra dans la scène tracée.",
+
+	"fluorite.options.rt.glow": "Contour lumineux des entités",
+	"fluorite.options.rt.glow.tooltip": "Dessine le contour vanilla de l'effet Luminescence (à travers les murs) autour des entités lumineuses.",
+
+	"fluorite.options.rt.waterWaves": "Eau animée",
+	"fluorite.options.rt.waterWaves.tooltip": "Anime les normales de surface de l'eau pour des reflets de vagues en mouvement.",
+
+	"fluorite.options.rt.hdr": "Sortie HDR",
+	"fluorite.options.rt.hdr.tooltip": "Présente en HDR (ST.2084/PQ) au lieu du SDR lorsque l'écran le prend en charge. Prend effet après le redémarrage du jeu.",
+
+	"fluorite.options.rt.hdrPaperWhite": "Blanc papier HDR",
+	"fluorite.options.rt.hdrPaperWhite.tooltip": "Luminosité absolue (en nits) vers laquelle la luminosité de scène équivalente SDR est mappée sur un écran HDR.",
+
+	"fluorite.options.rt.hdrPeak": "Luminosité HDR maximale",
+	"fluorite.options.rt.hdrPeak.tooltip": "Luminosité absolue (en nits) vers laquelle les hautes lumières s'atténuent. Réglez-la sur la luminosité HDR maximale de votre écran.",
+
+	"fluorite.options.rt.dlssQuality": "Qualité DLSS",
+	"fluorite.options.rt.dlssQuality.tooltip": "Mode de qualité de DLSS Ray Reconstruction. Les modes de qualité inférieure rendent moins de pixels et agrandissent l'image plus agressivement pour augmenter le nombre d'images par seconde ; les modes de qualité supérieure rendent plus de pixels pour une image plus nette. N'affecte l'image que lorsque DLSS Ray Reconstruction est activé.",
+	"fluorite.options.rt.dlssQuality.3": "Ultra performance",
+	"fluorite.options.rt.dlssQuality.0": "Performance",
+	"fluorite.options.rt.dlssQuality.1": "Équilibré",
+	"fluorite.options.rt.dlssQuality.2": "Qualité",
+	"fluorite.options.rt.dlssQuality.5": "DLAA",
+
+	"fluorite.options.rt.debugView": "Vue de débogage",
+	"fluorite.options.rt.debugView.tooltip": "Visualise un tampon intermédiaire du lancer de rayons au lieu de l'image finale.",
+	"fluorite.options.rt.debugView.0": "Désactivé",
+	"fluorite.options.rt.debugView.1": "Normales",
+	"fluorite.options.rt.debugView.2": "Albédo",
+	"fluorite.options.rt.debugView.3": "Profondeur",
+	"fluorite.options.rt.debugView.4": "Rugosité",
+	"fluorite.options.rt.debugView.5": "Mouvement",
+	"fluorite.options.rt.debugView.6": "Spéculaire",
+	"fluorite.options.rt.debugView.7": "Mouvement spéculaire"
+}

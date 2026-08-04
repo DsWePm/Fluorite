@@ -68,10 +68,19 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         int texSlot = int(epr.tint.w + 0.5);
         float4 texel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(uv, 0.0);
         bool stochasticAlpha = false;
-        MaterialHeader materialHeader;
+        // Only entities carry a material record; particles never index the table. The three fields the
+        // shadow-ray paths below need are lifted out of the struct rather than keeping the whole
+        // MaterialHeader live: it is 80 bytes, this is the hottest shader in the frame, and the reads
+        // happen after the alpha-cutout block so the struct would otherwise stay live across it.
+        // Lifting them also settles Slang's uninitialized-variable analysis, which cannot see that the
+        // `instanceKind == ENTITY_BIT` guard on each read implies the assignment here (E41035).
+        uint materialModel = 0u;
+        float materialTransmission = 0.0;
         if (instanceKind == ENTITY_BIT) {
-            materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[epr.materialId];
+            MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[epr.materialId];
             stochasticAlpha = (materialHeader.features & MATERIAL_FEATURE_STOCHASTIC_ALPHA) != 0u;
+            materialModel = materialHeader.model;
+            materialTransmission = materialHeader.params.w;
         }
         if (stochasticAlpha) {
             uint salt = pid * 1664525u
@@ -87,16 +96,16 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         // Radiance rays accept the surface and continue to closest-hit. Shadow rays use the same material
         // model here so entity dielectrics transmit instead of becoming opaque shadow blockers.
         bool shadowRay = (RayFlags() & RAY_FLAG_SKIP_CLOSEST_HIT_SHADER) != 0u;
-        if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_DIELECTRIC) {
+        if (instanceKind == ENTITY_BIT && shadowRay && materialModel == MATERIAL_DIELECTRIC) {
             float3 tint = lerp(float3(1.0, 1.0, 1.0),
                     srgbToLinear(texel.rgb) * epr.tint.rgb, texel.a);
-            payload.albedo *= half3(tint * clamp(materialHeader.params.w, 0.0, 1.0));
+            payload.albedo *= half3(tint * clamp(materialTransmission, 0.0, 1.0));
             IgnoreHit();
         }
-        if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_WATER) {
+        if (instanceKind == ENTITY_BIT && shadowRay && materialModel == MATERIAL_WATER) {
             float3 tint = srgbToLinear(texel.rgb) * epr.tint.rgb;
             payload.albedo *= half3(lerp(float3(1.0, 1.0, 1.0), tint, WATER_SHADOW_TINT)
-                    * clamp(materialHeader.params.w, 0.0, 1.0));
+                    * clamp(materialTransmission, 0.0, 1.0));
             payload.hitT = payload.hitT < 0.0 ? RayTCurrent() : min(payload.hitT, RayTCurrent());
             IgnoreHit();
         }

@@ -1,0 +1,60 @@
+{
+	"fluorite.options.rt.header": "Ray tracing",
+
+	"fluorite.options.rt.exposureMode": "Esposizione",
+	"fluorite.options.rt.exposureMode.tooltip": "Come l'immagine con ray tracing viene mappata sulla luminosità del display. Auto si adatta alla luminanza della scena; Manuale usa direttamente il valore di esposizione.",
+	"fluorite.options.rt.exposureMode.auto": "Auto",
+	"fluorite.options.rt.exposureMode.manual": "Manuale",
+
+	"fluorite.options.rt.manualEv": "Esposizione EV",
+	"fluorite.options.rt.manualEv.tooltip": "Compensazione dell'esposizione in stop. In Manuale è l'esposizione fissa. In Auto sposta l'esposizione automatica rendendola più chiara o più scura.",
+
+	"fluorite.options.rt.spp": "Campioni per pixel",
+	"fluorite.options.rt.spp.tooltip": "Campioni di path tracing presi per pixel in ogni fotogramma. Valori più alti sono più puliti, ma più esigenti.",
+
+	"fluorite.options.rt.maxBounces": "Rimbalzi del percorso",
+	"fluorite.options.rt.maxBounces.tooltip": "Numero massimo di rimbalzi secondari del path tracing dopo il primo colpo. Valori più alti catturano più luce indiretta, ma costano di più.",
+
+	"fluorite.options.rt.sunSize": "Dimensione del sole",
+	"fluorite.options.rt.sunSize.tooltip": "Raggio angolare del disco del sole e della luna. Dischi più grandi proiettano penombre più morbide.",
+
+	"fluorite.options.rt.entities": "Entità con ray tracing",
+	"fluorite.options.rt.entities.tooltip": "Include entità ed entità blocco nella scena con ray tracing.",
+
+	"fluorite.options.rt.particles": "Particelle con ray tracing",
+	"fluorite.options.rt.particles.tooltip": "Disegna le particelle come billboard dei raggi della telecamera nella scena tracciata.",
+
+	"fluorite.options.rt.glow": "Contorno luminoso entità",
+	"fluorite.options.rt.glow.tooltip": "Disegna il contorno vanilla dell'effetto Luminescenza (attraverso i muri) attorno alle entità luminose.",
+
+	"fluorite.options.rt.waterWaves": "Acqua animata",
+	"fluorite.options.rt.waterWaves.tooltip": "Anima le normali della superficie dell'acqua per riflessi di onde in movimento.",
+
+	"fluorite.options.rt.hdr": "Uscita HDR",
+	"fluorite.options.rt.hdr.tooltip": "Presenta in HDR (ST.2084/PQ) invece che in SDR, quando il display lo supporta. Ha effetto dopo il riavvio del gioco.",
+
+	"fluorite.options.rt.hdrPaperWhite": "Bianco carta HDR",
+	"fluorite.options.rt.hdrPaperWhite.tooltip": "Luminosità assoluta (in nit) a cui viene mappata la luminosità della scena equivalente a SDR su un display HDR.",
+
+	"fluorite.options.rt.hdrPeak": "Luminosità di picco HDR",
+	"fluorite.options.rt.hdrPeak.tooltip": "Luminosità assoluta (in nit) verso cui sfumano le alte luci. Impostala sulla luminosità HDR di picco del display.",
+
+	"fluorite.options.rt.dlssQuality": "Qualità DLSS",
+	"fluorite.options.rt.dlssQuality.tooltip": "Modalità qualità di DLSS Ray Reconstruction. Le modalità di qualità inferiore renderizzano meno pixel e fanno un upscaling più aggressivo per aumentare il framerate; le modalità di qualità superiore renderizzano più pixel per un'immagine più nitida. Influisce sull'immagine solo quando DLSS Ray Reconstruction è attivo.",
+	"fluorite.options.rt.dlssQuality.3": "Prestazioni ultra",
+	"fluorite.options.rt.dlssQuality.0": "Prestazioni",
+	"fluorite.options.rt.dlssQuality.1": "Bilanciata",
+	"fluorite.options.rt.dlssQuality.2": "Qualità",
+	"fluorite.options.rt.dlssQuality.5": "DLAA",
+
+	"fluorite.options.rt.debugView": "Vista di debug",
+	"fluorite.options.rt.debugView.tooltip": "Visualizza un buffer intermedio del ray tracing invece dell'immagine finale.",
+	"fluorite.options.rt.debugView.0": "Disattivato",
+	"fluorite.options.rt.debugView.1": "Normali",
+	"fluorite.options.rt.debugView.2": "Albedo",
+	"fluorite.options.rt.debugView.3": "Profondità",
+	"fluorite.options.rt.debugView.4": "Rugosità",
+	"fluorite.options.rt.debugView.5": "Movimento",
+	"fluorite.options.rt.debugView.6": "Speculare",
+	"fluorite.options.rt.debugView.7": "Movimento speculare"
+}

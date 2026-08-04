@@ -1,0 +1,60 @@
+{
+	"fluorite.options.rt.header": "Трассировка лучей",
+
+	"fluorite.options.rt.exposureMode": "Экспозиция",
+	"fluorite.options.rt.exposureMode.tooltip": "Как изображение с трассировкой лучей сопоставляется с яркостью дисплея. Авто адаптируется к яркости сцены; Вручную использует значение экспозиции напрямую.",
+	"fluorite.options.rt.exposureMode.auto": "Авто",
+	"fluorite.options.rt.exposureMode.manual": "Вручную",
+
+	"fluorite.options.rt.manualEv": "Экспозиция EV",
+	"fluorite.options.rt.manualEv.tooltip": "Коррекция экспозиции в стопах. В ручном режиме это фиксированная экспозиция. В автоматическом режиме она сдвигает автоэкспозицию светлее или темнее.",
+
+	"fluorite.options.rt.spp": "Сэмплов на пиксель",
+	"fluorite.options.rt.spp.tooltip": "Сэмплы path tracing на пиксель в каждом кадре. Чем выше значение, тем чище изображение, но тем выше нагрузка.",
+
+	"fluorite.options.rt.maxBounces": "Отскоки пути",
+	"fluorite.options.rt.maxBounces.tooltip": "Максимальное число вторичных отскоков path tracing после первичного попадания. Более высокие значения захватывают больше непрямого света, но обходятся дороже.",
+
+	"fluorite.options.rt.sunSize": "Размер солнца",
+	"fluorite.options.rt.sunSize.tooltip": "Угловой радиус диска солнца и луны. Более крупные диски дают более мягкие полутени.",
+
+	"fluorite.options.rt.entities": "Трассируемые сущности",
+	"fluorite.options.rt.entities.tooltip": "Включает сущности и блочные сущности в сцену с трассировкой лучей.",
+
+	"fluorite.options.rt.particles": "Трассируемые частицы",
+	"fluorite.options.rt.particles.tooltip": "Рисует частицы как билборды вдоль лучей камеры внутри трассируемой сцены.",
+
+	"fluorite.options.rt.glow": "Контур свечения сущностей",
+	"fluorite.options.rt.glow.tooltip": "Рисует ванильный контур эффекта свечения (сквозь стены) вокруг светящихся сущностей.",
+
+	"fluorite.options.rt.waterWaves": "Анимированная вода",
+	"fluorite.options.rt.waterWaves.tooltip": "Анимирует нормали поверхности воды для движущихся бликов волн.",
+
+	"fluorite.options.rt.hdr": "Вывод HDR",
+	"fluorite.options.rt.hdr.tooltip": "Отображает в HDR (ST.2084/PQ) вместо SDR, если дисплей поддерживает это. Вступает в силу после перезапуска игры.",
+
+	"fluorite.options.rt.hdrPaperWhite": "HDR Paper White",
+	"fluorite.options.rt.hdrPaperWhite.tooltip": "Абсолютная яркость (в нитах), к которой сопоставляется SDR-эквивалентная яркость сцены на HDR-дисплее.",
+
+	"fluorite.options.rt.hdrPeak": "Пиковая яркость HDR",
+	"fluorite.options.rt.hdrPeak.tooltip": "Абсолютная яркость (в нитах), к которой сходятся яркие участки. Установите пиковую HDR-яркость вашего дисплея.",
+
+	"fluorite.options.rt.dlssQuality": "Качество DLSS",
+	"fluorite.options.rt.dlssQuality.tooltip": "Режим качества DLSS Ray Reconstruction. Режимы более низкого качества рендерят меньше пикселей и агрессивнее масштабируют изображение для более высокой частоты кадров; режимы более высокого качества рендерят больше пикселей для более резкого изображения. Влияет на изображение только при включенном DLSS Ray Reconstruction.",
+	"fluorite.options.rt.dlssQuality.3": "Ультра-производительность",
+	"fluorite.options.rt.dlssQuality.0": "Производительность",
+	"fluorite.options.rt.dlssQuality.1": "Баланс",
+	"fluorite.options.rt.dlssQuality.2": "Качество",
+	"fluorite.options.rt.dlssQuality.5": "DLAA",
+
+	"fluorite.options.rt.debugView": "Отладочный вид",
+	"fluorite.options.rt.debugView.tooltip": "Показывает промежуточный буфер трассировки лучей вместо финального изображения.",
+	"fluorite.options.rt.debugView.0": "Выкл.",
+	"fluorite.options.rt.debugView.1": "Нормали",
+	"fluorite.options.rt.debugView.2": "Альбедо",
+	"fluorite.options.rt.debugView.3": "Глубина",
+	"fluorite.options.rt.debugView.4": "Шероховатость",
+	"fluorite.options.rt.debugView.5": "Движение",
+	"fluorite.options.rt.debugView.6": "Зеркальность",
+	"fluorite.options.rt.debugView.7": "Зеркальное движение"
+}

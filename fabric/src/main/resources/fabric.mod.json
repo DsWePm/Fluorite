@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "fluorite",
+	"version": "${version}",
+	"name": "Fluorite",
+	"description": "Hardware-ray-traced renderer with DLSS Ray Reconstruction for the Minecraft Vulkan backend.",
+	"authors": [
+		"Yuhan YAN (DsWePm)",
+		"ComfyFluffy and Caustica contributors"
+	],
+	"license": "LGPL-3.0-or-later",
+	"environment": "client",
+	"entrypoints": {
+		"main": [
+			"io.github.dswepm.fluorite.fabric.FluoriteFabric"
+		]
+	},
+	"mixins": [
+		"fluorite-common.mixins.json",
+		"fluorite-fabric.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

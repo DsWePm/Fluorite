@@ -1,0 +1,60 @@
+{
+	"fluorite.options.rt.header": "Raytracing",
+
+	"fluorite.options.rt.exposureMode": "Belichtung",
+	"fluorite.options.rt.exposureMode.tooltip": "Wie das Raytracing-Bild auf die Anzeigehelligkeit abgebildet wird. Automatisch passt sich der Szenenhelligkeit an; Manuell verwendet den Belichtungswert direkt.",
+	"fluorite.options.rt.exposureMode.auto": "Automatisch",
+	"fluorite.options.rt.exposureMode.manual": "Manuell",
+
+	"fluorite.options.rt.manualEv": "Belichtung EV",
+	"fluorite.options.rt.manualEv.tooltip": "Belichtungskorrektur in Blendenstufen. Im manuellen Modus ist dies die feste Belichtung. Im automatischen Modus verschiebt dies die automatische Belichtung heller oder dunkler.",
+
+	"fluorite.options.rt.spp": "Samples pro Pixel",
+	"fluorite.options.rt.spp.tooltip": "Pathtracing-Samples, die pro Pixel in jedem Frame genommen werden. Höhere Werte sind sauberer, aber anspruchsvoller.",
+
+	"fluorite.options.rt.maxBounces": "Path-Bounces",
+	"fluorite.options.rt.maxBounces.tooltip": "Maximale Anzahl sekundärer Pathtracing-Bounces nach dem Primärtreffer. Höhere Werte erfassen mehr indirektes Licht, kosten aber mehr Leistung.",
+
+	"fluorite.options.rt.sunSize": "Sonnengröße",
+	"fluorite.options.rt.sunSize.tooltip": "Winkelradius der Sonnen- und Mondscheibe. Größere Scheiben erzeugen weichere Halbschatten.",
+
+	"fluorite.options.rt.entities": "Raytracing-Entitäten",
+	"fluorite.options.rt.entities.tooltip": "Entitäten und Blockentitäten in die Raytracing-Szene einbeziehen.",
+
+	"fluorite.options.rt.particles": "Raytracing-Partikel",
+	"fluorite.options.rt.particles.tooltip": "Zeichnet Partikel als Billboards entlang der Kamerastrahlen in der berechneten Szene.",
+
+	"fluorite.options.rt.glow": "Leuchtkontur von Entitäten",
+	"fluorite.options.rt.glow.tooltip": "Zeichnet die Vanilla-Kontur des Glowing-Effekts (durch Wände) um leuchtende Entitäten.",
+
+	"fluorite.options.rt.waterWaves": "Animiertes Wasser",
+	"fluorite.options.rt.waterWaves.tooltip": "Animiert Wasseroberflächen-Normalen für bewegte Wellenlichter.",
+
+	"fluorite.options.rt.hdr": "HDR-Ausgabe",
+	"fluorite.options.rt.hdr.tooltip": "Gibt, wenn der Bildschirm es unterstützt, in HDR (ST.2084/PQ) statt SDR aus. Wird nach einem Neustart des Spiels wirksam.",
+
+	"fluorite.options.rt.hdrPaperWhite": "HDR Paper White",
+	"fluorite.options.rt.hdrPaperWhite.tooltip": "Absolute Helligkeit (in Nits), auf die SDR-äquivalente Szenenhelligkeit auf einem HDR-Bildschirm abgebildet wird.",
+
+	"fluorite.options.rt.hdrPeak": "HDR-Spitzenhelligkeit",
+	"fluorite.options.rt.hdrPeak.tooltip": "Absolute Helligkeit (in Nits), auf die Highlights zulaufen. Stelle sie auf die Spitzenhelligkeit deines HDR-Bildschirms ein.",
+
+	"fluorite.options.rt.dlssQuality": "DLSS-Qualität",
+	"fluorite.options.rt.dlssQuality.tooltip": "Qualitätsmodus von DLSS Ray Reconstruction. Modi mit niedrigerer Qualität rendern weniger Pixel und skalieren aggressiver hoch, um höhere Frameraten zu erreichen; Modi mit höherer Qualität rendern mehr Pixel für ein schärferes Bild. Betrifft das Bild nur, wenn DLSS Ray Reconstruction aktiviert ist.",
+	"fluorite.options.rt.dlssQuality.3": "Ultraleistung",
+	"fluorite.options.rt.dlssQuality.0": "Leistung",
+	"fluorite.options.rt.dlssQuality.1": "Ausgewogen",
+	"fluorite.options.rt.dlssQuality.2": "Qualität",
+	"fluorite.options.rt.dlssQuality.5": "DLAA",
+
+	"fluorite.options.rt.debugView": "Debug-Ansicht",
+	"fluorite.options.rt.debugView.tooltip": "Visualisiert einen Zwischenpuffer des Raytracings statt des finalen Bildes.",
+	"fluorite.options.rt.debugView.0": "Aus",
+	"fluorite.options.rt.debugView.1": "Normalen",
+	"fluorite.options.rt.debugView.2": "Albedo",
+	"fluorite.options.rt.debugView.3": "Tiefe",
+	"fluorite.options.rt.debugView.4": "Rauheit",
+	"fluorite.options.rt.debugView.5": "Bewegung",
+	"fluorite.options.rt.debugView.6": "Spiegelnd",
+	"fluorite.options.rt.debugView.7": "Spiegelnde Bewegung"
+}

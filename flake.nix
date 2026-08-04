@@ -1,5 +1,5 @@
 {
-  description = "Development environment for the Minecraft DLSS/Caustica mod";
+  description = "Development environment for the Minecraft DLSS/Fluorite mod";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -105,7 +105,7 @@
               export DLSS_SDK="${dlssSdk}"
               export PATH="$VULKAN_SDK/bin:$PATH"
 
-              echo "caustica dev shell"
+              echo "fluorite dev shell"
               echo "  Java:       $JAVA_HOME"
               echo "  C compiler: $CC"
               echo "  C++ compiler: $CXX"

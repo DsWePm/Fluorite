@@ -1,9 +1,44 @@
 # Developer Guide
 
+## Shader toolchain requirements
+
+The build shells out to `glslangValidator`, `spirv-val` and `slangc`. Each is resolved in this order:
+
+1. `-P<name>Path=<file-or-dir>`, or the `<NAME>` environment variable
+2. `$VULKAN_SDK/Bin/<name>`
+3. `PATH`
+
+**`slangc` must be at least Slang 2026.14.** The world shaders use the four-parameter
+`Ptr<T, Access, AddressSpace, Layout>` form, and that layout argument is load-bearing — without it
+`WorldPush.sunDir` lands at byte offset 200 instead of the Java writer's 208 and the shader silently
+reads garbage (see the comment at the top of `shaders/world/world_common.slang`). An older `slangc`
+does not merely warn about this; it cannot parse `world_common.slang` at all:
+
+```
+world_common.slang(10): error 39999: too many arguments to call (got 4, expected 3)
+```
+
+This also breaks `generateShaderRecords`, which runs `slangc --reflection-json` over the same module,
+so nothing compiles — not even the Java sources, since the `WorldPushData` / `MaterialHeaderData`
+records are generated from that reflection.
+
+The Vulkan SDK's bundled `slangc` lags the standalone Slang releases. SDK 1.4.341.1 ships Slang 2026.1,
+which is too old; CI pins SDK 1.4.350.0. If your SDK's copy is behind, download a standalone build from
+<https://github.com/shader-slang/slang/releases> and point the build at it, e.g. in
+`~/.gradle/gradle.properties`:
+
+```properties
+slangcPath=C:/tools/slang-2026.14/bin/slangc.exe
+```
+
+Note that `compileShaders` passes `-warnings-as-errors all`, so a newer `slangc` can also fail the
+build on diagnostics an older one never emitted.
+
 ## Windows
 
 1. Install the Vulkan SDK from <https://vulkan.lunarg.com/sdk/home>.
-   The installer sets `VULKAN_SDK` automatically.
+   The installer sets `VULKAN_SDK` automatically. See the toolchain note above if its bundled
+   `slangc` turns out to be older than Slang 2026.14.
 2. Download the DLSS SDK from <https://github.com/NVIDIA/DLSS/releases>.
    Extract it, then set `DLSS_SDK` to the folder you extracted.
 

@@ -1,0 +1,133 @@
+plugins {
+	id "net.neoforged.moddev" version "${moddevgradle_version}"
+	id "maven-publish"
+}
+
+version = rootProject.mod_version
+group = rootProject.maven_group
+
+base {
+	archivesName = "${rootProject.archives_base_name}-neoforge"
+}
+
+repositories {
+	mavenCentral()
+}
+
+// Shared sources live in common/ and are compiled here against NeoForge's Minecraft artifact. That this
+// compiles at all is the real proof the shared code is loader-agnostic: the Fabric API is simply not on
+// this classpath, so an interface injection that a bytecode scan cannot see still fails here.
+sourceSets {
+	main {
+		java.srcDir rootProject.file("common/src/main/java")
+		resources.srcDir rootProject.file("common/src/main/resources")
+	}
+}
+
+// Generated artifacts from the root project, depended on by task path so this module never touches
+// rootProject.tasks while configuring.
+sourceSets.main.java.srcDir(files(rootProject.ext.fluoriteShaderRecordsDir).builtBy(":generateShaderRecords"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteShaderSpirvDir).builtBy(":compileShaders"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteNgxNativesDir).builtBy(":bundleNgxNatives"))
+
+neoForge {
+	version = rootProject.neoforge_version
+
+	runs {
+		client {
+			client()
+			gameDirectory = rootProject.file("run-neoforge")
+
+			// The renderer only exists on the Vulkan backend, and Minecraft defaults to OpenGL. Baked into
+			// the run config rather than left to the caller so :neoforge:runClient is usable on its own —
+			// without it the client comes up on OpenGL and Fluorite silently does nothing.
+			programArguments.addAll("--renderDebugLabels", "--graphicsBackend", "VULKAN")
+
+				// Loads the fixed test world straight from the launch, so a digest or frameStats capture is
+				// one command rather than a command plus a human clicking through the menu. The cross-loader
+				// comparison only means anything if both sides open the same save at the same spawn.
+				programArguments.addAll("--quickPlaySingleplayer", "Shader Testing Java")
+
+			// FML's early loading screen creates the window with an OpenGL context and hands that same
+			// window to Minecraft, so glfwCreateWindowSurface then refuses it:
+			//   GLFW error 65540: Vulkan: Window surface creation requires the window to have the client
+			//   API set to GLFW_NO_API
+			// which kills the client before it draws a frame. Disabling the early window lets Minecraft
+			// create its own. The equivalent knob for a packaged install is earlyWindowControl=false in
+			// config/fml.toml — worth knowing, because a fresh run directory defaults it back on.
+			jvmArgument "-Dfml.earlyprogresswindow=false"
+
+			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
+			jvmArgument "--enable-native-access=ALL-UNNAMED"
+
+			// NVIDIA NGX (DLSS) allocates ~1MB on the stack during init, which overflows Java's default
+			// 1MB thread stack. This must be passed here, not via JAVA_TOOL_OPTIONS: the main render
+			// thread has to be sized before the VM parses that variable. Dropping it does not produce a
+			// readable error — NGX init dies with a StackOverflowError whose trace names nothing useful.
+			jvmArgument "-Xss16m"
+		}
+	}
+
+	mods {
+		fluorite {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+dependencies {
+	// NightConfig is NOT jarJar'd here: NeoForge's own ModConfigSpec is built on it and ships it, which
+	// is exactly why FluoriteConfig was written against NightConfig in the first place. Verify the
+	// shipped version stays API-compatible with the 3.8.3 the Fabric module bundles.
+	compileOnly "com.electronwill.night-config:core:3.8.3"
+	compileOnly "com.electronwill.night-config:toml:3.8.3"
+}
+
+processResources {
+	inputs.property "version", project.version
+
+	filesMatching("META-INF/neoforge.mods.toml") {
+		expand "version": inputs.properties.version
+	}
+}
+
+// ModDevGradle's NeoForm-runtime tasks resolve their own Java rather than reusing the daemon's, and ask
+// for 21. On a machine that only has the 25 this mod targets they fail with a toolchain error that names
+// no task you configured — and setting java.toolchain does not reach them. Point them at the JVM already
+// running the build instead; there is nothing about asset downloading or artifact assembly that needs an
+// older Java than the one compiling the mod.
+tasks.withType(net.neoforged.nfrtgradle.NeoFormRuntimeTask).configureEach {
+	def exe = org.gradle.internal.os.OperatingSystem.current().windows ? "java.exe" : "java"
+	javaExecutable = new File(new File(System.getProperty("java.home"), "bin"), exe).absolutePath
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+	withSourcesJar()
+	// ModDevGradle's own tasks (downloadAssets and friends) resolve a toolchain rather than reusing the
+	// daemon's JVM, and default to 21. Without this they fail on a machine that only has the 25 this mod
+	// actually targets, with an error that names no task you configured.
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+}
+
+tasks.named("jar", Jar).configure {
+	from(rootProject.files("LICENSE.md", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md")) {
+		into "META-INF"
+	}
+}
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			artifactId = "${rootProject.archives_base_name}-neoforge"
+			from components.java
+		}
+	}
+}
