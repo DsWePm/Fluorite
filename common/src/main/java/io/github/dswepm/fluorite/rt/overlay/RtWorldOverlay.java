@@ -92,7 +92,7 @@ public final class RtWorldOverlay {
                 }
             }
             if (!ready.isEmpty()) {
-                ensureOverlayBuffer(ctx, main.width, main.height);
+                ensureOverlayBuffer(ctx, graphicsUse, main.width, main.height);
                 RenderTarget uiTarget = RtUiOverlay.beginCompositeLayer(main);
                 long targetView = vkImageView(uiTarget.getColorTextureView());
                 if (targetView == 0L) {
@@ -109,7 +109,8 @@ public final class RtWorldOverlay {
         }
     }
 
-    private void ensureOverlayBuffer(RtContext ctx, int width, int height) {
+    private void ensureOverlayBuffer(RtContext ctx, RtGpuExecutor.GraphicsUse graphicsUse,
+                                     int width, int height) {
         this.ctxRef = ctx;
         if (uiCompositePipeline == null) {
             uiCompositeSet = RtOverlayPipelines.storageImageSet(ctx, 1, VK10.VK_SHADER_STAGE_FRAGMENT_BIT, "world overlay UI composite");
@@ -124,7 +125,11 @@ public final class RtWorldOverlay {
         }
         if (overlayImage == null || overlayImage.width != width || overlayImage.height != height) {
             if (overlayImage != null) {
-                overlayImage.destroy();
+                // Retired against graphics completion, not destroyed inline — uiCompositeSet still names
+                // this view for frames that may not have run yet. See RtGlowOutlineFeature's note; the
+                // trigger is a size change, i.e. a window resize or F11.
+                RtImage retired = overlayImage;
+                ctx.gpuExecutor().retireAfterGraphics(graphicsUse, retired::destroy);
             }
             overlayImage = ctx.createStorageImage(width, height, TARGET_FORMAT,
                     "world overlay " + width + "x" + height, VK10.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);

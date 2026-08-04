@@ -11,6 +11,8 @@ import io.github.dswepm.fluorite.FluoriteConfig;
 import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.client.FluoriteJitter;
 import io.github.dswepm.fluorite.mixin.CommandEncoderAccessor;
+import io.github.dswepm.fluorite.rt.gen.PackedPathSegmentData;
+import io.github.dswepm.fluorite.rt.gen.WaterMediumProbeData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushConstantsData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData.BreakEntry;
@@ -29,6 +31,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.MoonPhase;
 import net.minecraft.world.level.material.FluidState;
 import org.joml.Matrix4f;
@@ -37,6 +40,8 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK10;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
+import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDependencyInfo;
 import org.lwjgl.vulkan.VkImageBlit;
@@ -62,6 +67,7 @@ import io.github.dswepm.fluorite.rt.pipeline.RtHdrCompositePipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtSdrPresentPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
+import io.github.dswepm.fluorite.rt.sky.RtSky;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
@@ -95,7 +101,234 @@ public final class RtComposite {
     // Hot addresses/frameIndex and raygen's debugView avoid unnecessary global-memory dereferences;
     // WorldPushConstantsData is generated from the same Slang module and owns this second ABI as well.
     private static final int GUIDE_COUNT = 6; // RR guide buffers bound at world-pipeline bindings 3..8
-    private static final long PATH_RECORD_BYTES = 48L;
+    // Generated from the shader's own std430 layout rather than hand-copied, like every other ABI size
+    // here. It was a literal 48 that nothing checked against the struct it describes.
+    private static final long PATH_RECORD_BYTES = PackedPathSegmentData.BYTE_SIZE;
+    // ---- Ambient participating medium.
+    //
+    // Per-dimension presets are not here yet, so these are the overworld's numbers scaled by the player's
+    // multipliers. When presets arrive the preset supplies the base and these keep being the multipliers.
+
+    /** Reference density, height falloff, reference height and the distance past which fog stops. */
+    private static Float4 fogParams() {
+        var v = FluoriteConfig.Rt.Volumetrics.class;
+        boolean on = FluoriteConfig.Rt.Volumetrics.ENABLED.value()
+                && FluoriteConfig.Rt.Volumetrics.HEIGHT_FOG.value();
+        // A density of zero is the disable path: volume.slang returns early on it, so switching fog off
+        // costs one comparison per segment rather than a shader variant.
+        float density = on ? BASE_FOG_DENSITY * FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE.value() : 0f;
+        return new Float4(density,
+                FluoriteConfig.Rt.Volumetrics.HEIGHT_SCALE.value(),
+                FluoriteConfig.Rt.Volumetrics.HEIGHT_BASE.value(),
+                FluoriteConfig.Rt.Volumetrics.CULL_DISTANCE.value());
+    }
+
+    /**
+      * Per-channel extinction tint, slightly blue-biased so thick fog cools rather than greys, plus the
+      * near cutoff in w — the distance in front of the eye that stays clear.
+      */
+    private static Float4 fogExtinction() {
+        return new Float4(0.92f, 0.96f, 1.0f,
+                FluoriteConfig.Rt.Volumetrics.START_DISTANCE.value());
+    }
+
+    /**
+     * Where the volumetric visibility grid sits this frame: its minimum corner in rebased blocks, and its
+     * cell size in w. A cell size of zero is the disable path — sampleVolumeVisibility reports everything
+     * lit, which reproduces the unshadowed fog exactly rather than approximately.
+     *
+     * <p><b>Snapped in ABSOLUTE world coordinates, then rebased.</b> Both halves of that matter. Snapping
+     * is what keeps the sample lattice still while the player walks: an unsnapped grid would move
+     * continuously with the camera, so every cell would cast its ray from a slightly different place each
+     * frame and the fog would boil. Doing the snap before the rebase is what keeps the lattice still
+     * across a terrain rebase too — rebasing first would snap to a grid that jumps whenever the origin
+     * moves, which is a rare, large, and very hard-to-attribute flicker.
+     *
+     * <p>Centred on the camera, so the grid reaches half its extent in every direction. The camera sitting
+     * at the centre rather than at a corner is what makes a turn free: the field behind the player is
+     * already baked when they turn around.
+     *
+     * <p><b>The snap is to whole cells, which at the default cell size of 1 puts every cell centre at a
+     * block centre.</b> That alignment is not incidental — it is what stops light leaking through a
+     * one-block wall, because a cell that sits inside a solid block casts its rays from inside that block
+     * and reads occluded, so it blocks the interpolation the way the block blocks the light. See
+     * VISIBILITY_CELL_SIZE for the measurement that established it.
+     */
+    private static Float4 visibilityGridOrigin(double camX, double camY, double camZ, RtTerrain terrain) {
+        float cell = FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value();
+        if (cell <= 0f || !FluoriteConfig.Rt.Volumetrics.ENABLED.value()) {
+            return new Float4(0f, 0f, 0f, 0f);
+        }
+        double halfX = RtSky.VIS_GRID_W * 0.5 * cell;
+        double halfY = RtSky.VIS_GRID_H * 0.5 * cell;
+        double halfZ = RtSky.VIS_GRID_D * 0.5 * cell;
+        double ox = Math.floor(camX / cell) * cell - halfX;
+        double oy = Math.floor(camY / cell) * cell - halfY;
+        double oz = Math.floor(camZ / cell) * cell - halfZ;
+        return new Float4((float) (ox - terrain.blockX), (float) (oy - terrain.blockY),
+                (float) (oz - terrain.blockZ), cell);
+    }
+
+    /** Single-scattering albedo and the sun lobe's anisotropy. */
+    private static Float4 fogScatter() {
+        float[] tint = FluoriteConfig.Rt.Volumetrics.scatterTintRgb();
+        float scale = FluoriteConfig.Rt.Volumetrics.ALBEDO_SCALE.value();
+        // D13: this value is sigma_s / sigma_t, not an artistic radiance gain. Clamp at the ABI
+        // boundary as well as in the setting so every shader consumer receives a conservative medium,
+        // including callers assembled from a future preset whose tint accidentally exceeds one.
+        return new Float4(Math.clamp(tint[0] * scale, 0.0f, 1.0f),
+                Math.clamp(tint[1] * scale, 0.0f, 1.0f),
+                Math.clamp(tint[2] * scale, 0.0f, 1.0f),
+                FluoriteConfig.Rt.Volumetrics.PHASE_G.value());
+    }
+
+    /**
+     * Water's scattering coefficient and phase anisotropy.
+     *
+     * <p>One value for every water body. Per-biome character lives in the absorption, which the tint
+     * still drives; keeping the scattering global is what lets the single-scattering albedo be recovered
+     * in the shader as sigma_s/sigma_t from the extinction the wavefront record already carries — so this
+     * costs no memory in the record, which had exactly one spare uint and now still does.
+     */
+    // Last biome tint reported, so the line below prints on change instead of every frame.
+    //
+    // Quantised hard, and rate limited on top, because "changed" turned out to mean "moved". The tint is
+    // BiomeColors.getAverageWaterColor, which BLENDS over the surrounding area, so walking across a biome
+    // boundary sweeps it continuously and every single frame carries a tint no frame has carried before.
+    // The result was a per-frame LOGGER.info with string formatting on the render thread — and since the
+    // whole diagnostic is gated on frameStats, it only ran while a performance capture was running. A
+    // measurement instrument that costs render-thread time exactly when it is being measured is worse
+    // than no instrument.
+    private static final int WATER_TINT_LOG_BITS = 4;      // 16 levels per channel
+    private static final long WATER_LOG_MIN_INTERVAL_NS = 1_000_000_000L;
+    private int loggedWaterTint = Integer.MIN_VALUE;
+    private long loggedWaterTintAt = Long.MIN_VALUE;
+
+    /**
+     * Report the water coefficients the shader will derive from this biome's tint.
+     *
+     * <p>The tint is the only per-biome input, and everything visible underwater comes out of it: swamp
+     * water absorbs red and violet and reads green, ocean absorbs red and green and reads blue. What
+     * this prints is the same arithmetic {@code waterAbsorption} and {@code waterExtinction} do in the
+     * shader, so a colour that looks wrong in the water can be checked against the numbers rather than
+     * guessed at — and the extinction is what tints everything seen through the water, so the two should
+     * agree by eye.
+     *
+     * <p>Absorption is per channel and inverted from the tint: a low red tint means red is absorbed
+     * fastest, which is why the tint's own colour and the water's apparent colour are not the same
+     * thing. Extinction adds the scattered part on top, so it rises with turbidity while the ratio
+     * between channels does not.
+     *
+     * <p>M16 moved the source to a GPU reduction of the sky-view LUT, so this CPU diagnostic deliberately
+     * stops at coefficients and albedo. Reading the source back would either stall the frame or report a
+     * stale value, and either would make a performance diagnostic less trustworthy than no number.
+     */
+    private void logWaterCoefficients(float r, float g, float b) {
+        if (!FluoriteConfig.Rt.FrameStats.ENABLED.value()) {
+            return;
+        }
+        int shift = 8 - WATER_TINT_LOG_BITS;
+        int key = ((Math.round(r * 255f) >> shift) << (WATER_TINT_LOG_BITS * 2))
+                | ((Math.round(g * 255f) >> shift) << WATER_TINT_LOG_BITS)
+                | (Math.round(b * 255f) >> shift);
+        long now = System.nanoTime();
+        // The first report is unconditional. Timing it against a sentinel start value does not work:
+        // nanoTime differences are the only meaningful quantity, and `now - Long.MIN_VALUE` overflows to
+        // a large NEGATIVE number, which compares below any interval and silences the line forever. That
+        // is exactly what happened — the instrument built to answer "is the source too bright" reported
+        // nothing at all for a whole session, and silence looked identical to "nothing changed".
+        boolean everLogged = loggedWaterTint != Integer.MIN_VALUE;
+        if (everLogged && (key == loggedWaterTint || now - loggedWaterTintAt < WATER_LOG_MIN_INTERVAL_NS)) {
+            return;
+        }
+        loggedWaterTint = key;
+        loggedWaterTintAt = now;
+        float[] s = FluoriteConfig.Rt.Water.scatteringRgb();
+        float ar = WATER_ABSORB_FLOOR_R + WATER_DENSITY * (1f - Math.clamp(r, 0f, 1f));
+        float ag = WATER_ABSORB_FLOOR_G + WATER_DENSITY * (1f - Math.clamp(g, 0f, 1f));
+        float ab = WATER_ABSORB_FLOOR_B + WATER_DENSITY * (1f - Math.clamp(b, 0f, 1f));
+        // sigma_t = sigma_a + sigma_s, and the albedo is sigma_s over that. Additive and with sigma_s
+        // global, exactly as medium.slang has it.
+        //
+        // This printed the OTHER model until now — extinction as sigma_a*(1+k) and the albedo as k/(1+k),
+        // which is sigma_s proportional to sigma_a. That was a real design for two commits and was thrown
+        // out because a constant ratio is a grey albedo and every biome came out the same milky white; the
+        // shader moved on and this did not. So the one line whose whole job is to be checked against the
+        // shader has been reporting a rejected model's numbers, and reporting them for the model that
+        // rejection was about. Scattering is printed alongside now, so the next drift shows up as an
+        // arithmetic disagreement rather than as a plausible-looking wrong answer.
+        float albR = s[0] / (ar + s[0]);
+        float albG = s[1] / (ag + s[1]);
+        float albB = s[2] / (ab + s[2]);
+        FluoriteMod.LOGGER.info(
+                "Water: tint=({}, {}, {}) absorption=({}, {}, {}) scattering=({}, {}, {})"
+                        + " extinction=({}, {}, {}) scatterAlbedo=({}, {}, {})",
+                fmt(r), fmt(g), fmt(b),
+                fmt(ar), fmt(ag), fmt(ab),
+                fmt(s[0]), fmt(s[1]), fmt(s[2]),
+                fmt(ar + s[0]), fmt(ag + s[1]), fmt(ab + s[2]),
+                fmt(albR), fmt(albG), fmt(albB));
+    }
+
+    private static String fmt(float v) {
+        return String.format(java.util.Locale.ROOT, "%.4f", v);
+    }
+
+    // Mirrors medium.slang's waterAbsorption. Duplicated deliberately and narrowly: this is a diagnostic
+    // that exists to be compared against the shader, so it has to restate the shader's arithmetic rather
+    // than share it. If they drift, the log stops being evidence — which is exactly what it is for.
+    private static final float WATER_DENSITY = 0.1f;
+    private static final float WATER_ABSORB_FLOOR_R = 0.015f;
+    private static final float WATER_ABSORB_FLOOR_G = 0.010f;
+    private static final float WATER_ABSORB_FLOOR_B = 0.008f;
+
+    /** Absorption dialled by hand, replacing the biome's, for art direction and for diagnosis. */
+    private static Float4 waterAbsorbOverride() {
+        if (!FluoriteConfig.Rt.Water.ABSORB_OVERRIDE.value()) {
+            return new Float4(0f, 0f, 0f, 0f);
+        }
+        float[] a = FluoriteConfig.Rt.Water.absorptionRgb();
+        return new Float4(a[0], a[1], a[2], 1f);
+    }
+
+    private static Float4 waterScatter() {
+        float[] s = FluoriteConfig.Rt.Water.scatteringRgb();
+        return new Float4(s[0], s[1], s[2], FluoriteConfig.Rt.Water.PHASE_G.value());
+    }
+
+    /** Legacy xyz retired by M16; w still carries caustic dispersion without growing another field. */
+    private static Float4 waterAux() {
+        return new Float4(0f, 0f, 0f, FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
+    }
+
+    /** Legacy xyz retired by M16; w still carries thin-shell subsurface thickness. */
+    private static Float4 fogAux() {
+        return new Float4(0f, 0f, 0f, FluoriteConfig.Rt.Bsdf.SUBSURFACE_THICKNESS.value());
+    }
+
+    /**
+     * How far up the water column the reference-surface scan will walk before giving up.
+     *
+     * <p>Generous rather than tuned: the loop stops at the first non-water block, so it only runs to this
+     * limit for a camera genuinely that deep under water, and each step is one fluid-state lookup on the
+     * client's own chunk cache. A camera in an ocean exits after a couple of steps.
+     */
+    private static final int WATER_SURFACE_SCAN_LIMIT = 512;
+
+    private static final float BASE_FOG_DENSITY = 0.0016f;   // extinction per block at the reference height
+    /**
+     * Shading switches the closest-hit reads. Inline in the push constant rather than in WorldPush
+     * because the hit shader never dereferences that struct — one BDA load per hit to read a bit would
+     * cost more than the feature it gates.
+     */
+    private static int shadeFlags() {
+        int flags = 0;
+        if (FluoriteConfig.Rt.Bsdf.SUBSURFACE_SOLID_LAYER.value()) {
+            flags |= 1; // SHADE_SOLID_LAYER_SSS
+        }
+        return flags;
+    }
+
     private static int debugView() {
         return FluoriteConfig.Rt.Composite.DEBUG_VIEW.value();
     }
@@ -182,6 +415,24 @@ public final class RtComposite {
     // wait, so a slot is only read once the work that wrote it has completed and the read never blocks.
     private static final int GPU_ZONE_TRACE_PRIMARY = 0;
     private static final int GPU_ZONE_TRACE_INDIRECT = 1;
+    // The atmosphere's bakes, which sit BEFORE both traces and so fell inside neither zone. M10.4's
+    // capture is what exposed the gap: gpu.traceIndirect fell 0.575 ms when the camera's prefix segment
+    // stopped integrating analytically, and there was no number anywhere for what the froxel dispatch
+    // that made it possible had cost. A saving measured against an unmeasured cost is not a net figure,
+    // and M13 grows this dispatch rather than the traces, so the zone has to exist before then.
+    private static final int GPU_ZONE_SKY_BAKE = 2;
+    // The volumetric visibility grid, timed SEPARATELY from the bakes above it rather than inside them.
+    // The combined zone measured 1.258 ms at 1080p once the grid was added, against 0.106 ms before it,
+    // and there was no way to say how much of that twelvefold rise was the grid and how much was the
+    // froxel's own growth to 64x36x64 with two rays a cell -- two changes that landed without a reading
+    // between them. Deciding whether to spend more rays here needs the two numbers apart.
+    private static final int GPU_ZONE_VIS_BAKE = 3;
+    // The froxel, split out of GPU_ZONE_SKY_BAKE. That zone held the three sky tables AND the froxel, and
+    // the combined 1.34 ms could not say which of them to spend effort on -- the froxel runs one thread
+    // per COLUMN (2304 of them) while the visibility grid runs one per cell (131k) for a comparable ray
+    // count and costs 0.072 ms. Eighteen times is a number worth acting on, but not before it is
+    // attributed.
+    private static final int GPU_ZONE_FROXEL_BAKE = 4;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
@@ -212,11 +463,100 @@ public final class RtComposite {
 
     private static final class PushSlot {
         final RtBuffer buffer;
+        final RtBuffer waterProbe;
         final RtGpuExecutor.TrackedGraphicsUse graphicsUse = new RtGpuExecutor.TrackedGraphicsUse();
+        boolean waterProbeArmed;
+        RtTerrain.StreamingDiagnostics waterProbeTerrain;
+        int waterProbeCpuFlags;
 
-        PushSlot(RtBuffer buffer) {
+        PushSlot(RtBuffer buffer, RtBuffer waterProbe) {
             this.buffer = buffer;
+            this.waterProbe = waterProbe;
         }
+    }
+    private static final long WATER_PROBE_LOG_INTERVAL_NS = 250_000_000L;
+    private long waterProbeLoggedAt = Long.MIN_VALUE;
+
+    /** Reads an old ring slot only after its graphics timeline has completed; this never stalls the GPU
+     * that is rendering the current frame. */
+    private void logWaterMediumProbe(PushSlot slot) {
+        if (!slot.waterProbeArmed) {
+            return;
+        }
+        slot.waterProbe.invalidate(0L, WaterMediumProbeData.BYTE_SIZE);
+        long base = slot.waterProbe.mapped;
+        int probeFlags = MemoryUtil.memGetInt(base + WaterMediumProbeData.FLAGS_OFFSET);
+        if ((probeFlags & 1) == 0) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (waterProbeLoggedAt != Long.MIN_VALUE && now - waterProbeLoggedAt < WATER_PROBE_LOG_INTERVAL_NS) {
+            return;
+        }
+        waterProbeLoggedAt = now;
+
+        int gpuFrame = MemoryUtil.memGetInt(base + WaterMediumProbeData.FRAME_INDEX_OFFSET);
+        int pathFlags = MemoryUtil.memGetInt(base + WaterMediumProbeData.PATH_FLAGS_OFFSET);
+        int debug = MemoryUtil.memGetInt(base + WaterMediumProbeData.DEBUG_VIEW_OFFSET);
+        long ps = base + WaterMediumProbeData.PREFIX_SCATTER_LENGTH_OFFSET;
+        long pt = base + WaterMediumProbeData.PREFIX_TRANSMITTANCE_OFFSET;
+        long leaf = base + WaterMediumProbeData.LEAF_RADIANCE_OFFSET;
+        long comp = base + WaterMediumProbeData.COMPOSITE_RADIANCE_OFFSET;
+        long sky = base + WaterMediumProbeData.SKY_SOURCE_OPEN_OFFSET;
+        long up = base + WaterMediumProbeData.UPWARD_WATER_OFFSET;
+        long firstScatter = base + WaterMediumProbeData.FIRST_SEGMENT_SCATTER_OFFSET;
+        long firstT = base + WaterMediumProbeData.FIRST_SEGMENT_T_OFFSET;
+        long firstHit = base + WaterMediumProbeData.FIRST_HIT_OFFSET;
+        long firstThroughput = base + WaterMediumProbeData.FIRST_THROUGHPUT_OFFSET;
+        long firstWeightedScatter = base + WaterMediumProbeData.FIRST_WEIGHTED_SCATTER_OFFSET;
+        RtTerrain.StreamingDiagnostics terrain = slot.waterProbeTerrain;
+        String terrainText = terrain == null ? "unavailable" : String.format(java.util.Locale.ROOT,
+                "resident=%d published=%d desired=%d empty=%d inFlight=%d missing=%d reextract=%d"
+                        + " prepared=%d completed=%d instances=%d",
+                terrain.resident(), terrain.published(), terrain.desired(), terrain.empty(),
+                terrain.inFlight(), terrain.missing(), terrain.reextract(), terrain.prepared(),
+                terrain.completed(), terrain.instances());
+        FluoriteMod.LOGGER.info(
+                "RT water-medium probe: gpuFrame={} debug={} probeFlags=0x{} cpuFlags=0x{} pathFlags=0x{}"
+                        + " prefixLen={} prefixScatter=({},{},{}) prefixT=({},{},{}) prefixTLum={}"
+                        + " leaf=({},{},{}) leafLum={} composite=({},{},{}) prefixFraction={}"
+                        + " skySource=({},{},{}) skyOpen={} upWater={} skyDepth={} fallbackDepth={}"
+                        + " surfaceY={} firstSegmentLen={} firstScatter=({},{},{}) firstT=({},{},{})"
+                        + " firstTLum={} firstHitT={} firstMaterial={} firstEscaped={} firstMediumProfile={}"
+                        + " firstThroughput=({},{},{}) firstThroughputLum={}"
+                        + " firstWeightedScatter=({},{},{}) firstWeightedScatterLum={}"
+                        + " terrain[{}]",
+                gpuFrame, debug, Integer.toHexString(probeFlags), Integer.toHexString(slot.waterProbeCpuFlags),
+                Integer.toHexString(pathFlags),
+                fmt(MemoryUtil.memGetFloat(ps + 12)),
+                fmt(MemoryUtil.memGetFloat(ps)), fmt(MemoryUtil.memGetFloat(ps + 4)), fmt(MemoryUtil.memGetFloat(ps + 8)),
+                fmt(MemoryUtil.memGetFloat(pt)), fmt(MemoryUtil.memGetFloat(pt + 4)), fmt(MemoryUtil.memGetFloat(pt + 8)),
+                fmt(MemoryUtil.memGetFloat(pt + 12)),
+                fmt(MemoryUtil.memGetFloat(leaf)), fmt(MemoryUtil.memGetFloat(leaf + 4)), fmt(MemoryUtil.memGetFloat(leaf + 8)),
+                fmt(MemoryUtil.memGetFloat(leaf + 12)),
+                fmt(MemoryUtil.memGetFloat(comp)), fmt(MemoryUtil.memGetFloat(comp + 4)), fmt(MemoryUtil.memGetFloat(comp + 8)),
+                fmt(MemoryUtil.memGetFloat(comp + 12)),
+                fmt(MemoryUtil.memGetFloat(sky)), fmt(MemoryUtil.memGetFloat(sky + 4)), fmt(MemoryUtil.memGetFloat(sky + 8)),
+                fmt(MemoryUtil.memGetFloat(sky + 12)),
+                fmt(MemoryUtil.memGetFloat(up)), fmt(MemoryUtil.memGetFloat(up + 4)),
+                fmt(MemoryUtil.memGetFloat(up + 8)), fmt(MemoryUtil.memGetFloat(up + 12)),
+                fmt(MemoryUtil.memGetFloat(firstScatter + 12)),
+                fmt(MemoryUtil.memGetFloat(firstScatter)), fmt(MemoryUtil.memGetFloat(firstScatter + 4)),
+                fmt(MemoryUtil.memGetFloat(firstScatter + 8)),
+                fmt(MemoryUtil.memGetFloat(firstT)), fmt(MemoryUtil.memGetFloat(firstT + 4)),
+                fmt(MemoryUtil.memGetFloat(firstT + 8)), fmt(MemoryUtil.memGetFloat(firstT + 12)),
+                fmt(MemoryUtil.memGetFloat(firstHit)), Math.round(MemoryUtil.memGetFloat(firstHit + 4)),
+                Math.round(MemoryUtil.memGetFloat(firstHit + 8)),
+                Math.round(MemoryUtil.memGetFloat(firstHit + 12)),
+                fmt(MemoryUtil.memGetFloat(firstThroughput)),
+                fmt(MemoryUtil.memGetFloat(firstThroughput + 4)),
+                fmt(MemoryUtil.memGetFloat(firstThroughput + 8)),
+                fmt(MemoryUtil.memGetFloat(firstThroughput + 12)),
+                fmt(MemoryUtil.memGetFloat(firstWeightedScatter)),
+                fmt(MemoryUtil.memGetFloat(firstWeightedScatter + 4)),
+                fmt(MemoryUtil.memGetFloat(firstWeightedScatter + 8)),
+                fmt(MemoryUtil.memGetFloat(firstWeightedScatter + 12)),
+                terrainText);
     }
     // Menu/non-RT present: converts the SDR main target (sRGB) to PQ-encoded at paper white so menus,
     // the title panorama and the loading screen present correctly to the PQ swapchain instead of being
@@ -265,6 +605,8 @@ public final class RtComposite {
     private final Matrix4f mvPushMatrix = new Matrix4f();
     private final Matrix4f frameInvViewProj = new Matrix4f();
     private final BlockPos.MutableBlockPos cameraBlockPos = new BlockPos.MutableBlockPos();
+    /** Scratch for the reference-surface walk; never escapes the frame that uses it. */
+    private final BlockPos.MutableBlockPos surfaceScan = new BlockPos.MutableBlockPos();
     private double mvPrevCamX;
     private double mvPrevCamY;
     private double mvPrevCamZ;
@@ -275,6 +617,9 @@ public final class RtComposite {
     private float previousWaterWaveTime;
     private boolean waterWaveTimeValid;
     private long atlasSampler;
+    private long lutSampler;
+    // The atmosphere's precomputed tables (M10). Baked once, then sampled by world.rmiss and world.rgen.
+    private RtSky skyLuts;
     private boolean failed;
     private boolean loggedActive;
 
@@ -540,12 +885,16 @@ public final class RtComposite {
             if (pushRing == null) {
                 pushRing = new PushSlot[PUSH_RING];
                 for (int i = 0; i < PUSH_RING; i++) {
-                    pushRing[i] = new PushSlot(ctx.createBuffer(WORLD_PUSH_SIZE,
-                            VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i));
+                    pushRing[i] = new PushSlot(
+                            ctx.createBuffer(WORLD_PUSH_SIZE,
+                                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i),
+                            ctx.createBuffer(WaterMediumProbeData.BYTE_SIZE,
+                                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt water medium probe " + i));
                 }
             }
             if (gpuTimers == null) {
-                gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect");
+                gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect",
+                        "gpu.skyBake", "gpu.visBake", "gpu.froxelBake");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -602,6 +951,21 @@ public final class RtComposite {
         long celView = celestialsAtlasView();
         if (worldPipeline.hasSkyAtlas()) {
             worldPipeline.setSkyAtlas(celView != 0L ? celView : atlasView, sampler);
+        }
+        // The atmosphere's tables, bound HERE — the one path that runs both on first creation and on the
+        // post-reload rebind. They were previously bound from the bake, which happens exactly once ever;
+        // a pipeline rebuilt after that got an unbound binding, and sampling an unbound descriptor
+        // returned zero, so the sun and moon discs went black while the sunlight stayed right.
+        if (worldPipeline.hasTransmittanceLut()) {
+            if (skyLuts == null) {
+                skyLuts = RtSky.create(ctx);
+            }
+            worldPipeline.setTransmittanceLut(skyLuts.transmittanceView(), lutSampler(ctx));
+            worldPipeline.setMultiScatterLut(skyLuts.multiScatterView(), lutSampler(ctx));
+            worldPipeline.setSkyViewLuts(skyLuts.skyViewRayleighView(), skyLuts.skyViewMieView(),
+                    skyLuts.skyViewMultiView(), lutSampler(ctx));
+            worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
+            worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -828,6 +1192,7 @@ public final class RtComposite {
             pushSlot = (pushSlot + 1) % PUSH_RING;
             PushSlot selectedPushSlot = pushRing[pushSlot];
             graphicsUseWaiter.await(selectedPushSlot.graphicsUse);
+            logWaterMediumProbe(selectedPushSlot);
             if (gpuTimers != null) {
                 // The await above is what makes this safe: this slot's timestamps are from PUSH_RING frames
                 // ago and the GPU has finished with them, so reading costs nothing and resetting cannot
@@ -843,7 +1208,10 @@ public final class RtComposite {
             // submerged, fixing the air→water first-segment orientation) + W1 wave normals. Bit 1 used to
             // gate a Lambertian fallback BRDF that nothing ever turned off; the GGX path is unconditional
             // now, so that bit is unused rather than reassigned, to avoid a stale reader elsewhere.
+            // Bit 12 hides the first-person body from secondary rays; see below and trace.slang.
             int flags = 0;
+            // Far below any world, so the shader reads "not submerged" without a second flag to check.
+            float waterSurfaceY = -1.0e9f;
             var level = Minecraft.getInstance().level;
             if (level != null) {
                 cameraBlockPos.set(Mth.floor(camX), Mth.floor(camY), Mth.floor(camZ));
@@ -852,12 +1220,98 @@ public final class RtComposite {
                 // above its actual surface (shallow/flowing water, or standing with your head just over a
                 // source block).
                 FluidState fs = level.getFluidState(cameraBlockPos);
-                if (fs.is(FluidTags.WATER) && camY < cameraBlockPos.getY() + fs.getHeight(level, cameraBlockPos)) {
-                    flags |= 0b01;
+                if (fs.is(FluidTags.WATER)) {
+                    // The SUBMERGED test uses the camera's own block, which is what vanilla's
+                    // Camera.getFluidInCamera does and is right for "which medium does the camera ray
+                    // start in".
+                    float ownTop = cameraBlockPos.getY() + fs.getHeight(level, cameraBlockPos);
+                    if (camY < ownTop) {
+                        flags |= 0b01;
+                    }
+                    // The REFERENCE SURFACE is a different question and used to be answered with the same
+                    // number, which was wrong in a way that hid behind the shape of the bug it caused.
+                    //
+                    // getHeight returns 1.0 for a water block with more water above it, so deep under an
+                    // ocean the "surface" came out as floor(camY) + 1 -- pinned one block over the
+                    // camera's head, wherever the camera went. Two consequences, both observed: water
+                    // thirty blocks down was lit as though it sat at the surface, because its depth came
+                    // out as about one block; and floor(camY) steps by one every time the camera crosses a
+                    // block boundary, so the whole volume's brightness jumped in one-block layers as the
+                    // player swam up or down. That was reported as layered flicker on vertical movement,
+                    // and it survived silencing the sky term, which correctly ruled out the sky-light grid.
+                    //
+                    // Walk up to the real top of the column instead. Depth is a property of the water
+                    // body, so the answer must not move when the camera does -- that stillness is the
+                    // whole fix, and it is why a scan is worth a few dozen block lookups a frame.
+                    surfaceScan.set(cameraBlockPos);
+                    float surface = ownTop;
+                    for (int step = 0; step < WATER_SURFACE_SCAN_LIMIT; step++) {
+                        surfaceScan.setY(surfaceScan.getY() + 1);
+                        FluidState above = level.getFluidState(surfaceScan);
+                        if (!above.is(FluidTags.WATER)) {
+                            break;
+                        }
+                        surface = surfaceScan.getY() + above.getHeight(level, surfaceScan);
+                    }
+                    // Written whether or not the EYE is under it, and that separation is the whole point.
+                    //
+                    // Enclosed single scattering measures how deep a scattering point is in order to know
+                    // how much light ever reached it, and the reference surface used to be published only
+                    // while submerged. Surfacing therefore replaced every depth in the scene with zero:
+                    // exp(-sigma * 0) = 1, so every water segment — including one thirty blocks down —
+                    // was lit as though it sat at the surface. That is a step change in the whole volume
+                    // at the instant the eye crosses, which is exactly how it was reported (scattering
+                    // present above one precise height and absent below it, in every view direction).
+                    // The submerged FLAG still gates what it always did: which medium the camera ray
+                    // starts in. Depth is a property of the water, not of where the eye happens to be.
+                    waterSurfaceY = surface - terrain.blockY;
                 }
+            }
+            // Hide the first-person body from secondary rays while its owner is in the water at all
+            // (trace.slang FLAG_HIDE_SELF).
+            //
+            // The camera's own block is the wrong test and was tried first: standing waist-deep, the eye is
+            // a block and a half above the water and sits in AIR, so the flag never fired for exactly the
+            // case that asked for it. What matters is where the BODY is, because the body is what shows up
+            // sliced at the waterline in the surface reflection a metre in front of you — vanilla's first
+            // person draws no body at all, so half of one is read as a glitch rather than as seeing
+            // yourself. Standing beside a pond keeps the reflection, which is the case worth having.
+            Entity cameraOwner = Minecraft.getInstance().getCameraEntity();
+            if (cameraOwner != null && cameraOwner.isInWater()) {
+                flags |= 0b1000000000000;
             }
             if (waterWaves()) {
                 flags |= 0b10000; // W1: animated water wave normals
+            }
+            if (FluoriteConfig.Rt.Bsdf.MIS_ENABLED.value()) {
+                flags |= 0b100000; // weight the sun's two estimators instead of summing them
+            }
+            if (FluoriteConfig.Rt.Bsdf.ANISOTROPY_ENABLED.value()) {
+                flags |= 0b1000000; // stretch the specular lobe along the surface tangent
+            }
+            // Subsurface mode in bits 7-8 and the walk's event budget in bits 9-11. Packed rather than
+            // given lanes of their own: WorldPush is read once per path, but every field added to it is
+            // paid by the layout test, the generated record and everyone reading the struct.
+            flags |= (FluoriteConfig.Rt.Bsdf.subsurfaceModeId() & 0b11) << 7;
+            flags |= (Math.clamp(FluoriteConfig.Rt.Bsdf.SUBSURFACE_MAX_EVENTS.value(), 0, 7)) << 9;
+            // Bits 13-14: which source feeds the water's single scattering. A measurement switch —
+            // see FluoriteConfig.Rt.Water.SCATTER_SOURCE.
+            flags |= (FluoriteConfig.Rt.Water.scatterSourceId() & 0b11) << 13;
+            if (!FluoriteConfig.Rt.Water.SUN_SHADOW.value()) {
+                flags |= 0b1000000000000000; // bit 15: take the sun as unoccluded (isolation switch)
+            }
+            // Bits 16-17: which of the fog's two in-scatter machines are live. The froxel answers for the
+            // camera prefix and the closed form answers for every bounce; they are summed on screen, so
+            // this is the only way to ask which of them a brightness came from. See
+            // FluoriteConfig.Rt.Volumetrics.SEGMENT_SOURCE.
+            flags |= (FluoriteConfig.Rt.Volumetrics.segmentSourceId() & 0b11) << 16;
+            // Bits 18-22: the cap on how many visibility sub-steps a marched segment may take.
+            flags |= (FluoriteConfig.Rt.Volumetrics.visibilityMaxSteps() & 0b11111) << 18;
+            // Bits 23-25: jittered shadow rays for the fog's sun term (0 = read the grid instead).
+            flags |= (FluoriteConfig.Rt.Volumetrics.sunShadowRays() & 0b111) << 23;
+            if (FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER.value()) {
+                // Bit 26: the source decays at the diffusion rate rather than the beam's.
+                flags |= 1 << 26;
             }
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
@@ -883,7 +1337,7 @@ public final class RtComposite {
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
-                    terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, 0f);
+                    terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, waterSurfaceY);
 
             // Rebuild the TLAS this frame from static section instances merged with dynamic entity
             // instances, bind it into the pipeline's descriptor ring, record the build, then barrier so
@@ -895,12 +1349,28 @@ public final class RtComposite {
             RtEntities.FrameEntities fe = RtEntities.INSTANCE.beginFrame(ctx, terrain.staticInstances(),
                     terrain.blockX, terrain.blockY, terrain.blockZ, camX, camY, camZ, frameProjection, frameViewRotation);
             frameEntities = fe;
+            boolean waterProbeEnabled = FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE.value();
+            selectedPushSlot.waterProbeArmed = waterProbeEnabled;
+            selectedPushSlot.waterProbeTerrain = terrain.streamingDiagnostics();
+            selectedPushSlot.waterProbeCpuFlags = flags;
+            if (waterProbeEnabled) {
+                // A valid bit from an older use of this slot must not masquerade as a current sample if a
+                // trace aborts before the centre pixel writes. The four-byte flush is harmless on coherent
+                // memory and correctly aligned by VMA otherwise.
+                MemoryUtil.memPutInt(selectedPushSlot.waterProbe.mapped + WaterMediumProbeData.FLAGS_OFFSET, 0);
+                selectedPushSlot.waterProbe.flush(WaterMediumProbeData.FLAGS_OFFSET, Integer.BYTES);
+            }
             // Block-breaking overlay: resolves each destroy-stage RenderType's texture into the
             // SAME bindless entity-texture array (destroy_stage_N.png is a standalone Sampler0 texture,
             // not a block-atlas sprite — see ModelBakery.BREAKING_LOCATIONS/DESTROY_TYPES), so any newly
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            // Coefficients remain CPU-visible; M16's source is reduced on the GPU later and is deliberately
+            // not read back into this frame-stats diagnostic (see logWaterCoefficients).
+            if (level != null) {
+                logWaterCoefficients(wtr, wtg, wtb);
+            }
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -933,7 +1403,18 @@ public final class RtComposite {
                     new Float4(terrain.lightGridOriginX(), terrain.lightGridOriginY(), terrain.lightGridOriginZ(), 16f),
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
-                    FluoriteConfig.Rt.Lights.RIS_CANDIDATES.value()
+                    FluoriteConfig.Rt.Lights.RIS_CANDIDATES.value(),
+                    fogParams(),
+                    fogExtinction(),
+                    fogScatter(),
+                    fogAux(),
+                    // Written by sky_medium_reduce.comp later in this command buffer. Initial zero is
+                    // deliberate: it prevents a stale prior-frame source if recording stops before bake.
+                    new Float4(0f, 0f, 0f, 0f),
+                    waterScatter(),
+                    waterAbsorbOverride(),
+                    waterAux(),
+                    visibilityGridOrigin(camX, camY, camZ, terrain)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -958,6 +1439,64 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // TLAS build visible to the trace
 
+            // The atmosphere's tables. recordBakeIfNeeded is a no-op after the first frame — nothing in
+            // the transmittance table depends on the time of day, since the sun's position enters where
+            // it is sampled rather than where it is baked. Bound only once the bake has been recorded, so
+            // the descriptor never names an image with undefined contents.
+            if (skyLuts == null) {
+                skyLuts = RtSky.create(ctx);
+            }
+            if (gpuTimers != null) {
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+            }
+            if (skyLuts.recordBakeIfNeeded(cmd)) {
+                // The sky-view bake below SAMPLES both tables the call above may have just written. On
+                // every frame after the first it is a no-op and this costs nothing; on the first frame it
+                // is the difference between reading the atmosphere and reading undefined memory, for one
+                // frame, which is exactly the kind of fault that gets attributed to the wrong milestone.
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
+            // The sky-view table, every frame. Its two inputs do not depend on the time of day and are
+            // baked once; this one does, because the sun's direction enters where it is BAKED rather than
+            // where it is sampled. Recorded unconditionally rather than on a change test: the sun moves
+            // every tick anyway, and a test that let one stale frame through would show as the sky
+            // lagging the sun, which is exactly the kind of fault nobody attributes correctly later.
+            skyLuts.recordSkyViewBake(cmd, sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(),
+                    FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value(),
+                    pushBuf.deviceAddress);
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);
+            }
+            // The froxel, after the sky-view table and after the push buffer it reads has been written.
+            // It follows the CAMERA as well as the sun, so per-frame is not a choice here at all.
+            skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
+            }
+            // The volumetric visibility grid (M13.2), which the froxel does NOT read — it casts its own
+            // rays, at its own view-adaptive sample positions, and is far denser near the eye than any
+            // uniform world grid could be. This one exists for the segments the froxel cannot cover: every
+            // bounce, whose fog was completely unshadowed until now.
+            //
+            // Its own timing zone. Sharing the froxel's would keep the one question this dispatch raises
+            // unanswerable: it and the froxel each cast a few hundred thousand rays a frame, they can be
+            // resized independently, and a single number covering both cannot say which resize to make.
+            //
+            // Gated on the same condition visibilityGridOrigin() publishes: with cell size 0 the origin's
+            // w is 0, every sampler returns unoccluded, and the bake used to run anyway — 131k rays all
+            // cast from the degenerate origin, paid every frame to fill a grid nobody would read. The
+            // timer zone stays unconditional so gpu.visBake reads ~0 rather than going stale.
+            if (FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
+                    && FluoriteConfig.Rt.Volumetrics.ENABLED.value()) {
+                skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
+
             // Push the BDA ring slot's address plus the small hot subset used directly by the shaders.
             // Every 64-bit device address the trace needs lives here, not behind worldPushAddr: the
             // section/entity/material tables are read from world.rahit/world.rchit, which never load
@@ -966,10 +1505,12 @@ public final class RtComposite {
             ByteBuffer pushConstants = stack.malloc(WorldPushConstantsData.BYTE_SIZE);
             new WorldPushConstantsData(pushBuf.deviceAddress, terrain.tableAddress(), fe.geomTableAddr(),
                     RtMaterialRegistry.INSTANCE.tableAddress(),
+                    RtMaterialRegistry.INSTANCE.extensionTableAddress(),
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
-                    (int) frameCounter, debugView).write(pushConstants);
+                    waterProbeEnabled ? selectedPushSlot.waterProbe.deviceAddress : 0L,
+                    (int) frameCounter, debugView, shadeFlags()).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 if (gpuTimers != null) {
@@ -1117,38 +1658,48 @@ public final class RtComposite {
         starAngle = probe.getValue(EnvironmentAttributes.STAR_ANGLE, partial) * (float) (Math.PI / 180.0);
         starBrightness = probe.getValue(EnvironmentAttributes.STAR_BRIGHTNESS, partial);
         dayFactor = smoothstep(-0.08f, 0.10f, sunY);
-        float[] trans = new float[3];
+        // What leaves here is the light's UNDYED peak: the atmosphere it crosses is applied on the GPU,
+        // from the transmittance table, by dyeCelestialLight at each stage's entry point. This used to be
+        // an 8-step march ported into Java (atmosphereTransmittance, now deleted) purely so the sun's
+        // disc, the sky gradient and the light on terrain could not disagree about a sunset. They still
+        // cannot; there is now one implementation instead of two kept in step by hand.
         if (sunY > -0.05f) {
-            // Sun stays the NEE light through the whole sunset: its colour/intensity is the atmosphere's
-            // own transmittance (same Rayleigh+Mie+ozone march as the sky shader — see
-            // atmosphereTransmittance), so it whitens overhead and reddens+dims into the horizon on
-            // exactly the curve the visible sky follows. The old hand-tuned warmth ramp switched to the
-            // moon at sunY == 0 while the sun was still at ~16% strength, which read as a hard light pop
-            // at sunset/sunrise; transmittance is already near zero at the horizon, and the short
-            // smoothstep below carries the remainder to exactly zero before the moon takes over.
-            atmosphereTransmittance(sunX, sunY, sunZ, trans);
+            // Sun stays the NEE light through the whole sunset. Its colour and fall-off ARE the
+            // atmosphere's transmittance, so it whitens overhead and reddens into the horizon on exactly
+            // the curve the visible sky follows. The old hand-tuned warmth ramp switched to the moon at
+            // sunY == 0 while the sun was still at ~16% strength, which read as a hard light pop; the
+            // transmittance is already near zero at the horizon and this short fade carries the remainder
+            // to exactly zero before the moon takes over.
             float fade = smoothstep(-0.05f, 0.005f, sunY);
             float sunPeak = 21.0f;
             lx = sunX; ly = sunY; lz = sunZ;
-            rr = sunPeak * trans[0] * fade;
-            rg = sunPeak * trans[1] * fade;
-            rb = sunPeak * trans[2] * fade;
+            rr = sunPeak * fade;
+            rg = sunPeak * fade;
+            rb = sunPeak * fade;
             lightRadius = FluoriteConfig.Rt.Composite.SUN_ANGULAR_RADIUS.value();
         } else {
             // Moon: dim cool light, ramping up from zero at the sun→moon handoff (sunY = -0.05, where
             // the sun fade also reaches zero) so the switch is invisible. Scaled by the lit fraction so
-            // a new moon gives near-zero moonlight, and tinted by the same transmittance so a low moon
-            // is warm amber, silver once high (or zero while it is below the horizon).
-            atmosphereTransmittance(moonX, moonY, moonZ, trans);
+            // a new moon gives near-zero moonlight. The warm-amber-when-low tint comes from the same
+            // table on the GPU — lightDir is the moon's direction in this branch, so the dye follows.
             float moonStrength = smoothstep(0.04f, 0.22f, -sunY);
             float litFraction = 1.0f - Math.abs(moonPhase - 4.0f) / 4.0f; // 0 new .. 1 full
             float moonPeak = 0.20f * (0.15f + 0.85f * litFraction);
             lx = moonX; ly = moonY; lz = moonZ;
-            rr = 0.30f * moonPeak * moonStrength * trans[0];
-            rg = 0.36f * moonPeak * moonStrength * trans[1];
-            rb = 0.55f * moonPeak * moonStrength * trans[2];
+            rr = 0.30f * moonPeak * moonStrength;
+            rg = 0.36f * moonPeak * moonStrength;
+            rb = 0.55f * moonPeak * moonStrength;
             lightRadius = FluoriteConfig.Rt.Composite.MOON_ANGULAR_RADIUS.value();
         }
+        // Art direction on the celestial light, applied to the peak before the GPU dyes it with the
+        // atmosphere. Both defaults are the identity, so a fresh install is the physics and nothing else.
+        // Here rather than in the shader because this is exactly the quantity the shader is handed: put it
+        // downstream and it would have to be applied at all eight sites that read lightRadiance.
+        float[] tint = FluoriteConfig.Rt.Sky.sunTint();
+        float artScale = FluoriteConfig.Rt.Sky.SUN_INTENSITY.value();
+        rr *= artScale * tint[0];
+        rg *= artScale * tint[1];
+        rb *= artScale * tint[2];
         CelestialUv uv = celestialUv(moonPhase);
         return new SkyPush(
                 new Float4(sunX, sunY, sunZ, dayFactor),
@@ -1211,42 +1762,10 @@ public final class RtComposite {
         return t * t * (3f - 2f * t);
     }
 
-    /**
-     * RGB transmittance from the camera to space along {@code dir} — a verbatim port of
-     * {@code world.rmiss}'s {@code transmittanceToSpace} (Rayleigh + Mie + ozone optical depth, 8-step
-     * march from 2 km altitude; constants must stay in lock-step with the shader). This is what colours
-     * the NEE sun/moonlight: because the sky shader tints its visible discs with the identical function,
-     * the light on terrain and the sky's sunset can never disagree. A direction below the geometric
-     * horizon accumulates enormous optical depth, so the result rolls to zero smoothly on its own —
-     * no explicit planet-shadow test needed.
-     */
-    private static void atmosphereTransmittance(float dx, float dy, float dz, float[] out) {
-        final double planetR = 6371000.0, atmosR = 6471000.0;
-        final double[] rayBeta = {5.5e-6, 13.0e-6, 22.4e-6};
-        final double mieBeta = 21.0e-6 * 1.1;
-        final double[] ozoneBeta = {0.650e-6, 1.881e-6, 0.085e-6};
-        final double oy = planetR + 2000.0;
-        // Larger root of ray vs atmosphere sphere, origin (0, oy, 0).
-        double b = oy * dy;
-        double tEnd = -b + Math.sqrt(Math.max(b * b - (oy * oy - atmosR * atmosR), 0.0));
-        double seg = tEnd / 8.0;
-        double odR = 0.0, odM = 0.0, odO = 0.0;
-        for (int i = 0; i < 8; i++) {
-            double t = seg * (i + 0.5);
-            double px = dx * t, py = oy + dy * t, pz = dz * t;
-            double h = Math.sqrt(px * px + py * py + pz * pz) - planetR;
-            odR += Math.exp(-h / 8000.0) * seg;
-            odM += Math.exp(-h / 1200.0) * seg;
-            odO += Math.max(0.0, 1.0 - Math.abs(h - 25000.0) / 15000.0) * seg;
-        }
-        for (int i = 0; i < 3; i++) {
-            out[i] = (float) Math.exp(-(rayBeta[i] * odR + mieBeta * odM + ozoneBeta[i] * odO));
-        }
-    }
-
     public void destroy() {
-        // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
-        // longer in flight and can be freed immediately.
+        // Teardown runs after the device is idle, so the TLAS ring's slots are no longer in flight and
+        // can be freed immediately. That wait is FluoriteLifecycle.shutdown's first act — it was named
+        // here as something CLIENT_STOPPING already did for years before anyone checked, and it did not.
         tlasRing.destroy();
         if (gpuTimers != null) {
             gpuTimers.destroy(RtContext.get());
@@ -1326,6 +1845,7 @@ public final class RtComposite {
             for (PushSlot slot : pushRing) {
                 if (slot != null) {
                     slot.buffer.destroy();
+                    slot.waterProbe.destroy();
                 }
             }
             pushRing = null;
@@ -1337,6 +1857,36 @@ public final class RtComposite {
             }
             atlasSampler = 0L;
         }
+    }
+
+    /**
+     * Sampler for the atmosphere LUTs: LINEAR + CLAMP_TO_EDGE, which the block-atlas sampler is not.
+     *
+     * <p>Both differences matter and neither is a preference. NEAREST would draw the 256x64 table's texel
+     * grid as banding across the sky — and the axis it bands along is the horizon gradient the table
+     * exists to get right. REPEAT would wrap the zenith round to the ground: the parameterisation puts
+     * the extremes of the sky at u = 0 and u = 1, so the one place wrapping is visible is the one place
+     * the answer changes fastest.
+     */
+    private long lutSampler(RtContext ctx) {
+        if (lutSampler == 0L) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
+                        .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                        .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .minLod(0f).maxLod(0f);
+                LongBuffer p = stack.mallocLong(1);
+                if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                    throw new IllegalStateException("vkCreateSampler(atmosphere LUT) failed");
+                }
+                lutSampler = p.get(0);
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, lutSampler, "atmosphere LUT sampler");
+            }
+        }
+        return lutSampler;
     }
 
     private long atlasSampler(RtContext ctx) {
@@ -1556,6 +2106,7 @@ public final class RtComposite {
         }
         if (sdrPresentImage == null || sdrPresentImage.width != swapW || sdrPresentImage.height != swapH) {
             if (sdrPresentImage != null) {
+                ctx.waitIdle(); // see ensureOutput: a resize must not free what an in-flight frame reads
                 sdrPresentImage.destroy();
             }
             sdrPresentImage = ctx.createStorageImage(swapW, swapH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -1659,6 +2210,7 @@ public final class RtComposite {
         }
         if (fgHudlessImage == null || fgHudlessImage.width != main.width || fgHudlessImage.height != main.height) {
             if (fgHudlessImage != null) {
+                ctx.waitIdle(); // see ensureOutput: a resize must not free what an in-flight frame reads
                 fgHudlessImage.destroy();
             }
             fgHudlessImage = ctx.createStorageImage(main.width, main.height, VK10.VK_FORMAT_R8G8B8A8_UNORM,
@@ -1698,6 +2250,7 @@ public final class RtComposite {
         }
         if (fgHdrHudlessImage == null || fgHdrHudlessImage.width != src.width || fgHdrHudlessImage.height != src.height) {
             if (fgHdrHudlessImage != null) {
+                ctx.waitIdle(); // see ensureOutput: a resize must not free what an in-flight frame reads
                 fgHdrHudlessImage.destroy();
             }
             fgHdrHudlessImage = ctx.createStorageImage(src.width, src.height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -1817,6 +2370,13 @@ public final class RtComposite {
         if (fgInterp.length == count && fgInterpW == w && fgInterpH == h && fgInterpFormat == fmt
                 && (count == 0 || fgInterp[0] != null)) {
             return;
+        }
+        boolean freeing = false;
+        for (RtImage img : fgInterp) {
+            freeing |= img != null;
+        }
+        if (freeing) {
+            ctx.waitIdle(); // see ensureOutput: a resize must not free what an in-flight frame reads
         }
         for (RtImage img : fgInterp) {
             if (img != null) {

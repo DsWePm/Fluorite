@@ -46,7 +46,15 @@ neoForge {
 				// Loads the fixed test world straight from the launch, so a digest or frameStats capture is
 				// one command rather than a command plus a human clicking through the menu. The cross-loader
 				// comparison only means anything if both sides open the same save at the same spawn.
-				programArguments.addAll("--quickPlaySingleplayer", "Shader Testing Java")
+				// -PbenchWorld selects a different save; see fabric/build.gradle and
+				// tools/bench-world.sh for why a capture world has to be restored, not reused.
+				programArguments.addAll("--quickPlaySingleplayer",
+						project.hasProperty("benchWorld") ? project.benchWorld : "Shader Testing Java")
+
+				// Same benchmark resolution override the Fabric side takes; see the comment there.
+				if (project.hasProperty("benchWidth") && project.hasProperty("benchHeight")) {
+					programArguments.addAll("--width", project.benchWidth, "--height", project.benchHeight)
+				}
 
 			// FML's early loading screen creates the window with an OpenGL context and hands that same
 			// window to Minecraft, so glfwCreateWindowSurface then refuses it:

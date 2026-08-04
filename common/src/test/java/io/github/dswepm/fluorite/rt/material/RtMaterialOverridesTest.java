@@ -6,10 +6,91 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class RtMaterialOverridesTest {
+    /**
+     * A format-1 file must keep meaning exactly what it meant.
+     *
+     * <p>This is the compatibility promise the whole material-import design rests on: an existing LabPBR
+     * pack, which cannot possibly mention Disney parameters, has to keep rendering identically after the
+     * format gains them. Absent parameters therefore have to be absent — not defaulted to something that
+     * happens to look similar — so the material gets no extension record and the shader takes the same
+     * path it always did.
+     */
+    @Test
+    void formatOneStaysLoadableAndAuthorsNoDisneyParameters() {
+        var rule = RtMaterialOverrides.parse(JsonParser.parseString("""
+                {"format":1,"match":{"sprite":"minecraft:block/stone"},
+                "base":{"roughness":0.4}}
+                """).getAsJsonObject(), Identifier.parse("test:fluorite/materials/stone.json"));
+        assertNull(rule.disney(), "a format-1 rule cannot express Disney parameters");
+
+        RtMaterialDesc base = neutralBase();
+        assertTrue(rule.apply(base).disney().absent(), "no record should be charged for it");
+        assertEquals(base.disney(), rule.apply(base).disney());
+    }
+
+    /** A rule that mentions only a tint expresses nothing, and must not be charged an extension record. */
+    @Test
+    void weightlessDisneyParametersDoNotEarnAnExtensionRecord() {
+        var rule = RtMaterialOverrides.parse(JsonParser.parseString("""
+                {"format":2,"match":{"sprite":"minecraft:block/stone"},
+                "sheen":{"tint":1.0}}
+                """).getAsJsonObject(), Identifier.parse("test:fluorite/materials/stone.json"));
+        assertEquals(1.0f, rule.disney().sheenTint());
+        assertTrue(rule.disney().absent(), "sheen tint without sheen amount expresses nothing");
+    }
+
+    @Test
+    void parsesTheDisneyBlocks() {
+        var rule = RtMaterialOverrides.parse(JsonParser.parseString("""
+                {"format":2,"match":{"sprite":"minecraft:block/oak_leaves"},
+                "sheen":{"amount":0.4,"tint":0.8},
+                "clearcoat":{"amount":0.25,"gloss":0.7},
+                "specular":{"tint":0.3},
+                "anisotropy":{"amount":-0.5},
+                "subsurface":{"weight":0.9,"phase":0.6,"radius":[0.5,0.3,0.2]}}
+                """).getAsJsonObject(), Identifier.parse("test:fluorite/materials/leaves.json"));
+        RtMaterialDesc.Disney d = rule.disney();
+        assertEquals(0.4f, d.sheen());
+        assertEquals(0.8f, d.sheenTint());
+        assertEquals(0.25f, d.clearcoat());
+        assertEquals(0.7f, d.clearcoatGloss());
+        assertEquals(0.3f, d.specularTint());
+        assertEquals(-0.5f, d.anisotropy());
+        assertEquals(0.9f, d.subsurfaceWeight());
+        assertEquals(0.6f, d.subsurfacePhaseG());
+        assertEquals(0.5f, d.subsurfaceRadiusR());
+        assertFalse(d.absent());
+
+        // Replaces rather than multiplies: nothing in any source format supplies a value to scale.
+        assertEquals(d, rule.apply(neutralBase()).disney());
+    }
+
+    @Test
+    void rejectsOutOfRangeDisneyParameters() {
+        assertThrows(IllegalArgumentException.class, () -> RtMaterialOverrides.parse(
+                JsonParser.parseString("""
+                        {"format":2,"match":{"sprite":"minecraft:block/stone"},
+                        "anisotropy":{"amount":2.0}}
+                        """).getAsJsonObject(), Identifier.parse("test:m.json")));
+        assertThrows(IllegalArgumentException.class, () -> RtMaterialOverrides.parse(
+                JsonParser.parseString("""
+                        {"format":2,"match":{"sprite":"minecraft:block/stone"},
+                        "subsurface":{"weight":0.5,"radius":[1.0,1.0]}}
+                        """).getAsJsonObject(), Identifier.parse("test:m.json")));
+    }
+
+    private static RtMaterialDesc neutralBase() {
+        return new RtMaterialDesc(RtMaterialRegistry.MODEL_OPAQUE, RtMaterialDesc.Source.LAB_PBR,
+                RtMaterialRegistry.FEATURE_SPEC, 0.8f, 0.0f, 1.0f, 0.0f,
+                RtMaterialDesc.EmissionSource.NONE, 0.0f,
+                RtMaterialDesc.EmissionSummary.NONE, RtMaterialDesc.Disney.NONE);
+    }
+
     @Test
     void parsesVersionedExtensibleMaterialProperties() {
         var rule = RtMaterialOverrides.parse(JsonParser.parseString("""
@@ -26,7 +107,8 @@ final class RtMaterialOverridesTest {
         RtMaterialDesc base = new RtMaterialDesc(RtMaterialRegistry.MODEL_OPAQUE,
                 RtMaterialDesc.Source.LAB_PBR, RtMaterialRegistry.FEATURE_SPEC,
                 0.8f, 0.0f, 1.0f, 0.0f, RtMaterialDesc.EmissionSource.LAB_PBR,
-                5.0f, new RtMaterialDesc.EmissionSummary(0.2f, 0.1f, 0.05f, 0.1f, 0.5f));
+                5.0f, new RtMaterialDesc.EmissionSummary(0.2f, 0.1f, 0.05f, 0.1f, 0.5f),
+                RtMaterialDesc.Disney.NONE);
         RtMaterialDesc applied = rule.apply(base);
         assertEquals(RtMaterialDesc.Source.OVERRIDE, applied.source());
         // emission.strength is a multiplier on the already-resolved strength: it scales LabPBR's own
@@ -42,7 +124,7 @@ final class RtMaterialOverridesTest {
     void transmissionIorOverridesTheBuiltInIndex() {
         RtMaterialDesc glassBase = new RtMaterialDesc(RtMaterialRegistry.MODEL_DIELECTRIC,
                 RtMaterialDesc.Source.HEURISTIC, 0, 0.0025f, 0.0f, RtDielectrics.GLASS_IOR, 1.0f,
-                RtMaterialDesc.EmissionSource.NONE, 0.0f, RtMaterialDesc.EmissionSummary.NONE);
+                RtMaterialDesc.EmissionSource.NONE, 0.0f, RtMaterialDesc.EmissionSummary.NONE, RtMaterialDesc.Disney.NONE);
         var rule = RtMaterialOverrides.parse(JsonParser.parseString("""
                 {"format":1,"match":{"sprite":"somemod:block/crystal"},
                 "model":"dielectric","transmission":{"ior":2.417}}
@@ -65,7 +147,7 @@ final class RtMaterialOverridesTest {
                 """).getAsJsonObject(), Identifier.parse("test:fluorite/materials/pool.json"));
         RtMaterialDesc base = new RtMaterialDesc(RtMaterialRegistry.MODEL_OPAQUE,
                 RtMaterialDesc.Source.HEURISTIC, 0, 0.8f, 0.0f, 1.0f, 0.0f,
-                RtMaterialDesc.EmissionSource.NONE, 0.0f, RtMaterialDesc.EmissionSummary.NONE);
+                RtMaterialDesc.EmissionSource.NONE, 0.0f, RtMaterialDesc.EmissionSummary.NONE, RtMaterialDesc.Disney.NONE);
         RtMaterialDesc applied = rule.apply(base);
         assertEquals(RtMaterialRegistry.MODEL_WATER, applied.model());
         assertEquals(RtDielectrics.WATER_IOR, applied.ior());
@@ -80,7 +162,7 @@ final class RtMaterialOverridesTest {
                 """).getAsJsonObject(), Identifier.parse("test:boost.json"));
         RtMaterialDesc base = new RtMaterialDesc(RtMaterialRegistry.MODEL_OPAQUE,
                 RtMaterialDesc.Source.HEURISTIC, 0, 0.8f, 0.0f, 1.0f, 0.0f,
-                RtMaterialDesc.EmissionSource.NONE, 0.0f, RtMaterialDesc.EmissionSummary.NONE);
+                RtMaterialDesc.EmissionSource.NONE, 0.0f, RtMaterialDesc.EmissionSummary.NONE, RtMaterialDesc.Disney.NONE);
 
         RtMaterialDesc applied = rule.apply(base);
 
@@ -90,8 +172,13 @@ final class RtMaterialOverridesTest {
 
     @Test
     void rejectsUnknownVersionsAndOutOfRangePhysicalValues() {
+        // A version this build does not know about. Anything up to FORMAT is accepted, because an older
+        // file still means what it meant — see formatOneStaysLoadableAndAuthorsNoDisneyParameters.
         assertThrows(IllegalArgumentException.class, () -> RtMaterialOverrides.parse(
-                JsonParser.parseString("{\"format\":2,\"match\":{\"sprite\":\"minecraft:block/stone\"}}")
+                JsonParser.parseString("{\"format\":99,\"match\":{\"sprite\":\"minecraft:block/stone\"}}")
+                        .getAsJsonObject(), Identifier.parse("test:bad.json")));
+        assertThrows(IllegalArgumentException.class, () -> RtMaterialOverrides.parse(
+                JsonParser.parseString("{\"format\":0,\"match\":{\"sprite\":\"minecraft:block/stone\"}}")
                         .getAsJsonObject(), Identifier.parse("test:bad.json")));
         assertThrows(IllegalArgumentException.class, () -> RtMaterialOverrides.parse(
                 JsonParser.parseString("{\"format\":1,\"match\":{\"sprite\":\"minecraft:block/stone\"},"

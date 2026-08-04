@@ -19,8 +19,10 @@ import math;
 [[vk::binding(3, 1)]] Sampler2D materialSurface1Tex[];
 
 void payloadSetPacked(inout Payload payload, uint material, float roughness, float metalness,
-        float emission, float sss, float ior, float transmission, uint emissionSource) {
-    payload.flags = material | (emissionSource << PAYLOAD_EMISSION_SOURCE_SHIFT);
+        float emission, float sss, float ior, float transmission, uint emissionSource,
+        uint extensionIndex) {
+    payload.flags = material | (emissionSource << PAYLOAD_EMISSION_SOURCE_SHIFT)
+            | ((extensionIndex & PAYLOAD_EXTENSION_MASK) << PAYLOAD_EXTENSION_SHIFT);
     payload.roughMetal = packHalf2(float2(roughness, metalness));
     payload.emissionSss = packHalf2(float2(emission, sss));
     payload.iorTransmission = packHalf2(float2(ior, transmission));
@@ -86,18 +88,38 @@ float rayConeUnitUvLod(uint rayCone, float2 textureSizePx) {
 // don't invert it through the surface (the black-spot fix). Returns AO (blue) via `ao`; falls back to
 // `n` on a degenerate UV triangle. Instance transforms are translation-only, so object edges equal
 // world edges.
-float3 perturbNormal(float3 n, float3 p0, float3 p1, float3 p2, float2 t0, float2 t1, float2 t2, float3 vdir, float4 ntex, out float ao) {
-    ao = 1.0;
+/**
+ * The direction texture U increases in, projected onto the shading plane.
+ *
+ * Two things want this and they must agree: the normal map decodes in this basis, and an anisotropic
+ * streak runs along it. One derivation, so a pack cannot end up with a highlight stretched across the
+ * grain of its own normal map. Returns the zero vector for a degenerate UV triangle.
+ */
+float3 uvTangent(float3 n, float3 p0, float3 p1, float3 p2,
+                 float2 t0, float2 t1, float2 t2, out float handedness) {
+    handedness = 1.0;
     float2 g1 = t1 - t0;
     float2 g2 = t2 - t0;
     float det = g1.x * g2.y - g1.y * g2.x;
     if (abs(det) <= 1.0e-12) {
-        return n;
+        return float3(0.0, 0.0, 0.0);
     }
     float r = 1.0 / det;
     float3 traw = ((p1 - p0) * g2.y - (p2 - p0) * g1.y) * r;
-    float3 T = normalize(traw - n * dot(n, traw));       // Gram-Schmidt against the viewer-oriented normal
-    float3 B = cross(n, T) * (det < 0.0 ? -1.0 : 1.0);   // handedness from the UV winding
+    handedness = det < 0.0 ? -1.0 : 1.0;                 // from the UV winding
+    float3 t = traw - n * dot(n, traw);                  // Gram-Schmidt against the viewer-oriented normal
+    float len2 = dot(t, t);
+    return len2 > 1.0e-12 ? t * rsqrt(len2) : float3(0.0, 0.0, 0.0);
+}
+
+float3 perturbNormal(float3 n, float3 p0, float3 p1, float3 p2, float2 t0, float2 t1, float2 t2, float3 vdir, float4 ntex, out float ao) {
+    ao = 1.0;
+    float handedness;
+    float3 T = uvTangent(n, p0, p1, p2, t0, t1, t2, handedness);
+    if (dot(T, T) <= 0.0) {
+        return n;
+    }
+    float3 B = cross(n, T) * handedness;
     float2 nxy = ntex.xy * 2.0 - 1.0;                    // R,G = tangent-space X,Y
     float nz = sqrt(max(0.0, 1.0 - dot(nxy, nxy)));      // reconstruct Z
     float3 nm = normalize(nxy.x * T + nxy.y * B + nz * n);
@@ -111,6 +133,7 @@ float3 perturbNormal(float3 n, float3 p0, float3 p1, float3 p2, float2 t0, float
 
 struct Surface {
     float3 normal;
+    float3 tangent;   // UV-space, on the shading plane; zero when the UV triangle is degenerate
     float3 f0;
     float roughness;
     float metalness;
@@ -138,6 +161,8 @@ Surface evaluateMaterial(MaterialHeader header, float2 atlasUv, float lod, float
         float fallbackRoughness, float fallbackMetalness, float fallbackEmission, bool allowSss) {
     Surface surface;
     surface.normal = geometricNormal;
+    float tangentHandedness;
+    surface.tangent = uvTangent(geometricNormal, p0, p1, p2, uv0, uv1, uv2, tangentHandedness);
     surface.roughness = fallbackRoughness;
     surface.metalness = fallbackMetalness;
     surface.f0 = lerp(float3(0.04, 0.04, 0.04), albedo, fallbackMetalness);
@@ -155,8 +180,15 @@ Surface evaluateMaterial(MaterialHeader header, float2 atlasUv, float lod, float
         float4 surface0 = samplePageSurface0(page, pageUv, materialLod);
         if ((header.features & MATERIAL_FEATURE_SPEC) != 0u) {
             float4 surface1 = samplePageSurface1(page, pageUv, materialLod); // LabPBR F0
-            surface.roughness = surface0.r;
-            surface.metalness = surface0.g;
+            // A channel the pack named in its material JSON keeps the JSON value; everything else takes
+            // the decoded texture. See MATERIAL_FEATURE_ROUGHNESS_AUTHORED for why the JSON outranks the
+            // _s texture rather than the other way round.
+            if ((header.features & MATERIAL_FEATURE_ROUGHNESS_AUTHORED) == 0u) {
+                surface.roughness = surface0.r;
+            }
+            if ((header.features & MATERIAL_FEATURE_METALNESS_AUTHORED) == 0u) {
+                surface.metalness = surface0.g;
+            }
             surface.emission = surface0.b;
             surface.sss = allowSss ? surface0.a : 0.0;
             surface.f0 = surface1.rgb;
@@ -256,7 +288,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         }
         payload.f0 = half3(0.0h, 0.0h, 0.0h);
         payloadSetPacked(payload, MATERIAL_PARTICLE, 1.0, 0.0, 0.0, 0.0,
-                1.0, 0.0, EMISSION_SOURCE_NONE);
+                1.0, 0.0, EMISSION_SOURCE_NONE, 0u); // particles carry no material record
         return;
     }
     // Dynamic entities: instances with this custom-index flag bit carry real captured ModelPart
@@ -322,7 +354,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float sss = material == MATERIAL_OPAQUE ? surface.sss : 0.0;
         payloadSetPacked(payload, material, surface.roughness, surface.metalness,
                 emission, sss, header.params.z, header.params.w,
-                materialEmissionSource(header, emission));
+                materialEmissionSource(header, emission), header.extensionOffset);
+        // Measured against the normal that was just written, which is what raygen rebuilds the
+        // reference frame from. Free: an angle in bits nobody was using, not a vector in the payload.
+        payload.flags |= packTangentAzimuth(n, surface.tangent);
         payloadSetDielectric(payload, material, entering);
         return;
     }
@@ -391,7 +426,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         payload.f0 = half3(glassSurface.f0);
         payloadSetPacked(payload, MATERIAL_DIELECTRIC, glassSurface.roughness,
                 glassSurface.metalness, 0.0, 0.0, materialHeader.params.z,
-                materialHeader.params.w, EMISSION_SOURCE_NONE);
+                materialHeader.params.w, EMISSION_SOURCE_NONE, materialHeader.extensionOffset);
         payloadSetDielectric(payload, MATERIAL_DIELECTRIC, entering);
         return;
     }
@@ -410,9 +445,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     float ew = pr.normal.w;
     bool nonSolid = ew >= 1.5;
     float emission = nonSolid ? ew - 2.0 : ew; // heuristic emission source (block light level)
+    // SOLID blocks were excluded from subsurface outright; see SHADE_SOLID_LAYER_SSS for why that is
+    // both where the effect is most wanted and where a pack can most easily surprise you.
+    bool allowSss = nonSolid || (pc.shadeFlags & SHADE_SOLID_LAYER_SSS) != 0u;
     Surface surface = evaluateMaterial(materialHeader, uv, blockLod, float3(payload.albedo), n,
             tp0, tp1, tp2, uv0, uv1, uv2, vdir,
-            materialHeader.params.x, materialHeader.params.y, emission, nonSolid);
+            materialHeader.params.x, materialHeader.params.y, emission, allowSss);
     n = surface.normal;
     payload.albedo *= half(surface.ao);
     // Block-breaking overlay: opaque/cutout terrain (water skips — fluids aren't breakable). Evaluate
@@ -424,7 +462,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     payload.f0 = half3(surface.f0);
     payloadSetPacked(payload, material, surface.roughness, surface.metalness,
             surface.emission, surface.sss, materialHeader.params.z, materialHeader.params.w,
-            materialEmissionSource(materialHeader, surface.emission));
+            materialEmissionSource(materialHeader, surface.emission), materialHeader.extensionOffset);
     payloadSetDielectric(payload, material, entering);
     // RIS emitter-NEE membership: raygen gates this emitter's direct-hit emission term (RIS covers it).
     if ((pr.flags & TERRAIN_PRIM_IN_LIGHT_BUFFER) != 0u) {

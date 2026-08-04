@@ -59,7 +59,10 @@ public final class FluoriteConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
-            Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST,
+            Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
+            Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
+            Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.ABSORB_OVERRIDE,
+            Rt.Water.SCATTER_R,
         };
     }
 
@@ -104,6 +107,30 @@ public final class FluoriteConfig {
                         + " grid are always active whenever RIS is on. min-fill-ratio drops emissive footprints\n"
                         + " below that fraction of their bounding rectangle (speckle/sparse crossed planes), so\n"
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
+        FILE.setComment("volumetrics",
+                " The world's ambient participating medium — the fog every path is inside, as opposed\n"
+                        + " to the water and glass a path enters through geometry. density-scale multiplies\n"
+                        + " the active dimension's density preset; the legacy-named intensity-scale is now\n"
+                        + " a 0..1 multiplier over its physical scattering albedo. cull-distance bounds how far a segment keeps\n"
+                        + " accumulating fog. scatter-tint is one of: neutral, warm, cool, green, violet.");
+        FILE.setComment("bsdf",
+                " Surface response. sun-mis weights the two ways the sun and moon are estimated —\n"
+                        + " next-event estimation toward the light, and a continuation ray landing on it —\n"
+                        + " against each other instead of summing them. Only materials smoother than\n"
+                        + " roughness ~0.006 are affected; mirrors are untouched by construction.\n"
+                        + " anisotropy stretches the specular highlight along the surface tangent for\n"
+                        + " materials that author anisotropy.amount; everything else is unaffected.\n"
+                        + " subsurface-solid-layer lets ordinary (SOLID-layer) blocks carry LabPBR\n"
+                        + " subsurface; turn it off if a pack's _s alpha makes plain blocks look waxy.\n"
+                        + " subsurface-mode is off | thin | random-walk. thin is the cheap surface\n"
+                        + " approximation; random-walk actually walks the photon through the medium and\n"
+                        + " costs one traversal per scattering event. subsurface-max-events bounds that\n"
+                        + " walk — running out falls back to a diffuse bounce rather than losing energy.");
+        FILE.setComment("water",
+                " Enclosed participating media. Scattering and optional absorption overrides each have\n"
+                        + " a strength (the arithmetic-mean coefficient per block) and an RGB colour shape;\n"
+                        + " changing colour does not change strength. phase-g is forward-scattering\n"
+                        + " anisotropy: positive puts a halo around the sun seen from underwater.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -144,6 +171,24 @@ public final class FluoriteConfig {
 
     private static String fileString(String tomlPath) {
         return FILE.contains(tomlPath) ? FILE.<String>get(tomlPath) : null;
+    }
+
+    /**
+     * Put every setting back to the value the code ships with.
+     *
+     * <p>Generic over the whole registry rather than a method on each setting class, because the
+     * interface already exposes both halves of the operation. A {@code -Dfluorite.*} override is
+     * deliberately NOT consulted: this is the button a player presses after an evening of tuning, and it
+     * should land somewhere predictable rather than somewhere that depends on how the game was launched.
+     */
+    public static void resetAllToDefaults() {
+        for (RuntimeSetting<?> setting : SETTINGS) {
+            resetOne(setting);
+        }
+    }
+
+    private static <T> void resetOne(RuntimeSetting<T> setting) {
+        setting.set(setting.defaultValue());
     }
 
     public interface RuntimeSetting<T> {
@@ -575,6 +620,608 @@ public final class FluoriteConfig {
         }
 
         /** RIS block-emitter lights. {@code ris-candidates = 0} disables everything. */
+        /**
+         * The world's ambient participating medium: the fog every path is inside at all times, as opposed
+         * to the water and glass a path enters through geometry.
+         *
+         * <p>These are global multipliers over whatever the active dimension asks for, not the values
+         * themselves. Per-dimension character belongs in a preset; what belongs here is the player's
+         * ability to want more or less of it than the preset chose.
+         */
+        public static final class Volumetrics {
+            public static final BooleanSetting ENABLED =
+                    bool("fluorite.rt.fog.enabled", "volumetrics.enabled", true);
+
+            /** Exponential height fog: the analytic term, evaluated per segment with no marching. */
+            public static final BooleanSetting HEIGHT_FOG =
+                    bool("fluorite.rt.fog.heightFog", "volumetrics.height-fog", true);
+
+            /** Scales the preset's density. 1 is the preset as authored. */
+            public static final FloatSetting DENSITY_SCALE =
+                    clampedFloat("fluorite.rt.fog.densityScale", "volumetrics.density-scale", 1.0f, 0.0f, 10.0f);
+
+            /**
+             * Multiplies the preset's single-scattering albedo. The external keys retain their legacy
+             * intensity name so existing configs migrate by clamping instead of silently resetting.
+             */
+            public static final FloatSetting ALBEDO_SCALE =
+                    clampedFloat("fluorite.rt.fog.intensityScale", "volumetrics.intensity-scale", 1.0f, 0.0f, 1.0f);
+
+            /**
+             * Blocks in front of the eye that stay clear. Fog starts accumulating past this, which keeps
+             * the near field readable instead of veiling the whole screen uniformly.
+             */
+            public static final FloatSetting START_DISTANCE =
+                    clampedFloat("fluorite.rt.fog.startDistance", "volumetrics.start-distance", 16.0f, 0.0f, 512.0f);
+
+            /** Blocks beyond which a segment stops accumulating fog. Distant terrain stays readable. */
+            public static final FloatSetting CULL_DISTANCE =
+                    clampedFloat("fluorite.rt.fog.cullDistance", "volumetrics.cull-distance", 512.0f, 16.0f, 4096.0f);
+
+            /** Height in blocks over which the density falls by a factor of e. */
+            public static final FloatSetting HEIGHT_SCALE =
+                    clampedFloat("fluorite.rt.fog.heightScale", "volumetrics.height-scale", 48.0f, 1.0f, 512.0f);
+
+            /**
+              * World height the layer sits at. The density holds steady at and below this, and falls off
+              * above it with HEIGHT_SCALE, so this is what moves the fog rather than reshaping it.
+              */
+            public static final FloatSetting HEIGHT_BASE =
+                    clampedFloat("fluorite.rt.fog.heightBase", "volumetrics.height-base", 62.0f, -64.0f, 320.0f);
+
+            /**
+             * Scattering tint, as a named hue. Not a colour picker: the settings UI has no colour control,
+             * and an exact RGB belongs in the dimension preset rather than in a per-player override.
+             */
+            public static final StringSetting SCATTER_TINT =
+                    string("fluorite.rt.fog.scatterTint", "volumetrics.scatter-tint", "neutral",
+                            Volumetrics::sanitizeTint);
+
+            /**
+             * Forward-scattering anisotropy of the sun lobe. Positive values put a glow around the sun,
+             * which is most of what makes fog read as lit rather than as a grey wash.
+             */
+            public static final FloatSetting PHASE_G =
+                    clampedFloat("fluorite.rt.fog.phaseG", "volumetrics.phase-g", 0.55f, -0.9f, 0.9f);
+
+            /**
+             * Which segments of a path are allowed to add fog in-scatter: {@code both}, {@code froxel},
+             * {@code marched}, {@code none}.
+             *
+             * <p>A measurement switch, like {@link Water#SCATTER_SOURCE}, and it exists because the fog's
+             * in-scatter now comes from two machines with two different occlusion models. The camera's
+             * prefix segment reads the froxel, which resolves sun and sky visibility per world-space cell.
+             * Every other segment — every bounce — still runs the closed form in {@code integrateSegment},
+             * which has no occlusion at all. The two are added together on screen, so "the fog indoors is
+             * too bright" cannot be attributed to either by looking at it.
+             *
+             * <p>{@code froxel} silences the marched half and {@code marched} silences the froxel half.
+             * Neither touches extinction, so what a segment hides stays exactly as it was and only what it
+             * emits moves — the same separation of "too bright" from "too opaque" the water switch makes.
+             */
+            public static final StringSetting SEGMENT_SOURCE =
+                    string("fluorite.rt.fog.segmentSource", "volumetrics.segment-source", "both",
+                            Volumetrics::sanitizeSegmentSource);
+
+            private static String sanitizeSegmentSource(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "froxel", "marched", "none" -> v;
+                    default -> "both";
+                };
+            }
+
+            /**
+             * Cell size of the volumetric visibility grid, in blocks. 0 turns the grid off entirely and
+             * restores the unshadowed fog exactly.
+             *
+             * <p>The grid's CELL COUNT is fixed (it is a texture's dimensions, 64x32x64), so this is the
+             * one dial and it trades reach against leakage: at 1 block the grid reaches 32 blocks
+             * horizontally and 16 vertically from the camera, at 2 blocks twice that in each axis. Beyond
+             * it the fog falls back to unshadowed, faded in rather than cut, so the choice is where the
+             * shadowing stops rather than whether it looks wrong somewhere.
+             *
+             * <p><b>One is the default, and the step from 2 to 1 is a change in kind rather than in
+             * degree.</b> Trilinear filtering blends the eight nearest cells, so light leaks inward from
+             * outside a wall unless a cell of its own sits in the way. At 2 blocks a one-block wall is
+             * thinner than a cell and cannot hold one, so the interpolation runs straight from "inside the
+             * room" to "outside the house" — measured exactly that way: a shell of single dirt blocks lit
+             * the fog inside it, and doubling the wall to two blocks (one cell) stopped it dead.
+             *
+             * <p>At 1 block the lattice lands on block CENTRES rather than block corners, which is the
+             * property that does the work: every solid block then holds a cell of its own, that cell's
+             * rays leave from inside the block and hit its own faces, and it reads occluded. A sample
+             * point in the room blends room cells and wall cells and can never reach an outside one. Even
+             * cell sizes cannot have this property at all — their centres fall on block boundaries by
+             * construction, which is the worst place to sample a one-block wall from.
+             *
+             * <p>Eight was measured and is useless, which is where this line of work started: that was the
+             * coarse CPU sky-light grid, whose cells are taller than a house, so the cell holding a sealed
+             * room also held the open sky above its roof and averaged to open.
+             *
+             * <p>Turning it off is not the same as turning fog scattering off: extinction is untouched, so
+             * what the fog HIDES is identical either way and only the shadowing moves.
+             */
+            public static final FloatSetting VISIBILITY_CELL_SIZE =
+                    clampedFloat("fluorite.rt.fog.visibilityCellSize", "volumetrics.visibility-cell-size",
+                            1.0f, 0.0f, 16.0f);
+
+            /**
+             * Most sub-steps a marched segment may split its ambient in-scatter into, one visibility
+             * sample each.
+             *
+             * <p>A CAP, not a count. The step length is the grid's cell size, because sampling a grid
+             * finer than its cells tells you nothing it can represent and sampling it coarser throws away
+             * resolution the rays already paid for. A short segment therefore takes as many steps as it
+             * has cells to cross and stops; only a long one reaches this limit, and past it the steps
+             * grow rather than the count.
+             *
+             * <p>This exists as a dial because it is the one candidate for soft light shafts that can be
+             * separated from the other two by moving it. Grid resolution and the denoiser also blur a
+             * shaft, and all three arguments are equally plausible written down — raising this and seeing
+             * nothing change rules it out in one look, which no amount of reasoning about it does.
+             */
+            public static final IntSetting VISIBILITY_MAX_STEPS =
+                    intValue("fluorite.rt.fog.visibilityMaxSteps", "volumetrics.visibility-max-steps", 6);
+
+            /**
+             * Jittered shadow rays the fog's SUN term gets per marched segment. 0 keeps it on the
+             * visibility grid.
+             *
+             * <p>The grid cannot carry a light shaft and this is measured, not assumed: debug view 19
+             * plots sun visibility along a scanline from the grid and from a ray at the same points, and
+             * indoors the grid reaches 0 in shadow but only 0.5 where the truth is 1, with a ramp where
+             * the truth is a step. Trilinear blends the eight nearest cells and every indoor sample is
+             * within one cell of a wall, so the lit peak is averaged down whatever the cell size.
+             *
+             * <p>The SKY term stays on the grid regardless. It is genuinely low frequency — a room is
+             * dark, a hillside is not — so it needs no edge, and it is 0.072 ms for the whole field.
+             * Splitting the two by their frequency content is the point.
+             *
+             * <p><b>Default 1, and both halves of that are measured.</b> Cost, from flipping this knob at
+             * a fixed camera position inside one session: 2 rays cost 2.0 +/- 0.2 ms of
+             * {@code gpu.traceIndirect} (17.5 against 15.5, +13%), and the reading is trustworthy because
+             * the third plateau returned to the first within 0.2 ms. Benefit: 1 and 2 are hard to tell
+             * apart, and both are visibly better than the grid. So 1 buys the whole visible difference for
+             * about half the cost.
+             *
+             * <p>One sample per pixel per frame is not a compromise here, it is the regime this kind of
+             * renderer is built for: the estimator is unbiased and DLSS-RR already accumulates temporally,
+             * which is exactly how production path tracers shade volumetrics. The falsification test for
+             * that claim is in sunInScatterStochastic and it has been run — with the denoiser off the
+             * result is noise, not the blocky bias M9 measured.
+             */
+            public static final IntSetting SUN_SHADOW_RAYS =
+                    intValue("fluorite.rt.fog.sunShadowRays", "volumetrics.sun-shadow-rays", 1);
+
+            /**
+             * Let light reaching a scattering point decay at the DIFFUSION rate instead of the beam's.
+             *
+             * <p>Fixes two symptoms that look unrelated and are one bug. Dense fog goes black instead of
+             * turning into a bright formless glow, and deep water goes black instead of settling to a
+             * water colour. Both come from single scattering treating every scattering event as a loss
+             * to the source -- but scattering removes light from the BEAM, not from the MEDIUM.
+             *
+             * <p>The coefficient is the diffusion approximation's K, derived rather than fitted (see
+             * volume.slang diffuseAttenuation). At the water's default turbidity that is about 0.39 times
+             * the extinction, so the source reaches two and a half times deeper than the beam.
+             *
+             * <p>Off reproduces the previous behaviour exactly, which is what makes it an A/B rather than
+             * a tuning dial.
+             */
+            public static final BooleanSetting MULTI_SCATTER =
+                    bool("fluorite.rt.fog.multiScatter", "volumetrics.multi-scatter", true);
+
+            /** Bits 23-25 of worldPush.flags. */
+            public static int sunShadowRays() {
+                return Math.clamp(SUN_SHADOW_RAYS.value(), 0, 7);
+            }
+
+            /** Bits 18-22 of worldPush.flags. Clamped so a bad config cannot unroll a raygen loop. */
+            public static int visibilityMaxSteps() {
+                return Math.clamp(VISIBILITY_MAX_STEPS.value(), 1, 31);
+            }
+
+            /** Bits 16-17 of worldPush.flags: 0 both, 1 froxel only, 2 marched only, 3 neither. */
+            public static int segmentSourceId() {
+                return switch (SEGMENT_SOURCE.get()) {
+                    case "froxel" -> 1;
+                    case "marched" -> 2;
+                    case "none" -> 3;
+                    default -> 0;
+                };
+            }
+
+            private static String sanitizeTint(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "neutral", "warm", "cool", "green", "violet" -> v;
+                    default -> "neutral";
+                };
+            }
+
+            /** Linear RGB for the named tint. Kept beside the names so the two cannot drift. */
+            public static float[] scatterTintRgb() {
+                return switch (SCATTER_TINT.get()) {
+                    case "warm" -> new float[] {1.00f, 0.86f, 0.68f};
+                    case "cool" -> new float[] {0.72f, 0.82f, 1.00f};
+                    case "green" -> new float[] {0.72f, 0.92f, 0.74f};
+                    case "violet" -> new float[] {0.84f, 0.74f, 1.00f};
+                    default -> new float[] {0.92f, 0.94f, 0.96f};
+                };
+            }
+
+            private Volumetrics() {
+            }
+        }
+
+        /** Surface response: which parts of the Disney model are active, and how they are estimated. */
+        public static final class Bsdf {
+            /**
+             * Multiple importance sampling for the sun and moon.
+             *
+             * <p>The celestial light is estimated twice at every glossy vertex — once by next-event
+             * estimation toward it, once by whatever the continuation lobe happens to hit — and without
+             * a weight the two are summed, which counts it twice. It was held in check by an epsilon in
+             * the GGX denominator that clamped every specular peak in the renderer; with this on, the
+             * clamp is gone and each estimate is weighted by the density of the strategy that produced
+             * it.
+             *
+             * <p>Only materials smoother than roughness ~0.006 change, since that is where a lobe gets
+             * tight enough to compete with the light's own angular size. Mirrors are untouched by
+             * construction: a delta lobe has no finite density, contributes no specular next-event term,
+             * and keeps reflecting the drawn sprite exactly as before. Off restores the summation, for
+             * comparing the two.
+             */
+            public static final BooleanSetting MIS_ENABLED =
+                    bool("fluorite.rt.bsdf.sunMis", "bsdf.sun-mis", true);
+
+            /**
+             * The anisotropic specular lobe.
+             *
+             * <p>Stretches the highlight along the surface tangent, which is what brushed metal, satin
+             * and hair look like. Costs nothing on a material that authored no {@code anisotropy}: the
+             * lobe collapses to the isotropic one exactly, and the shading context takes an early
+             * return rather than decoding a tangent.
+             *
+             * <p>Default on, unlike the original plan. That plan reasoned there was no authoring channel
+             * for it, so the feature could only ever cost. There is one now — {@code anisotropy.amount}
+             * in a material JSON — and a material that does not use it is unaffected either way, so the
+             * switch exists to A/B the lobe rather than to keep it off.
+             */
+            public static final BooleanSetting ANISOTROPY_ENABLED =
+                    bool("fluorite.rt.bsdf.anisotropy", "bsdf.anisotropy", true);
+
+            /**
+             * Let the SOLID terrain layer carry subsurface scattering.
+             *
+             * <p>Terrain extraction marks non-SOLID (cutout/translucent) quads, and the hit shader has
+             * been using that marker to zero the LabPBR subsurface channel for everything else — so
+             * quartz, smooth stone and every ordinary block were excluded. That is precisely where a
+             * BSSRDF earns its cost: the materials people expect light to seep through are mostly SOLID.
+             *
+             * <p>On by default, but the switch is not ceremonial. LabPBR keeps subsurface in the alpha of
+             * the {@code _s} texture, and a pack that never meant to use it can leave anything there;
+             * opening this makes whatever they left visible as translucency on ordinary blocks. If a pack
+             * suddenly looks waxy, this is the first thing to turn off.
+             */
+            /**
+             * Modelled thickness of the thin-shell subsurface slab. 1 is exactly today's behaviour.
+             *
+             * <p><b>Added as a calibration instrument with an explicit end state to decide.</b> The thin
+             * shell is the default subsurface path after M8 (the random walk is correct but lands at
+             * 1.612x the trace budget against a 1.5x gate, so it stays opt-in), which makes its look
+             * worth tuning by eye against the real renderer instead of by editing two constants and
+             * rebuilding. When a value is settled, ONE of two things must happen deliberately:
+             *
+             * <ul>
+             *   <li>fold it into SSS_STRENGTH and SSS_G in math.slang and delete this setting, its UI
+             *       row and its lang keys — the default if it turns out one number suits everything; or
+             *   <li>keep it as an art-direction control, in which case its home is the TOML / dimension
+             *       preset surface rather than the video settings screen, alongside the other authored
+             *       appearance values (see M14).
+             * </ul>
+             *
+             * <p>What must not happen is neither: a knob left in the UI after its purpose is served is
+             * how a settings screen fills with rows nobody can explain, and this one is doubly
+             * misleading because it looks like a material property when it is really two hardcoded
+             * constants wearing a disguise.
+             *
+             * <p>One number for two effects because thickness drives both, and separate sliders would
+             * let someone build a slab that cannot exist — very thick yet still sharply forward
+             * scattering, which reads as glowing through without diffusing. Thicker transmits less and
+             * scatters more isotropically; thinner is brighter and more directional, like a petal.
+             */
+            public static final FloatSetting SUBSURFACE_THICKNESS =
+                    clampedFloat("fluorite.rt.bsdf.subsurfaceThickness", "bsdf.subsurface-thickness",
+                            1.0f, 0.05f, 5.0f);
+
+            public static final BooleanSetting SUBSURFACE_SOLID_LAYER =
+                    bool("fluorite.rt.bsdf.subsurfaceSolidLayer", "bsdf.subsurface-solid-layer", true);
+
+            /**
+             * How subsurface scattering is estimated: {@code off}, {@code thin}, or {@code random-walk}.
+             *
+             * <p>{@code thin} is the shipping approximation — one forward-biased phase term across the
+             * surface, no interior at all. It is cheap, it looks right on a backlit leaf, and it has
+             * nothing to say about a block with volume.
+             *
+             * <p>{@code random-walk} adds a real walk through the medium as a continuation lobe: the
+             * photon enters, scatters until it finds a way out, and leaves somewhere else. That is what
+             * gives quartz depth rather than a painted-on glow. It costs one traversal per scattering
+             * event, which is why the budget below exists.
+             *
+             * <p>Default {@code thin}. The walk is opt-in until it has been measured on more than one
+             * machine — see the note on Turing in the plan: the extension is exposed there but the
+             * hardware behind it is not, so short incoherent rays cost what they say they cost.
+             */
+            public static final StringSetting SUBSURFACE_MODE =
+                    string("fluorite.rt.bsdf.subsurfaceMode", "bsdf.subsurface-mode", "thin",
+                            Bsdf::sanitizeSubsurfaceMode);
+
+            /**
+             * Scattering events one walk may take before it gives up.
+             *
+             * <p>This is the performance lever, and it is meant to be turned. Cost is very close to
+             * linear in it, because each event is one traversal. Running out does NOT truncate the
+             * energy — the path falls back to an ordinary diffuse bounce — so lowering it trades
+             * accuracy inside thick material for time, rather than trading brightness for time.
+             */
+            public static final IntSetting SUBSURFACE_MAX_EVENTS =
+                    clampedInt("fluorite.rt.bsdf.subsurfaceMaxEvents", "bsdf.subsurface-max-events", 4, 0, 7);
+
+            private static String sanitizeSubsurfaceMode(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "off", "thin", "random-walk" -> v;
+                    default -> "thin";
+                };
+            }
+
+            /** 0 off, 1 thin, 2 random walk — the encoding world.rgen unpacks from the flags word. */
+            public static int subsurfaceModeId() {
+                return switch (SUBSURFACE_MODE.get()) {
+                    case "off" -> 0;
+                    case "random-walk" -> 2;
+                    default -> 1;
+                };
+            }
+
+            private Bsdf() {
+            }
+        }
+
+        /** Enclosed participating media: what water does besides absorb. */
+        public static final class Water {
+            /**
+             * Which of the two sources feeds the water's single scattering: {@code both}, {@code sun},
+             * {@code sky}, {@code none}.
+             *
+             * <p>A measurement switch, not a look. The scattering has two independent sources with
+             * independent occlusion models — the sun through shadow rays, the sky through the sky-light
+             * grid — and when the result misbehaves the first question is always which of them did it.
+             * Before this switch existed there was no matching way to silence the sun, so every
+             * investigation had to reason about the sum. Isolating a term is the difference between
+             * measuring and guessing.
+             *
+             * <p>{@code none} is not redundant with turning scattering off through the coefficients:
+             * this leaves sigma_s (and therefore the extinction, and therefore visibility) exactly as
+             * it is, and removes only the in-scattered light. That separates "the water is too bright"
+             * from "the water is too opaque".
+             */
+            public static final StringSetting SCATTER_SOURCE =
+                    string("fluorite.rt.water.scatterSource", "water.scatter-source", "both",
+                            Water::sanitizeScatterSource);
+
+            private static String sanitizeScatterSource(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "sun", "sky", "none" -> v;
+                    default -> "both";
+                };
+            }
+
+            /**
+             * Apply the sun-visibility shadow rays' transmittance to the water's sun term, or take the
+             * sun as unoccluded.
+             *
+             * <p>DEFAULT OFF, which is older than the current estimator and due a re-measure. The off
+             * default was chosen when the strata were deterministic: one binary answer evaluated near
+             * the camera and applied to the whole segment, so crossing any occlusion boundary toggled
+             * the murk across the entire screen at once — measured by isolation, and the reason this
+             * switch exists. The strata have since been jittered per frame from the path's own RNG (the
+             * M13.3 shape; see enclosedSingleScatter), which turns that bias into zero-mean noise the
+             * denoiser can converge — and the fog's sun term made the same move and ships with its
+             * stochastic ray ON (Volumetrics.SUN_SHADOW_RAYS, default 1). The two media now differ only
+             * by this default; M15.1's unified volume shadow sampler is where their estimators merge,
+             * and re-deciding this default belongs to that measurement.
+             *
+             * <p>The rays are traced whether or not this is on — the sun term's depth attenuation reads
+             * their measured water column (sh.waterHitT) either way — so ON changes which answers are
+             * USED, not which rays are cast.
+             *
+             * <p>Kept as a switch because it is the isolation tool that found the original artifact, and
+             * the A/B lever for the re-measure.
+             */
+            public static final BooleanSetting SUN_SHADOW =
+                    bool("fluorite.rt.water.sunShadow", "water.sun-shadow", false);
+
+            /**
+             * Chromatic spread of the caustic pattern, as a multiple of water's real dispersion.
+             *
+             * <p>1 is physical: water's index runs about 1.331 at 700 nm against 1.340 at 450 nm.
+             *
+             * <p>It was expected to be visible at 1 anyway, on the reasoning that it only has to matter
+             * where {@code det J} approaches zero, so the fringes would appear along the bright
+             * filaments where the eye already is. MEASURED, and that reasoning is wrong: at TWENTY times
+             * physical, a debug view amplifying the inter-channel deviation twentyfold still showed
+             * neutral grey — under one percent of channel separation. Colour only appears around 100x.
+             *
+             * <p>The likely reason is {@link io.github.dswepm.fluorite.rt.RtComposite} nothing and this
+             * file nothing: it is CAUSTIC_MAX in water.slang. The filaments clamp, all three channels
+             * clamp to the same 6, and the fringe can only show where the fold has moved far enough that
+             * one channel clamps and another does not. That is a lot of spread.
+             *
+             * <p>So the default is an exaggeration, deliberately and by a large factor. 0 is monochrome.
+             * Physically correct and invisible is a legitimate thing to overrule, but it should be
+             * overruled knowingly rather than by a number that quietly means something else.
+             *
+             * <p>Nearly free: the expensive part of a caustic is evaluating the wave field, the wave
+             * field does not know about colour, and all three wavelengths share the same three surface
+             * normals. Only the refraction and the landing arithmetic run three times.
+             */
+            public static final FloatSetting CAUSTIC_DISPERSION =
+                    clampedFloat("fluorite.rt.water.causticDispersion", "water.caustic-dispersion",
+                            50.0f, 0.0f, 100.0f);
+
+            /** Bits 13-14 of worldPush.flags: 0 both, 1 sun only, 2 sky only, 3 neither. */
+            public static int scatterSourceId() {
+                return switch (SCATTER_SOURCE.get()) {
+                    case "sun" -> 1;
+                    case "sky" -> 2;
+                    case "none" -> 3;
+                    default -> 0;
+                };
+            }
+
+            /**
+             * Forward-scattering anisotropy of the water's phase function.
+             *
+             * <p>Positive keeps light going the way it was already going, which is what puts a bright
+             * halo around the sun seen from underwater. Water is strongly forward-scattering in reality;
+             * 0 would be a fog of perfectly isotropic particles and looks flat.
+             */
+            public static final FloatSetting PHASE_G =
+                    clampedFloat("fluorite.rt.water.phaseG", "water.phase-g", 0.75f, -0.9f, 0.9f);
+
+            /**
+             * Absorption dialled directly, in 0-255 per channel, instead of taken from the biome.
+             *
+             * <p>Absorption is the channel every visible property of water descends from — the colour,
+             * how far you can see, and now the scattering albedo, which is sigma_s over sigma_t and so
+             * inherits the tint from here. Being able to set it by hand is the base for art-directing
+             * any of them, and the base for telling a wrong colour from a wrong formula.
+             *
+             * <p>Note it is INVERTED from what a water colour looks like: high red absorption means red
+             * is removed fastest, so the water reads cyan. A swamp is high red and high blue; an ocean
+             * is high red and high green.
+             */
+            public static final BooleanSetting ABSORB_OVERRIDE =
+                    bool("fluorite.rt.water.absorbOverride", "water.absorb-override", false);
+            public static final IntSetting ABSORB_R =
+                    clampedInt("fluorite.rt.water.absorbR", "water.absorb-r", 60, 0, 255);
+            public static final IntSetting ABSORB_G =
+                    clampedInt("fluorite.rt.water.absorbG", "water.absorb-g", 42, 0, 255);
+            public static final IntSetting ABSORB_B =
+                    clampedInt("fluorite.rt.water.absorbB", "water.absorb-b", 12, 0, 255);
+
+            /** Mean absorption coefficient range, per block. Individual colour-shaped channels may exceed it. */
+            public static final float ABSORB_FULL_SCALE = 0.4f;
+            public static final FloatSetting ABSORB_STRENGTH =
+                    clampedFloat("fluorite.rt.water.absorbStrength", "water.absorb-strength",
+                            legacyCoefficientStrength(60, 42, 12, ABSORB_FULL_SCALE),
+                            0.0f, ABSORB_FULL_SCALE);
+
+            public static float[] absorptionRgb() {
+                return coefficientRgb(ABSORB_R.value(), ABSORB_G.value(), ABSORB_B.value(),
+                        ABSORB_STRENGTH.value());
+            }
+
+            /**
+             * Scattering, dialled directly in 0-255 per channel — the other half of the medium, and
+             * authored independently of absorption rather than derived from it.
+             *
+             * <p>Absorption alone makes water a coloured filter: what survives is tinted, what does not
+             * is gone. Everything that reads as water rather than as glass is the scattered part — the
+             * murk, the shafts, the way depth closes in instead of merely darkening.
+             *
+             * <p>Very nearly neutral by default, which is both the physics and the point: absorption is
+             * what varies strongly with wavelength, so the albedo {@code sigma_s/sigma_t} comes out
+             * blue-weighted on its own without this having to be blue.
+             *
+             * <p>This used to be a single "turbidity" multiplier over a fixed neutral colour, and that
+             * shape is the whole reason the water went pale. Raising a knob that only feeds sigma_s
+             * raises the albedo toward 1, and the deep-water limit is albedo * source, so more turbid
+             * could only ever mean whiter and brighter — never darker, which is the opposite of what
+             * suspended matter does. Real particles scatter AND absorb; two coefficients let that be
+             * said. Murky water is high in BOTH.
+             *
+             * <p>Zero reproduces the absorption-only water this renderer shipped with, exactly, and is
+             * the A/B for everything here. Reference points at the default full scale: ~24 is clear
+             * ocean; a pond or a swamp wants both this and the absorption several times higher.
+             */
+            public static final IntSetting SCATTER_R =
+                    clampedInt("fluorite.rt.water.scatterR", "water.scatter-r", 24, 0, 255);
+            public static final IntSetting SCATTER_G =
+                    clampedInt("fluorite.rt.water.scatterG", "water.scatter-g", 26, 0, 255);
+            public static final IntSetting SCATTER_B =
+                    clampedInt("fluorite.rt.water.scatterB", "water.scatter-b", 28, 0, 255);
+
+            /**
+             * Mean scattering coefficient range, per block. Individual colour-shaped channels may exceed it.
+             *
+             * <p>Half of {@link #ABSORB_FULL_SCALE} deliberately. Water whose scattering rivals its
+             * absorption has a single-scattering albedo near 1, and that is the pale-grey failure this
+             * replaced; the ceiling being lower makes the well-behaved range the easy one to land in.
+             */
+            public static final float SCATTER_FULL_SCALE = 0.2f;
+            public static final FloatSetting SCATTER_STRENGTH =
+                    clampedFloat("fluorite.rt.water.scatterStrength", "water.scatter-strength",
+                            legacyCoefficientStrength(24, 26, 28, SCATTER_FULL_SCALE),
+                            0.0f, SCATTER_FULL_SCALE);
+
+            static {
+                // D17/9A: the retired value was a fraction of peak sun radiance. M16's source is an
+                // actual phase-integrated sky-view radiance, so reusing the same key would give one
+                // number incompatible units. The next normal options save persists this removal.
+                FILE.remove("water.ambient-scale");
+                // One-time compatibility path. Before D16 the RGB sliders were coefficients, so their
+                // arithmetic mean was also their hidden strength. If the new scalar is absent, recover
+                // that mean from the already-resolved legacy values. The next save writes the scalar;
+                // reset-to-default still uses the authored defaults above rather than this migrated value.
+                if (System.getProperty("fluorite.rt.water.absorbStrength") == null
+                        && !FILE.contains("water.absorb-strength")) {
+                    ABSORB_STRENGTH.set(legacyCoefficientStrength(
+                            ABSORB_R.value(), ABSORB_G.value(), ABSORB_B.value(), ABSORB_FULL_SCALE));
+                }
+                if (System.getProperty("fluorite.rt.water.scatterStrength") == null
+                        && !FILE.contains("water.scatter-strength")) {
+                    SCATTER_STRENGTH.set(legacyCoefficientStrength(
+                            SCATTER_R.value(), SCATTER_G.value(), SCATTER_B.value(), SCATTER_FULL_SCALE));
+                }
+            }
+
+            public static float[] scatteringRgb() {
+                return coefficientRgb(SCATTER_R.value(), SCATTER_G.value(), SCATTER_B.value(),
+                        SCATTER_STRENGTH.value());
+            }
+
+            private static float legacyCoefficientStrength(int r, int g, int b, float fullScale) {
+                return ((r + g + b) / 3.0f) / 255.0f * fullScale;
+            }
+
+            /**
+             * Resolve a coefficient from an RGB shape and its independent arithmetic-mean strength.
+             * An all-zero shape has no chromaticity, so it resolves to neutral rather than secretly
+             * disabling a non-zero strength; strength zero is the one unambiguous off control.
+             */
+            static float[] coefficientRgb(int r, int g, int b, float strength) {
+                float cr = Math.clamp(r, 0, 255);
+                float cg = Math.clamp(g, 0, 255);
+                float cb = Math.clamp(b, 0, 255);
+                float mean = (cr + cg + cb) / 3.0f;
+                float safeStrength = Math.max(strength, 0.0f);
+                if (mean <= 1.0e-6f) {
+                    return new float[] {safeStrength, safeStrength, safeStrength};
+                }
+                float scale = safeStrength / mean;
+                return new float[] {cr * scale, cg * scale, cb * scale};
+            }
+
+            private Water() {
+            }
+        }
+
         public static final class Lights {
             public static final IntSetting RIS_CANDIDATES =
                     intAtLeast("fluorite.rt.risCandidates", "lights.ris-candidates", 8, 0);
@@ -751,8 +1398,106 @@ public final class FluoriteConfig {
             }
         }
 
+        /**
+         * Art direction over the celestial light and the sky, on top of the physics rather than instead of
+         * it. <b>Every default here is the identity</b> — a fresh install renders exactly what the
+         * atmosphere model says, and any deviation is something a person chose.
+         *
+         * <p>Intensity and temperature are separate knobs on purpose: the temperature tint is normalised
+         * to unit luminance, so turning the sun warmer does not also turn it dimmer, and the two can be
+         * dialled without fighting each other.
+         *
+         * <p>Sun and sky are also separate. Physically one temperature governs both, but the two are
+         * being tuned against different things — the sun against how lit surfaces read, the sky against
+         * how the backdrop reads — and a single control would make every adjustment to one a regression
+         * in the other.
+         */
+        public static final class Sky {
+            /** Multiplies the celestial light: sun/moon NEE, and the water and fog ambient derived from it. */
+            public static final FloatSetting SUN_INTENSITY =
+                    clampedFloat("fluorite.rt.sunIntensity", "sky.sun-intensity", 1.0f, 0.0f, 8.0f);
+            /** Colour temperature of that light in kelvin. 0 leaves the atmosphere's own colour alone. */
+            public static final IntSetting SUN_TEMPERATURE =
+                    clampedInt("fluorite.rt.sunTemperature", "sky.sun-temperature", 0, 0, 20000);
+            /** Multiplies the sky's in-scatter. Applied in the sky-view bake, so it costs nothing per pixel. */
+            public static final FloatSetting SKY_INTENSITY =
+                    clampedFloat("fluorite.rt.skyIntensity", "sky.sky-intensity", 1.0f, 0.0f, 8.0f);
+            /** Colour temperature of the sky in kelvin. 0 leaves it alone. */
+            public static final IntSetting SKY_TEMPERATURE =
+                    clampedInt("fluorite.rt.skyTemperature", "sky.sky-temperature", 0, 0, 20000);
+
+            private Sky() {
+            }
+
+            /** The sun's tint: unit-luminance blackbody colour, or white when the knob is off. */
+            public static float[] sunTint() {
+                return blackbodyTint(SUN_TEMPERATURE.value());
+            }
+
+            /** The sky's tint, same convention. */
+            public static float[] skyTint() {
+                return blackbodyTint(SKY_TEMPERATURE.value());
+            }
+
+            /**
+             * Linear sRGB for a blackbody at {@code kelvin}, normalised so its luminance is 1.
+             *
+             * <p>Via the Planckian locus in CIE xy and the standard D65 matrix rather than a hand-made
+             * warm-to-cool ramp: a ramp would put "6500 K" wherever it was drawn, and the whole point of
+             * naming the control in kelvin is that the number means something outside this file.
+             *
+             * <p>The normalisation is what keeps this orthogonal to {@link #SUN_INTENSITY}. Without it a
+             * warm setting would also be a dim one, since a blackbody's blue channel falls off fastest,
+             * and every temperature change would need an intensity change to undo the brightness it
+             * brought with it.
+             */
+            public static float[] blackbodyTint(int kelvin) {
+                if (kelvin <= 0) {
+                    return new float[]{1.0f, 1.0f, 1.0f};
+                }
+                double t = Math.clamp(kelvin, 1667, 25000);
+                double x;
+                if (t < 4000.0) {
+                    x = -0.2661239e9 / (t * t * t) - 0.2343589e6 / (t * t) + 0.8776956e3 / t + 0.179910;
+                } else {
+                    x = -3.0258469e9 / (t * t * t) + 2.1070379e6 / (t * t) + 0.2226347e3 / t + 0.240390;
+                }
+                double y;
+                if (t < 2222.0) {
+                    y = -1.1063814 * x * x * x - 1.34811020 * x * x + 2.18555832 * x - 0.20219683;
+                } else if (t < 4000.0) {
+                    y = -0.9549476 * x * x * x - 1.37418593 * x * x + 2.09137015 * x - 0.16748867;
+                } else {
+                    y = 3.0817580 * x * x * x - 5.87338670 * x * x + 3.75112997 * x - 0.37001483;
+                }
+                if (y <= 1.0e-6) {
+                    return new float[]{1.0f, 1.0f, 1.0f};
+                }
+                double bigX = x / y;
+                double bigZ = (1.0 - x - y) / y;
+                double r = 3.2406 * bigX - 1.5372 - 0.4986 * bigZ;
+                double g = -0.9689 * bigX + 1.8758 + 0.0415 * bigZ;
+                double b = 0.0557 * bigX - 0.2040 + 1.0570 * bigZ;
+                r = Math.max(r, 0.0);
+                g = Math.max(g, 0.0);
+                b = Math.max(b, 0.0);
+                double lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                if (lum <= 1.0e-6) {
+                    return new float[]{1.0f, 1.0f, 1.0f};
+                }
+                return new float[]{(float) (r / lum), (float) (g / lum), (float) (b / lum)};
+            }
+        }
+
         /** Startup Vulkan inventory + {@code VK_EXT_device_fault} reporting on device loss. See {@code VulkanDiagnostics}. */
         public static final class Diagnostics {
+
+            /** Low-rate centre-pixel GPU/CPU telemetry for water-medium streaming bugs. The probe adds one
+             * upward ray per frame while enabled and logs only after an already-completed ring slot is
+             * reused, so it does not introduce a readback stall. */
+            public static final BooleanSetting WATER_MEDIUM_TRACE =
+                    bool("fluorite.rt.waterMediumTrace", "diagnostics.water-medium-trace", false);
+
             /** Heavy driver-side crash diagnostics: vendor diagnostics-config extensions (shader debug
              * info, resource tracking, automatic checkpoints, shader error reporting) and the
              * {@code deviceFaultVendorBinary} feature (vendor-format crash dump on device loss). Off by

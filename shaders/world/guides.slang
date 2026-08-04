@@ -101,10 +101,11 @@ public float2 resolveSpecularGuides(SpecSurface surface, float3 primaryDir,
     float3 specDir = reflect(primaryDir, n);
 
     // Pass A stops radiance traversal at the first split, so reflection motion keeps one dedicated,
-    // deterministic guide probe.
-    traceGuide(CULL_SECONDARY,
+    // deterministic guide probe. Same cull mask Pass B's reflection will use, so the motion vector
+    // describes the surface the radiance actually lands on rather than one the body still occludes.
+    traceGuide(secondaryCullMask(),
             offsetSurfaceOrigin(surfacePos, surface.biasNormal, specDir, SURF_BIAS),
-            RAY_TMIN, specDir, 10000.0,
+            RAY_TMIN, specDir, RAY_FAR,
             max(length(surface.camRel) * primaryConeSpread, RAY_CONE_MIN_WIDTH),
             max(primaryConeSpread, RAY_CONE_MIN_SPREAD));
     float3 reflectedHit;
@@ -162,7 +163,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
     // The camera interface consumed bounce 0; the remaining configured bounce budget is the natural
     // cap for deterministic guide crossings too.
     for (uint crossing = 0u; crossing < worldPush.maxBounces; ++crossing) {
-        traceGuide(CULL_PRIMARY, ro, RAY_TMIN, direction, 10000.0,
+        traceGuide(CULL_PRIMARY, ro, RAY_TMIN, direction, RAY_FAR,
                 rayConeWidth, rayConeSpread);
         if (payload.hitT <= 0.0) {
             setTransmissionGuide((ro + direction * 1.0e6) - worldPush.camOffset,

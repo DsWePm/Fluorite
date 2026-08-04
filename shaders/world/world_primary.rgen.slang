@@ -16,16 +16,20 @@
 import world_common;
 import world_core;
 import math;
+import bsdf;
 import medium;
+import volume;
 import segment;
 import water;
 import trace;
 import guides;
+import atmosphere;
+import atmosphere_lut;
 
 public PathSegment tracePrimary(PathSegment seg,
                                 DevicePtr<PackedPathSegment> queue,
                                 uint splitRecord,
-                                out uint nextRecord) {
+                                out bool hasNext) {
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -35,14 +39,14 @@ public PathSegment tracePrimary(PathSegment seg,
     uint seed = seg.seed;
     bool showCelestial = seg.showCelestial;
     bool waterWaves = (worldPush.flags & 16u) != 0u;
-    nextRecord = PATH_NO_NEXT;
+    hasNext = false;
 
     {
         int bounce = seg.bounce;
         PathSegment terminal = makePathSegment(ro, rd, throughput, medium,
                                                rayConeWidth, rayConeSpread, seed, bounce,
                                                showCelestial);
-        traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
+        traceRadiance(CULL_PRIMARY, ro, 0.0, rd, RAY_FAR,
                       showCelestial, rayConeWidth, rayConeSpread);
 
         if (payload.hitT < 0.0) {
@@ -61,15 +65,25 @@ public PathSegment tracePrimary(PathSegment seg,
         float3 n = payload.normal;
         float3 hitPos = ro + rd * payload.hitT;
         uint material = payloadMaterial();
-        if (material != MATERIAL_WATER && material != MATERIAL_DIELECTRIC) {
+        bool dielectric = material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC;
+        // A rough dielectric is handed to Pass B whole instead of being resolved here. Two reasons, and
+        // either alone would be enough: everything below refracts exactly through the interface, which
+        // only describes a delta; and the split budget is two records per pixel, which an interface that
+        // scatters cannot be allowed to branch out of.
+        if (!dielectric || !isDeltaTransmission(clamp(payloadRoughness(), 0.0, 1.0))) {
             float rough = material == MATERIAL_PARTICLE
                     ? 1.0 : clamp(payloadRoughness(), 0.0, 1.0);
             bool exactSpecular = material == MATERIAL_OPAQUE && isDeltaAlpha(rough);
             rough = exactSpecular ? 0.0 : rough;
             float metal = material == MATERIAL_PARTICLE
                     ? 0.0 : clamp(payloadMetalness(), 0.0, 1.0);
-            float3 diffAlb = material == MATERIAL_PARTICLE
-                    ? float3(payload.albedo) : float3(payload.albedo) * (1.0 - metal);
+            // A dielectric's albedo lane is its transmission tint, not a diffuse reflectance. Handing
+            // that to RR as gAlbedo would have it demodulate a frosted pane by the colour of what it
+            // filters, which is a different quantity that happens to share a lane.
+            float3 diffAlb = dielectric
+                    ? float3(0.0, 0.0, 0.0)
+                    : (material == MATERIAL_PARTICLE
+                            ? float3(payload.albedo) : float3(payload.albedo) * (1.0 - metal));
             if (bounce == 0) {
                 gv_normal = n;
                 gv_hitCamRel = hitPos - worldPush.camOffset;
@@ -82,21 +96,25 @@ public PathSegment tracePrimary(PathSegment seg,
                                               float3(0.0, 0.0, 0.0));
                 } else {
                     float3 v = -rd;
+                    // One roughness reaches RR, so a clearcoated surface has to nominate whichever of
+                    // its two specular lobes carries the energy — see specularGuide.
+                    SpecularGuide guide = specularGuide(float3(payload.f0), rough,
+                            max(1.0e-4, dot(n, v)), materialExtension(payload.flags));
                     gv_albedo = diffAlb;
-                    gv_rough = rough;
-                    gv_spec = makeSpecSurface(gv_hitCamRel, n, float3(payload.motionPrev), rough,
-                                              rrSpecularAlbedo(payload.f0, rough, dot(n, v)));
+                    gv_rough = guide.alpha;
+                    gv_spec = makeSpecSurface(gv_hitCamRel, n, float3(payload.motionPrev), guide.alpha,
+                                              guide.reflectance);
                 }
             }
 
             return terminal;
         }
 
-        // This hit is consumed in pass A, so carry its travelled-medium absorption and cone growth into
-        // the record for the next trace. The terminal hit above is deliberately not consumed here.
-        if (any(medium.current.extinction > 0.0)) {
-            throughput *= exp(-medium.current.extinction * payload.hitT);
-        }
+        // This hit is consumed in pass A, but the travelled segment is not. Pass B reconstructs the one
+        // camera-to-interface prefix shared by both Fresnel leaves and owns its complete SegmentIntegral:
+        // in-scatter plus transmittance, in that order. Applying Beer here would split that contract across
+        // passes and either double attenuation or force pass B to discard half of the integrator's answer.
+        // Cone growth is geometric state rather than radiometric state, so it still follows the consumed hit.
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0),
                            RAY_CONE_MIN_WIDTH);
 
@@ -172,8 +190,8 @@ public PathSegment tracePrimary(PathSegment seg,
                     deferredDir, throughput * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
                     true);
-            queue[splitRecord] = packPathSegment(deferred, PATH_NO_NEXT);
-            nextRecord = splitRecord;
+            queue[splitRecord] = packPathSegment(deferred, false);
+            hasNext = true;
             float3 reflectedDir = reflect(rd, n);
             PathSegment reflected = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
@@ -212,18 +230,18 @@ public PathSegment tracePrimary(PathSegment seg,
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+    undyedCelestialIrradiance = worldPush.lightRadiance.xyz;
+    // Same dual convention as pass B: retain the undyed peak for sampled emitter directions, then centre-
+    // dye the compatibility WorldPush copy. Shared helpers therefore agree on both sides of the pass split.
+    dyeCelestialLight(worldPush);
     uint2 dispatchIndex = DispatchRaysIndex().xy;
     uint2 dimensions = DispatchRaysDimensions().xy;
     int2 pix = int2(dispatchIndex);
     float2 size = float2(dimensions);
-    float2 uv = (float2(pix) + 0.5) / size;
-    float2 jndc = (uv + worldPush.jitter / size) * 2.0 - 1.0;
-    float4 nearH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
-    float4 farH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
-    float3 nearP = nearH.xyz / nearH.w;
-    float3 farP = farH.xyz / farH.w;
-    float3 origin = nearP + worldPush.camOffset;
-    float3 dir = normalize(farP - nearP);
+    CameraRay camera = cameraRay(dispatchIndex, dimensions);
+    float2 jndc = camera.jndc;
+    float3 origin = camera.origin;
+    float3 dir = camera.dir;
     float rayConeSpread = primaryRayConeSpread(jndc, size, dir);
     uint seed = (dispatchIndex.x * 1973u + dispatchIndex.y * 9277u + 26699u)
             ^ (worldPush.frameIndex * 2654435761u);
@@ -238,13 +256,15 @@ void main() {
     seed = pcg(seed);
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
             cameraMedium, 0.0, rayConeSpread, seed, 0, true);
-    uint nextRecord;
+    bool hasNext;
     PathSegment terminal = tracePrimary(
-            current, queue, splitRecord, nextRecord);
-    queue[pixelIndex] = packPathSegment(terminal, nextRecord);
+            current, queue, splitRecord, hasNext);
+    queue[pixelIndex] = packPathSegment(terminal, hasNext);
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);
-    if (pc.debugView != 0u) {
+    // The volume views (8+) describe what happens between hits, which no guide buffer records, so pass B
+    // writes those. Anything below is a guide visualization and belongs here.
+    if (pc.debugView != 0u && pc.debugView < 8u) {
         writeDebugView(pix);
     }
 }

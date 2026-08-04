@@ -154,6 +154,9 @@ abstract class GenerateShaderRecords extends DefaultTask {
         }
         sb << ") {\n"
         sb << "    public static final int BYTE_SIZE = ${byteSize};\n"
+        fields.each { field ->
+            sb << "    public static final int ${upperSnake(field.name)}_OFFSET = ${(field.binding.offset ?: 0) as int};\n"
+        }
         arrays.each { field ->
             sb << "    public static final int ${upperSnake(field.name)}_CAPACITY = ${field.type.elementCount};\n"
         }
@@ -230,6 +233,30 @@ abstract class GenerateShaderRecords extends DefaultTask {
         Map materialHeaderType = materialProbeArray.type.elementType as Map
         int materialHeaderByteSize = materialProbeArray.type.uniformStride as int
 
+        def extensionParameter = reflection.parameters.find { it.name == "materialExtensionLayoutProbe" }
+        def extensionProbeArray = extensionParameter?.type?.resultType?.fields?.find { it.name == "values" }
+        if (extensionProbeArray?.type?.kind != "array" || extensionProbeArray.type.elementType?.name != "MaterialExtension") {
+            throw new GradleException("unexpected MaterialExtension reflection probe shape")
+        }
+        Map materialExtensionType = extensionProbeArray.type.elementType as Map
+        int materialExtensionByteSize = extensionProbeArray.type.uniformStride as int
+
+        def segmentParameter = reflection.parameters.find { it.name == "packedPathSegmentLayoutProbe" }
+        def segmentProbeArray = segmentParameter?.type?.resultType?.fields?.find { it.name == "values" }
+        if (segmentProbeArray?.type?.kind != "array" || segmentProbeArray.type.elementType?.name != "PackedPathSegment") {
+            throw new GradleException("unexpected PackedPathSegment reflection probe shape")
+        }
+        Map packedPathSegmentType = segmentProbeArray.type.elementType as Map
+        int packedPathSegmentByteSize = segmentProbeArray.type.uniformStride as int
+
+        def waterProbeParameter = reflection.parameters.find { it.name == "waterMediumProbeLayoutProbe" }
+        def waterProbeArray = waterProbeParameter?.type?.resultType?.fields?.find { it.name == "values" }
+        if (waterProbeArray?.type?.kind != "array" || waterProbeArray.type.elementType?.name != "WaterMediumProbe") {
+            throw new GradleException("unexpected WaterMediumProbe reflection probe shape")
+        }
+        Map waterMediumProbeType = waterProbeArray.type.elementType as Map
+        int waterMediumProbeByteSize = waterProbeArray.type.uniformStride as int
+
         def pushParameter = reflection.parameters.find { it.name == "pushConstantsLayoutProbe" }
         if (pushParameter?.type?.elementType?.name != "WorldPushConstants") {
             throw new GradleException("Slang reflection omitted pushConstantsLayoutProbe")
@@ -249,5 +276,14 @@ abstract class GenerateShaderRecords extends DefaultTask {
                 generateJava(pushConstantsType, pushConstantsByteSize, "WorldPushConstantsData"), "UTF-8")
         new File(packageDir, "MaterialHeaderData.java").setText(
                 generateJava(materialHeaderType, materialHeaderByteSize, "MaterialHeaderData"), "UTF-8")
+        // The Java side only reads BYTE_SIZE from this one — the records are written by the GPU. The
+        // generated writer is unused but harmless, and having the size come from the shader's own layout
+        // is the point: it was a hand-copied 48 that nothing checked.
+        new File(packageDir, "MaterialExtensionData.java").setText(
+                generateJava(materialExtensionType, materialExtensionByteSize, "MaterialExtensionData"), "UTF-8")
+        new File(packageDir, "PackedPathSegmentData.java").setText(
+                generateJava(packedPathSegmentType, packedPathSegmentByteSize, "PackedPathSegmentData"), "UTF-8")
+        new File(packageDir, "WaterMediumProbeData.java").setText(
+                generateJava(waterMediumProbeType, waterMediumProbeByteSize, "WaterMediumProbeData"), "UTF-8")
     }
 }

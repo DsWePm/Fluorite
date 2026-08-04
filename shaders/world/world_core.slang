@@ -22,6 +22,12 @@ import world_common;
 // `worldPush` global). Layout constants generated from this module's SPIR-V — see world_common.WorldPush.
 public static WorldPush worldPush = {};
 
+// The BDA carries the active celestial emitter's UNDYED irradiance. Raygen keeps that value here before
+// dyeCelestialLight mutates its local WorldPush copy for legacy centre-direction consumers. Finite-emitter
+// estimators need the original so each sampled direction can receive its own atmospheric transmittance.
+// Module state is per invocation; this adds no WorldPush lane and no cross-thread storage.
+public static float3 undyedCelestialIrradiance = {};
+
 // The radiance payload remains module-level so tracePath and its guide helpers can share it across
 // HitObject trace/invoke calls, mirroring the GLSL rayPayloadEXT global.
 public static Payload payload = {};
@@ -58,6 +64,38 @@ public static const float INV_PI = 0.31830988618;
 // as worldPush.lightDir / worldPush.lightRadiance / worldPush.sunDir.
 public static const float SURF_BIAS = 0.005;  // offset secondary-ray origins along the normal (anti-acne)
 public static const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset already clears the surface
+// How far a ray may travel before it is treated as having escaped. Named because it is not only a tmax:
+// a ray that escapes still travelled this far through whatever medium it was in, and the segment
+// attenuation has to use the same distance the trace did or the two silently drift apart.
+public static const float RAY_FAR = 10000.0;
+
+/** The camera ray for one dispatch index, plus the jittered NDC both passes derive it from. */
+public struct CameraRay {
+    public float3 origin;
+    public float3 dir;
+    public float2 jndc;   // primaryRayConeSpread needs this; the volumetric prefix does not
+};
+
+/**
+ * Reconstructs the camera ray. Shared because both raygens need it and must agree exactly: the indirect
+ * pass measures the prefix segment the primary pass consumed as the distance from this origin to the
+ * queued record's, so two copies of these eight lines drifting apart would show up as fog appearing or
+ * vanishing in front of every water surface.
+ */
+public CameraRay cameraRay(uint2 dispatchIndex, uint2 dimensions) {
+    float2 size = float2(dimensions);
+    float2 uv = (float2(dispatchIndex) + 0.5) / size;
+    float2 jndc = (uv + worldPush.jitter / size) * 2.0 - 1.0;
+    float4 nearH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 1.0, 1.0));
+    float4 farH = mul(worldPush.invViewProj, float4(jndc.x, jndc.y, 0.0, 1.0));
+    float3 nearP = nearH.xyz / nearH.w;
+    float3 farP = farH.xyz / farH.w;
+    CameraRay ray;
+    ray.origin = nearP + worldPush.camOffset;
+    ray.dir = normalize(farP - nearP);
+    ray.jndc = jndc;
+    return ray;
+}
 
 // Water is a smooth dielectric. IOR 1.333; absorption is per-block Beer-Lambert extinction.
 public static const float WATER_IOR = 1.333;
@@ -87,8 +125,43 @@ public static const float MIRROR_ALPHA_MAX = 4.0e-4; // LabPBR perceptual smooth
 // reflection MV is left at zero and RR falls back to the ordinary MV.
 public static const float SPEC_MOTION_ALPHA_MAX = 0.25; // perceptual smoothness <= 0.5
 
+/**
+ * Alpha floor for a specular peak that nothing weights.
+ *
+ * A GGX peak goes as 1/(PI alpha^2), so a light sampled by area against a near-mirror receiver puts the
+ * whole lobe into one sample and the estimator has no way to temper it. Where the light is also sampled
+ * by the BSDF, MIS does the tempering and no floor is wanted. Where it is not — block emitters, and the
+ * sun with MIS switched off — this is what bounds it.
+ *
+ * It is not physically motivated: it makes a very smooth surface reflect a light as though it were
+ * slightly rougher. 0.02 is where the 1e-7 epsilon that used to sit in ggxD effectively capped the peak,
+ * so surfaces look as they did when that epsilon was doing this job for the whole renderer.
+ *
+ * Delta lobes are exempt and must stay exempt: alpha 0 means no microfacet specular term at all, and
+ * flooring it would invent a highlight on a mirror that has never had one.
+ */
+public static const float UNWEIGHTED_SPEC_ALPHA_FLOOR = 0.02;
+
 public bool isDeltaAlpha(float roughness) {
     return clamp(roughness, 0.0, 1.0) <= MIRROR_ALPHA_MAX;
+}
+
+/**
+ * Above this alpha a dielectric interface stops being a delta and is resolved as a microfacet lobe.
+ *
+ * Deliberately NOT MIRROR_ALPHA_MAX, and the difference is load-bearing. That threshold is 4e-4, and
+ * every transparent block the game ships is authored above it — glass and ice at 0.0025, water at
+ * 0.0064. Reusing it here would take every pane of glass in Minecraft off Pass A's split path and
+ * switch off resolveTransmissionGuide with it, which is the entire reason that chain exists.
+ *
+ * 0.06 leaves about a factor of ten over water, the roughest thing vanilla authors, so only a pack that
+ * genuinely means frosted glass crosses it. Note that means a LabPBR pack authoring a high roughness on
+ * glass in its _s texture now gets what it asked for, where before the value was read and discarded.
+ */
+public static const float TRANSMISSION_DELTA_ALPHA_MAX = 0.06;
+
+public bool isDeltaTransmission(float roughness) {
+    return clamp(roughness, 0.0, 1.0) <= TRANSMISSION_DELTA_ALPHA_MAX;
 }
 
 // Continuations one sample may carry: the camera segment, plus the reflection branch a primary

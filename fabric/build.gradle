@@ -40,13 +40,44 @@ loom {
 			// Loads the fixed test world straight from the launch, so a digest or frameStats capture is one
 			// command rather than a command plus a human clicking through the menu. The comparison only means
 			// anything if both loaders open the same save at the same spawn.
-			programArgs "--quickPlaySingleplayer", "Shader Testing Java"
+			// -PbenchWorld selects a different save. Performance captures use a dedicated one that
+			// tools/bench-world.sh restores from a pristine master first: Minecraft writes the
+			// player position back on exit, so a world that has been played in has a camera that
+			// moved, and the camera dominates trace cost far more than whatever is being measured.
+			programArgs "--quickPlaySingleplayer",
+					project.hasProperty("benchWorld") ? project.benchWorld : "Shader Testing Java"
 
 			// The renderer only exists on the Vulkan backend, and options.txt defaults to "default", which
 			// does not reliably resolve to Vulkan — the client then comes up on OpenGL and Fluorite silently
 			// does nothing, which looks exactly like the mod being broken. Forced here so the two loaders'
 			// run configs say the same thing; the NeoForge side has carried this since it was written.
 			programArgs "--graphicsBackend", "VULKAN"
+
+			// Benchmarks have to name their resolution. Without this a capture describes whatever size the
+			// window happened to be — the first cost figures taken for the volumetrics work were at
+			// 427x240 render / 854x480 output, while every budget in the plan is written for 1440p, and
+			// nothing in the numbers said so. Opt in with:
+			//   ./gradlew :fabric:runClient -PbenchWidth=2560 -PbenchHeight=1440
+			if (project.hasProperty("benchWidth") && project.hasProperty("benchHeight")) {
+				programArgs "--width", project.benchWidth, "--height", project.benchHeight
+			}
+			// Vulkan validation, opt-in:
+			//   ./gradlew :fabric:runClient -PvkValidation
+			// Minecraft's VulkanInstance takes a `validation` flag but nothing here can reach it, so this
+			// goes through the loader instead: VK_INSTANCE_LAYERS force-enables a layer the application
+			// never asked for. Off by default because it costs a large fraction of the frame and would
+			// make every benchmark meaningless — but it is the right first instrument for anything that
+			// smells like a destroyed-resource-still-bound bug, where the symptom on screen is whatever
+			// memory got reused and says nothing about who freed it.
+			//
+			// Messages need somewhere to go: with no VK_EXT_debug_utils messenger created by the app, the
+			// layer drops them unless a settings file redirects them, hence run/vk_layer_settings.txt.
+			if (project.hasProperty("vkValidation")) {
+				environmentVariable "VK_INSTANCE_LAYERS", "VK_LAYER_KHRONOS_validation"
+				environmentVariable "VK_LAYER_SETTINGS_PATH",
+						file("${project.rootDir}/run/vk_layer_settings.txt").absolutePath
+			}
+
 			// java.lang.foreign restricted methods (FFM bindings into the NGX shim)
 			vmArg "--enable-native-access=ALL-UNNAMED"
 

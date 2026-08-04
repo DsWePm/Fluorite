@@ -2,10 +2,13 @@ package io.github.dswepm.fluorite.mixin;
 
 import io.github.dswepm.fluorite.FluoriteConfig;
 import io.github.dswepm.fluorite.client.RtVideoOptions;
+import io.github.dswepm.fluorite.client.gui.RtOptionsScreen;
 import java.util.ArrayList;
 import java.util.List;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.OptionsList;
 import net.minecraft.client.gui.screens.options.VideoSettingsScreen;
 import net.minecraft.network.chat.Component;
@@ -23,10 +26,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <ul>
  *   <li>The Quality section drops the vanilla options the path tracer supersedes (Ambient Occlusion and
  *       Entity Shadows are computed by RT global illumination / RT shadows).</li>
- *   <li>A trailing "Ray Tracing" section adds the {@link RtVideoOptions} controls.</li>
+ *   <li>A "Ray Tracing" section adds one button opening {@link RtOptionsScreen}.</li>
  * </ul>
  *
- * When RT is disabled the screen is left exactly as vanilla built it.
+ * <p>One button rather than the settings themselves: they are Fluorite's screens to lay out, and
+ * twenty-eight rows appended to someone else's list is not a layout. Everything below that button lives in
+ * {@link RtVideoOptions.Category}.
+ *
+ * <p>When RT is disabled the screen is left exactly as vanilla built it.
  */
 @Mixin(VideoSettingsScreen.class)
 public abstract class VideoSettingsScreenMixin {
@@ -36,6 +43,7 @@ public abstract class VideoSettingsScreenMixin {
     }
 
     private static final Component FLUORITE$RT_HEADER = Component.translatable("fluorite.options.rt.header");
+    private static final Component FLUORITE$RT_OPEN = Component.translatable("fluorite.options.rt.open");
 
     @Redirect(
         method = "addOptions",
@@ -67,8 +75,12 @@ public abstract class VideoSettingsScreenMixin {
         if (list == null) {
             return;
         }
+        VideoSettingsScreen self = (VideoSettingsScreen) (Object) this;
         list.addHeader(FLUORITE$RT_HEADER);
-        list.addSmall(RtVideoOptions.runtimeOptions());
+        list.addBig(Button.builder(FLUORITE$RT_OPEN,
+                        button -> Minecraft.getInstance().gui
+                                .setScreen(new RtOptionsScreen(self, Minecraft.getInstance().options)))
+                .build());
     }
 
     @Inject(method = "removed", at = @At("TAIL"))

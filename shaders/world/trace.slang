@@ -1,13 +1,42 @@
 // Ray dispatch: SBT/cull constants, payload construction, ordinary/reordered radiance, guide probes,
 // and shadow visibility. Depends on core.
 
-// receiver billboards only. The first-person camera owner uses 0x01 (secondary only).
+// receiver billboards only. The first-person camera owner uses 0x04 (CULL_SELF) alone.
 
 import world_common;
 import world_core;
 
-public static const uint CULL_SECONDARY = 0x01u;
+// TLAS instance-mask bits, ANDed against the per-ray cull mask (RtEntities sets them).
+//
+//   0x01 secondary — shadows, GI bounces, reflections. Terrain and ordinary entities carry it.
+//   0x02 primary   — the camera ray.
+//   0x04 self      — the first-person camera OWNER'S OWN BODY, and nothing else.
+//
+// The self bit exists because "visible to secondary rays" and "visible to secondary rays cast FROM THE
+// EYE" are different questions, and the body is the only instance for which they differ. It sits at the
+// camera, so any ray starting there hits it immediately; every other instance is somewhere the eye is
+// not. Keeping it on its own bit lets a ray opt out of it without opting out of the world.
+public static const uint CULL_SECONDARY_NO_SELF = 0x01u;
+public static const uint CULL_SELF = 0x04u;
+public static const uint CULL_SECONDARY = CULL_SECONDARY_NO_SELF | CULL_SELF;
 public static const uint CULL_PRIMARY = 0x02u;
+
+// worldPush.flags bit 12: hide the first-person body from every secondary ray this frame. Set while the
+// eye is inside a water block — see secondaryCullMask.
+public static const uint FLAG_HIDE_SELF = 1u << 12u;
+
+/**
+ * Cull mask for secondary rays: reflections, GI bounces, and NEE shadow rays.
+ *
+ * Normally the first-person body is included, so the player sees themselves in a pond as anyone else
+ * would. While the eye is inside a water block it is dropped, because the water surface is then within
+ * centimetres of the camera and its reflection shows the body sliced off at the waterline — a view
+ * vanilla never presents, since first person does not draw the body at all. One uniform branch per path
+ * rather than a per-ray distance test: whether the eye is in the water is a property of the frame.
+ */
+public uint secondaryCullMask() {
+    return (worldPush.flags & FLAG_HIDE_SELF) != 0u ? CULL_SECONDARY_NO_SELF : CULL_SECONDARY;
+}
 public static const uint TERRAIN_BUCKETS = 4u;
 public static const uint SBT_RADIANCE = 0u;
 public static const uint SBT_SHADOW = TERRAIN_BUCKETS;
@@ -89,7 +118,7 @@ public Payload makeShadowPayload() {
     return shadowPayload;
 }
 
-public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
+public VisibilityResult visibilityMasked(uint cullMask, float3 origin, float3 dir, float tmax) {
     // Vulkan requires an identical payload structure for every stage reachable by this trace. The shadow
     // path uses only albedo as accumulated transmittance and hitT as the nearest-water crossing.
     Payload shadowPayload = makeShadowPayload();
@@ -99,13 +128,18 @@ public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
     // needs only ordinary TraceRay and no invocation-reorder capability.
     TraceRay(topLevelAS,
             RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
-            CULL_SECONDARY, SBT_SHADOW, SBT_STRIDE_BUCKET, MISS_GUIDE,
+            cullMask, SBT_SHADOW, SBT_STRIDE_BUCKET, MISS_GUIDE,
             makeRay(origin, RAY_TMIN, dir, tmax), shadowPayload);
     VisibilityResult result;
     result.transmittance = shadowPayload.flags == 0u
             ? shadowPayload.albedo : float3(0.0, 0.0, 0.0);
     result.waterHitT = shadowPayload.hitT;
     return result;
+}
+
+/** Shadow ray from a shading point: the ordinary secondary mask, so the body shadows like any other. */
+public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
+    return visibilityMasked(secondaryCullMask(), origin, dir, tmax);
 }
 
 // `valid` is false when the point projects behind the previous camera, where the perspective divide

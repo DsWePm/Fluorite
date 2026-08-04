@@ -95,10 +95,17 @@ public final class RtPipeline {
     private final long bindlessPool;
     private final long bindlessSet;
     private final int skyAtlasBinding;
+    private final int transmittanceBinding;
+    private final int multiScatterBinding;
+    private final int skyViewBinding;
+    private final int froxelBinding;
+    private final int visibilityGridBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
-                       long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding) {
+                       long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
+                       int transmittanceBinding, int multiScatterBinding, int skyViewBinding,
+                       int froxelBinding, int visibilityGridBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -122,6 +129,11 @@ public final class RtPipeline {
         this.bindlessPool = bindlessPool;
         this.bindlessSet = bindlessSet;
         this.skyAtlasBinding = skyAtlasBinding;
+        this.transmittanceBinding = transmittanceBinding;
+        this.multiScatterBinding = multiScatterBinding;
+        this.skyViewBinding = skyViewBinding;
+        this.froxelBinding = froxelBinding;
+        this.visibilityGridBinding = visibilityGridBinding;
     }
 
     /**
@@ -157,7 +169,38 @@ public final class RtPipeline {
             // draw the sun/moon discs. Canonical material pages live in the bindless set, not set 0.
             int skyBinding = skyAtlas ? materialBase : -1;
             int skySamplers = skyAtlas ? 1 : 0;
-            int bindingCount = firstExtraBinding + extraStorageImages + skySamplers;
+            // The atmosphere's transmittance LUT (M10). A sampled image rather than a storage image
+            // because it must filter: the table is 256x64 over the whole sky, so unfiltered fetches show
+            // its texel grid as banding along exactly the horizon gradient it exists to get right.
+            // Visible from MISS (the sun/moon disc tint) and RAYGEN (the NEE consumers).
+            int transmittanceBinding = skyAtlas ? materialBase + skySamplers : -1;
+            int transmittanceSamplers = skyAtlas ? 1 : 0;
+            // The multi-scatter table (M10.2). Consumed in MISS, where the sky is built; raygen is in the
+            // stage flags because the two raygens import atmosphere_lut for the celestial-light dye, and
+            // a binding declared in a module reaches every importer whether it reads it or not (debug
+            // view 13 does read it there). Nothing in the shading path wants it: NEE sunlight is DIRECT
+            // light, and light that has bounced twice in the air is by definition not that.
+            int multiScatterBinding = skyAtlas ? materialBase + skySamplers + transmittanceSamplers : -1;
+            int multiScatterSamplers = skyAtlas ? 1 : 0;
+            // The three sky-view tables (M10.3), bindings 12..14. Three rather than one because the phase
+            // functions are applied at lookup: Rayleigh's lobe, Mie's forward spike, and the isotropic
+            // multiple-scattering term cannot share a texel and still let the halo stay sharp.
+            int skyViewBinding = skyAtlas ? multiScatterBinding + 1 : -1;
+            int skyViewSamplers = skyAtlas ? 3 : 0;
+            // The aerial-perspective froxel (M10.4), binding 15. A 3D sampled image: raygen reads it at a
+            // hit's own depth, so it has to filter across slices, and unfiltered fetches would put the
+            // grid's 32 depth steps on screen as visible shells around the camera.
+            int froxelBinding = skyAtlas ? skyViewBinding + skyViewSamplers : -1;
+            int froxelSamplers = skyAtlas ? 1 : 0;
+            // The volumetric visibility grid (M13.2), binding 16. A 3D sampled image and RAYGEN-only:
+            // volume.slang is the sole importer of the module that declares it, and both raygens are its
+            // only importers in turn. Filtering is not an optimisation here — every value the grid holds
+            // is exactly 0 or 1, so a nearest fetch would put its cell boundaries on screen as hard steps
+            // in the fog, and the smooth field the trilinear blend produces IS the product.
+            int visibilityGridBinding = skyAtlas ? froxelBinding + froxelSamplers : -1;
+            int visibilityGridSamplers = skyAtlas ? 1 : 0;
+            int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
+                    + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -175,6 +218,23 @@ public final class RtPipeline {
             if (skyAtlas) {
                 binds.get(skyBinding).binding(skyBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+                binds.get(transmittanceBinding).binding(transmittanceBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(multiScatterBinding).binding(multiScatterBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                for (int i = 0; i < skyViewSamplers; i++) {
+                    binds.get(skyViewBinding + i).binding(skyViewBinding + i)
+                            .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                            .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                }
+                binds.get(froxelBinding).binding(froxelBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(visibilityGridBinding).binding(visibilityGridBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -182,7 +242,8 @@ public final class RtPipeline {
             long dsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, label + " descriptor set layout");
 
-            int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers;
+            int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers + transmittanceSamplers
+                    + multiScatterSamplers + skyViewSamplers + froxelSamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -367,7 +428,8 @@ public final class RtPipeline {
             }
             sbt.flush();
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
-                    bindlessLayout, bindlessPool, bindlessSet, skyBinding);
+                    bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
+                    multiScatterBinding, skyViewBinding, froxelBinding, visibilityGridBinding);
         }
     }
 
@@ -450,6 +512,40 @@ public final class RtPipeline {
 
     public boolean hasSkyAtlas() {
         return skyAtlasBinding >= 0;
+    }
+
+    /** Bind the atmosphere's transmittance LUT (M10), sampled by world.rmiss and world.rgen. */
+    public void setTransmittanceLut(long imageView, long sampler) {
+        writeAtlasBinding(transmittanceBinding, imageView, sampler);
+    }
+
+    public boolean hasTransmittanceLut() {
+        return transmittanceBinding >= 0;
+    }
+
+    /** Bind the atmosphere's multi-scatter table (M10.2), sampled by world.rmiss. */
+    public void setMultiScatterLut(long imageView, long sampler) {
+        writeAtlasBinding(multiScatterBinding, imageView, sampler);
+    }
+
+    /** Bind the three sky-view tables (M10.3) in Rayleigh / Mie / multi-scatter order. */
+    public void setSkyViewLuts(long rayleighView, long mieView, long multiView, long sampler) {
+        if (skyViewBinding < 0) {
+            return;
+        }
+        writeAtlasBinding(skyViewBinding, rayleighView, sampler);
+        writeAtlasBinding(skyViewBinding + 1, mieView, sampler);
+        writeAtlasBinding(skyViewBinding + 2, multiView, sampler);
+    }
+
+    /** Bind the aerial-perspective froxel (M10.4). */
+    public void setAerialPerspectiveLut(long imageView, long sampler) {
+        writeAtlasBinding(froxelBinding, imageView, sampler);
+    }
+
+    /** Bind the volumetric visibility grid (M13.2), sampled by the fog on every marched segment. */
+    public void setVolumeVisibilityGrid(long imageView, long sampler) {
+        writeAtlasBinding(visibilityGridBinding, imageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

@@ -34,16 +34,26 @@ final class RtMaterialLayoutTest {
 
     @Test
     void reflectedWorldPushConstantsIncludeLightBuffersAndDebugView() {
-        // 10 uint64_t addresses (world/table/material, 5 light buffers, path queue) + 2 uint.
-        assertEquals(88, WorldPushConstantsData.BYTE_SIZE);
+        // 11 uint64_t addresses (world/table/material/material-extension, 5 light buffers, path
+        // queue) + 3 uint, tail-padded to the struct's 8-byte alignment. Still under Vulkan's
+        // guaranteed 128, but the headroom is now 24 bytes: the next address added here spends 8 of
+        // them, and whoever adds it should redo this arithmetic rather than trust this comment.
+        // (The 12th address, M9's sky-light grid, was retired in M15.0 with the CPU grid it pointed
+        // at.) Every uint added here is paid by the closest-hit shader, which reads pc on every hit
+        // and never dereferences WorldPush — that is why shading switches land here rather than there.
+        assertEquals(112, WorldPushConstantsData.BYTE_SIZE);
         ByteBuffer data = ByteBuffer.allocateDirect(WorldPushConstantsData.BYTE_SIZE)
                 .order(ByteOrder.nativeOrder());
-        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11, 12).write(data);
-        assertEquals(4L, data.getLong(24));  // materialTableAddr
-        assertEquals(5L, data.getLong(32));  // lightBufAddr
-        assertEquals(9L, data.getLong(64));  // lightGridSpanAddr (last of the light-buffer addresses)
-        assertEquals(10L, data.getLong(72)); // pathQueueAddr
-        assertEquals(11, data.getInt(80));   // frameIndex
-        assertEquals(12, data.getInt(84));   // debugView
+        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L,
+                13, 14, 15).write(data);
+        assertEquals(4L, data.getLong(WorldPushConstantsData.MATERIAL_TABLE_ADDR_OFFSET));
+        assertEquals(5L, data.getLong(WorldPushConstantsData.MATERIAL_EXTENSION_ADDR_OFFSET));
+        assertEquals(6L, data.getLong(WorldPushConstantsData.LIGHT_BUF_ADDR_OFFSET));
+        assertEquals(10L, data.getLong(WorldPushConstantsData.LIGHT_GRID_SPAN_ADDR_OFFSET));
+        assertEquals(11L, data.getLong(WorldPushConstantsData.PATH_QUEUE_ADDR_OFFSET));
+        assertEquals(12L, data.getLong(WorldPushConstantsData.WATER_PROBE_ADDR_OFFSET));
+        assertEquals(13, data.getInt(WorldPushConstantsData.FRAME_INDEX_OFFSET));
+        assertEquals(14, data.getInt(WorldPushConstantsData.DEBUG_VIEW_OFFSET));
+        assertEquals(15, data.getInt(WorldPushConstantsData.SHADE_FLAGS_OFFSET));
     }
 }

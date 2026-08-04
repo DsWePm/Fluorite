@@ -86,9 +86,20 @@ public final class RtEntities {
     /** Custom-index flag (bit 22) marking a particle billboard instance (shares the entity geom table). */
     public static final int PARTICLE_BIT = 0x400000;
     // TLAS visibility-mask bits, ANDed against the per-ray cull mask in world.rgen. Bit 0 = secondary rays
-    // (shadows / GI / reflections, CULL_SECONDARY); bit 1 = the primary camera ray (CULL_PRIMARY).
+    // (shadows / GI / reflections, CULL_SECONDARY); bit 1 = the primary camera ray (CULL_PRIMARY);
+    // bit 2 = the first-person camera owner's own body, and nothing else (CULL_SELF).
     private static final int MASK_SECONDARY = 0x01;
     private static final int MASK_PRIMARY = 0x02;
+    /**
+     * The first-person camera owner's own body.
+     *
+     * <p>Its own bit rather than {@link #MASK_SECONDARY}, because the body is the one instance for which
+     * "visible to secondary rays" and "visible to secondary rays cast FROM THE EYE" differ: it sits at
+     * the camera, so a ray starting there hits it before it has gone anywhere. That cost the water's
+     * volumetric sun term its shadow ray — see trace.slang's CULL_SELF and volume.slang's
+     * enclosedSingleScatter.
+     */
+    private static final int MASK_SELF = 0x04;
     /** Default mask: visible to every ray (terrain and ordinary entities use this). */
     private static final int MASK_ALL = 0xFF;
     /** Particles are primary-ray-only: visible/lit by the camera path, invisible to shadows/GI/reflections. */
@@ -697,7 +708,7 @@ public final class RtEntities {
                 continue;
             }
             boolean firstPersonSelf = entity == cameraEntity && firstPerson;
-            int mask = firstPersonSelf ? MASK_SECONDARY : MASK_ALL;
+            int mask = firstPersonSelf ? MASK_SELF : MASK_ALL;
             float ix;
             float iy;
             float iz;
