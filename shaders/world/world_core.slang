@@ -22,6 +22,12 @@ import world_common;
 // `worldPush` global). Layout constants generated from this module's SPIR-V — see world_common.WorldPush.
 public static WorldPush worldPush = {};
 
+// The BDA carries the active celestial emitter's UNDYED irradiance. Raygen keeps that value here before
+// dyeCelestialLight mutates its local WorldPush copy for legacy centre-direction consumers. Finite-emitter
+// estimators need the original so each sampled direction can receive its own atmospheric transmittance.
+// Module state is per invocation; this adds no WorldPush lane and no cross-thread storage.
+public static float3 undyedCelestialIrradiance = {};
+
 // The radiance payload remains module-level so tracePath and its guide helpers can share it across
 // HitObject trace/invoke calls, mirroring the GLSL rayPayloadEXT global.
 public static Payload payload = {};

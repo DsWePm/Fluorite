@@ -238,6 +238,22 @@ public static const uint PAYLOAD_MATERIAL_MASK = 3u;
 // configurable sun the radiance is over a million and half would clamp it.
 public static const uint PAYLOAD_ANALYTIC_LIGHT = 1u << 20u;
 
+// PCG lives in the binding-free common module because raygen, the froxel compute bake and the
+// world-space visibility compute bake all need the SAME celestial-emitter sampler. Keeping the stream
+// in math.slang made compute callers grow lookalike hashes because math imports the ray-tracing bindings.
+public uint pcg(inout uint s) {
+    s = s * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+public float rndf(inout uint s) {
+    // Convert the high 24 bits, which are exactly representable as float. Converting all 32 bits first
+    // lets the top 128 uint values round to 2^32, incorrectly returning 1.0 and breaking `< probability`
+    // tests (most seriously the F == 1 total-internal-reflection branch).
+    return float(pcg(s) >> 8u) * (1.0 / 16777216.0);
+}
+
 // The celestial light is a square of angular half-size `halfAngle` laid out on the plane tangent to the
 // light direction, spun to the celestial axis so it does not roll as the sun tracks across the sky.
 // sampleSquare draws from it and world.rmiss tests against it; the two have to agree on this frame
@@ -246,6 +262,45 @@ public static const uint PAYLOAD_ANALYTIC_LIGHT = 1u << 20u;
 public void squareLightFrame(float3 axis, float3 celestialAxis, out float3 right, out float3 up) {
     right = normalize(cross(axis, celestialAxis));
     up = cross(right, axis);
+}
+
+/**
+ * One direction on the active square celestial emitter from a caller-owned unit-square sample.
+ *
+ * <p>Pure and binding-free: every estimator supplies its own random stream, while this function owns the
+ * emitter geometry. The visible square, surface NEE, water, marched fog, froxel fog and visibility grid
+ * therefore cannot silently disagree about the light's angular extent or tangent frame.
+ */
+public float3 sampleSquareLightDirection(float3 axis, float3 celestialAxis, float halfAngle,
+                                         float2 unitSample) {
+    if (halfAngle <= 0.0) {
+        return normalize(axis);
+    }
+    float3 right;
+    float3 up;
+    squareLightFrame(axis, celestialAxis, right, up);
+    float tangentExtent = tan(halfAngle);
+    float2 square = (unitSample * 2.0 - float2(1.0, 1.0)) * tangentExtent;
+    return normalize(axis + square.x * right + square.y * up);
+}
+
+public struct SquareLightSample {
+    public float3 direction;
+    public float2 uv;
+};
+
+/** The single stochastic interface for the active finite celestial emitter. */
+public SquareLightSample sampleSquareLight(float3 axis, float3 celestialAxis, float halfAngle,
+                                            inout uint seed) {
+    SquareLightSample sample;
+    if (halfAngle <= 0.0) {
+        sample.uv = float2(0.5, 0.5);
+        sample.direction = normalize(axis);
+        return sample;
+    }
+    sample.uv = float2(rndf(seed), rndf(seed));
+    sample.direction = sampleSquareLightDirection(axis, celestialAxis, halfAngle, sample.uv);
+    return sample;
 }
 
 /**

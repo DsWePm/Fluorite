@@ -222,19 +222,6 @@ public float fresnelDielectric(float cosI, float etaI, float etaT) {
     return 0.5 * (rs * rs + rp * rp);
 }
 
-// PCG hash RNG.
-public uint pcg(inout uint s) {
-    s = s * 747796405u + 2891336453u;
-    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-    return (w >> 22u) ^ w;
-}
-public float rndf(inout uint s) {
-    // Convert the high 24 bits, which are exactly representable as float. Converting all 32 bits first
-    // lets the top 128 uint values round to 2^32, incorrectly returning 1.0 and breaking `< probability`
-    // tests (most seriously the F == 1 total-internal-reflection branch).
-    return float(pcg(s) >> 8u) * (1.0 / 16777216.0);
-}
-
 public float3 primaryRayDir(float2 ndc) {
     float4 nearH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
     float4 farH = mul(worldPush.invViewProj, float4(ndc.x, ndc.y, 0.0, 1.0));
@@ -271,12 +258,7 @@ public float3 cosineDir(float3 n, inout uint s) {
 // direction, from worldPush.celestial.xyz). Averaged over frames by DLSS-RR this yields soft penumbrae that
 // widen with occluder distance (contact-hardening) for free. halfAngle <= 0 ⇒ exact direction (hard).
 public float3 sampleSquare(float3 axis, float halfAngle, inout uint s) {
-    float3 right, up;
-    squareLightFrame(axis, worldPush.celestial.xyz, right, up); // shared with world.rmiss — see there
-    float t = tan(halfAngle);
-    float u = (rndf(s) * 2.0 - 1.0) * t;
-    float v = (rndf(s) * 2.0 - 1.0) * t;
-    return normalize(axis + u * right + v * up);
+    return sampleSquareLight(axis, worldPush.celestial.xyz, halfAngle, s).direction;
 }
 
 // Sample a GGX visible-normal (VNDF, Heitz 2018) about geometric normal n for view ve, returning the

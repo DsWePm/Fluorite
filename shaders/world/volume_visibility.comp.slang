@@ -26,6 +26,7 @@
 // the same reason the froxel does: the consumers read the same field, and two copies of a grid origin
 // that disagree by one cell is a bug that looks like light leaking through walls.
 
+import atmosphere;
 import world_common;
 
 // 64 x 32 x 64 cells. The extent in blocks is the cell size times these, so the cell size (a runtime
@@ -94,8 +95,24 @@ void main(uint3 id: SV_DispatchThreadID) {
     // Straight up rather than a hemisphere for the second: the ambient really is an integral over
     // directions, but the question a ceiling asks is binary and one ray settles it, where a hemisphere
     // would cost as many rays per cell as the whole grid costs now.
-    float sunVis = occluded(p, wp.lightDir.xyz) ? 0.0 : 1.0;
+    // One point on the same finite square used by surface and volumetric NEE. Hash WORLD cells rather
+    // than dispatch ids so moving the camera/grid origin does not reshuffle every sample at once; frame
+    // variation turns the finite-emitter estimate into temporal noise instead of a coherent horizon pop.
+    int3 worldCell = int3(floor(p / max(cell, 1.0e-4)));
+    uint lightSeed = asuint(worldCell.x) * 1973u
+            ^ asuint(worldCell.y) * 9277u
+            ^ asuint(worldCell.z) * 26699u
+            ^ wp.frameIndex * 2654435761u;
+    lightSeed = pcg(lightSeed);
+    SquareLightSample lightSample = sampleSquareLight(
+            wp.lightDir.xyz, wp.celestial.xyz, wp.lightDir.w, lightSeed);
+    float2 lightUv = lightSample.uv;
+    float3 lightDir = lightSample.direction;
+    float sunVis = celestialDirectionVisible(lightDir) && !occluded(p, lightDir) ? 1.0 : 0.0;
     float skyVis = occluded(p, float3(0.0, 1.0, 0.0)) ? 0.0 : 1.0;
 
-    visibilityGrid[int3(id)] = float4(sunVis, skyVis, 0.0, 0.0);
+    // BA preserve the VISIBILITY-WEIGHTED emitter coordinates. After trilinear filtering the consumer
+    // divides this first moment by filtered visibility, so blocked samples cannot pull the surviving
+    // light back toward the square's centre and lose the sunrise colour/visibility correlation.
+    visibilityGrid[int3(id)] = float4(sunVis, skyVis, lightUv * sunVis);
 }

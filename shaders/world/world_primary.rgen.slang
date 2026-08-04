@@ -230,11 +230,9 @@ public PathSegment tracePrimary(PathSegment seg,
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-    // Same dye as pass B's raygen. This pass no longer integrates the camera prefix segment (that moved
-    // to pass B, which reads the froxel or reconstructs the prefix itself — see world.rgen), but the
-    // helpers it shares with pass B read the same worldPush global, and a field dyed on one side of the
-    // pass boundary and undyed on the other would disagree about the sunset. Dyeing at entry keeps every
-    // reader on one convention.
+    undyedCelestialIrradiance = worldPush.lightRadiance.xyz;
+    // Same dual convention as pass B: retain the undyed peak for sampled emitter directions, then centre-
+    // dye the compatibility WorldPush copy. Shared helpers therefore agree on both sides of the pass split.
     dyeCelestialLight(worldPush);
     uint2 dispatchIndex = DispatchRaysIndex().xy;
     uint2 dimensions = DispatchRaysDimensions().xy;

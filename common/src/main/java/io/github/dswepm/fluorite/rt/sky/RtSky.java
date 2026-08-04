@@ -224,16 +224,14 @@ public final class RtSky {
             writeSampledImage(vk, stack, froxelBake.descriptorSet(), 0, sky.transmittance.view, sampler);
             writeStorageImage(vk, stack, froxelBake.descriptorSet(), 1, sky.aerialPerspective.view);
 
-            // Eight bits per channel, because every exact value this grid holds is 0 or 1 — all the
-            // precision that matters is in the FILTERING between them, and a float format would spend four
-            // times the bandwidth storing the same information.
+            // Eight bits per channel. R/G are binary visibility before filtering; B/A carry the
+            // visibility-weighted unit-square coordinates of the sampled celestial point. Those moments
+            // need spatial correlation, not HDR range, and a float format would spend four times the
+            // bandwidth for no demonstrated gain.
             //
-            // R8G8B8A8 rather than the R8G8 the data actually needs. Vulkan's list of formats a device
-            // MUST support as a storage image contains R8G8B8A8_UNORM and does not contain R8G8_UNORM, so
-            // the tighter format would work on the machine it was written on and be a format-support
-            // failure somewhere else — the kind of portability bug that never reproduces locally. 512 KB
-            // against 256 KB is not worth that, and the two spare channels are somewhere for a future
-            // third visibility to go without a second image.
+            // Vulkan's required storage-image format list contains R8G8B8A8_UNORM. Keeping the portable
+            // four-channel format also lets the sunrise estimator preserve which emitter coordinates
+            // survived visibility filtering without allocating a second image.
             sky.visibilityGrid = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "volume visibility grid");
             writeStorageImage(vk, stack, visibilityBake.descriptorSet(), 0, sky.visibilityGrid.view);
@@ -267,7 +265,7 @@ public final class RtSky {
         return aerialPerspective == null ? 0L : aerialPerspective.view;
     }
 
-    /** The volumetric visibility grid's view (M13.2). R sun visibility, G sky openness. */
+    /** M13.2 visibility grid: R sun, G sky, BA visibility-weighted celestial sample coordinates. */
     public long visibilityGridView() {
         return visibilityGrid == null ? 0L : visibilityGrid.view;
     }

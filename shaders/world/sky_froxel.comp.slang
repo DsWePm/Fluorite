@@ -142,7 +142,8 @@ void main(uint3 id: SV_DispatchThreadID) {
     float heightBase = wp.fogParams.z;
     float startDist = wp.fogExtinction.w;
 
-    float3 sunDir = wp.lightDir.xyz;
+    uint lightSeed = id.x * 1973u ^ id.y * 9277u ^ wp.frameIndex * 2654435761u;
+    lightSeed = pcg(lightSeed);
 
     // March from the eye to this froxel's far edge, accumulating as we go. Each thread redoes the stretch
     // its predecessors covered, which is deliberate: the alternative is a serial scan down the column with
@@ -199,24 +200,32 @@ void main(uint3 id: SV_DispatchThreadID) {
             float3 fogAlbedo = wp.fogScatter.xyz;
             float3 sigmaS = fogAlbedo * fogSigmaT + atmoSigmaS;
 
-            // Sunlight reaching this point, dimmed by the atmosphere it crossed. No occlusion test — that is
-            // M13's half of this grid, and leaving it out here rather than approximating it with one ray is
-            // the whole reason the grid exists.
-            float r = PLANET_R + ATMOS_VIEW_ALTITUDE;
-            float muS = clamp(sunDir.y, -1.0, 1.0);
-            float3 sunT = muS < horizonMu(r)
-                    ? float3(0.0, 0.0, 0.0)
-                    : transmittanceLut.SampleLevel(transmittanceLutUv(r, muS), 0.0).rgb;
+            // One stochastic finite-emitter point owns atmosphere, local-fog attenuation, phase and the
+            // froxel's own visibility ray together. This keeps the steep horizon colour gradient correlated
+            // with the terrain test instead of switching an already-orange centre sample on as one block.
+            SquareLightSample lightSample = sampleSquareLight(
+                    wp.lightDir.xyz, wp.celestial.xyz, wp.lightDir.w, lightSeed);
+            float3 sampledLightDir = lightSample.direction;
+            float3 sampledIrradiance = float3(0.0, 0.0, 0.0);
+            bool celestialVisible = celestialDirectionVisible(sampledLightDir);
+            if (celestialVisible) {
+                float r = PLANET_R + ATMOS_VIEW_ALTITUDE;
+                float muS = clamp(sampledLightDir.y, -1.0, 1.0);
+                float3 atmosphereT = transmittanceLut.SampleLevel(
+                        transmittanceLutUv(r, muS), 0.0).rgb;
+                sampledIrradiance = wp.lightRadiance.xyz * atmosphereT;
+            }
 
             // M15.2: the same local-fog source attenuation the marched estimator has always applied.
-            // This shader reads undyed WorldPush values, so its direct path is atmosphere LUT * local fog;
-            // raygen receives atmosphere-dyed values and passes only local fog to the same source module.
+            // This compute stage reads the undyed WorldPush value, so its direct path is atmosphere LUT *
+            // local fog. Raygen preserves the same undyed value before centre-dyeing its compatibility copy;
+            // finite-emitter paths there perform this same per-direction LUT lookup.
             bool multiScatter = (wp.flags & (1u << 26u)) != 0u;
             float3 fogSunSigma = multiScatter
                     ? volumeDiffuseAttenuation(wp.fogExtinction.xyz, fogAlbedo, wp.fogScatter.w)
                     : wp.fogExtinction.xyz;
             float3 localFogSunT = volumeAmbientTransmittance(wp.fogParams, wp.fogExtinction,
-                                                              fogSunSigma, p, sunDir, maxDist);
+                                                               fogSunSigma, p, sampledLightDir, maxDist);
 
             // M13: the visibility this grid was built to hold. One ray per CELL rather than per pixel, which
             // is the entire difference between volumetric shadows and what a path tracer can afford to do
@@ -224,7 +233,7 @@ void main(uint3 id: SV_DispatchThreadID) {
             // one coin flip near the camera applied to a whole segment, flipping the screen at once whenever
             // the camera crossed an occlusion boundary. A cell's answer is shared by every pixel that reads it
             // and interpolated between neighbours, so it varies smoothly in space and in time.
-            float sunVis = sunOccluded(p, sunDir) ? 0.0 : 1.0;
+            float sunVis = celestialVisible && !sunOccluded(p, sampledLightDir) ? 1.0 : 0.0;
 
             // Two occlusion tests for two different quantities: a ray at the sun for the directional
             // term, a ray at the zenith for the isotropic ones. Gating the ambient on the SUN would be
@@ -232,8 +241,8 @@ void main(uint3 id: SV_DispatchThreadID) {
             // what removes ambient light is a roof, not a hill.
             float skyOpen = skyReachable(p);
             AmbientRadianceSource source = evaluateAmbientRadianceSource(
-                    rd, sunDir, wp.fogScatter.w,
-                    wp.lightRadiance.xyz, sunT * localFogSunT,
+                    rd, sampledLightDir, wp.fogScatter.w,
+                    sampledIrradiance, localFogSunT,
                     wp.mediumSkyRadiance.xyz);
             float3 visibleSource = source.sun * sunVis + source.sky * skyOpen;
 

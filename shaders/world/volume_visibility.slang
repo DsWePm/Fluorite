@@ -1,4 +1,5 @@
-// The bound volumetric visibility grid and the one correct way to read it.
+// The bound volumetric visibility grid and the one correct way to read it. R/G are sun visibility and
+// sky openness; BA are the visibility-weighted first moment of the sampled celestial square coordinates.
 //
 // Separate from the bake for the same reason atmosphere_lut is separate from atmosphere: the bake's
 // descriptor set has exactly one storage image, a binding declared in a module reaches every importer,
@@ -23,6 +24,12 @@ public static const int VIS_GRID_D = 64;
  */
 [[vk::binding(16, 0)]] public Sampler3D volumeVisibilityGrid;
 
+public struct VolumeVisibilitySample {
+    public float sun;
+    public float sky;
+    public float2 lightUv;
+};
+
 /**
  * How wide the handover to the unshadowed model is at the grid's faces, in normalized units.
  *
@@ -44,10 +51,14 @@ static const float VIS_EDGE_FADE = 0.06;
  * the appearance it always had. The opposite default would black out the distance the moment a camera
  * moved, and it would do so silently.
  */
-public float2 sampleVolumeVisibility(float3 p) {
+public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
+    VolumeVisibilitySample result;
+    result.sun = 1.0;
+    result.sky = 1.0;
+    result.lightUv = float2(0.5, 0.5);
     float cell = worldPush.visGridOrigin.w;
     if (cell <= 0.0) {
-        return float2(1.0, 1.0);
+        return result;
     }
     float3 extent = cell * float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
     // Cell (i,j,k) holds the answer for origin + (i+0.5)*cell, whose normalized coordinate is exactly
@@ -55,10 +66,22 @@ public float2 sampleVolumeVisibility(float3 p) {
     // writes centres. If that convention ever changes, both sides move together or the field shifts.
     float3 uvw = (p - worldPush.visGridOrigin.xyz) / extent;
     if (any(uvw < float3(0.0, 0.0, 0.0)) || any(uvw > float3(1.0, 1.0, 1.0))) {
-        return float2(1.0, 1.0);
+        return result;
     }
-    float2 v = volumeVisibilityGrid.SampleLevel(uvw, 0.0).rg;
+    float4 v = volumeVisibilityGrid.SampleLevel(uvw, 0.0);
     float3 toFace = min(uvw, float3(1.0, 1.0, 1.0) - uvw);
     float edge = saturate(min(min(toFace.x, toFace.y), toFace.z) / VIS_EDGE_FADE);
-    return lerp(float2(1.0, 1.0), v, edge);
+    result.sun = lerp(1.0, v.r, edge);
+    result.sky = lerp(1.0, v.g, edge);
+    float2 lightMoment = lerp(float2(0.5, 0.5), v.ba, edge);
+    result.lightUv = result.sun > 1.0e-5
+            ? clamp(lightMoment / result.sun, float2(0.0, 0.0), float2(1.0, 1.0))
+            : float2(0.5, 0.5);
+    return result;
+}
+
+/** Compatibility view for callers that need only the two visibility scalars. */
+public float2 sampleVolumeVisibility(float3 p) {
+    VolumeVisibilitySample result = sampleVolumeLightVisibility(p);
+    return float2(result.sun, result.sky);
 }

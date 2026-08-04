@@ -17,6 +17,7 @@
 import math;
 import medium;
 import trace;
+import atmosphere_lut;
 import volume_source;
 import volume_visibility;
 import world_common;
@@ -220,16 +221,15 @@ float2 nextAmbientSunVisStratum(int index, int cap, float3 ro, float3 rd, float2
 }
 
 /**
- * One shared jitter + shadow-ray operation. `useTransmittance=false` still traces: enclosed water needs
- * waterHitT to measure source depth even when its diagnostic switch disables surface occlusion.
+ * One shared shadow-ray operation at a caller-selected position/direction. `useTransmittance=false`
+ * still traces: enclosed water needs waterHitT even when its diagnostic switch disables occlusion.
  */
-VolumeSunShadowSample sampleVolumeSunShadow(float3 ro, float3 rd, float2 stratum,
-                                             float3 sunDir, bool useTransmittance,
-                                             inout uint seed) {
+VolumeSunShadowSample traceVolumeSunShadow(float3 ro, float3 rd, float sampleT,
+                                            float3 sunDir, bool useTransmittance) {
     VolumeSunShadowSample sample;
-    sample.t = lerp(stratum.x, stratum.y, rndf(seed));
+    sample.t = sampleT;
     VisibilityResult shadow = visibilityMasked(CULL_SECONDARY_NO_SELF, ro + rd * sample.t,
-                                                sunDir, RAY_FAR);
+                                                 sunDir, RAY_FAR);
     sample.transmittance = useTransmittance
             ? shadow.transmittance
             : float3(1.0, 1.0, 1.0);
@@ -317,8 +317,18 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
  * <p>Stratified in optical depth; each layer carries its exact unoccluded view-path weight. The visibility
  * sample stands in for that layer's weighted visibility, which is the named approximation above.
  */
+float3 sampledAmbientSunSource(float3 ro, float3 viewDir, float3 lightDir,
+                               float phaseG, float3 sunSigma) {
+    float3 sampledIrradiance = sampleCelestialIrradiance(
+            undyedCelestialIrradiance, lightDir);
+    float3 localFogT = ambientTransmittanceWith(sunSigma, ro, lightDir, RAY_FAR);
+    return evaluateAmbientRadianceSource(
+            viewDir, lightDir, phaseG, sampledIrradiance,
+            localFogT, float3(0.0, 0.0, 0.0)).sun;
+}
+
 float3 sunInScatterStochastic(float3 ro, float3 rd, float2 window, float3 scatterAlbedo,
-                              float3 sunSource, int rays, inout uint seed) {
+                               float phaseG, float3 sunSigma, int rays, inout uint seed) {
     float3 gathered = float3(0.0, 0.0, 0.0);
     float3 transmittance = float3(1.0, 1.0, 1.0);
     AmbientSunVisSchedule schedule = makeAmbientSunVisSchedule(ro, rd, window);
@@ -336,8 +346,13 @@ float3 sunInScatterStochastic(float3 ro, float3 rd, float2 window, float3 scatte
             continue;
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
-        VolumeSunShadowSample shadow = sampleVolumeSunShadow(ro, rd, stratum,
-                worldPush.lightDir.xyz, true, seed);
+        float sampleT = lerp(tA, tB, rndf(seed));
+        SquareLightSample lightSample = sampleSquareLight(
+                worldPush.lightDir.xyz, worldPush.celestial.xyz, worldPush.lightDir.w, seed);
+        float3 lightDir = lightSample.direction;
+        float3 sunSource = sampledAmbientSunSource(ro, rd, lightDir, phaseG, sunSigma);
+        VolumeSunShadowSample shadow = traceVolumeSunShadow(
+                ro, rd, sampleT, lightDir, true);
         gathered += transmittance * scatterAlbedo * sunSource * shadow.transmittance
                 * (float3(1.0, 1.0, 1.0) - stepT);
         transmittance *= stepT;
@@ -563,16 +578,11 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
     // sin(elevation) = 0.2 it claimed 5x the depth against a true 1.48x, and it diverges at sunset — so
     // the sun term died within a block or two of the surface and left a bright band hugging the surface
     // with darkness immediately under it. A bounded path is what turns that edge into a falloff.
-    float sunY = worldPush.lightDir.y;
-    if (sunSourceOn && sunY > 1.0e-3) {
-        float sinAir = sqrt(max(0.0, 1.0 - sunY * sunY));
-        float sinWater = sinAir / WATER_IOR;
-        // The 1e-4 floor is unreachable given the critical angle bounds cosWater below at ~0.66; it is
-        // there so a future IOR change cannot turn this into a division by zero silently.
-        float cosWater = sqrt(max(1.0e-4, 1.0 - sinWater * sinWater));
-        float sunPathScale = 1.0 / cosWater;
+    if (sunSourceOn) {
+        float phaseG = mediumPhaseG(medium);
+        // The finite emitter direction, refraction and phase are sampled per stratum below.
 
-        // THE DIRECTION THE SUN ACTUALLY COMES FROM, INSIDE THE WATER.
+        // THE DIRECTION EACH SAMPLED EMITTER POINT ACTUALLY COMES FROM, INSIDE THE WATER.
         //
         // The path length has used the refracted angle for a while; the direction had not, and the
         // comment that stood here said so and deferred it. It has a symptom now: at sunrise the shafts
@@ -582,8 +592,7 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // Snell with n = 1.333 folds the entire sky into a cone of half-angle 48.6 degrees, so the sun
         // seen from under the surface is NEVER lower than about 41.6 degrees of elevation however low it
         // sits in the air. That is the same critical angle that makes Snell's window, and the same one
-        // already bounding sunPathScale two lines up — this is that fact applied to the direction rather
-        // than only to the length.
+        // bounding sunPathScale below — this is that fact applied to the direction as well as the length.
         //
         // Built by keeping the azimuth and swapping the zenith angle, which is what refraction at a flat
         // surface does: the bend happens in the plane of incidence, so only the tilt changes. The
@@ -592,20 +601,11 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         //
         // The surface is taken as FLAT here, matching waterAnchor.w and the depth d0 measured against it.
         // Wave normals perturb what the surface looks like, not where this integral thinks it is.
-        float3 sunHoriz = float3(worldPush.lightDir.x, 0.0, worldPush.lightDir.z);
-        float horizLen = max(length(sunHoriz), 1.0e-6);
-        float3 refractedSun = (sunHoriz / horizLen) * sinWater + float3(0.0, cosWater, 0.0);
-
-        float cosT = dot(rd, refractedSun);
         // rd.y, not rd.y/sunY. `descentPerT` is how fast the ray's DEPTH falls per unit t, which is the
         // ray's own vertical component and has nothing to do with where the sun is; the sun's slant is
         // `pathScale`, and depthAttenuatedIntegral already multiplies the two. Passing rd.y/sunY divided
         // by sin(elevation) twice, so a low sun squared its own slant. The sky term below always passed
         // rd.y; the two never agreed.
-        float phaseG = mediumPhaseG(medium);
-        float3 phaseGain = worldPush.lightRadiance.xyz
-                * (4.0 * PI * enclosedPhase(cosT, phaseG, albedo));
-
         // Shadow rays at FIXED OPTICAL DEPTHS along the segment. Each stratum carries the exact share of
         // the VIEW-path closed form, F(edge[i+1]) - F(edge[i]); visibility and the source's measured water
         // path are represented by one jittered sample inside it. That makes this a controlled stratified
@@ -648,11 +648,35 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             if (all(weight <= 1.0e-8)) {
                 continue;
             }
+            // One sample owns every directional quantity: emitter position, atmospheric colour,
+            // refraction, phase and shadow. The old centre-direction `sunY` gate switched the complete
+            // orange term on at once; a finite square instead contributes only the fraction above the
+            // flat water horizon. With a finite emitter, consume all three random dimensions before the
+            // visibility decision so later strata do not change sequence across sunrise.
+            float sampleT = lerp(edgeNear, edgeFar, rndf(seed));
+            SquareLightSample lightSample = sampleSquareLight(
+                    worldPush.lightDir.xyz, worldPush.celestial.xyz, worldPush.lightDir.w, seed);
+            float3 airLightDir = lightSample.direction;
+            if (airLightDir.y <= 0.0) {
+                continue;
+            }
+
+            float sinAir = sqrt(max(0.0, 1.0 - airLightDir.y * airLightDir.y));
+            float sinWater = sinAir / WATER_IOR;
+            // The floor is unreachable for WATER_IOR: the refracted cone bounds cosWater near 0.66. It
+            // guards a future IOR change from silently creating a division by zero in sunPathScale.
+            float cosWater = sqrt(max(1.0e-4, 1.0 - sinWater * sinWater));
+            float sunPathScale = 1.0 / cosWater;
+            float3 lightHoriz = float3(airLightDir.x, 0.0, airLightDir.z);
+            float horizLen = max(length(lightHoriz), 1.0e-6);
+            float3 refractedLight = (lightHoriz / horizLen) * sinWater
+                    + float3(0.0, cosWater, 0.0);
+            float3 sampledIrradiance = sampleCelestialIrradiance(
+                    undyedCelestialIrradiance, airLightDir);
             // Bit 15: DISCARD the shadow ray's transmittance and take the sun as unoccluded. The ray is
-            // still traced either way — sh.waterHitT below is what measures the sun's real water column,
-            // and the depth integral needs that answer whether or not the occlusion half is used. So the
-            // switch splits this term into its two moving parts — occlusion, and the depth integral
-            // weighting it — without changing which rays are cast.
+            // still traced for every above-horizon emitter sample — shadow.waterHitT below measures the
+            // sun's real water column, and the depth integral needs it even when occlusion is disabled.
+            // A below-horizon sample has zero source and skips the ray in either switch state.
             // JITTERED inside the stratum, not pinned to its near edge.
             //
             // The edge was deterministic, so every frame asked the same question at the same place and got
@@ -673,8 +697,8 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             // The view-path stratum weights remain closed-form; the one source/visibility sample standing
             // in for the whole stratum is the explicit M15 approximation documented above.
             bool useVisibility = (worldPush.flags & 32768u) == 0u;
-            VolumeSunShadowSample shadow = sampleVolumeSunShadow(ro, rd, stratum,
-                    refractedSun, useVisibility, seed);
+            VolumeSunShadowSample shadow = traceVolumeSunShadow(
+                    ro, rd, sampleT, refractedLight, useVisibility);
 
             // HOW MUCH WATER THE SUNLIGHT ACTUALLY CROSSED, measured by the ray that just crossed it.
             //
@@ -695,9 +719,12 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
             float sunWaterPath = shadow.waterHitT > 0.0
                     ? shadow.waterHitT
                     : max(d0 - rd.y * shadow.t, 0.0) * sunPathScale;
-            sunTerm += shadow.transmittance * exp(-sigmaSource * sunWaterPath) * weight;
+            float3 phaseGain = sampledIrradiance
+                    * (4.0 * PI * enclosedPhase(dot(rd, refractedLight), phaseG, albedo));
+            sunTerm += phaseGain * shadow.transmittance
+                    * exp(-sigmaSource * sunWaterPath) * weight;
         }
-        total += phaseGain * sunTerm;
+        total += sunTerm;
     }
 
     // Sky light, arriving from overhead, so its path to depth d is d. The water's own source, not the
@@ -844,11 +871,11 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // — they are added together on screen, so a disagreement between them would show up as a seam
             // at whatever depth the camera's prefix segment happens to end.
             //
-            // M15.2/M16: both estimators call evaluateAmbientRadianceSource. This marched path passes
-            // local fog attenuation for the directional light because dyeCelestialLight already applied
-            // the atmosphere to its private WorldPush copy; the froxel reads the undyed buffer and passes
-            // atmosphere LUT * local fog. Both read the same GPU-reduced mediumSkyRadiance for the sky.
-            // The froxel additionally integrates the planetary atmosphere itself over the camera prefix.
+            // M15.2/M16: both estimators call evaluateAmbientRadianceSource and read the same GPU-reduced
+            // mediumSkyRadiance for the sky. The centre-direction source below remains only the grid/outside-
+            // grid fallback; D20's ray and in-grid paths rebuild it from the sampled emitter direction.
+            // Froxel does the same lookup through its compute-local LUT binding and additionally integrates
+            // the planetary atmosphere itself over the camera prefix.
             //
             // The ad-hoc "extinguished light returns as glow" term that used to sit here is gone. It
             // returned 0.35x the sun's RADIANCE isotropically and grew with density, so at density 10 it
@@ -912,9 +939,19 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                         // whichever side of a shadow boundary that end happened to fall on, which is the
                         // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
                         // shape.
-                        float2 vis = sampleVolumeVisibility(ro + rd * ((tA + tB) * 0.5));
+                        VolumeVisibilitySample visSample = sampleVolumeLightVisibility(
+                                ro + rd * ((tA + tB) * 0.5));
+                        float3 stepSunSource = gridSunSource;
+                        if (sunRays == 0u) {
+                            float3 gridLightDir = sampleSquareLightDirection(
+                                    worldPush.lightDir.xyz, worldPush.celestial.xyz,
+                                    worldPush.lightDir.w, visSample.lightUv);
+                            stepSunSource = sampledAmbientSunSource(
+                                    ro, rd, gridLightDir, phaseG, sunSigma);
+                        }
                         ambientStep(acc, ro, rd, tA, tB, scatterAlbedo,
-                                    gridSunSource, skySource, vis);
+                                    stepSunSource, skySource,
+                                    float2(visSample.sun, visSample.sky));
                     }
                 }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,
@@ -932,7 +969,8 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
                     uint fogSeed = seed ^ 0x9E3779B9u; // pcg takes an inout, so it needs a variable
                     fogSeed = pcg(fogSeed);
                     seg.inScatter += sunInScatterStochastic(ro, rd, window, scatterAlbedo,
-                                                            sunSource, int(sunRays), fogSeed);
+                                                             phaseG, sunSigma,
+                                                             int(sunRays), fogSeed);
                 }
             }
         }

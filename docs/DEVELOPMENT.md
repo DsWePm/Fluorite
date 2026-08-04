@@ -43,7 +43,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 代码完成、待游戏内/性能验收；水天空开放度结构性缺陷记入 M17（2026-08-04） | §7，决策依据 §10 D1–D19 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；水天空开放度结构性缺陷记入 M17（2026-08-04） | §7，决策依据 §10 D1–D20 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -74,7 +74,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | `sky_view.comp.slang` | 192×128 sky-view 表（**三张**：相位函数在读取时施加而非烘入——Mie 前向尖峰窄于方位轴分辨率；**逐帧**——依赖太阳） |
 | `sky_medium_reduce.comp.slang` | M16：完整 sky-view 上半球按立体角做 `1/(4π)` reduction，写一份空气/水共享的 `mediumSkyRadiance`（逐帧、单 256-lane workgroup） |
 | `sky_froxel.comp.slang` | 64×36×64 相机前缀雾/空气透视 froxel（含大气项；自发光线，**不读**可见性网格） |
-| `volume_visibility.comp.slang` | 64×32×64 世界空间可见性网格（R=太阳、G=天顶，各一条光线/cell，cell 中心写入） |
+| `volume_visibility.comp.slang` | 64×32×64 世界空间可见性网格（R=太阳、G=天顶、BA=可见天体样本坐标的一阶矩；各一条光线/cell，cell 中心写入） |
 | `world_layout_probe.slang` | 仅构建期反射探针，不打包 |
 
 **模块（import）**：`world_common.slang`（ABI：`WorldPush(Constants)`、`MaterialHeader/Extension`、`PackedPathSegment`、`Light`）· `world_core.slang`（bindings、payload、常量）· `math.slang` · `bsdf.slang` · `volume.slang`（体积积分器）· `volume_source.slang`（跨 stage 的纯高度积分/扩散/source 数学）· `medium.slang`（Medium/栈/参数/profile）· `water.slang`（波谱/法线/焦散）· `subsurface.slang` · `lighting.slang`（光网格+RIS）· `atmosphere.slang` · `atmosphere_lut.slang`（LUT bindings+读法）· `volume_visibility.slang` · `guides.slang`（仅 Pass A）· `segment.slang` · `trace.slang` / `trace_ser.slang`。
@@ -115,13 +115,13 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | | 封闭介质（水/玻璃/冰） | 环境介质（空气雾） |
 |---|---|---|
 | 透射率 | 闭式 `exp(-σt·t)` | 闭式（高度积分 `ambientHeightIntegral`，剖面**在基准高度以下饱和**） |
-| 太阳项 | `enclosedSingleScatter`：Snell 折射太阳方向 + 路径缩放；3 条分层**抖动**阴影线（τ=0/1.25/2.5，段内 jitter；`water.sun-shadow` 默认 false 只弃透射率、射线仍发——`waterHitT` 要用） | 闭式源 × `4π·hg`；默认 1 条抖动阴影线（`volumetrics.sun-shadow-rays=1`），0 = 读可见性网格；太阳路径用扩散衰减 σ（multi-scatter 开时） |
+| 太阳项 | `enclosedSingleScatter`：每个现有分层样本统一采有限面积天体方向→逐方向大气透射→Snell 折射→相位→阴影；最多 3 条阴影线（τ=0/1.25/2.5，段内 jitter；`water.sun-shadow` 默认 false 只弃透射率，仍用射线的 `waterHitT`） | 闭式源 × `4π·hg`；默认 1 条抖动阴影线（`volumetrics.sun-shadow-rays=1`），同一有限天体样本驱动颜色/相位/阴影；0 = 读带天体样本一阶矩的可见性网格；太阳路径用扩散衰减 σ（multi-scatter 开时） |
 | 天空项 | 共享 `mediumSkyRadiance` × 上射线深度 × 可见性网格开阔度 × 深度衰减积分 | 同一 `mediumSkyRadiance`；天顶开阔度门控（网格 march 子步，telescoping 恒等式保证网格关闭=闭式 no-op） |
 | 多重散射近似 | `effectiveAnisotropy`（g_eff = g^(1/(1−ω))）+ `diffuseAttenuation`（K=√(3σa·σtr) 钳 [σa,σt]） | 大气 MS LUT + 扩散衰减；**局部雾自身 MS 无模型（已知 limitation）** |
 | 相位 | HG×95% + Rayleigh×5%（`enclosedPhase`） | HG（`fogScatter.w`，默认 0.55） |
 | 相机前缀 | Pass B 零消光积分（Pass A 已扣吸收） | **froxel**（64×36×64，指数深度轴，含大气项） |
 
-**M16（2026-08-04）已收口的源分叉**：froxel、marched fog 与 water 共读 `mediumSkyRadiance`；旧 `waterAmbient/fogAmbient.xyz` 清零，只保留各自 `.w` 搭载的无关参数。**M15.2（2026-08-03）已收口的估计器分叉**：froxel 与 marched 共用 `volume_source.slang`；局部雾太阳自衰减补进 froxel，`fogScatter` 两边统一为 albedo。froxel 独有的行星大气介质积分是有意口径差。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐。
+**M16（2026-08-04）已收口的源分叉**：froxel、marched fog 与 water 共读 `mediumSkyRadiance`；旧 `waterAmbient/fogAmbient.xyz` 清零，只保留各自 `.w` 搭载的无关参数。**D20/12A 已收口的方向分叉**：`sampleSquareLight` 是有限面积太阳/月亮的单一随机接口；水、marched fog、froxel、可见性网格和表面 NEE 的大气颜色、相位、阴影与水折射均从同一枚样本导出。**M15.2（2026-08-03）已收口的估计器分叉**：froxel 与 marched 共用 `volume_source.slang`；局部雾太阳自衰减补进 froxel，`fogScatter` 两边统一为 albedo。froxel 独有的行星大气介质积分是有意口径差。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐。
 
 ---
 
@@ -383,14 +383,17 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 **剩余验收**：`visibility-cell-size=0` 的 telescoping 归零测试仍成立；`RtPathSegmentLayoutTest` 仍 48；同会话比值 `bench` ≈1.0×（重构应中性）；**顺带偿还 M9 欠账：`bench-water` 两机位首采**，数字进 §4.2 作 M16/M17 的基线。水天空开放度的视觉出口改由 M17 条目定义，M15 不用临时补丁伪装通过。
 
-### M16 散射源 Radiance 化 — LUT 档（D1-A；2026-08-04 代码完成，待游戏内/性能验收）
+### M16 散射源 Radiance 化 — LUT 档（D1-A；D20/12A 代码完成，待连续性复验/性能验收）
 
 - 水、雾天空项统一读取 `mediumSkyRadiance`。`sky_medium_reduce.comp.slang` 用一个 256-lane workgroup 遍历完整 192×128 三表，按 LUT 的折叠方位与非线性高度轴求精确 cell 立体角，并积成 `1/(4π)∫上半球 Lsky dω`。已有水上射线深度、开阔度与深度衰减门控保留。
 - reduction 在合成时施加 Rayleigh/Mie phase，并直接包含 sky-view multi 表；原先单独相加的 `sampleMultiScatter×SUN_INTENSITY` 删除，避免把已在 sky-view 路径积分过的能量再加一次。
 - D17/9A：`water.ambient-scale` 与 `AMBIENT_FOG_FRACTION` 删除，不保留艺术倍率；旧 TOML 键在下一次正常保存时移除。`fogAmbient.xyz`/`waterAmbient.xyz` 清零，`.w` 的 SSS thickness/caustic dispersion 继续使用。
 - D19/11A：`WorldPushData` 新增唯一 `mediumSkyRadiance`（720→736B）；sky-view→reduction、reduction→froxel 两个 compute barrier 封在 `RtSky.recordSkyViewBake` 内。无新增 RT descriptor 或逐射线纹理读取。
 - **可观察改进**：夜晚/黄昏水下亮度随 LUT 正确衰减（旧常数是太阳峰值比例，日落后偏亮）。
-- **验收**：全天时段扫描（黎明→正午→黄昏→夜，R9 同款）；debugView 8/10 对账水雾量级；确认水/雾随同一天空色温变化且夜晚不残留固定亮度；`gpu.skyBake` 记录 reduction 合并后的成本，`bench`/`bench-water` 同会话留档。lang 11 份已删除退役 UI 键。
+- **2026-08-04 首轮游戏内验收**：用户确认正午/黄昏/夜晚时水与雾共同跟随天空亮度和色温，且 water 与 marched/froxel fog 无新增颜色或亮度接缝；但太阳盘露出/没入地平线附近出现蓝夜↔橙红黎明/黄昏的确定性跳变。
+- **D20/12A 根因与修复**：`mediumSkyRadiance` 数值扫描连续，排除 M16 reduction；真正的分叉是水的 `sunY > 1e-3` 整项门、froxel/可见性网格只对天体中心发阴影线，以及“中心方向大气颜色 + 抖动方向可见性”的不相关组合。现在每条**既有**太阳阴影查询先采同一方形天体点，由该点同时决定逐方向 LUT Radiance、局部雾透射、相位、遮挡和水面 Snell 折射。默认 0.6° 半角、平面水地平线的确定性几何探针显示：可见面积从中心高度 −0.6° 到 +0.6° 连续由 0→1（−0.4/−0.2/0/+0.2/+0.4° 约为 0.166/0.334/0.500/0.666/0.834），旧点门则在一个阈值整项翻转。
+- **D20 成本与物理边界**：不增加阴影射线预算；surface NEE 复用既有 2 个 RNG，水/compute 估计器增加相同的 2 个 RNG，另有方向构造及逐方向 LUT/解析运算；地平线下零贡献样本可少发射线。默认 marched、water、froxel 是所选有限天体分布下的随机估计，误差应表现为可被时域降噪的噪点而非整屏跳变；既有 D9 分层近似仍非严格 `f/pdf`。`sun-shadow-rays=0` 的网格档把 BA 存为可见样本坐标一阶矩，再在过滤后的均值方向求非线性颜色/相位，属于有意的低成本有偏近似，不宣称与逐射线档等价。
+- **验收**：以默认非零太阳角半径缓慢跨越日出、日落各一次；水下、开阔地空气雾、室内洞口和 froxel/marched 切换都不得再出现全屏同帧蓝↔橙或亮度阶跃。暂时关闭 RR/时域积累时，允许看到逐像素/逐 froxel 随机噪声，若仍是整块/整屏同刻翻转则失败。`sun-angular-radius=0` 会退化为点光源硬切，不能拿来判定面积光连续性。另记录 `gpu.froxelBake`、`gpu.visBake`、`bench` 与 `bench-water` 同会话 A/B；性能数字回来后再请示是否需要质量档调整。11 份语言 JSON 已删除退役 UI 键。
 
 ### M17 体积散射顶点 + NEE — 质量档（D1-C）
 
@@ -596,6 +599,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | D17 | 旧天空亮度倍率（用户选 9A） | **删除 `water.ambient-scale` 与 `AMBIENT_FOG_FRACTION`，LUT Radiance 直接进入积分器** | 最物理且不会用艺术倍率掩盖源错误；旧键单位是“太阳比例”，不能重解释为 LUT multiplier。无 GPU 成本，代价是旧观感倍率不兼容 |
 | D18 | sky-view 积分（用户选 10A） | **完整 192×128 三表按立体角 reduction，输出 `1/(4π)` 上半球积分；不再额外加 multi-scatter LUT** | 对当前各向同性天空近似是离散 LUT 上最准确的确定性积分；避免多重散射双计。每帧 24,576 texel×3 读取、单 workgroup reduction，成本并入 `gpu.skyBake` 实测 |
 | D19 | 统一源的传输（用户选 11A） | **`WorldPushData` 增加唯一 `mediumSkyRadiance`，GPU reduction 写，空气/水共读** | +16B/frame-slot；不占 128B push constants，不增加 RT descriptor/逐射线采样。两个 compute barrier 是必须同步成本 |
+| D20 | 黎明/黄昏天体跨地平线连续性（用户选 12A） | **完全随机有限面积天体：每个现有阴影查询采一枚方形天体点，并让方向、大气 Radiance、相位、阴影及水折射保持同样本相关** | 在当前面积光分布与既有分层估计器内最接近物理；由时间噪声替代确定性整屏跳变。阴影射线数不增加，但有 2 RNG + 方向/LUT/解析 ALU；网格 0-ray 档仅保存可见样本一阶矩，是有偏近似。若后续要增样本、改分布或改变默认质量档，必须带实测再次请示 |
 
 **同日确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 

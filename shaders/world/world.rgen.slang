@@ -280,6 +280,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             if (lightHalfAngle > 0.0) {
                 lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
             }
+            float3 sampledLightIrradiance = sampleCelestialIrradiance(
+                    undyedCelestialIrradiance, lightDir);
             // Billboards are effectively two-sided receivers. Bias from the side facing the light; shadow
             // rays exclude particles anyway, but this keeps the origin sane when the light is behind the
             // camera side.
@@ -289,7 +291,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
                 float3 vis = visibilityThroughAmbient(medium, shadowOrigin, lightDir, RAY_FAR).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
-                    L += throughput * albedo * INV_PI * worldPush.lightRadiance.xyz * ndl * vis;
+                    L += throughput * albedo * INV_PI * sampledLightIrradiance * ndl * vis;
                 }
             }
 
@@ -395,6 +397,11 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (lightHalfAngle > 0.0) {
             lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
         }
+        // The emitter spans the steep atmospheric horizon gradient. Sampling only its visibility while
+        // reusing the centre's colour is biased precisely at dawn/dusk, so direction and irradiance are
+        // one sample just as direction, BRDF and shadow already are.
+        float3 sampledLightIrradiance = sampleCelestialIrradiance(
+                undyedCelestialIrradiance, lightDir);
         float ndl = max(0.0, dot(n, lightDir));
         if (ndl > 0.0) {
             VisibilityResult shadow = visibilityThroughAmbient(medium, p, lightDir, RAY_FAR);
@@ -453,7 +460,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float wLight = misActive ? powerHeuristic(pdfLight, pdfB) : 1.0;
 
                 float3 brdf = sampled * wLight + disneyLobes(bc, ext, lightDir);
-                L += throughput * brdf * worldPush.lightRadiance.xyz * ndl * vis;
+                L += throughput * brdf * sampledLightIrradiance * ndl * vis;
             }
         }
 
@@ -491,7 +498,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 }
                 if (max(visB.r, max(visB.g, visB.b)) > 0.0) {
                     float cosT = dot(lightDir, rd);
-                    L += throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl * worldPush.lightRadiance.xyz * visB;
+                    L += throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
+                            * sampledLightIrradiance * visB;
                 }
             }
         }
@@ -1002,8 +1010,9 @@ float3 volumeDebug(PackedPathSegment packed) {
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-    // The push carries the light's UNDYED peak; the atmosphere it crossed is applied here, once, before
-    // anything downstream reads it. See dyeCelestialLight for why this is not done at the use sites.
+    undyedCelestialIrradiance = worldPush.lightRadiance.xyz;
+    // Preserve the CPU-pushed UNDYED peak for finite-emitter samples. The compatibility WorldPush copy is
+    // then dyed at the centre for legacy consumers; stochastic NEE applies the LUT at its sampled direction.
     dyeCelestialLight(worldPush);
     uint2 dispatchIndex = DispatchRaysIndex().xy;
     uint2 dimensions = DispatchRaysDimensions().xy;

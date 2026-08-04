@@ -122,6 +122,11 @@ public float horizonMu(float r) {
     return -sqrt(max(0.0, 1.0 - (PLANET_R * PLANET_R) / (r * r)));
 }
 
+/** Whether a celestial direction clears the atmospheric model's geometric horizon at view altitude. */
+public bool celestialDirectionVisible(float3 direction) {
+    return direction.y >= horizonMu(PLANET_R + ATMOS_VIEW_ALTITUDE);
+}
+
 // ---- The medium at an altitude, in one place.
 //
 // Scattering and extinction were being rebuilt from the three density profiles at every site that needed

@@ -67,6 +67,14 @@ public float3 sampleTransmittanceToSpace(float3 dir) {
     return sampleTransmittance(PLANET_R + ATMOS_VIEW_ALTITUDE, clamp(dir.y, -1.0, 1.0));
 }
 
+/** Atmospheric colour of one finite-emitter direction from the undyed irradiance pushed by the CPU. */
+public float3 sampleCelestialIrradiance(float3 undyedIrradiance, float3 sampledDirection) {
+    if (!celestialDirectionVisible(sampledDirection)) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    return undyedIrradiance * sampleTransmittanceToSpace(sampledDirection);
+}
+
 /**
  * Transmittance to space from an arbitrary altitude. The general form of the above, which the camera
  * cannot use (it is pinned to ATMOS_VIEW_ALTITUDE) but the multi-scatter bake needs at every step of
@@ -133,11 +141,10 @@ public float3 sampleSkyView(float3 dir, float3 sunDir) {
  * kept in step by hand so the sun's disc, the sky gradient and the light on terrain could not disagree
  * about a sunset. Deleting that port is what M10.1 is for, and this is where its work moved to.
  *
- * <p><b>Applied to the push constant rather than at each use.</b> The directional-light sites all read
- * this value. Dyeing them one by one would mean several chances to forget, and the missed one would show
- * up as a sunset where the fog disagreed with the ground. It is also the honest shape:
- * the sun is one direction per frame, so this is a per-frame constant, and a value uniform over the whole
- * dispatch has no business being re-fetched per pixel at eight call sites.
+ * <p><b>This is the centre-direction compatibility convention.</b> Consumers that model the celestial
+ * emitter as one direction read the centre-dyed push value. Finite-emitter estimators instead preserve
+ * the undyed CPU value and call {@code sampleCelestialIrradiance} for the direction they actually sampled;
+ * near the horizon, using the centre colour for the whole square would break colour/visibility correlation.
  *
  * <p>M16's {@code mediumSkyRadiance} is deliberately not touched here. It is the phase-integrated
  * radiance of the already-dyed sky-view LUT, not a fraction of the directional light. Multiplying it by
