@@ -13,6 +13,7 @@ import io.github.dswepm.fluorite.rt.entity.RtEntities;
 import io.github.dswepm.fluorite.rt.entity.RtEntityTextures;
 import io.github.dswepm.fluorite.rt.material.RtBlockMaterials;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssFg;
+import io.github.dswepm.fluorite.rt.pipeline.RtDlssRr;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrain;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrainDigest;
 import io.github.dswepm.fluorite.rt.terrain.RtWorkerPool;
@@ -89,6 +90,7 @@ public final class FluoriteLifecycle {
 	public static void onRenderStateInvalidated() {
 		RtTerrain.requestFullClear();
 		RtComposite.INSTANCE.resetFailureLatch(); // F3+A doubles as manual RT recovery after a latched failure
+		RtDlssRr.INSTANCE.requestHistoryReset();
 		// Residency is about to be rebuilt from scratch; keeping the old hashes would mix two worlds.
 		RtTerrainDigest.reset();
 	}

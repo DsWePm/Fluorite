@@ -11,7 +11,7 @@
 //   go on the stack.** That is the decision the rest of this file rests on: the stack keeps its
 //   named-field, depth-2, no-dynamic-indexing shape (see medium.slang for why that matters in a
 //   register-bound raygen), and an unbounded field that every path is inside at all times then costs
-//   zero per-path state. Whether a path is in open air is the explicit Medium.ambient bit, never
+//   zero per-path state. Whether a path is in open air is the explicit MEDIUM_FLAG_AMBIENT bit, never
 //   inferred from ior == 1 && extinction == 0.
 
 import math;
@@ -119,9 +119,10 @@ public float3 ambientTransmittance(float3 ro, float3 rd, float dist) {
  * the ambient field only applies after that, which this does not model. Such points are already deep in
  * the water's own absorption, so the error lands where almost nothing is visible anyway.
  */
-public VisibilityResult visibilityThroughAmbient(MediumStack stack, float3 origin, float3 dir, float tmax) {
+public VisibilityResult visibilityThroughAmbient(float3 mediumExtinction, uint mediumFlags,
+                                                  float3 origin, float3 dir, float tmax) {
     VisibilityResult result = visibility(origin, dir, tmax);
-    if (stack.current.ambient) {
+    if (mediumFlagsAmbient(mediumFlags)) {
         result.transmittance *= ambientTransmittance(origin, dir, tmax);
     }
     return result;
@@ -546,9 +547,10 @@ public static const int WATER_SUN_VIS_STRATA = 3;
  * one filling the screen. When the camera is not in water at all, the segment's own start is the
  * surface crossing, which is exactly right for looking down into a pond.
  */
-float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd, float tEnd,
+float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 albedo,
+                             float3 ro, float3 rd, float tEnd,
                              inout uint seed) {
-    float3 sigmaT = mediumSigmaT(medium, ro);
+    float3 sigmaT = mediumSigmaTFields(mediumExtinction, mediumFlags, ro);
     // FALLBACK ONLY. Both scattering terms measure the light's path through the water with a ray now
     // (see below); this stands in for the cases where a ray found no surface to measure against, which is
     // rare and always means the geometry did not agree that this point is under water.
@@ -579,7 +581,7 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
     // the sun term died within a block or two of the surface and left a bright band hugging the surface
     // with darkness immediately under it. A bounded path is what turns that edge into a falloff.
     if (sunSourceOn) {
-        float phaseG = mediumPhaseG(medium);
+        float phaseG = mediumPhaseGFlags(mediumFlags);
         // The finite emitter direction, refraction and phase are sampled per stratum below.
 
         // THE DIRECTION EACH SAMPLED EMITTER POINT ACTUALLY COMES FROM, INSIDE THE WATER.
@@ -739,7 +741,7 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // treatment as the sun's source path. Without it the two sources would disagree about how deep
         // light reaches, which would show as the sky term dying at a different depth from the sun's.
         float3 skySigmaSource = multiScatterOn()
-                ? volumeDiffuseAttenuation(sigmaT, albedo, mediumPhaseG(medium))
+                ? volumeDiffuseAttenuation(sigmaT, albedo, mediumPhaseGFlags(mediumFlags))
                 : sigmaT;
         // ONE RAY STRAIGHT UP, and it answers both questions the sky term has.
         //
@@ -801,41 +803,40 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
  * Medium parameter queries and the sun-visibility sampler. Keeping the estimator seam internal gives
  * callers one contract without degrading a homogeneous exact solution into numerical marching.
  */
-public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd, float tEnd,
-                                        uint seed) {
+public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFlags,
+                                        float3 ro, float3 rd, float tEnd, uint seed) {
     SegmentIntegral seg;
     seg.transmittance = float3(1.0, 1.0, 1.0);
     seg.inScatter = float3(0.0, 0.0, 0.0);
 
-    Medium current = stack.current;
-    uint profile = mediumProfile(current);
+    uint profile = mediumProfileFlags(currentFlags);
 
     // Estimator dispatch behind the one segment interface. Homogeneous enclosed media retain their
     // exact closed form; the spatially varying ambient field retains its analytic-height march. The
     // shared parameter queries and shadow sampler are the seam -- forcing both through one numerical
     // method would make the homogeneous path slower and less accurate merely to look uniform.
     if (profile != MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT) {
-        float3 sigmaT = mediumSigmaT(current, ro);
+        float3 sigmaT = mediumSigmaTFields(currentExtinction, currentFlags, ro);
         if (any(sigmaT > 0.0)) {
             seg.transmittance = exp(-sigmaT * tEnd);
 
-            float3 scatterAlbedo = mediumScatterAlbedo(current);
+            float3 scatterAlbedo = mediumScatterAlbedoFields(currentExtinction, currentFlags);
             if (profile == MEDIUM_PROFILE_HOMOGENEOUS_ENCLOSED
                     && any(scatterAlbedo > 0.0)) {
                 // Its own rehash of the caller's seed, distinct from the fog's below, so the water's
                 // stratum jitter and the fog's cannot draw the same numbers on the same pixel.
                 uint waterSeed = seed ^ 0x85EBCA6Bu;
                 waterSeed = pcg(waterSeed);
-                seg.inScatter += enclosedSingleScatter(current, scatterAlbedo, ro, rd, tEnd,
-                                                       waterSeed);
+                seg.inScatter += enclosedSingleScatter(currentExtinction, currentFlags,
+                                                       scatterAlbedo, ro, rd, tEnd, waterSeed);
             }
         }
     }
 
     // A path inside water is inside water — not inside water *and* the world's fog.
     if (profile == MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT) {
-        float3 scatterAlbedo = mediumScatterAlbedo(current);
-        float phaseG = mediumPhaseG(current);
+        float3 scatterAlbedo = mediumScatterAlbedoFields(currentExtinction, currentFlags);
+        float phaseG = mediumPhaseGFlags(currentFlags);
         float2 window = ambientWindow(tEnd);
         float tau = ambientHeightIntegral(ro, rd, window.x, window.y);
         if (tau > 0.0) {

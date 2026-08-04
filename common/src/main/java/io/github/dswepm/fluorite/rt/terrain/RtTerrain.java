@@ -231,6 +231,20 @@ public final class RtTerrain {
         return table.instances;
     }
 
+    /** Render-thread snapshot paired with the water GPU probe. Counts, rather than section identities,
+     * are enough to test the reported correlation: the volume disappears while initial terrain is being
+     * published. Keeping the snapshot here avoids exposing mutable residency collections to diagnostics. */
+    public StreamingDiagnostics streamingDiagnostics() {
+        return new StreamingDiagnostics(resident.size(), published.size(), desired.size(), empty.size(),
+                inFlight.size(), missing.size(), reextract.size(), prepared.size(), completedBuilds.size(),
+                table.instances.size());
+    }
+
+    public record StreamingDiagnostics(int resident, int published, int desired, int empty,
+                                       int inFlight, int missing, int reextract, int prepared,
+                                       int completed, int instances) {
+    }
+
     /** Section table device address: {@code {u64 primAddr, u64 uvAddr, u32 triBase[4]}} per section, indexed by gl_InstanceCustomIndexEXT. */
     public long tableAddress() {
         return table.address();

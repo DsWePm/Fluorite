@@ -41,17 +41,19 @@ final class RtMaterialLayoutTest {
         // (The 12th address, M9's sky-light grid, was retired in M15.0 with the CPU grid it pointed
         // at.) Every uint added here is paid by the closest-hit shader, which reads pc on every hit
         // and never dereferences WorldPush — that is why shading switches land here rather than there.
-        assertEquals(104, WorldPushConstantsData.BYTE_SIZE);
+        assertEquals(112, WorldPushConstantsData.BYTE_SIZE);
         ByteBuffer data = ByteBuffer.allocateDirect(WorldPushConstantsData.BYTE_SIZE)
                 .order(ByteOrder.nativeOrder());
-        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12, 13, 14).write(data);
-        assertEquals(4L, data.getLong(24));  // materialTableAddr
-        assertEquals(5L, data.getLong(32));  // materialExtensionAddr
-        assertEquals(6L, data.getLong(40));  // lightBufAddr
-        assertEquals(10L, data.getLong(72)); // lightGridSpanAddr (last of the light-buffer addresses)
-        assertEquals(11L, data.getLong(80)); // pathQueueAddr
-        assertEquals(12, data.getInt(88));   // frameIndex
-        assertEquals(13, data.getInt(92));   // debugView
-        assertEquals(14, data.getInt(96));   // shadeFlags
+        new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L,
+                13, 14, 15).write(data);
+        assertEquals(4L, data.getLong(WorldPushConstantsData.MATERIAL_TABLE_ADDR_OFFSET));
+        assertEquals(5L, data.getLong(WorldPushConstantsData.MATERIAL_EXTENSION_ADDR_OFFSET));
+        assertEquals(6L, data.getLong(WorldPushConstantsData.LIGHT_BUF_ADDR_OFFSET));
+        assertEquals(10L, data.getLong(WorldPushConstantsData.LIGHT_GRID_SPAN_ADDR_OFFSET));
+        assertEquals(11L, data.getLong(WorldPushConstantsData.PATH_QUEUE_ADDR_OFFSET));
+        assertEquals(12L, data.getLong(WorldPushConstantsData.WATER_PROBE_ADDR_OFFSET));
+        assertEquals(13, data.getInt(WorldPushConstantsData.FRAME_INDEX_OFFSET));
+        assertEquals(14, data.getInt(WorldPushConstantsData.DEBUG_VIEW_OFFSET));
+        assertEquals(15, data.getInt(WorldPushConstantsData.SHADE_FLAGS_OFFSET));
     }
 }

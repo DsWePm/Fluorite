@@ -43,7 +43,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；水天空开放度结构性缺陷记入 M17（2026-08-04） | §7，决策依据 §10 D1–D20 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04） | §7，决策依据 §10 D1–D27 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -52,8 +52,8 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 
 ### 2.1 双 pass wavefront（详见 `docs/WAVEFRONT_PLAN.md`，此处只留骨架）
 
-- **Pass A** `world_primary.rgen.slang`：每像素一条相机光线，捕获 DLSS-RR guides 与运动矢量，走电介质链（最多**一次** delta 分裂），向队列写 1–2 条续段记录。普通 `TraceRay`（不摊 SER 屏障）。只对自己消费的段施加封闭介质 Beer–Lambert，**不做任何体积内散射**。
-- **Pass B** `world.rgen.slang`：弹射循环（太阳 NEE+MIS、RIS、SSS、俄罗斯轮盘），**所有体积内散射在这里**，包括重建相机前缀段（ambient → 读 froxel；水下 → 零消光 `integrateSegment`）。编译两份：普通 + `world_ser`（SER）。
+- **Pass A** `world_primary.rgen.slang`：每像素一条相机光线，捕获 DLSS-RR guides 与运动矢量，走电介质链（最多**一次** delta 分裂），向队列写 1–2 条续段记录。普通 `TraceRay`（不摊 SER 屏障）。只解析边界、IOR/Fresnel、分支与几何 ray-cone 状态；**不施加被消费相机前缀的吸收或散射**。
+- **Pass B** `world.rgen.slang`：弹射循环（太阳 NEE+MIS、RIS、SSS、俄罗斯轮盘），**所有体积段的完整 `SegmentIntegral` 所有权都在这里**。相机前缀只积一次：ambient → froxel 的 in-scatter+transmittance；水下 → 真实水 `Medium` 的闭式 in-scatter+Beer transmittance。再以 `prefix.inScatter + prefix.transmittance × ΣleafRadiance` 合成 Fresnel 叶。编译两份：普通 + `world_ser`（SER）。
 - 队列：`2 × width × height` 条 `PackedPathSegment`，索引固定不分配（`pixelIndex` / `W*H + pixelIndex`），`PATH_HAS_NEXT` 位；`MAX_PATH_SEGMENTS == 2` 与 `2×` 尺寸是同一事实的两次陈述，必须一起改。
 - 分裂资格**只键于材质 model**（`MATERIAL_WATER`/`MATERIAL_DIELECTRIC`，粗糙电介质走终端续段由 Pass B 解析），永不键于叶集合。
 
@@ -110,7 +110,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 
 ### 2.5 体积介质现状（M13.3 后，M15 重构的起点）
 
-`Medium { float ior; float3 extinction; bool water; bool ambient; }`，栈深 2 具名字段。`integrateSegment`（`volume.slang`）单入口、两分支：
+`Medium { float ior; float3 extinction; uint flags; }`，`MEDIUM_FLAG_WATER` / `MEDIUM_FLAG_AMBIENT` 在一个原子分类字中，栈深 2 具名字段。48B wavefront 记录仍传输 `MediumStack`；受 Slang 2026.14 raygen 分类值错误别名影响，Pass B 按 D27 直接从 `PackedPathSegment.pathFlags` 解码唯一 `activeMediumFlags`：低 16 位为 current、高 16 位为 outer，进入/退出时整体改写，积分、阴影和 reservoir 只在调用点提取 current。IOR/extinction 仍为 primitive active state；分类打包只是编译器规避层，不是第二套介质物理模型。`integrateSegment`（`volume.slang`）仍是单一能量契约、两种估计器分支：
 
 | | 封闭介质（水/玻璃/冰） | 环境介质（空气雾） |
 |---|---|---|
@@ -119,7 +119,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | 天空项 | 共享 `mediumSkyRadiance` × 上射线深度 × 可见性网格开阔度 × 深度衰减积分 | 同一 `mediumSkyRadiance`；天顶开阔度门控（网格 march 子步，telescoping 恒等式保证网格关闭=闭式 no-op） |
 | 多重散射近似 | `effectiveAnisotropy`（g_eff = g^(1/(1−ω))）+ `diffuseAttenuation`（K=√(3σa·σtr) 钳 [σa,σt]） | 大气 MS LUT + 扩散衰减；**局部雾自身 MS 无模型（已知 limitation）** |
 | 相位 | HG×95% + Rayleigh×5%（`enclosedPhase`） | HG（`fogScatter.w`，默认 0.55） |
-| 相机前缀 | Pass B 零消光积分（Pass A 已扣吸收） | **froxel**（64×36×64，指数深度轴，含大气项） |
+| 相机前缀 | Pass B 用真实水 `Medium` 一次返回 in-scatter + Beer transmittance；Pass A 不再预扣 | **froxel**（64×36×64，指数深度轴，含大气项） |
 
 **M16（2026-08-04）已收口的源分叉**：froxel、marched fog 与 water 共读 `mediumSkyRadiance`；旧 `waterAmbient/fogAmbient.xyz` 清零，只保留各自 `.w` 搭载的无关参数。**D20/12A 已收口的方向分叉**：`sampleSquareLight` 是有限面积太阳/月亮的单一随机接口；水、marched fog、froxel、可见性网格和表面 NEE 的大气颜色、相位、阴影与水折射均从同一枚样本导出。**M15.2（2026-08-03）已收口的估计器分叉**：froxel 与 marched 共用 `volume_source.slang`；局部雾太阳自衰减补进 froxel，`fogScatter` 两边统一为 albedo。froxel 独有的行星大气介质积分是有意口径差。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐。
 
@@ -147,7 +147,8 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | 锚点 | 铁律 |
 |---|---|
 | `medium.slang` `MediumStack` | 深度 2、具名字段、**非数组**（动态索引落 scratch，raygen 已寄存器受限）。`entering` 逐面重推导 ⇒ 走丢的路径下个界面自愈 |
-| `medium.slang` `Medium.ambient` | 显式位，不是 `ior==1 && extinction==0` 推断（无色电介质会误答）。**环境介质永不进栈** |
+| `medium.slang` `Medium.flags` | WATER/AMBIENT 共用一个 `uint` 分类字，不再使用 shader `bool`；ambient 是显式位，不从 `ior==1 && extinction==0` 推断（无色电介质会误答）。**环境介质永不进栈** |
+| `world.rgen.slang` 活动介质状态 | **禁止在 indirect raygen 同时存活、复制、传递或原地修改两个 `Medium` 聚合量，也禁止把 current/outer flags 拆成两个持久 primitive。** `PathSegment.medium` 只传 IOR/extinction；分类必须由 queue `pathFlags` 直接解码成唯一 `activeMediumFlags`，进入/退出整体更新。改回任何聚合/双标量接口前必须用真实 GPU probe 证明目标工具链已修复，shader 编译和 `spirv-val` 通过不算证据 |
 | `medium.slang` `mediumScatterAlbedo` | σs 保持全局、反照率由 `σs/σt` 反推——48B 记录保住最后一个空 lane 的原因。σs∝σa 的灰色反照率教训写在原地 |
 | `volume.slang` 透射率包装器 | **阴影 payload 不许增长**（SER 在 `ReorderThread` 溢出全部存活值）；透射率乘法只存在于唯一包装器里，「第四条阴影线不会悄悄漏掉」 |
 | `volume.slang` 体积采样 | 采样位置**不得依赖段长**（否则相邻像素按命中距离读出量级不同的答案 = 斑块） |
@@ -276,10 +277,22 @@ MC 相机是**点**，不存在「半潜」机位。两机位分开采：(a) 完
 
 **代码里错的东西和用户看到的现象是两个集合，交集靠隔离实验建立，不能靠推理宣称。** M9 七轮里前六个「根因」全是读代码读出来的（其中两个还是真缺陷——修是对的，但宣布它们是根因是错误归因），唯一站住的结论来自 `SCATTER_SOURCE` 四档 + `SUN_SHADOW` 开关的判据链。规程：
 1. 先设计**判据表**（每个观察结果指向哪个子系统），后动手；「不要先讲机制」。
-2. 隔离开关現役清单：`water.scatter-source`（both/sun/sky/none，none 保 σs 只去 in-scatter——把「太亮」和「太浑」分开）、`volumetrics.segment-source`（both/froxel/marched/none）、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`（可证明 no-op）、debug view 8–19。
+2. 隔离开关現役清单：`water.scatter-source`（both/sun/sky/none，none 保 σs 只去 in-scatter——把「太亮」和「太浑」分开）、`volumetrics.segment-source`（both/froxel/marched/none）、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`（可证明 no-op）、debug view 8–21。
 3. 修掉顺手发现的真缺陷**不等于**结案；结案标准是判据表闭合。
 
-### 4.6 跨加载器验证
+### 4.6 GPU shader 运行期日志方法
+
+介质/ABI 类故障不能用「编译成功」或一张 debug 图结案。固定流程：
+
+1. 先跑 `generateShaderRecords compileShaders :neoforge:processResources :neoforge:compileJava`，避免只更新源码/根目录 SPIR-V、运行目录仍读旧资源。日志文件名必须带方案编号与加载器，例如 `codex-neoforge-20B-scalar-state-rerun-stdout.log`。
+2. 用原始复现存档启动，不另造简化世界代替真实路径。中心像素 probe 同时记录传输边界、活动状态、积分结果和 terrain 驻留；一次只增加能区分两个假设的字段。
+3. 对结构传值问题，至少布四个边界：queue 解包值、函数显式引用入口值、首次积分前值、首次积分后/profile 值。只看 callee 最终值无法区分「传输已坏」「局部复制坏」「积分调用坏」。本次成功判据为 queue/current/outer=`1/1/2`、post profile=`1`、`firstScatter>0`。
+4. **探针会改变被测 shader。** 两次带 caller/pre/post 读取的 20B 曾取得首次正确后 145/241 条零回退；删除这些读取后，通用 probe 连续 200 条仍为 profile=2，复用同一 lane 直记 raw `currentFlags` 又连续 44 条为 3。前两次是诊断读取改变活跃性/寄存器分配后偶然压住错编，不是修复。任何成功版本必须在删掉一次性观察点后再跑一次原始复现。
+5. pipeline cache/异步新建仍是启动时变化的候选解释，但本轮没有 pipeline generation/hash 日志，**不得把数值转折直接命名为 pipeline 切换**。同理，把 GPU 状态与 CPU/terrain 状态写在同一条日志不等于证明 GC/TLAS/区块发布有因果。
+6. 修复成立的标准：删除一次性 caller/pre/post lanes 和 Java offset/格式串后，保留通用 `water-medium-trace`（profile、散射、透射、Radiance、开阔度、首段与 terrain）仍连续通过；再跑生成记录、shader 编译、双侧 ABI 测试。失败与“被探针改变的假成功”日志都要保存。
+7. 工具链升级不能自动当作修复。Slang 生成 SPIR-V，Vulkan 驱动消费 SPIR-V；升级 Vulkan SDK 可能只替换 validator/header，升级驱动只可能改变驱动端编译，升级 Slang 才会直接改变这里的生成代码。升级任一层后都保留 D27，先用同一最小复现比较旧/新 SPIR-V，再跑 raw 边界 probe 和 cleanup 后原始存档长跑；只有跨目标 GPU 连续通过，才另行请示是否删除规避层。
+
+### 4.7 跨加载器验证
 
 两个 run 目录每次运行都改写存档——比对前必须从纯净主副本还原双方；只比 `builds==1` 的 section；`common/` 纯净性靠字节码扫描 + `:neoforge:compileJava`。全流程见 `docs/PLATFORM_NOTES.md`（那里的规则：**没列出的差异都是 bug**）。
 
@@ -295,8 +308,8 @@ MC 相机是**点**，不存在「半潜」机位。两机位分开采：(a) 完
 | `runClient.ps1` | 直接跑 | 停 daemon、设 ZGC 等 JVM 参数、强制 `--graphicsBackend VULKAN` |
 | frameStats | `-Dfluorite.rt.frameStats=true` | CSV 到 `<gameDir>/rt-frame-stats/frame.csv`；含 GPU 时间戳 scope；hitch 线=1.5× 滚动中位 |
 | 验证层 | `-PvkValidation` | 挂 `run/vk_layer_settings.txt`（sync+core）；默认关（开着基准全废） |
-| 诊断键 | `diagnostics.heavy-crash-diagnostics` / `terrain-digest` / `terrain-digest-sections` / `cull-trace` | digest 摘要 vs 逐面 cull 追踪是两件仪器 |
-| debug 视图 | `composite.debug-view`（视频设置→诊断） | 0–7 既有 guide/材质视图；**8** 体积 in-scatter 原始值 · **9** 段（逃逸/长度/是否水）· **10** 水太阳阴影线 · **11** 焦散色差×20 · **12/13** 透射/多重散射 LUT 对照 · **14/15** sky-view LUT/参照 march · **16** 光染色 · **17** froxel · **18** 可见性网格（R 太阳 G 天顶）· **19** 网格 vs 射线真值示波器 |
+| 诊断键 | `diagnostics.heavy-crash-diagnostics` / `terrain-digest` / `terrain-digest-sections` / `cull-trace` / `water-medium-trace` | `water-medium-trace` 每 250 ms 回读一次已完成环槽的中心视线水介质数据；无当前帧 readback stall，开启时每帧只额外发射一条向上诊断光线 |
+| debug 视图 | `composite.debug-view`（视频设置→诊断） | 0–7 既有 guide/材质视图；**8** 队列首叶体积 in-scatter（固定逐像素 seed：稳定空间噪声，不作时域收敛）· **9** 首叶段（逃逸/长度/是否水）· **10** 水太阳阴影线 · **11** 焦散色差×20 · **12/13** 透射/多重散射 LUT 对照 · **14/15** sky-view LUT/参照 march · **16** 光染色 · **17** froxel · **18** 可见性网格（R 太阳 G 天顶）· **19** 网格 vs 射线真值示波器 · **20** 正常合成实际使用的相机前缀 in-scatter（右条：绿=水下且前缀非零，红=水下但前缀零长，蓝=CPU 判定不在水下）· **21** 完整 pre-RR 合成的前缀有/无交替条带；由于 Vulkan storage-image Y 原点与最终屏幕约定相反，亮度占比区实际显示在屏幕顶部 1/4（R=8×、G=2×、B=1×），条带在底部 3/4 |
 | 隔离开关 | §4.5 清单 | 全部在视频设置可翻，同会话 A/B 首选 |
 | shader 构建 | `compileShaders`（SPIR-V+spirv-val；`world.rgen` 编两份含 SER 变体）、`generateShaderRecords`（反射 JSON→Java ABI 记录） | **slangc ≥ 2026.14**；工具解析顺序 `-P<name>Path` → 环境变量 → `$VULKAN_SDK/Bin` → PATH；独立 toolchain 在 `F:\MC\Shader\tools\slang-2026.14` |
 | NGX | `-PdlssSdk`（属性优先于 `DLSS_SDK`——daemon 缓存环境，报错会叫你 `--stop`）、`-PngxVendorConfig=rel/dev`、`-PngxPlatforms` | shim 构建见 `docs/developer_guide.md` |
@@ -366,7 +379,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 注释与行为对齐批处理：bit15 「skip the shadow ray」措辞（实际只弃透射率、射线仍发——`waterHitT` 要用）；`volume.slang` 「Character for character the froxel's source」（已不真）；`world_primary.rgen` 「this pass integrates the camera prefix segment」；froxel 各处「32 slices」陈旧数字；`world_common.slang` 「bits above 11 free」（12/13 已用）；`lighting.slang` 「Light48」；`FluoriteConfig` `Water.SUN_SHADOW` 整段陈旧文档。
 
 **15.1 Medium 采样接口 + 统一体积阴影采样器（2026-08-03 已实现，空气雾视觉验收通过）**
-- `medium.slang` 收拢为 `mediumSigmaT` / `mediumScatterAlbedo` / `mediumPhaseG` / `mediumProfile`；一个 profile 同时选择 estimator 与 source adapter，避免两组浅查询产生一致性负担。`mediumDensityAt` 留在 Implementation 内部。`integrateSegment` 仍是唯一外部 Interface：**均质封闭介质走精确闭式路径**，非均质 ambient 走解析高度 march。
+- `medium.slang` 收拢为 `mediumSigmaT` / `mediumScatterAlbedo` / `mediumPhaseG` / `mediumProfile`；一个 profile 同时选择 estimator 与 source adapter，避免两组浅查询产生一致性负担。`mediumDensityAt` 留在 Implementation 内部。`integrateSegment` 仍是唯一外部 Interface：**均质封闭介质走精确闭式路径**，非均质 ambient 走解析高度 march。D27 后这些查询提供 `*Fields/*Flags` 标量入口供 active raygen 使用，`Medium` 包装保留给传输与其他 stage；二者共享同一公式，不是两套 estimator。
 - **统一体积阴影采样器**：水与雾共享固定光学深度分层（τ 步长 1.25）、段内 jitter、`CULL_SECONDARY_NO_SELF`、shadow trace 与按用途 rehash 的 seed 纪律；均质 τ→distance 与 ambient τ→distance 是两个内部 adapter。
 - D9 明确：这是分层近似，不宣称严格无偏。层内按距离均匀采样、使用闭式 view-path 权重；严格 `f/pdf` 修正留到 M17，因为它会改变亮度与噪声。ambient 边界用 8 次二分反演并复用相邻边界；默认 1 ray 不反演。
 - D12 审计结论：水的 sun-shadow 关时仍保留最多 3 条。每层的 `waterHitT` 都在测自己的 source path；压成 1 条会在不平水面、洞顶与不同水体高度下引入衰减误差，不属于中性重构。
@@ -380,6 +393,12 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - **D14/D16 设置语义收口（用户选 6A、8A）**：空气雾太阳可见性与水体太阳遮挡保持独立实现并在 UI 明确命名，任何一个旋钮都不宣称控制另一介质。水体散射与手动吸收覆盖均拆成“强度 × RGB 颜色形状”；颜色用算术均值归一化，旧配置自动迁移为逐通道系数完全相同的结果。仅 CPU 配置换算，无 shader ABI、ALU 或射线成本。
 
 **2026-08-03 游戏内视觉验收记录**：用户确认能量响应、froxel/marched 接缝、低太阳角与阴影三项“非常完美”。水下另发现结构性问题：当前天空源只从封闭水段起点发一条竖直探测，并以单个 `skyOpen` 标量门控整段；相机浸水时各主射线共享起点，因此头顶一块方块可让整屏水天空散射归零。可见性网格原点按 cell 取整又会把该单标量放大成深水洞口的一方块横向跳变。这不是空气雾 shadow-ray 配置位直接控制水，而是独立水体天空门控与最终画面合成造成的歧义。按 D15 不做临时逐层/网格补丁，留到 M17 在真实散射顶点采样局部天空可见性。
+
+**2026-08-04 水下相机前缀回归（D21–D23）**：用户用 RR 关闭、`water.scatter-source=none/sky` 无视觉差异的单变量实验确认：Pass A 消费水→空气界面后提前把 Beer absorption 乘入各 Fresnel 叶，Pass B 却用 `ambient=false, water=false, extinction=0` 的被动介质重建相机到水面的共享前缀，导致该水段 in-scatter 恒为零。封闭水房间的 debug 9 为水、debug 8 在 water source=none 时纯黑且不受空气雾开关影响，排除了“封闭水段被当成空气雾”；穿出水面后的空气雾本身合法，只因缺失前景水散射而显得突出。按 13B，Pass A 删除前缀 Beer，Pass B 以真实起始 `Medium` 一次消费完整 `SegmentIntegral`，无新增 march/阴影线。另确认世界重载时未请求 NGX history reset：上次在水底退出后重新载入会短暂显示旧散射，移动后消失；RR 预先关闭再载入则开局也无散射。按 14A 在 `allChanged()` 生命周期只置下一次 RR evaluate 的 reset flag，不销毁 feature。debug 8 原来只用 frame seed，所有像素同帧同样本造成整屏蓝青闪烁；按 15A 改为固定逐像素 seed，保留原始估计器空间方差但冻结时域变化。
+
+**2026-08-04 Slang 活动介质回归（D24–D27，代码结案、待视觉验收）**：真正导致“数秒后水散射消失”的后级缺陷是 Slang 2026.14 在 indirect raygen 中把 WATER(1) 与 outer AMBIENT(2) 的两个同时存活分类值错误合为 3；于是 profile 从 enclosed water(1) 变成 ambient fog(2)，水积分返回零而空气雾路径接管。失败路线依次为：单 `uint flags`、显式 `__ref PathSegment`、叶字段复制 `MediumStack`、先后换序、两个独立 `Medium`、直接原地修改唯一 `seg.medium`，以及 current/outer 六 primitive 标量；20B 只在 caller/pre/post 诊断存在时恢复，cleanup 后复发，属于 observer effect。用户批准 21A/D27 后，current+outer 分类改为直接从 queue `pathFlags` 解码的唯一 32-bit 活动字；raw 运行 197 条在 terrain resident 38→2604 期间全部为 current WATER=1、散射非零，删除 raw 探针并恢复普通 profile 后又运行 211 条至 resident=2252，0 条回退、profile 恒为 1。物理公式、48B ABI、采样/阴影线/march 均未改变。
+
+**归因边界**：当前可高置信称为“Slang→SPIR-V→驱动编译链上的表示/活跃性错编”，因为只改变源码表示与诊断读取就改变 GPU 结果，而 CPU queue、介质参数和物理积分不变；尚未制作最小复现并差分 SPIR-V，故不能 100% 区分“Slang 发出错误 SPIR-V”和“Slang 发出合法但触发 NVIDIA 驱动错编的 SPIR-V”。Vulkan API/SDK 升级本身不自动改变项目固定使用的 Slang 生成结果。
 
 **剩余验收**：`visibility-cell-size=0` 的 telescoping 归零测试仍成立；`RtPathSegmentLayoutTest` 仍 48；同会话比值 `bench` ≈1.0×（重构应中性）；**顺带偿还 M9 欠账：`bench-water` 两机位首采**，数字进 §4.2 作 M16/M17 的基线。水天空开放度的视觉出口改由 M17 条目定义，M15 不用临时补丁伪装通过。
 
@@ -497,6 +516,8 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 **其他**：水线效果放弃——**MC 相机是一个点**，不存在「半身入水」状态（同一事实否掉「半潜 bench 机位」）；原版水下整屏贴图压掉（光栅时代替代品）；色散物理 1× 不可见（三通道差 <1%，`CAUSTIC_MAX` 夹平是嫌疑），默认 50× 用户目视选定；焦散不向 HPWater 靠（解析雅可比 vs 光子抛撒，§6.3）。
 
+**Pass 拆分的能量所有权教训（2026-08-04）**：同一介质段的 in-scatter 与 transmittance 不能分给两个 pass。把 Beer 提前乘进分支、再让后级为了“避免双计”构造零消光介质，会保住吸收却静默删除散射；设置仍正常写入、系数日志仍非零，因此表面症状会像热更新失效。回归防线：Pass A 只解析被消费边界，Pass B 独占完整 `SegmentIntegral`，源码契约测试钉死两端。
+
 ### 9.2 M13.x 体积可见性与光柱（2026-08-01/02）
 
 - 密闭房间雾亮着=弹射段太阳项带相位前向增益无人移除——`SEGMENT_SOURCE` 隔离测出（不是推理出）。修法=世界空间可见性网格（两条光线两个量：太阳/天顶，**不可互换**——山影不许抽走环境光）。
@@ -532,8 +553,10 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | F11 | DLSS 档位标签错（quality=0 是 Performance）：按缩放比核对不信标签 |
 | F12 | （归因纪律，§4.5）代码里的错和看到的现象是两个集合，交集靠隔离实验 |
 | F13 | 计划里的定量缓解手段必须先测量或标注未测 |
+| F14 | shader 编译、`spirv-val` 与源码结构测试只能证明静态契约；Slang 后端聚合量错编必须由真实 GPU 边界 probe 裁决 |
+| F15 | shader probe 会改变寄存器活跃性与优化结果；带 probe 的连续成功必须在删掉一次性观察点后复验。“进入世界几秒后变化”不能自动归因给 pipeline cache、GC、区块/TLAS 或时域后处理 |
 
-仪器教训：曝光日志 `now - Long.MIN_VALUE` 溢出为负 ⇒ 永久沉默——「为回答『源是否过亮』而造的仪器整个会话什么都没报，沉默看起来和『没变化』一样」；水系数诊断打印了**被拒模型**的数字（该被对账的那行本身错了）；验证层无 messenger 时静默（`vk_layer_settings.txt` 的存在理由）；归档文件名不带配置 ⇒ 拿游走档比 thin 档差点报回归。
+仪器教训：曝光日志 `now - Long.MIN_VALUE` 溢出为负 ⇒ 永久沉默——「为回答『源是否过亮』而造的仪器整个会话什么都没报，沉默看起来和『没变化』一样」；水系数诊断打印了**被拒模型**的数字（该被对账的那行本身错了）；只记录 post 值会把传输/复制/调用三个边界混在一起；启动早期 probe 可能来自上一代缓存 pipeline；验证层无 messenger 时静默（`vk_layer_settings.txt` 的存在理由）；归档文件名不带配置 ⇒ 拿游走档比 thin 档差点报回归。
 
 ### 9.6 硬件 / 平台
 
@@ -541,7 +564,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 摘要比对：流体世界**永不全局收敛**，`builds==1` 是唯一可信集（R17）。
 - NeoForge `hidesNeighborFace` 残差：双方各自正确，记录不修（PLATFORM_NOTES 的「列出即非 bug」原则）。
 
-### 9.7 风险登记簿现状（R1–R23）
+### 9.7 风险登记簿现状（R1–R24）
 
 | # | 一句话 | 状态 |
 |---|---|---|
@@ -559,6 +582,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | R20 | 照抄参考常数 | 政策 §6.1，常数一律重标定 |
 | R21–R22 | 交互水发散 / 域拖糊 | CFL+钳位+海绵层；整纹素移动 |
 | R23 | RIS 阴影线绕过雾与焦散 | 已修两半（`visibilityThroughAmbient` + `shadeReservoir` 焦散） |
+| R24 | Slang 2026.14 错误别名 raygen 中并存的嵌套/局部乃至两个独立 primitive flags | D27 把 current/outer 分类压入一个从 48B queue `pathFlags` 直接解码的活动字；raw 197 条与 cleanup 后普通 profile 211 条 GPU 日志均零回退。规避层保留，工具链升级仍按 §4.6 重新裁决，禁止仅凭编译成功删除 |
 
 ---
 
@@ -600,6 +624,34 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | D18 | sky-view 积分（用户选 10A） | **完整 192×128 三表按立体角 reduction，输出 `1/(4π)` 上半球积分；不再额外加 multi-scatter LUT** | 对当前各向同性天空近似是离散 LUT 上最准确的确定性积分；避免多重散射双计。每帧 24,576 texel×3 读取、单 workgroup reduction，成本并入 `gpu.skyBake` 实测 |
 | D19 | 统一源的传输（用户选 11A） | **`WorldPushData` 增加唯一 `mediumSkyRadiance`，GPU reduction 写，空气/水共读** | +16B/frame-slot；不占 128B push constants，不增加 RT descriptor/逐射线采样。两个 compute barrier 是必须同步成本 |
 | D20 | 黎明/黄昏天体跨地平线连续性（用户选 12A） | **完全随机有限面积天体：每个现有阴影查询采一枚方形天体点，并让方向、大气 Radiance、相位、阴影及水折射保持同样本相关** | 在当前面积光分布与既有分层估计器内最接近物理；由时间噪声替代确定性整屏跳变。阴影射线数不增加，但有 2 RNG + 方向/LUT/解析 ALU；网格 0-ray 档仅保存可见样本一阶矩，是有偏近似。若后续要增样本、改分布或改变默认质量档，必须带实测再次请示 |
+
+### 2026-08-04 水下前缀与时间诊断裁决（D21–D23，用户选 13B、14A、15A）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D21 | 被消费相机前缀的能量所有权（用户选 13B） | **Pass A 不预扣介质能量；Pass B 用真实起始 Medium 一次消费完整 `SegmentIntegral`** | 保持 `L = Ls + T·Li` 与统一积分器契约，水下前缀不再只有吸收没有散射；不增加 march、采样或阴影线，只把已有计算放回唯一所有者。风险是阶段间 throughput 语义改变，靠空气→水、水→空气、TIR/玻璃回归与源码契约测试守住 |
+| D22 | 世界切换时的 RR 历史（用户选 14A） | **`allChanged()` 请求下一次 DLSS-RR evaluate 清历史，不销毁/重建 NGX feature** | 世界/维度改变后旧样本没有任何物理对应；reset 下一帧重新收敛，无持续 GPU 成本。相比 feature 重建避免 device idle、分配与可见卡顿 |
+| D23 | debug 8 随机种子（用户选 15A） | **固定逐像素 seed，移除 frame seed** | 调试图用于归因而非时域收敛；冻结普通 Monte Carlo 空间方差，消除全屏同步闪烁。零新增射线/ALU（同量级 hash），代价是固定噪点可能保留单样本离群，不能拿 debug 8 判断最终降噪品质 |
+
+### 2026-08-04 Slang 介质 ABI/活动状态裁决（D24–D27，用户选 16A、17A-R、18A、19A、20A、20B、21A）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D24 | 介质分类表示（用户选 16A） | **`water/ambient` 两个 shader bool 合并为一个 `uint flags`，WATER=1、AMBIENT=2** | 分类是一个原子语义，避免 bool ABI 表示差异；48B queue 不变，无采样/ALU 实质增加。运行期证明表示正确但仍会在 Slang 聚合量降级中被错误合并为 3，因此它是必要条件而非完整修复 |
+| D25 | `tracePath` 传参（17A public constref 不可用后，用户选 17A-R） | **使用 Slang 内部 `__ref PathSegment`，按只读传输边界约定使用** | 入口 probe 稳定读到 WATER=1，绕开 ordinary `in` 的 `transformParamsToConstRef` 复制缝；不改变物理与 GPU 工作量。它不能保护函数内并存/可变的嵌套 `Medium`，所以仍需 D26 |
+| D26 | 活动介质表示（18A/19A/20A 均被真实 GPU probe 否决后，用户选 20B） | **primitive active state 方向成立；“current/outer 六个独立标量”实现被 cleanup 复验否决，已由 D27 取代** | σa/σs、IOR、Fresnel、相位、MIS、阴影与能量公式均不变；不增加 ray/march/sample，每 SPP 仍只解包一次。带 caller/pre/post 观察时曾通过，cleanup 后两个 primitive flags 仍合为 3，故该具体编码不得恢复 |
+| D27 | 活动分类加固（用户选 21A） | **current/outer flags 打包为唯一 `activeMediumFlags`，直接源自 `PackedPathSegment.pathFlags`；低/高 16 位分别表示 current/outer** | 不改变 σa/σs、IOR、Fresnel、相位、MIS、阴影、能量或 48B ABI；不新增 ray/march/sample，仅增加少量 mask/shift，且减少同时存活分类标量，VGPR 压力预期不升。raw 197 条与 cleanup 后 profile 211 条真实 RTX 2080/NeoForge 运行均零回退；保留 `RtMediumLifecycleRegressionTest` 和升级复验协议 |
+
+### 2026-08-04 水下散射消失的运行期证据链
+
+- Debug 20 已证明：CPU 水下分类、相机前缀长度、水体 Radiance 与水体光源开关均工作。
+- Debug 21 已证明：前缀散射进入完整 raw HDR 合成，且实测占比达到黄/白区间；空气雾覆盖、叶节点动态范围淹没、RR 与自动曝光均不再作为当前主因。
+- 初始 probe 显示 queue flags=1，显式 `__ref` 入口仍为 1，但普通 `in`/聚合局部状态在首次积分前变成 current=3、outer=3，profile=2、`firstScatter=0`。extinction luminance 始终正确，故不是水参数、GC、区块发布或积分公式归零，而是分类 lane 的 Slang 后端错误别名。
+- 否决顺序必须保留：16A 单 flags → 17A-R `__ref` → 18A 叶字段复制/换序 → 19A 两个独立 `Medium` → 20A 唯一可变 `seg.medium`。最后两项都在 `integrateSegment` **之前**读出 3/3，排除积分调用；不能把这些失败方案重新包装成“更干净的重构”带回来。
+- 20B 带 caller/pre/post 诊断时两次出现 1/2、profile=1 与 `firstScatter=(0.0063,0.0261,0.4123)`，首次正确后分别 145 条约 42 秒、241 条约 70 秒零回退。最初将它解释为 pipeline 代际切换；cleanup 复验推翻了这个结论。
+- 删除 caller/pre/post lanes 后，通用 probe 连续 200 条仍为 profile=2/散射零；随后不增加 layout、只把既有 `firstHit.w` 暂时改记 raw current flags，连续 44 条均为 3。结论：诊断读取改变了 flags 的活跃性/寄存器分配并偶然压住 Slang 错编，前两轮是 observer effect，不是修复；pipeline cache、GC 与 terrain 阈值仍未被这组数据证明为时间现象根因。
+- 21A/D27 把 current/outer flags 压入唯一活动字并直接从 queue `pathFlags` 解码。`codex-neoforge-21A-packed-flags-raw-stdout.log` 共 197 条，current code 恒为 1、`firstScatter>0`，terrain resident 由 38 增至 2604；删除 raw 读取并恢复普通 profile 后，`codex-neoforge-21A-final-clean-stdout.log` 共 211 条、0 异常，profile 恒为 1、散射非零，resident 至 2252。它通过了 observer-effect cleanup 闸门。
+- `diagnostics.water-medium-trace` 继续作为通用运行期仪器。每条 `RT water-medium probe` 记录 `prefixLen`、`prefixScatter`、`prefixT`、`leaf`、`composite`、`prefixFraction`、`mediumSkyRadiance`、`skyOpen`、向上 `waterHitT`、fallback depth、surface Y、首叶首段的 `firstSegmentLen/firstScatter/firstT/firstHit/escaped/mediumProfile`，以及 resident/published/desired/inFlight/missing/instances。一次性 `[DEBUG-medium-flags]` 与 raw `firstMediumCode` 已删除。证据日志包括 `codex-neoforge-{19A-prepost,20A-authoritative-stack,20B-scalar-state,20B-scalar-state-rerun,20B-final-clean,20B-clean-rawflag,21A-packed-flags-raw,21A-final-clean}-stdout.log`。
 
 **同日确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 

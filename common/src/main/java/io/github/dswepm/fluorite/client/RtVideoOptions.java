@@ -110,7 +110,9 @@ public final class RtVideoOptions {
                         fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
-                case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource()));
+                case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
+                        bool("fluorite.options.rt.waterMediumTrace",
+                                FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE)));
             };
         }
     }
@@ -648,9 +650,9 @@ public final class RtVideoOptions {
             // between hits rather than the hits themselves. See world.rgen's volumeDebug. 12 is neither —
             // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
             new OptionInstance.Enum<>(
-                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19),
+                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21),
                     Codec.INT),
-            Math.clamp(setting.value(), 0, 19),
+            Math.clamp(setting.value(), 0, 21),
             setting::set);
     }
 

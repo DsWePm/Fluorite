@@ -28,6 +28,7 @@ public struct WorldPushConstants {
     public uint64_t lightGridCellAddr;   // dense light grid cell headers (0 = global proposals only)
     public uint64_t lightGridSpanAddr;   // packed weighted section spans referenced by cell headers
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
+    public uint64_t waterProbeAddr;      // optional host-visible WaterMediumProbe (0 = diagnostic off)
     public uint frameIndex;
     public uint debugView;
     // Shading switches the CLOSEST-HIT needs. They live here rather than in WorldPush because the hit
@@ -287,6 +288,29 @@ public float3 sampleSquareLightDirection(float3 axis, float3 celestialAxis, floa
 public struct SquareLightSample {
     public float3 direction;
     public float2 uv;
+};
+
+// One-pixel runtime telemetry for the disappearing-underwater-scatter investigation. Pass B writes this
+// only for the centre pixel and only when waterProbeAddr is non-zero. It deliberately carries quantities
+// from both sides of the compositor seam so a log can distinguish a shortened camera segment from a dead
+// source, a visibility-grid transition, or a later radiance term. The buffer is ringed with WorldPush and
+// read only after that slot's graphics timeline has completed, so diagnosis never stalls the current frame.
+public struct WaterMediumProbe {
+    public uint frameIndex;
+    public uint flags;       // bit0 valid, bit1 submerged, bit2 non-zero prefix, bit3 finite output
+    public uint pathFlags;   // first queued leaf's path flags
+    public uint debugView;
+    public float4 prefixScatterLength; // xyz in-scatter, w camera-to-first-leaf length
+    public float4 prefixTransmittance; // xyz Beer transmittance, w luminance
+    public float4 leafRadiance;        // xyz post-prefix leaf radiance, w luminance
+    public float4 compositeRadiance;   // xyz complete raw HDR, w prefix luminance fraction
+    public float4 skySourceOpen;       // xyz shared sky Radiance source, w sampled sky openness
+    public float4 upwardWater;         // x measured up-ray water length, y chosen sky depth, z fallback depth, w surface Y
+    public float4 firstSegmentScatter; // xyz ACTUAL first trace's raw in-scatter, w travelled distance
+    public float4 firstSegmentT;       // xyz ACTUAL first trace's transmittance, w luminance
+    public float4 firstHit;            // x raw hitT, y material id, z escaped flag, w medium profile
+    public float4 firstThroughput;     // xyz throughput entering the actual first segment, w luminance
+    public float4 firstWeightedScatter;// xyz exact contribution added to L, w luminance
 };
 
 /** The single stochastic interface for the active finite celestial emitter. */

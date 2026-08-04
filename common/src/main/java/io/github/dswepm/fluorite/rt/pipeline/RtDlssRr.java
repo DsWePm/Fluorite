@@ -72,6 +72,18 @@ public final class RtDlssRr {
     }
 
     /**
+     * Discard temporal samples on the next evaluation without recreating the NGX feature.
+     *
+     * <p>World joins, dimension changes and full render-state invalidations break every correspondence
+     * represented by the existing history even when resolution and quality stay unchanged. Delaying the
+     * reset until evaluate also preserves it while RR is temporarily disabled.
+     */
+    public void requestHistoryReset() {
+        resetHistory = true;
+        lastFrameNanos = 0L;
+    }
+
+    /**
      * Record a DLSS-RR evaluation: denoise + upscale the noisy path-traced color (at render res) using
      * the guide buffers, writing the display-res result into {@code out}. {@code jitterX/jitterY} is the
      * sub-pixel camera jitter applied to the primary ray this frame, in render pixels. Returns false

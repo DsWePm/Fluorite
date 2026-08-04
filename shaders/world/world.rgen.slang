@@ -38,7 +38,38 @@ import lighting;
 import atmosphere;
 import atmosphere_lut;
 
-public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
+public struct FirstSegmentTrace {
+    public float3 inScatter;
+    public float segmentEnd;
+    public float3 transmittance;
+    public float hitT;
+    public float3 throughput;
+    public uint material;
+    public uint escaped;
+    public uint mediumProfile;
+};
+
+FirstSegmentTrace emptyFirstSegmentTrace(PathSegment seg, uint activeMediumFlags) {
+    FirstSegmentTrace first;
+    first.inScatter = float3(0.0, 0.0, 0.0);
+    first.segmentEnd = 0.0;
+    first.transmittance = float3(1.0, 1.0, 1.0);
+    first.hitT = -1.0;
+    first.throughput = seg.throughput;
+    first.material = 0xFFFFFFFFu;
+    first.escaped = 1u;
+    first.mediumProfile = mediumProfileFlags(activeCurrentMediumFlags(activeMediumFlags));
+    return first;
+}
+
+// Slang's ordinary `in` struct parameter is lowered by transformParamsToConstRef; runtime telemetry
+// showed that lowering changed nested Medium.flags from WATER (1) to WATER|AMBIENT (3). An explicit
+// `ref` bypasses that copy/lowering seam. Treat the referenced record as immutable: its transport fields
+// are copied once into primitive active state below, which is the only representation mutated by bounces.
+public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
+                        uint2 pix, uint sampleIndex, bool captureFirst,
+                        out FirstSegmentTrace firstTrace) {
+    firstTrace = emptyFirstSegmentTrace(seg, activeMediumFlags);
     float3 L = float3(0.0, 0.0, 0.0);
     float3 ro = seg.ro;
     float3 rd = seg.rd;
@@ -61,10 +92,14 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     uint proposalSeed = pix.x * 1973u + pix.y * 9277u + 26699u
             ^ worldPush.frameIndex * 2654435761u ^ sampleIndex * 2246822519u;
     proposalSeed = pcg(proposalSeed);
-    // The medium the segment starts in. For the camera segment that is water when the eye is submerged
-    // (so the first ray already carries the right relative index and absorption); for a segment split off
-    // a dielectric it is whatever the parent was travelling through.
-    MediumStack medium = seg.medium;
+    // Slang 2026.14 aliases two simultaneously-live classification values in this raygen. The caller
+    // therefore decodes current+outer directly from PackedPathSegment.pathFlags into the single packed
+    // activeMediumFlags word. Do not split it into persistent currentFlags/outerFlags locals: diagnostic
+    // reads proved that doing so is observer-sensitive. IOR/extinction remain primitive active state.
+    float currentIor = seg.medium.current.ior;
+    float3 currentExtinction = seg.medium.current.extinction;
+    float outerIor = seg.medium.outer.ior;
+    float3 outerExtinction = seg.medium.outer.extinction;
     // Read once per path rather than per bounce: it is a frame-wide branch on a value already loaded.
     uint secondaryCull = secondaryCullMask();
     bool waterWaves = (worldPush.flags & 16u) != 0u; // animated wave-normal perturbation
@@ -137,7 +172,24 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // environment medium has the most of, so any volumetric term added here has to sit on this side of
         // the break or it will be missing from precisely the direction it is most visible in.
         float segmentEnd = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
-        SegmentIntegral segIntegral = integrateSegment(medium, ro, rd, segmentEnd, seed);
+        SegmentIntegral segIntegral = integrateSegment(
+                currentExtinction, activeCurrentMediumFlags(activeMediumFlags), ro, rd, segmentEnd, seed);
+        // Capture the quantities from THIS trace before payload or throughput advances. The previous
+        // diagnostic re-traced the same geometric ray after tracePath returned; that is not evidence for
+        // what tracePath integrated when streamed geometry, alpha any-hit, or mutable payload state can
+        // make two traversals disagree. This copy is therefore the ground truth used by the runtime log.
+        if (captureFirst && bounce == seg.bounce) {
+            bool escaped = payload.hitT < 0.0;
+            firstTrace.inScatter = segIntegral.inScatter;
+            firstTrace.segmentEnd = segmentEnd;
+            firstTrace.transmittance = segIntegral.transmittance;
+            firstTrace.hitT = payload.hitT;
+            firstTrace.throughput = throughput;
+            firstTrace.material = escaped ? 0xFFFFFFFFu : payloadMaterial();
+            firstTrace.escaped = escaped ? 1u : 0u;
+            firstTrace.mediumProfile = mediumProfileFlags(
+                    activeCurrentMediumFlags(activeMediumFlags));
+        }
         // In-scatter first: it is what the segment added to the radiance arriving along it, so it is
         // weighted by the throughput reaching the segment rather than the throughput leaving it.
         L += throughput * segIntegral.inScatter;
@@ -198,9 +250,11 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 
             // The medium this face opens into, and the one it returns to on the way out — which is what
             // the stack remembers.
-            Medium entered = makeDielectricMedium(isWater, max(payloadIor(), 1.0), tint, transmission);
-            float etaI = medium.current.ior;
-            float etaT = entering ? entered.ior : medium.outer.ior;
+            float enteredIor = max(payloadIor(), 1.0);
+            float3 enteredExtinction = dielectricMediumExtinction(isWater, tint, transmission);
+            uint enteredFlags = dielectricMediumFlags(isWater);
+            float etaI = currentIor;
+            float etaT = entering ? enteredIor : outerIor;
 
             // The normal the interface refracts about. A smooth dielectric uses its own surface normal
             // and stays an exact delta — which is water, glass and ice, everything vanilla ships. A
@@ -239,9 +293,17 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 // Crossing into or out of the volume. Absorption is the medium's job from here, so the
                 // tint is NOT also multiplied into the throughput — that would double-count it.
                 if (entering) {
-                    mediumPush(medium, entered);
+                    outerIor = currentIor;
+                    outerExtinction = currentExtinction;
+                    currentIor = enteredIor;
+                    currentExtinction = enteredExtinction;
+                    activeMediumFlags = enterActiveMediumFlags(activeMediumFlags, enteredFlags);
                 } else {
-                    mediumPop(medium);
+                    currentIor = outerIor;
+                    currentExtinction = outerExtinction;
+                    outerIor = 1.0;
+                    outerExtinction = float3(0.0, 0.0, 0.0);
+                    activeMediumFlags = exitActiveMediumFlags(activeMediumFlags);
                 }
             }
             if (!deltaInterface) {
@@ -289,7 +351,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float ndl = abs(signedNdl);
             if (ndl > 0.0) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
-                float3 vis = visibilityThroughAmbient(medium, shadowOrigin, lightDir, RAY_FAR).transmittance;
+                float3 vis = visibilityThroughAmbient(
+                        currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
+                        shadowOrigin, lightDir, RAY_FAR).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                     L += throughput * albedo * INV_PI * sampledLightIrradiance * ndl * vis;
                 }
@@ -303,7 +367,9 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 BsdfContext bc = makeBsdfContext(hitPos, n, v, rd, albedo,
                                                  float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
                 Reservoir r = risInitial(bc, seed, proposalSeed);
-                L += throughput * shadeReservoir(medium, bc, materialExtension(payload.flags), r);
+                L += throughput * shadeReservoir(
+                        currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
+                        bc, materialExtension(payload.flags), r);
             }
 
             if (bounce >= maxBounces) {
@@ -404,12 +470,15 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 undyedCelestialIrradiance, lightDir);
         float ndl = max(0.0, dot(n, lightDir));
         if (ndl > 0.0) {
-            VisibilityResult shadow = visibilityThroughAmbient(medium, p, lightDir, RAY_FAR);
+            VisibilityResult shadow = visibilityThroughAmbient(
+                    currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
+                    p, lightDir, RAY_FAR);
             float3 vis = shadow.transmittance;
             // Underwater receiver whose shadow ray crossed a water surface: scale the direct light by
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
             // so it applies to the whole NEE term (diffuse + specular).
-            if (medium.current.water && waterWaves && shadow.waterHitT > 0.0) {
+            if (mediumFlagsWater(activeCurrentMediumFlags(activeMediumFlags))
+                    && waterWaves && shadow.waterHitT > 0.0) {
                 vis *= waterCaustic(p + lightDir * shadow.waterHitT, lightDir, shadow.waterHitT);
             }
             if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
@@ -471,7 +540,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // sss=0 there (falls back to plain front-only RIS).
         if (risOn) {
             Reservoir r = risInitial(bc, seed, proposalSeed);
-            L += throughput * shadeReservoir(medium, bc, ext, r);
+            L += throughput * shadeReservoir(
+                    currentExtinction, activeCurrentMediumFlags(activeMediumFlags), bc, ext, r);
         }
 
         // Thin-surface SSS transmission. Light entering from the back face scatters through toward the
@@ -488,11 +558,14 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (sssMode != 0u && sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float backNdl = max(0.0, dot(-n, lightDir));
             if (backNdl > 0.0) {
-                VisibilityResult shadowBack = visibilityThroughAmbient(medium, hitPos - n * SURF_BIAS, lightDir, RAY_FAR);
+                VisibilityResult shadowBack = visibilityThroughAmbient(
+                        currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
+                        hitPos - n * SURF_BIAS, lightDir, RAY_FAR);
                 float3 visB = shadowBack.transmittance;
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.
-                if (medium.current.water && waterWaves && shadowBack.waterHitT > 0.0) {
+                if (mediumFlagsWater(activeCurrentMediumFlags(activeMediumFlags))
+                        && waterWaves && shadowBack.waterHitT > 0.0) {
                     visB *= waterCaustic(hitPos + lightDir * shadowBack.waterHitT,
                                          lightDir, shadowBack.waterHitT);
                 }
@@ -761,6 +834,17 @@ static const float VIS_PROFILE_DIST = 4.0;
 // axis and pins anything that escaped at the top.
 static const float VIS_PROFILE_RANGE = 8.0;
 
+// The exact camera-prefix in-scatter consumed by the normal compositor, before any leaf radiance, RR,
+// exposure or tonemap. Unlike debug 8, this is the camera-to-first-interface segment rather than the
+// queued first leaf. It exists to distinguish "the water estimator is alive somewhere in the path" from
+// "the water term the normal image actually adds is alive".
+static const uint DEBUG_VIEW_CAMERA_PREFIX = 20u;
+
+// Full raw compositor with and without the camera prefix in alternating equal-screen bands. This runs
+// the normal leaf loop but bypasses RR, so it answers whether the prefix survives the actual HDR sum.
+// The lower quarter paints its luminance fraction (R = 8x, G = 2x, B = 1x) instead of scene colour.
+static const uint DEBUG_VIEW_COMPOSITE_PREFIX_AB = 21u;
+
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
     // view that resampled it through anything else would be testing the resampling.
@@ -962,7 +1046,7 @@ float3 skyTransmittanceDebug(float2 uv, uint2 pix) {
     return atmosphereTransmittance(r, mu, 8);
 }
 
-float3 volumeDebug(PackedPathSegment packed) {
+float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
     PathSegment seg = unpackPathSegment(packed);
     traceRadiance(seg.bounce == 0 ? CULL_PRIMARY : secondaryCullMask(),
                   seg.ro, 0.0, seg.rd, RAY_FAR, seg.showCelestial,
@@ -975,12 +1059,12 @@ float3 volumeDebug(PackedPathSegment packed) {
         // saturate. G: length, ramped to 64 blocks. B: the medium is water.
         return float3(escaped ? 1.0 : 0.0,
                       min(segmentEnd * (1.0 / 64.0), 1.0),
-                      seg.medium.current.water ? 1.0 : 0.0);
+                      mediumIsWater(seg.medium.current) ? 1.0 : 0.0);
     }
     if (pc.debugView == DEBUG_VIEW_WATER_CAUSTIC) {
         // Same conditions the sun NEE applies it under: an underwater receiver whose shadow ray crossed
         // a water surface. Black therefore means "no caustic here", which is itself an answer.
-        if (escaped || !seg.medium.current.water) {
+        if (escaped || !mediumFlagsWater(unpackCurrentMediumFlags(packed.pathFlags))) {
             return float3(0.0, 0.0, 0.0);
         }
         float3 hitPos = seg.ro + seg.rd * segmentEnd;
@@ -1002,9 +1086,125 @@ float3 volumeDebug(PackedPathSegment packed) {
     }
     // What the segment added, with nothing the path did afterwards. A water medium is never ambient, so
     // for a submerged view this is the enclosed single-scattering term alone.
-    uint debugSeed = uint(pc.debugView) * 2654435761u + worldPush.frameIndex;
+    // Stable per-pixel noise makes the raw estimator inspectable. A frame-only seed made every pixel draw
+    // the same sample and change it in lockstep each frame, turning ordinary variance into a full-screen
+    // cyan flash. Keeping the frame out deliberately freezes that variance while this debug view is active.
+    uint debugSeed = pixelIndex ^ (uint(pc.debugView) * 2654435761u);
     debugSeed = pcg(debugSeed);
-    return integrateSegment(seg.medium, seg.ro, seg.rd, segmentEnd, debugSeed).inScatter;
+    return integrateSegment(seg.medium.current.extinction, unpackCurrentMediumFlags(packed.pathFlags),
+                            seg.ro, seg.rd, segmentEnd, debugSeed).inScatter;
+}
+
+SegmentIntegral cameraPrefixIntegral(uint2 dispatchIndex, uint2 dimensions,
+                                     PackedPathSegment firstLeaf, uint pixelIndex) {
+    // The prefix segment: camera to wherever the primary pass left off. Pass A consumed the interface and
+    // queued its Fresnel leaves, but deliberately left this segment's radiometry untouched. The prefix is
+    // shared by those leaves, so integrating it once here applies both in-scatter and transmittance once,
+    // through the same SegmentIntegral contract used by every other travelled medium segment.
+    //
+    // A straight line, always. The primary pass traces one ray and resolves at most one interface, so the
+    // prefix is either zero-length (it did not split, and the queued origin is the camera's) or the one
+    // segment up to that interface. Both branches share it and it is additively independent of them, so
+    // it is integrated once here rather than per leaf. See docs/WAVEFRONT_PLAN.md.
+    CameraRay camera = cameraRay(dispatchIndex, dimensions);
+    float3 prefixOrigin = camera.origin;
+    float prefixLength = length(firstLeaf.ro - prefixOrigin);
+    bool cameraInWater = (worldPush.flags & 1u) != 0u;
+    SegmentIntegral prefix;
+    if (!cameraInWater) {
+        // The froxel answers for this stretch, because this stretch is exactly what it covers: the eye,
+        // this pixel's ray, out to a distance. Everything else in the renderer still marches, and has to —
+        // a bounce ray is not on the screen, so it has no column here to read.
+        //
+        // A lateral move on its own. The closed form it replaces is an exact integral of the same
+        // unshadowed medium, and 32 interpolated slices are not more accurate than exact. What the grid
+        // has that the closed form cannot is a place to put VISIBILITY, resolved in world-space cells and
+        // interpolated, which is the whole of M13 and the reason this is wired now rather than then: if 64
+        // slices band, or the exponential axis shows shells in the near field, that has to surface while
+        // the closed form is still here to compare against.
+        float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
+        float4 aerial = sampleAerialPerspective(screenUv, prefixLength, worldPush.fogParams.w);
+        // Bit 17 (Rt.Volumetrics.SEGMENT_SOURCE): silence the froxel's half of the fog. The alpha is
+        // kept — what this stretch of air HIDES is not in question, only what it emits.
+        prefix.inScatter = ((worldPush.flags >> 17u) & 1u) != 0u
+                ? float3(0.0, 0.0, 0.0)
+                : aerial.rgb;
+        prefix.transmittance = float3(aerial.a, aerial.a, aerial.a);
+    } else {
+        // Submerged: this is a real water segment, not ambient fog and not a zero-extinction placeholder.
+        // Its closed-form adapter returns the water in-scatter and the Beer transmittance together; Pass A
+        // no longer pre-applies either half, so the result below is the prefix's sole energy accounting.
+        // The prefix runs outside tracePath and so has no path seed of its own. Derived from the pixel
+        // and the frame so it decorrelates the same way every other sample in the renderer does.
+        uint prefixSeed = pixelIndex ^ (worldPush.frameIndex * 2654435761u);
+        prefixSeed = pcg(prefixSeed);
+        prefix = integrateSegment(waterExtinction(worldPush.waterParams.xyz), MEDIUM_FLAG_WATER,
+                                  prefixOrigin, camera.dir, prefixLength, prefixSeed);
+    }
+    return prefix;
+}
+
+void writeWaterMediumProbe(uint2 dispatchIndex, uint2 dimensions, PackedPathSegment firstLeaf,
+                           SegmentIntegral prefix, float3 leafRadiance, float3 compositeRadiance,
+                           FirstSegmentTrace firstTrace) {
+    if (pc.waterProbeAddr == 0 || any(dispatchIndex != dimensions / 2u)) {
+        return;
+    }
+
+    CameraRay camera = cameraRay(dispatchIndex, dimensions);
+    bool submerged = (worldPush.flags & 1u) != 0u;
+    float prefixLength = length(firstLeaf.ro - camera.origin);
+    float prefixLum = luminance(max(prefix.inScatter, float3(0.0, 0.0, 0.0)));
+    float leafLum = luminance(max(leafRadiance, float3(0.0, 0.0, 0.0)));
+    float compositeLum = luminance(max(compositeRadiance, float3(0.0, 0.0, 0.0)));
+
+    float measuredUpWater = 0.0;
+    float fallbackDepth = max(worldPush.waterAnchor.w - camera.origin.y, 0.0);
+    float skyDepth = fallbackDepth;
+    float skyOpen = 1.0;
+    if (submerged) {
+        // Repeats the sky term's representative up-ray for one pixel only. Recording it independently is
+        // intentional: if streamed geometry shortens this measurement, the log must show the input that
+        // changed rather than merely the resulting blue value.
+        VisibilityResult up = visibilityMasked(CULL_SECONDARY_NO_SELF, camera.origin,
+                                               float3(0.0, 1.0, 0.0), RAY_FAR);
+        measuredUpWater = up.waterHitT;
+        skyDepth = measuredUpWater > 0.0 ? measuredUpWater : fallbackDepth;
+        float3 gateP = float3(camera.origin.x, camera.origin.y + skyDepth + 0.5, camera.origin.z);
+        skyOpen = sampleVolumeVisibility(gateP).y;
+    }
+
+    bool finiteOutput = all(prefix.inScatter == prefix.inScatter)
+            && all(prefix.transmittance == prefix.transmittance)
+            && all(leafRadiance == leafRadiance)
+            && all(compositeRadiance == compositeRadiance);
+    WaterMediumProbe probe;
+    probe.frameIndex = worldPush.frameIndex;
+    probe.flags = 1u | (submerged ? 2u : 0u) | (prefixLength > 1.0e-3 ? 4u : 0u)
+            | (finiteOutput ? 8u : 0u);
+    probe.pathFlags = firstLeaf.pathFlags;
+    probe.debugView = pc.debugView;
+    probe.prefixScatterLength = float4(prefix.inScatter, prefixLength);
+    probe.prefixTransmittance = float4(prefix.transmittance, luminance(prefix.transmittance));
+    probe.leafRadiance = float4(leafRadiance, leafLum);
+    probe.compositeRadiance = float4(compositeRadiance, prefixLum / max(compositeLum, 1.0e-8));
+    probe.skySourceOpen = float4(worldPush.mediumSkyRadiance.xyz, skyOpen);
+    probe.upwardWater = float4(measuredUpWater, skyDepth, fallbackDepth, worldPush.waterAnchor.w);
+
+    // These values are copied out of tracePath's ACTUAL first TraceRay, not reconstructed with a second
+    // traversal. firstWeightedScatter is the exact non-prefix term added to L on that iteration and gives
+    // the log a conservation check: leaf radiance cannot be below it unless later code loses energy.
+    probe.firstSegmentScatter = float4(firstTrace.inScatter, firstTrace.segmentEnd);
+    probe.firstSegmentT = float4(firstTrace.transmittance,
+                                 luminance(firstTrace.transmittance));
+    probe.firstHit = float4(firstTrace.hitT, float(firstTrace.material), float(firstTrace.escaped),
+                            float(firstTrace.mediumProfile));
+    probe.firstThroughput = float4(firstTrace.throughput,
+                                   luminance(max(firstTrace.throughput, float3(0.0, 0.0, 0.0))));
+    float3 weightedFirstScatter = firstTrace.throughput * firstTrace.inScatter;
+    probe.firstWeightedScatter = float4(weightedFirstScatter,
+            luminance(max(weightedFirstScatter, float3(0.0, 0.0, 0.0))));
+    DevicePtr<WaterMediumProbe>(pc.waterProbeAddr)[0] = probe;
 }
 
 [shader("raygeneration")]
@@ -1019,8 +1219,28 @@ void main() {
     int2 pix = int2(dispatchIndex);
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
-    if (pc.debugView != 0u) {
-        if (pc.debugView >= DEBUG_VIEW_SKY_TRANSMITTANCE) {
+    bool compositePrefixDebug = pc.debugView == DEBUG_VIEW_COMPOSITE_PREFIX_AB;
+    if (pc.debugView != 0u && !compositePrefixDebug) {
+        if (pc.debugView == DEBUG_VIEW_CAMERA_PREFIX) {
+            SegmentIntegral prefix = cameraPrefixIntegral(
+                    dispatchIndex, dimensions, queue[pixelIndex], pixelIndex);
+            float3 prefixDebug = prefix.inScatter;
+            // Right-edge status strip keeps a black radiance result unambiguous:
+            //   green = submerged and a non-zero camera-to-interface prefix was reconstructed;
+            //   red   = submerged but this ray reached no consumed interface (the leaf owns the segment);
+            //   blue  = the CPU did not classify the camera as submerged.
+            if (dispatchIndex.x >= dimensions.x - max(dimensions.x / 12u, 1u)) {
+                CameraRay debugCamera = cameraRay(dispatchIndex, dimensions);
+                float debugPrefixLength = length(queue[pixelIndex].ro - debugCamera.origin);
+                bool debugCameraInWater = (worldPush.flags & 1u) != 0u;
+                prefixDebug = !debugCameraInWater
+                        ? float3(0.0, 0.0, 1.0)
+                        : debugPrefixLength > 1.0e-3
+                        ? float3(0.0, 1.0, 0.0)
+                        : float3(1.0, 0.0, 0.0);
+            }
+            outImage[pix] = float4(prefixDebug, 1.0);
+        } else if (pc.debugView >= DEBUG_VIEW_SKY_TRANSMITTANCE) {
             // Screen-space, not a path property, so these take the pixel rather than the queued record.
             float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
             float3 table = pc.debugView == DEBUG_VIEW_SKY_TRANSMITTANCE
@@ -1043,68 +1263,35 @@ void main() {
                     : froxelDebug(screenUv);
             outImage[pix] = float4(table, 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_VOLUME_INSCATTER) {
-            outImage[pix] = float4(volumeDebug(queue[pixelIndex]), 1.0);
+            outImage[pix] = float4(volumeDebug(queue[pixelIndex], pixelIndex), 1.0);
         }
         return; // pass A owns the guide visualizations
     }
     uint spp = max(worldPush.spp, 1u);
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
     uint recordIndex = pixelIndex;
+    PathSegment firstQueuedSegment = unpackPathSegment(queue[pixelIndex]);
+    FirstSegmentTrace actualFirstTrace = emptyFirstSegmentTrace(
+            firstQueuedSegment, unpackActiveMediumFlags(queue[pixelIndex].pathFlags));
+    bool captureProbe = pc.waterProbeAddr != 0 && all(dispatchIndex == dimensions / 2u);
 
-    // The prefix segment: camera to wherever the primary pass left off. That pass consumed it — it
-    // applied the enclosed medium's absorption and queued the branches at the interface — so no record
-    // describes what the ambient field did along it, and without this the fog would be missing from
-    // exactly the stretch nearest the camera.
-    //
-    // A straight line, always. The primary pass traces one ray and resolves at most one interface, so the
-    // prefix is either zero-length (it did not split, and the queued origin is the camera's) or the one
-    // segment up to that interface. Both branches share it and it is additively independent of them, so
-    // it is integrated once here rather than per leaf. See docs/WAVEFRONT_PLAN.md.
-    CameraRay camera = cameraRay(dispatchIndex, dimensions);
-    float3 prefixOrigin = camera.origin;
-    float prefixLength = length(queue[pixelIndex].ro - prefixOrigin);
-    // Ambient only, with zero enclosed extinction: the primary pass already applied the enclosed
-    // medium's absorption to this segment and applying it twice would darken everything seen through
-    // water. A submerged camera is inside water rather than inside the world's air, so it leaves the
-    // ambient field too — which is why this is the flag rather than an unconditional airMedium().
-    Medium prefixAir = airMedium();
-    prefixAir.ambient = (worldPush.flags & 1u) == 0u;
-    MediumStack prefixMedium = makeMediumStack(prefixAir);
-    SegmentIntegral prefix;
-    if (prefixAir.ambient) {
-        // The froxel answers for this stretch, because this stretch is exactly what it covers: the eye,
-        // this pixel's ray, out to a distance. Everything else in the renderer still marches, and has to —
-        // a bounce ray is not on the screen, so it has no column here to read.
-        //
-        // A lateral move on its own. The closed form it replaces is an exact integral of the same
-        // unshadowed medium, and 32 interpolated slices are not more accurate than exact. What the grid
-        // has that the closed form cannot is a place to put VISIBILITY, resolved in world-space cells and
-        // interpolated, which is the whole of M13 and the reason this is wired now rather than then: if 64
-        // slices band, or the exponential axis shows shells in the near field, that has to surface while
-        // the closed form is still here to compare against.
-        float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
-        float4 aerial = sampleAerialPerspective(screenUv, prefixLength, worldPush.fogParams.w);
-        // Bit 17 (Rt.Volumetrics.SEGMENT_SOURCE): silence the froxel's half of the fog. The alpha is
-        // kept — what this stretch of air HIDES is not in question, only what it emits.
-        prefix.inScatter = ((worldPush.flags >> 17u) & 1u) != 0u
-                ? float3(0.0, 0.0, 0.0)
-                : aerial.rgb;
-        prefix.transmittance = float3(aerial.a, aerial.a, aerial.a);
-    } else {
-        // Submerged: the camera is inside water, not inside the world's air, so the ambient field is not
-        // what this segment travels through and the froxel has nothing to say about it.
-        // The prefix runs outside tracePath and so has no path seed of its own. Derived from the pixel
-        // and the frame so it decorrelates the same way every other sample in the renderer does.
-        uint prefixSeed = pixelIndex ^ (worldPush.frameIndex * 2654435761u);
-        prefixSeed = pcg(prefixSeed);
-        prefix = integrateSegment(prefixMedium, prefixOrigin, camera.dir, prefixLength, prefixSeed);
-    }
+    SegmentIntegral prefix = cameraPrefixIntegral(
+            dispatchIndex, dimensions, queue[pixelIndex], pixelIndex);
 
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];
+        // tracePath owns primitive active state and leaves this transport record unchanged, so all SPP
+        // can share one unpack without inheriting a previous sample's dielectric transitions.
         PathSegment segment = unpackPathSegment(packed);
         for (uint s = 0u; s < spp; ++s) {
-            frameRadiance += tracePath(segment, uint2(pix), s + leaf * spp);
+            bool captureFirst = captureProbe && leaf == 0u && s == 0u;
+            FirstSegmentTrace tracedFirst;
+            frameRadiance += tracePath(segment, unpackActiveMediumFlags(packed.pathFlags),
+                                       uint2(pix), s + leaf * spp,
+                                       captureFirst, tracedFirst);
+            if (captureFirst) {
+                actualFirstTrace = tracedFirst;
+            }
         }
         if ((packed.pathFlags & PATH_HAS_NEXT) == 0u) {
             break;
@@ -1115,5 +1302,22 @@ void main() {
         // boundary to say it.
         recordIndex = dimensions.x * dimensions.y + pixelIndex;
     }
-    outImage[pix] = float4(prefix.inScatter + prefix.transmittance * (frameRadiance / float(spp)), 1.0);
+    float3 leafRadiance = prefix.transmittance * (frameRadiance / float(spp));
+    float3 compositeRadiance = prefix.inScatter + leafRadiance;
+    if (compositePrefixDebug) {
+        if (dispatchIndex.y >= dimensions.y * 3u / 4u) {
+            float prefixLum = luminance(max(prefix.inScatter, float3(0.0, 0.0, 0.0)));
+            float compositeLum = luminance(max(compositeRadiance, float3(0.0, 0.0, 0.0)));
+            float fraction = prefixLum / max(compositeLum, 1.0e-8);
+            compositeRadiance = saturate(float3(fraction * 8.0, fraction * 2.0, fraction));
+        } else {
+            // Neighbouring 32-pixel bands compare almost the same view direction. A visible seam means the
+            // prefix materially changes the raw HDR composite before RR/exposure/tonemap.
+            bool includePrefix = ((dispatchIndex.x / 32u) & 1u) == 0u;
+            compositeRadiance = includePrefix ? compositeRadiance : leafRadiance;
+        }
+    }
+    writeWaterMediumProbe(dispatchIndex, dimensions, queue[pixelIndex], prefix,
+                          leafRadiance, prefix.inScatter + leafRadiance, actualFirstTrace);
+    outImage[pix] = float4(compositeRadiance, 1.0);
 }

@@ -68,14 +68,62 @@ public float3 volumeExtinction(float3 tint, float transmission) {
 public struct Medium {
     public float ior;
     public float3 extinction;
-    public bool water; // drives the wave-refraction caustic on submerged receivers; nothing else is water-specific
-    // Whether this medium is the world's open air, and so subject to the unbounded ambient field —
-    // height fog and, later, noise fog and clouds. An explicit bit rather than ior == 1 && extinction ==
-    // 0, because a colourless dielectric would answer that test and the ambient field must not apply
-    // inside glass. mediumPop restores it through airMedium(), and the per-face re-derivation of
-    // `entering` means a path that somehow loses track re-synchronises at the next interface.
-    public bool ambient;
+    // One scalar flag word is deliberately used instead of nested shader bools. Runtime telemetry proved
+    // that passing PathSegment by value could preserve `water` while changing `ambient` at the callee ABI
+    // boundary. A uint has an unambiguous representation and keeps medium classification atomic.
+    public uint flags;
 };
+
+// WATER drives enclosed-water scattering and submerged caustics. AMBIENT marks the world's open air,
+// where the unbounded height-fog field applies; it must stay false inside colourless dielectrics.
+public static const uint MEDIUM_FLAG_WATER = 1u << 0u;
+public static const uint MEDIUM_FLAG_AMBIENT = 1u << 1u;
+
+// Active raygen classification is one indivisible scalar. Low 16 bits describe the current medium and
+// high 16 bits the medium restored after an exit. Keeping the pair in one word prevents Slang 2026.14
+// from assigning two simultaneously-live classification values to the same lowered value. Sixteen bits
+// per side leaves room for future medium traits without changing the 48-byte queue ABI.
+public static const uint ACTIVE_MEDIUM_FLAGS_MASK = 0xffffu;
+public static const uint ACTIVE_MEDIUM_OUTER_SHIFT = 16u;
+
+public uint packActiveMediumFlags(uint currentFlags, uint outerFlags) {
+    return (currentFlags & ACTIVE_MEDIUM_FLAGS_MASK)
+            | ((outerFlags & ACTIVE_MEDIUM_FLAGS_MASK) << ACTIVE_MEDIUM_OUTER_SHIFT);
+}
+
+public uint activeCurrentMediumFlags(uint activeMediumFlags) {
+    return activeMediumFlags & ACTIVE_MEDIUM_FLAGS_MASK;
+}
+
+public uint activeOuterMediumFlags(uint activeMediumFlags) {
+    return (activeMediumFlags >> ACTIVE_MEDIUM_OUTER_SHIFT) & ACTIVE_MEDIUM_FLAGS_MASK;
+}
+
+public uint enterActiveMediumFlags(uint activeMediumFlags, uint enteredFlags) {
+    return packActiveMediumFlags(enteredFlags, activeCurrentMediumFlags(activeMediumFlags));
+}
+
+public uint exitActiveMediumFlags(uint activeMediumFlags) {
+    return packActiveMediumFlags(activeOuterMediumFlags(activeMediumFlags), MEDIUM_FLAG_AMBIENT);
+}
+
+public bool mediumFlagsWater(uint flags) {
+    return (flags & MEDIUM_FLAG_WATER) != 0u;
+}
+
+public bool mediumFlagsAmbient(uint flags) {
+    return (flags & MEDIUM_FLAG_AMBIENT) != 0u;
+}
+
+// Transport-side convenience only. Active raygen/integrator state uses the scalar helpers above because
+// Slang 2026.14 aliases flags when two Medium aggregates are simultaneously live in the indirect raygen.
+public bool mediumIsWater(Medium m) {
+    return mediumFlagsWater(m.flags);
+}
+
+public bool mediumIsAmbient(Medium m) {
+    return mediumFlagsAmbient(m.flags);
+}
 
 public struct MediumStack {
     public Medium current;
@@ -93,14 +141,13 @@ public Medium airMedium() {
     Medium m;
     m.ior = 1.0;
     m.extinction = float3(0.0, 0.0, 0.0);
-    m.water = false;
-    m.ambient = true;
+    m.flags = MEDIUM_FLAG_AMBIENT;
     return m;
 }
 
-/** Local density implementation. Not part of the Medium interface; mediumSigmaT is its only consumer. */
-float mediumDensityAt(Medium m, float3 p) {
-    if (!m.ambient) {
+/** Local density implementation. Not part of the Medium interface; mediumSigmaTFields is its consumer. */
+float mediumDensityAt(uint flags, float3 p) {
+    if (!mediumFlagsAmbient(flags)) {
         return 1.0;
     }
     float scale = max(worldPush.fogParams.y, 1.0e-3);
@@ -108,8 +155,14 @@ float mediumDensityAt(Medium m, float3 p) {
 }
 
 /** Local total extinction sigma_t. Integrated ambient optical depth uses volume_source's exact form. */
+public float3 mediumSigmaTFields(float3 extinction, uint flags, float3 p) {
+    return mediumFlagsAmbient(flags)
+            ? worldPush.fogExtinction.xyz * mediumDensityAt(flags, p)
+            : extinction;
+}
+
 public float3 mediumSigmaT(Medium m, float3 p) {
-    return m.ambient ? worldPush.fogExtinction.xyz * mediumDensityAt(m, p) : m.extinction;
+    return mediumSigmaTFields(m.extinction, m.flags, p);
 }
 
 /**
@@ -133,29 +186,43 @@ public float3 mediumSigmaT(Medium m, float3 p) {
  * Per-biome variation survives, and for the right reason: sigma_t is per water body, so a strongly
  * absorbing swamp gets a low albedo and clear ocean a high one.
  */
-public float3 mediumScatterAlbedo(Medium m) {
-    if (m.ambient) {
+public float3 mediumScatterAlbedoFields(float3 extinction, uint flags) {
+    if (mediumFlagsAmbient(flags)) {
         return worldPush.fogScatter.xyz;
     }
-    return m.water
+    return mediumFlagsWater(flags)
             ? worldPush.waterScatter.xyz
-                    / max(m.extinction, float3(1.0e-6, 1.0e-6, 1.0e-6))
+                    / max(extinction, float3(1.0e-6, 1.0e-6, 1.0e-6))
             : float3(0.0, 0.0, 0.0);
 }
 
+public float3 mediumScatterAlbedo(Medium m) {
+    return mediumScatterAlbedoFields(m.extinction, m.flags);
+}
+
 /** Henyey-Greenstein anisotropy used by this medium's direct-light source adapter. */
+public float mediumPhaseGFlags(uint flags) {
+    return mediumFlagsAmbient(flags)
+            ? worldPush.fogScatter.w
+            : (mediumFlagsWater(flags) ? worldPush.waterScatter.w : 0.0);
+}
+
 public float mediumPhaseG(Medium m) {
-    return m.ambient ? worldPush.fogScatter.w : (m.water ? worldPush.waterScatter.w : 0.0);
+    return mediumPhaseGFlags(m.flags);
 }
 
 /** Complete profile query used by integrateSegment's internal estimator seam. */
-public uint mediumProfile(Medium m) {
-    if (m.ambient) {
+public uint mediumProfileFlags(uint flags) {
+    if (mediumFlagsAmbient(flags)) {
         return MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT;
     }
-    return m.water
+    return mediumFlagsWater(flags)
             ? MEDIUM_PROFILE_HOMOGENEOUS_ENCLOSED
             : MEDIUM_PROFILE_HOMOGENEOUS_PASSIVE;
+}
+
+public uint mediumProfile(Medium m) {
+    return mediumProfileFlags(m.flags);
 }
 
 public MediumStack makeMediumStack(Medium start) {
@@ -177,11 +244,18 @@ public void mediumPop(inout MediumStack stack) {
 
 // Water's tint is a biome colour whose absorption is calibrated per block of depth; any other volume
 // dielectric's tint is a filter over a reference block of travel. Both end up as per-channel extinction.
+public float3 dielectricMediumExtinction(bool isWater, float3 tint, float transmission) {
+    return isWater ? waterExtinction(tint) : volumeExtinction(tint, transmission);
+}
+
+public uint dielectricMediumFlags(bool isWater) {
+    return isWater ? MEDIUM_FLAG_WATER : 0u;
+}
+
 public Medium makeDielectricMedium(bool isWater, float ior, float3 tint, float transmission) {
     Medium m;
     m.ior = ior;
-    m.extinction = isWater ? waterExtinction(tint) : volumeExtinction(tint, transmission);
-    m.water = isWater;
-    m.ambient = false;
+    m.extinction = dielectricMediumExtinction(isWater, tint, transmission);
+    m.flags = dielectricMediumFlags(isWater);
     return m;
 }

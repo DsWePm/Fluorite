@@ -110,11 +110,11 @@ public PathSegment tracePrimary(PathSegment seg,
             return terminal;
         }
 
-        // This hit is consumed in pass A, so carry its travelled-medium absorption and cone growth into
-        // the record for the next trace. The terminal hit above is deliberately not consumed here.
-        if (any(medium.current.extinction > 0.0)) {
-            throughput *= exp(-medium.current.extinction * payload.hitT);
-        }
+        // This hit is consumed in pass A, but the travelled segment is not. Pass B reconstructs the one
+        // camera-to-interface prefix shared by both Fresnel leaves and owns its complete SegmentIntegral:
+        // in-scatter plus transmittance, in that order. Applying Beer here would split that contract across
+        // passes and either double attenuation or force pass B to discard half of the integrator's answer.
+        // Cone growth is geometric state rather than radiometric state, so it still follows the consumed hit.
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0),
                            RAY_CONE_MIN_WIDTH);
 

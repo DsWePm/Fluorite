@@ -317,7 +317,8 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
 // ray, and return throughput-free radiance contrib*vis*W. The one ray serves whichever term fired for
 // the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the
 // sample's side of the surface.
-public float3 shadeReservoir(MediumStack medium, BsdfContext c, MaterialExtension ext, Reservoir s) {
+public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
+                             BsdfContext c, MaterialExtension ext, Reservoir s) {
     if (s.W <= 0.0 || s.phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }
@@ -350,7 +351,8 @@ public float3 shadeReservoir(MediumStack medium, BsdfContext c, MaterialExtensio
     // Through the ambient wrapper like every other shadow ray: an emitter 200 blocks away is behind the
     // same fog the sun is, and this one call site quietly missed that when the ambient medium landed.
     float3 wiShadow = toL / dist;
-    VisibilityResult shadow = visibilityThroughAmbient(medium, origin, wiShadow, dist * 0.999);
+    VisibilityResult shadow = visibilityThroughAmbient(
+            mediumExtinction, mediumFlags, origin, wiShadow, dist * 0.999);
     float3 vis = shadow.transmittance;
     // The other half of R23. The ambient wrapper above fixed this call site's fog; the caustic was the
     // part still missing, so a lantern over a pond lit the bottom through a surface that visibly bends
@@ -362,7 +364,7 @@ public float3 shadeReservoir(MediumStack medium, BsdfContext c, MaterialExtensio
     // neighbouring surface points from different directions, so the true focusing differs — the error
     // shrinks with distance and is bounded by the same CAUSTIC_MAX either way. An emitter below the
     // surface never crosses it, leaves waterHitT at the -1 sentinel, and takes no caustic at all.
-    if (medium.current.water && (worldPush.flags & 16u) != 0u && shadow.waterHitT > 0.0) {
+    if (mediumFlagsWater(mediumFlags) && (worldPush.flags & 16u) != 0u && shadow.waterHitT > 0.0) {
         vis *= waterCaustic(origin + wiShadow * shadow.waterHitT, wiShadow, shadow.waterHitT);
     }
     return contrib * vis * s.W;

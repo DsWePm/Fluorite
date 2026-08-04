@@ -60,4 +60,17 @@ public final class RtBuffer {
         }
         Vma.vmaFlushAllocation(vma, allocation, offset, length);
     }
+
+    /** Invalidate host cache lines before reading bytes written by the GPU. VMA treats host-coherent
+     * allocations as a no-op and aligns non-coherent ranges to the device atom size. */
+    public void invalidate(long offset, long length) {
+        if (!hostVisible) {
+            throw new IllegalStateException("Cannot invalidate a non-host-visible buffer");
+        }
+        if (offset < 0L || length < 0L || offset > size || length > size - offset) {
+            throw new IndexOutOfBoundsException("Invalidate range " + offset + ".." + (offset + length)
+                    + " exceeds buffer size " + size);
+        }
+        Vma.vmaInvalidateAllocation(vma, allocation, offset, length);
+    }
 }

@@ -1492,6 +1492,12 @@ public final class FluoriteConfig {
         /** Startup Vulkan inventory + {@code VK_EXT_device_fault} reporting on device loss. See {@code VulkanDiagnostics}. */
         public static final class Diagnostics {
 
+            /** Low-rate centre-pixel GPU/CPU telemetry for water-medium streaming bugs. The probe adds one
+             * upward ray per frame while enabled and logs only after an already-completed ring slot is
+             * reused, so it does not introduce a readback stall. */
+            public static final BooleanSetting WATER_MEDIUM_TRACE =
+                    bool("fluorite.rt.waterMediumTrace", "diagnostics.water-medium-trace", false);
+
             /** Heavy driver-side crash diagnostics: vendor diagnostics-config extensions (shader debug
              * info, resource tracking, automatic checkpoints, shader error reporting) and the
              * {@code deviceFaultVendorBinary} feature (vendor-format crash dump on device loss). Off by

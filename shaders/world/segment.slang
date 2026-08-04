@@ -112,12 +112,27 @@ public PackedPathSegment packPathSegment(PathSegment seg, bool hasNext) {
     p.seed = seg.seed;
     p.pathFlags = (uint(seg.bounce) & 15u)
             | (seg.showCelestial ? 1u << 8u : 0u)
-            | (seg.medium.current.water ? 1u << 9u : 0u)
-            | (seg.medium.outer.water ? 1u << 10u : 0u)
+            | (mediumIsWater(seg.medium.current) ? 1u << 9u : 0u)
+            | (mediumIsWater(seg.medium.outer) ? 1u << 10u : 0u)
             | (hasNext ? PATH_HAS_NEXT : 0u)
-            | (seg.medium.current.ambient ? 1u << 12u : 0u)
-            | (seg.medium.outer.ambient ? 1u << 13u : 0u);
+            | (mediumIsAmbient(seg.medium.current) ? 1u << 12u : 0u)
+            | (mediumIsAmbient(seg.medium.outer) ? 1u << 13u : 0u);
     return p;
+}
+
+public uint unpackCurrentMediumFlags(uint pathFlags) {
+    return ((pathFlags & (1u << 9u)) != 0u ? MEDIUM_FLAG_WATER : 0u)
+            | ((pathFlags & (1u << 12u)) != 0u ? MEDIUM_FLAG_AMBIENT : 0u);
+}
+
+public uint unpackOuterMediumFlags(uint pathFlags) {
+    return ((pathFlags & (1u << 10u)) != 0u ? MEDIUM_FLAG_WATER : 0u)
+            | ((pathFlags & (1u << 13u)) != 0u ? MEDIUM_FLAG_AMBIENT : 0u);
+}
+
+public uint unpackActiveMediumFlags(uint pathFlags) {
+    return packActiveMediumFlags(
+            unpackCurrentMediumFlags(pathFlags), unpackOuterMediumFlags(pathFlags));
 }
 
 public PathSegment unpackPathSegment(PackedPathSegment p) {
@@ -125,13 +140,11 @@ public PathSegment unpackPathSegment(PackedPathSegment p) {
     Medium current;
     current.ior = iors.x;
     current.extinction = unpackRgb9e5(p.currentExtinction);
-    current.water = (p.pathFlags & (1u << 9u)) != 0u;
-    current.ambient = (p.pathFlags & (1u << 12u)) != 0u;
+    current.flags = unpackCurrentMediumFlags(p.pathFlags);
     Medium outer;
     outer.ior = iors.y;
     outer.extinction = unpackRgb9e5(p.outerExtinction);
-    outer.water = (p.pathFlags & (1u << 10u)) != 0u;
-    outer.ambient = (p.pathFlags & (1u << 13u)) != 0u;
+    outer.flags = unpackOuterMediumFlags(p.pathFlags);
     MediumStack medium;
     medium.current = current;
     medium.outer = outer;

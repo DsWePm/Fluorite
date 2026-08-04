@@ -12,6 +12,7 @@ import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.client.FluoriteJitter;
 import io.github.dswepm.fluorite.mixin.CommandEncoderAccessor;
 import io.github.dswepm.fluorite.rt.gen.PackedPathSegmentData;
+import io.github.dswepm.fluorite.rt.gen.WaterMediumProbeData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushConstantsData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData.BreakEntry;
@@ -462,11 +463,100 @@ public final class RtComposite {
 
     private static final class PushSlot {
         final RtBuffer buffer;
+        final RtBuffer waterProbe;
         final RtGpuExecutor.TrackedGraphicsUse graphicsUse = new RtGpuExecutor.TrackedGraphicsUse();
+        boolean waterProbeArmed;
+        RtTerrain.StreamingDiagnostics waterProbeTerrain;
+        int waterProbeCpuFlags;
 
-        PushSlot(RtBuffer buffer) {
+        PushSlot(RtBuffer buffer, RtBuffer waterProbe) {
             this.buffer = buffer;
+            this.waterProbe = waterProbe;
         }
+    }
+    private static final long WATER_PROBE_LOG_INTERVAL_NS = 250_000_000L;
+    private long waterProbeLoggedAt = Long.MIN_VALUE;
+
+    /** Reads an old ring slot only after its graphics timeline has completed; this never stalls the GPU
+     * that is rendering the current frame. */
+    private void logWaterMediumProbe(PushSlot slot) {
+        if (!slot.waterProbeArmed) {
+            return;
+        }
+        slot.waterProbe.invalidate(0L, WaterMediumProbeData.BYTE_SIZE);
+        long base = slot.waterProbe.mapped;
+        int probeFlags = MemoryUtil.memGetInt(base + WaterMediumProbeData.FLAGS_OFFSET);
+        if ((probeFlags & 1) == 0) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (waterProbeLoggedAt != Long.MIN_VALUE && now - waterProbeLoggedAt < WATER_PROBE_LOG_INTERVAL_NS) {
+            return;
+        }
+        waterProbeLoggedAt = now;
+
+        int gpuFrame = MemoryUtil.memGetInt(base + WaterMediumProbeData.FRAME_INDEX_OFFSET);
+        int pathFlags = MemoryUtil.memGetInt(base + WaterMediumProbeData.PATH_FLAGS_OFFSET);
+        int debug = MemoryUtil.memGetInt(base + WaterMediumProbeData.DEBUG_VIEW_OFFSET);
+        long ps = base + WaterMediumProbeData.PREFIX_SCATTER_LENGTH_OFFSET;
+        long pt = base + WaterMediumProbeData.PREFIX_TRANSMITTANCE_OFFSET;
+        long leaf = base + WaterMediumProbeData.LEAF_RADIANCE_OFFSET;
+        long comp = base + WaterMediumProbeData.COMPOSITE_RADIANCE_OFFSET;
+        long sky = base + WaterMediumProbeData.SKY_SOURCE_OPEN_OFFSET;
+        long up = base + WaterMediumProbeData.UPWARD_WATER_OFFSET;
+        long firstScatter = base + WaterMediumProbeData.FIRST_SEGMENT_SCATTER_OFFSET;
+        long firstT = base + WaterMediumProbeData.FIRST_SEGMENT_T_OFFSET;
+        long firstHit = base + WaterMediumProbeData.FIRST_HIT_OFFSET;
+        long firstThroughput = base + WaterMediumProbeData.FIRST_THROUGHPUT_OFFSET;
+        long firstWeightedScatter = base + WaterMediumProbeData.FIRST_WEIGHTED_SCATTER_OFFSET;
+        RtTerrain.StreamingDiagnostics terrain = slot.waterProbeTerrain;
+        String terrainText = terrain == null ? "unavailable" : String.format(java.util.Locale.ROOT,
+                "resident=%d published=%d desired=%d empty=%d inFlight=%d missing=%d reextract=%d"
+                        + " prepared=%d completed=%d instances=%d",
+                terrain.resident(), terrain.published(), terrain.desired(), terrain.empty(),
+                terrain.inFlight(), terrain.missing(), terrain.reextract(), terrain.prepared(),
+                terrain.completed(), terrain.instances());
+        FluoriteMod.LOGGER.info(
+                "RT water-medium probe: gpuFrame={} debug={} probeFlags=0x{} cpuFlags=0x{} pathFlags=0x{}"
+                        + " prefixLen={} prefixScatter=({},{},{}) prefixT=({},{},{}) prefixTLum={}"
+                        + " leaf=({},{},{}) leafLum={} composite=({},{},{}) prefixFraction={}"
+                        + " skySource=({},{},{}) skyOpen={} upWater={} skyDepth={} fallbackDepth={}"
+                        + " surfaceY={} firstSegmentLen={} firstScatter=({},{},{}) firstT=({},{},{})"
+                        + " firstTLum={} firstHitT={} firstMaterial={} firstEscaped={} firstMediumProfile={}"
+                        + " firstThroughput=({},{},{}) firstThroughputLum={}"
+                        + " firstWeightedScatter=({},{},{}) firstWeightedScatterLum={}"
+                        + " terrain[{}]",
+                gpuFrame, debug, Integer.toHexString(probeFlags), Integer.toHexString(slot.waterProbeCpuFlags),
+                Integer.toHexString(pathFlags),
+                fmt(MemoryUtil.memGetFloat(ps + 12)),
+                fmt(MemoryUtil.memGetFloat(ps)), fmt(MemoryUtil.memGetFloat(ps + 4)), fmt(MemoryUtil.memGetFloat(ps + 8)),
+                fmt(MemoryUtil.memGetFloat(pt)), fmt(MemoryUtil.memGetFloat(pt + 4)), fmt(MemoryUtil.memGetFloat(pt + 8)),
+                fmt(MemoryUtil.memGetFloat(pt + 12)),
+                fmt(MemoryUtil.memGetFloat(leaf)), fmt(MemoryUtil.memGetFloat(leaf + 4)), fmt(MemoryUtil.memGetFloat(leaf + 8)),
+                fmt(MemoryUtil.memGetFloat(leaf + 12)),
+                fmt(MemoryUtil.memGetFloat(comp)), fmt(MemoryUtil.memGetFloat(comp + 4)), fmt(MemoryUtil.memGetFloat(comp + 8)),
+                fmt(MemoryUtil.memGetFloat(comp + 12)),
+                fmt(MemoryUtil.memGetFloat(sky)), fmt(MemoryUtil.memGetFloat(sky + 4)), fmt(MemoryUtil.memGetFloat(sky + 8)),
+                fmt(MemoryUtil.memGetFloat(sky + 12)),
+                fmt(MemoryUtil.memGetFloat(up)), fmt(MemoryUtil.memGetFloat(up + 4)),
+                fmt(MemoryUtil.memGetFloat(up + 8)), fmt(MemoryUtil.memGetFloat(up + 12)),
+                fmt(MemoryUtil.memGetFloat(firstScatter + 12)),
+                fmt(MemoryUtil.memGetFloat(firstScatter)), fmt(MemoryUtil.memGetFloat(firstScatter + 4)),
+                fmt(MemoryUtil.memGetFloat(firstScatter + 8)),
+                fmt(MemoryUtil.memGetFloat(firstT)), fmt(MemoryUtil.memGetFloat(firstT + 4)),
+                fmt(MemoryUtil.memGetFloat(firstT + 8)), fmt(MemoryUtil.memGetFloat(firstT + 12)),
+                fmt(MemoryUtil.memGetFloat(firstHit)), Math.round(MemoryUtil.memGetFloat(firstHit + 4)),
+                Math.round(MemoryUtil.memGetFloat(firstHit + 8)),
+                Math.round(MemoryUtil.memGetFloat(firstHit + 12)),
+                fmt(MemoryUtil.memGetFloat(firstThroughput)),
+                fmt(MemoryUtil.memGetFloat(firstThroughput + 4)),
+                fmt(MemoryUtil.memGetFloat(firstThroughput + 8)),
+                fmt(MemoryUtil.memGetFloat(firstThroughput + 12)),
+                fmt(MemoryUtil.memGetFloat(firstWeightedScatter)),
+                fmt(MemoryUtil.memGetFloat(firstWeightedScatter + 4)),
+                fmt(MemoryUtil.memGetFloat(firstWeightedScatter + 8)),
+                fmt(MemoryUtil.memGetFloat(firstWeightedScatter + 12)),
+                terrainText);
     }
     // Menu/non-RT present: converts the SDR main target (sRGB) to PQ-encoded at paper white so menus,
     // the title panorama and the loading screen present correctly to the PQ swapchain instead of being
@@ -797,7 +887,9 @@ public final class RtComposite {
                 for (int i = 0; i < PUSH_RING; i++) {
                     pushRing[i] = new PushSlot(
                             ctx.createBuffer(WORLD_PUSH_SIZE,
-                                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i));
+                                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt world push " + i),
+                            ctx.createBuffer(WaterMediumProbeData.BYTE_SIZE,
+                                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "rt water medium probe " + i));
                 }
             }
             if (gpuTimers == null) {
@@ -1100,6 +1192,7 @@ public final class RtComposite {
             pushSlot = (pushSlot + 1) % PUSH_RING;
             PushSlot selectedPushSlot = pushRing[pushSlot];
             graphicsUseWaiter.await(selectedPushSlot.graphicsUse);
+            logWaterMediumProbe(selectedPushSlot);
             if (gpuTimers != null) {
                 // The await above is what makes this safe: this slot's timestamps are from PUSH_RING frames
                 // ago and the GPU has finished with them, so reading costs nothing and resetting cannot
@@ -1256,6 +1349,17 @@ public final class RtComposite {
             RtEntities.FrameEntities fe = RtEntities.INSTANCE.beginFrame(ctx, terrain.staticInstances(),
                     terrain.blockX, terrain.blockY, terrain.blockZ, camX, camY, camZ, frameProjection, frameViewRotation);
             frameEntities = fe;
+            boolean waterProbeEnabled = FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE.value();
+            selectedPushSlot.waterProbeArmed = waterProbeEnabled;
+            selectedPushSlot.waterProbeTerrain = terrain.streamingDiagnostics();
+            selectedPushSlot.waterProbeCpuFlags = flags;
+            if (waterProbeEnabled) {
+                // A valid bit from an older use of this slot must not masquerade as a current sample if a
+                // trace aborts before the centre pixel writes. The four-byte flush is harmless on coherent
+                // memory and correctly aligned by VMA otherwise.
+                MemoryUtil.memPutInt(selectedPushSlot.waterProbe.mapped + WaterMediumProbeData.FLAGS_OFFSET, 0);
+                selectedPushSlot.waterProbe.flush(WaterMediumProbeData.FLAGS_OFFSET, Integer.BYTES);
+            }
             // Block-breaking overlay: resolves each destroy-stage RenderType's texture into the
             // SAME bindless entity-texture array (destroy_stage_N.png is a standalone Sampler0 texture,
             // not a block-atlas sprite — see ModelBakery.BREAKING_LOCATIONS/DESTROY_TYPES), so any newly
@@ -1405,6 +1509,7 @@ public final class RtComposite {
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
+                    waterProbeEnabled ? selectedPushSlot.waterProbe.deviceAddress : 0L,
                     (int) frameCounter, debugView, shadeFlags()).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
@@ -1740,6 +1845,7 @@ public final class RtComposite {
             for (PushSlot slot : pushRing) {
                 if (slot != null) {
                     slot.buffer.destroy();
+                    slot.waterProbe.destroy();
                 }
             }
             pushRing = null;
