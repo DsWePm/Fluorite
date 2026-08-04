@@ -38,17 +38,11 @@ import static io.github.dswepm.fluorite.rt.RtContext.check;
  * hands the views to whoever binds them — the same ownership shape {@code RtComposite} uses for the
  * trace targets, and the same compute-pipeline shape {@code RtExposurePipeline} uses for its two passes.
  *
- * <p>Today that is two tables: transmittance to space ({@link #TRANSMITTANCE_W} x
- * {@link #TRANSMITTANCE_H}) and multiple scattering ({@link #MULTISCATTER_N} squared). Sky-view and the
- * aerial-perspective froxel follow, and they belong here rather than in four more classes because they
- * form a CHAIN — each is baked from the one before, so the thing that has to be got right is the ORDER,
- * and an order is easier to keep correct in one file than across four. {@link #recordBakeIfNeeded} is
- * where that order lives, barrier included; no caller can get it wrong because no caller can see it.
- *
- * <p><b>The tables are baked once, not per frame, and that is a property rather than a cache.</b>
- * Nothing in them depends on the time of day: the sun's position enters where they are SAMPLED, not
- * where they are baked. Rebaking every frame would cost the same and mean the same, which is exactly why
- * the reflex to do so is worth naming — it looks like safety and is only waste.
+ * <p>The dependency chain is transmittance → multiple scattering → sky-view → medium-sky reduction →
+ * aerial-perspective froxel. The first two tables are baked once because the sun enters where they are
+ * sampled; the last three run every frame because they depend on sun or camera state. Barriers between
+ * dependent links live here, beside the order they protect, so no caller can observe an intermediate
+ * half-written table or stale shared medium radiance.
  */
 public final class RtSky {
     private static final String SHADER_DIR = "/fluorite/rt/";
@@ -61,6 +55,7 @@ public final class RtSky {
     public static final int SKY_VIEW_W = 192;
     public static final int SKY_VIEW_H = 128;
     private static final int SKY_VIEW_PUSH_BYTES = 32; // float4 sun direction + float4 art tint
+    private static final int MEDIUM_SKY_REDUCE_PUSH_BYTES = 32; // WorldPush address + float4 sun direction
     /** Must match FROXEL_W/H/D in shaders/world/sky_froxel.comp.slang. */
     public static final int FROXEL_W = 64;
     public static final int FROXEL_H = 36;
@@ -75,7 +70,7 @@ public final class RtSky {
     private static final int VIS_PUSH_BYTES = 8; // WorldPush address; the grid's placement is a field in it
     private static final int BAKE_GROUP = 8; // matches [numthreads(8, 8, 1)] in both bake shaders
 
-    /** One compute bake: its layout, its set, and the pipeline that writes one table. */
+    /** One compute stage: its layout, its set, and its pipeline. */
     private record Bake(long descriptorSetLayout, long descriptorPool, long descriptorSet,
                         long pipelineLayout, long pipeline) {
         void destroy(VkDevice vk) {
@@ -90,6 +85,7 @@ public final class RtSky {
     private final Bake transmittanceBake;
     private final Bake multiScatterBake;
     private final Bake skyViewBake;
+    private final Bake mediumSkyReduceBake;
     private final Bake froxelBake;
     private final Bake visibilityBake;
     private final RtOverlayPipelines.AccelStructureSet froxelTlas;
@@ -105,13 +101,15 @@ public final class RtSky {
     private boolean baked;
 
     private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
-                  Bake froxelBake, RtOverlayPipelines.AccelStructureSet froxelTlas,
+                  Bake mediumSkyReduceBake, Bake froxelBake,
+                  RtOverlayPipelines.AccelStructureSet froxelTlas,
                   Bake visibilityBake, RtOverlayPipelines.AccelStructureSet visibilityTlas,
                   long lutSampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
         this.multiScatterBake = multiScatterBake;
         this.skyViewBake = skyViewBake;
+        this.mediumSkyReduceBake = mediumSkyReduceBake;
         this.froxelBake = froxelBake;
         this.froxelTlas = froxelTlas;
         this.visibilityBake = visibilityBake;
@@ -138,8 +136,17 @@ public final class RtSky {
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, SKY_VIEW_PUSH_BYTES);
-            // Aerial perspective: the same two tables in, one 3D image out, and the WorldPush address so
-            // the camera matrix and the fog's parameters are read rather than restated.
+            // M16: all three completed sky-view bands in, one phase-integrated upper-hemisphere source
+            // written through the WorldPush BDA. One shared field is what prevents air and water from
+            // silently acquiring separate fixed-colour or fixed-brightness source paths again.
+            Bake mediumSkyReduceBake = createBake(ctx, stack, "sky_medium_reduce.comp.spv",
+                    "medium sky reduction",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
+                    MEDIUM_SKY_REDUCE_PUSH_BYTES);
+            // Aerial perspective: transmittance in, one 3D image out, and the WorldPush address so the
+            // camera, fog parameters and just-reduced medium sky source are read rather than restated.
             // Set 1 is a ring of TLAS-only descriptor sets, borrowed from the overlay passes rather than
             // rebuilt: the handle changes almost every frame, and rewriting one set while an earlier
             // frame may still be reading it is a hazard that already has exactly one correct solution in
@@ -148,7 +155,6 @@ public final class RtSky {
                     ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "sky froxel TLAS");
             Bake froxelBake = createBake(ctx, stack, "sky_froxel.comp.spv", "sky froxel",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, FROXEL_PUSH_BYTES,
                     froxelTlas.layout);
 
@@ -176,8 +182,9 @@ public final class RtSky {
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, VIS_PUSH_BYTES,
                     visibilityTlas.layout);
 
-            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake, froxelBake,
-                    froxelTlas, visibilityBake, visibilityTlas, sampler);
+            RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
+                    mediumSkyReduceBake, froxelBake, froxelTlas,
+                    visibilityBake, visibilityTlas, sampler);
             // The images are allocated HERE rather than lazily inside the bake, so the views exist from
             // the moment this object does. Creating them in the bake made a view's availability depend on
             // whether the bake had run, which in turn made the ray-tracing pipeline's binding depend on
@@ -205,12 +212,17 @@ public final class RtSky {
             writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 2, sky.skyViewRayleigh.view);
             writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 3, sky.skyViewMie.view);
             writeStorageImage(vk, stack, skyViewBake.descriptorSet(), 4, sky.skyViewMulti.view);
+            writeSampledImage(vk, stack, mediumSkyReduceBake.descriptorSet(), 0,
+                    sky.skyViewRayleigh.view, sampler);
+            writeSampledImage(vk, stack, mediumSkyReduceBake.descriptorSet(), 1,
+                    sky.skyViewMie.view, sampler);
+            writeSampledImage(vk, stack, mediumSkyReduceBake.descriptorSet(), 2,
+                    sky.skyViewMulti.view, sampler);
 
             sky.aerialPerspective = ctx.createStorageImage3D(FROXEL_W, FROXEL_H, FROXEL_D,
                     VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "aerial perspective froxel");
             writeSampledImage(vk, stack, froxelBake.descriptorSet(), 0, sky.transmittance.view, sampler);
-            writeSampledImage(vk, stack, froxelBake.descriptorSet(), 1, sky.multiScatter.view, sampler);
-            writeStorageImage(vk, stack, froxelBake.descriptorSet(), 2, sky.aerialPerspective.view);
+            writeStorageImage(vk, stack, froxelBake.descriptorSet(), 1, sky.aerialPerspective.view);
 
             // Eight bits per channel, because every exact value this grid holds is 0 or 1 — all the
             // precision that matters is in the FILTERING between them, and a float format would spend four
@@ -328,11 +340,12 @@ public final class RtSky {
      * happened to load. The two tables it reads genuinely do not depend on the time of day, which is why
      * they are baked once and this one cannot be.
      *
-     * <p>Cheap enough to leave unconditional: 24576 texels of a 32-step march, against a full-resolution
-     * screen of rays that each used to march 16 steps with an 8-step inner loop.
+     * <p>The following reduction is part of this operation: it consumes all 24576 texels and writes the
+     * one shared medium source before the froxel. Keeping both dispatches in one method makes their two
+     * compute barriers an invariant instead of a caller convention.
      */
     public void recordSkyViewBake(VkCommandBuffer cmd, float sunX, float sunY, float sunZ,
-                                  float[] tint, float intensity) {
+                                   float[] tint, float intensity, long worldPushAddr) {
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "sky view bake")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, skyViewBake.pipeline());
@@ -348,6 +361,26 @@ public final class RtSky {
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
             VK10.vkCmdDispatch(cmd, (SKY_VIEW_W + BAKE_GROUP - 1) / BAKE_GROUP,
                     (SKY_VIEW_H + BAKE_GROUP - 1) / BAKE_GROUP, 1);
+
+            // The reduction reads all three images just written above. Keep this barrier inside the LUT
+            // owner: exposing the intermediate ordering to RtComposite would let a future caller sample a
+            // half-written sky and produce a one-frame medium flash without any validation error.
+            shaderWriteToComputeReadBarrier(cmd, stack);
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    mediumSkyReduceBake.pipeline());
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    mediumSkyReduceBake.pipelineLayout(), 0,
+                    stack.longs(mediumSkyReduceBake.descriptorSet()), null);
+            ByteBuffer reducePush = stack.malloc(MEDIUM_SKY_REDUCE_PUSH_BYTES);
+            reducePush.putLong(0, worldPushAddr).putLong(8, 0L);
+            reducePush.putFloat(16, sunX).putFloat(20, sunY).putFloat(24, sunZ).putFloat(28, 0.0f);
+            VK10.vkCmdPushConstants(cmd, mediumSkyReduceBake.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, reducePush);
+            // Exactly one 256-lane group; each lane folds a strided subset of the full 192x128 table.
+            VK10.vkCmdDispatch(cmd, 1, 1, 1);
+            // The froxel is the immediate consumer of mediumSkyRadiance. The later generic bake barrier
+            // protects ray tracing, but it is too late for this compute-to-compute dependency.
+            shaderWriteToComputeReadBarrier(cmd, stack);
         }
     }
 
@@ -428,6 +461,7 @@ public final class RtSky {
         visibilityBake.destroy(vk);
         froxelTlas.destroy(vk);
         froxelBake.destroy(vk);
+        mediumSkyReduceBake.destroy(vk);
         skyViewBake.destroy(vk);
         multiScatterBake.destroy(vk);
         transmittanceBake.destroy(vk);
@@ -438,6 +472,15 @@ public final class RtSky {
         VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, bake.pipelineLayout(), 0,
                 stack.longs(bake.descriptorSet()), null);
         VK10.vkCmdDispatch(cmd, (w + BAKE_GROUP - 1) / BAKE_GROUP, (h + BAKE_GROUP - 1) / BAKE_GROUP, 1);
+    }
+
+    private static void shaderWriteToComputeReadBarrier(VkCommandBuffer cmd, MemoryStack stack) {
+        VkMemoryBarrier.Buffer barrier = VkMemoryBarrier.calloc(1, stack);
+        barrier.get(0).sType$Default()
+                .srcAccessMask(VK10.VK_ACCESS_SHADER_WRITE_BIT)
+                .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT);
+        VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier, null, null);
     }
 
     /** Build one bake's layout/pool/set/pipeline. {@code types} is the set-0 binding list, in order. */

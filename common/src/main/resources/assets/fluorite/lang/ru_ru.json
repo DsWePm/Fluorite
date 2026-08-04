@@ -51,8 +51,6 @@
   "fluorite.options.rt.waterSunShadow.tooltip": "Use the transmittance measured by water's fixed three stratified rays. Off still traces those rays for water depth but treats the sun as unoccluded — independent of air-fog visibility.",
   "fluorite.options.rt.section.waterScatter": "Рассеяние",
   "fluorite.options.rt.section.waterAbsorb": "Поглощение",
-  "fluorite.options.rt.waterAmbient": "Небо под водой",
-  "fluorite.options.rt.waterAmbient.tooltip": "Насколько ярко небо под водой, в долях от солнца. Глубокая вода сходится к альбедо рассеяния, умноженному на это значение, — единственный регулятор яркости мути.",
   "fluorite.options.rt.waterPhaseG": "Фаза воды",
   "fluorite.options.rt.waterPhaseG.tooltip": "Смещение рассеяния воды вперёд. Положительное даёт ореол вокруг солнца, видимого снизу. Сильно рассеивающая вода сама приходит к изотропности.",
   "fluorite.options.rt.waterScatterStrength": "Scattering Strength",

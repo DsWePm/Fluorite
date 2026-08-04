@@ -51,8 +51,6 @@
   "fluorite.options.rt.waterSunShadow.tooltip": "Use the transmittance measured by water's fixed three stratified rays. Off still traces those rays for water depth but treats the sun as unoccluded — independent of air-fog visibility.",
   "fluorite.options.rt.section.waterScatter": "산란",
   "fluorite.options.rt.section.waterAbsorb": "흡수",
-  "fluorite.options.rt.waterAmbient": "물속의 하늘",
-  "fluorite.options.rt.waterAmbient.tooltip": "물속에서 하늘이 얼마나 밝은지(태양 대비 비율). 깊은 물은 산란 알베도 × 이 값으로 수렴하므로, 탁도의 밝기를 정하는 유일한 설정입니다.",
   "fluorite.options.rt.waterPhaseG": "물의 위상",
   "fluorite.options.rt.waterPhaseG.tooltip": "물 산란의 전방 치우침. 양수이면 물속에서 본 태양 주위에 후광이 생깁니다. 산란이 강한 물은 저절로 등방적으로 바뀝니다.",
   "fluorite.options.rt.waterScatterStrength": "Scattering Strength",

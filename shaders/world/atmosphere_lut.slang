@@ -108,23 +108,6 @@ public float3 sampleMultiScatter(float r, float muS) {
     return skyMultiScatterLut.SampleLevel(multiScatterLutUv(r, muS), 0.0).rgb;
 }
 
-// The two phase functions, kept here beside the only thing that uses them. Rayleigh is the classic
-// (1 + cos^2) lobe; Mie is Henyey-Greenstein, normalised over the sphere — the 1/(4*pi) is written out
-// rather than folded into a tuned constant, because a phase function missing it is an energy error that
-// then has to be cancelled by every parameter downstream.
-float rayleighPhase(float cosT) {
-    return (3.0 / (16.0 * ATMOS_LUT_PI)) * (1.0 + cosT * cosT);
-}
-
-float miePhase(float cosT) {
-    float g = MIE_G;
-    float g2 = g * g;
-    float d = 1.0 + g2 - 2.0 * g * cosT;
-    return (1.0 - g2) / (4.0 * ATMOS_LUT_PI * max(d * sqrt(max(d, 0.0)), 1.0e-6));
-}
-
-static const float ATMOS_LUT_PI = 3.14159265359;
-
 /**
  * The sky along `dir`, from the tables — what world.rmiss used to build with a 16-step march wrapping an
  * 8-step march, 128 extinction evaluations for every escaping ray.
@@ -139,7 +122,8 @@ public float3 sampleSkyView(float3 dir, float3 sunDir) {
     float3 rayleigh = skyViewRayleighLut.SampleLevel(uv, 0.0).rgb;
     float3 mie = skyViewMieLut.SampleLevel(uv, 0.0).rgb;
     float3 multi = skyViewMultiLut.SampleLevel(uv, 0.0).rgb;
-    return rayleigh * rayleighPhase(cosT) + mie * miePhase(cosT) + multi;
+    return rayleigh * atmosphereRayleighPhase(cosT)
+            + mie * atmosphereMiePhase(cosT) + multi;
 }
 
 /**
@@ -149,22 +133,19 @@ public float3 sampleSkyView(float3 dir, float3 sunDir) {
  * kept in step by hand so the sun's disc, the sky gradient and the light on terrain could not disagree
  * about a sunset. Deleting that port is what M10.1 is for, and this is where its work moved to.
  *
- * <p><b>Applied to the push constant rather than at each use.</b> Eight sites read this light — sun NEE,
- * particle NEE, subsurface, the miss shader's analytic lobe, the water and fog in-scatter, and the two
- * ambient terms derived from it. Dyeing them one by one would mean eight chances to forget, and the
- * eighth would show up as a sunset where the fog disagreed with the ground. It is also the honest shape:
+ * <p><b>Applied to the push constant rather than at each use.</b> The directional-light sites all read
+ * this value. Dyeing them one by one would mean several chances to forget, and the missed one would show
+ * up as a sunset where the fog disagreed with the ground. It is also the honest shape:
  * the sun is one direction per frame, so this is a per-frame constant, and a value uniform over the whole
  * dispatch has no business being re-fetched per pixel at eight call sites.
  *
- * <p>The ambient terms are dyed too. They arrive as fractions of this same light (see
- * RtComposite.waterAmbient / fogAmbient), so they were dyed before by construction; leaving them out
- * would have kept the fog at full noon strength through a sunset.
+ * <p>M16's {@code mediumSkyRadiance} is deliberately not touched here. It is the phase-integrated
+ * radiance of the already-dyed sky-view LUT, not a fraction of the directional light. Multiplying it by
+ * the sun transmittance again would double-dye sunsets.
  *
  * <p>{@code lightRadiance.w} is star brightness, not radiance. Only xyz moves.
  */
 public void dyeCelestialLight(inout WorldPush push) {
     float3 t = sampleTransmittanceToSpace(push.lightDir.xyz);
     push.lightRadiance.xyz *= t;
-    push.waterAmbient.xyz *= t;
-    push.fogAmbient.xyz *= t;
 }

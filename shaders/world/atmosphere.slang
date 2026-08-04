@@ -173,6 +173,20 @@ public void multiScatterLutParams(float2 uv, out float r, out float muS) {
 // from colliding in the raygens, which see both.
 static const float ATMOS_PI = 3.14159265359;
 
+// Kept in the binding-free atmosphere module because both the sky-view reader and M16's medium-sky
+// reduction compose the three split LUT bands. Duplicating either normalisation would make the sky seen
+// by a miss ray and the radiance integrated for participating media disagree about energy.
+public float atmosphereRayleighPhase(float cosT) {
+    return (3.0 / (16.0 * ATMOS_PI)) * (1.0 + cosT * cosT);
+}
+
+public float atmosphereMiePhase(float cosT) {
+    float g = MIE_G;
+    float g2 = g * g;
+    float d = 1.0 + g2 - 2.0 * g * cosT;
+    return (1.0 - g2) / (4.0 * ATMOS_PI * max(d * sqrt(max(d, 0.0)), 1.0e-6));
+}
+
 public static const int SKY_VIEW_W = 192;
 public static const int SKY_VIEW_H = 128;
 

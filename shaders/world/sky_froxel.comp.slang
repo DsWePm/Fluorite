@@ -1,4 +1,4 @@
-// Bakes what the air between the camera and everything else does to the picture, into a 32x32x32 grid
+// Bakes what the air between the camera and everything else does to the picture, into a 64x36x64 grid
 // laid over the view frustum. Each froxel holds the in-scattered light gathered from the eye out to its
 // depth, and the transmittance over that same stretch.
 //
@@ -44,8 +44,7 @@ struct FroxelPush {
 [[vk::push_constant]] FroxelPush froxelPush;
 
 [[vk::binding(0, 0)]] Sampler2D transmittanceLut;
-[[vk::binding(1, 0)]] Sampler2D multiScatterLut;
-[[vk::binding(2, 0)]] RWTexture3D<float4> aerialPerspective;
+[[vk::binding(1, 0)]] RWTexture3D<float4> aerialPerspective;
 // Set 1, its own ring: the TLAS handle changes almost every frame, and rewriting one set's binding while
 // an earlier frame's command buffer may still be reading it is the hazard RtPipeline.setTlas exists to
 // guard against. Reusing RtOverlayPipelines.AccelStructureSet rather than growing set 0 is what keeps
@@ -219,13 +218,7 @@ void main(uint3 id: SV_DispatchThreadID) {
             float3 localFogSunT = volumeAmbientTransmittance(wp.fogParams, wp.fogExtinction,
                                                               fogSunSigma, p, sunDir, maxDist);
 
-            // fogAmbient is dyed here by the same transmittance the sun term gets. Everywhere else that dye
-        // is applied once to the push constant by dyeCelestialLight, but that runs in the ray-tracing
-        // stages on their own copies — this shader reads the BUFFER, which still holds the undyed peak.
-        // Left raw it would have made the fog's ambient the only thing in the renderer that does not
-        // redden at sunset, which is exactly the sort of divergence M10.1 existed to make impossible.
-        //
-        // M13: the visibility this grid was built to hold. One ray per CELL rather than per pixel, which
+            // M13: the visibility this grid was built to hold. One ray per CELL rather than per pixel, which
             // is the entire difference between volumetric shadows and what a path tracer can afford to do
             // inline — the water work measured what a handful of per-segment rays gives instead, and it was
             // one coin flip near the camera applied to a whole segment, flipping the screen at once whenever
@@ -238,12 +231,10 @@ void main(uint3 id: SV_DispatchThreadID) {
             // wrong in the other direction — a hillside shadow would drain the sky out of the fog, when
             // what removes ambient light is a roof, not a hill.
             float skyOpen = skyReachable(p);
-            float3 atmosphereMultiScatter = multiScatterLut.SampleLevel(
-                    multiScatterLutUv(r, muS), 0.0).rgb * SUN_INTENSITY;
             AmbientRadianceSource source = evaluateAmbientRadianceSource(
                     rd, sunDir, wp.fogScatter.w,
                     wp.lightRadiance.xyz, sunT * localFogSunT,
-                    wp.fogAmbient.xyz, atmosphereMultiScatter);
+                    wp.mediumSkyRadiance.xyz);
             float3 visibleSource = source.sun * sunVis + source.sky * skyOpen;
 
             // Closed form over the step, for the same reason as the other two bakes: near the ground a step

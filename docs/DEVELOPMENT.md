@@ -38,12 +38,12 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M8 | 随机游走 BSSRDF | ✅ 实现 / ⚠️ 门槛 | 游走 1.567× 超 1.5% 门槛；默认 `thin`，游走作高配。两个 PROVISIONAL 常数未标定（`subsurface.slang`） |
 | M9 | 水体散射（σa/σs） | ✅ | 七轮弯路后收尾：σa/σs 独立创作量、3 条分层**抖动**阴影线、折射太阳方向、焦散+色散。**性能欠账：bench-water 两机位从未采**（§4.4） |
 | M10 | LUT 大气 | ✅ | 子阶段编号（代码注释在引用）：**M10.1**=大气单一实现（删 CPU 版 `atmosphereTransmittance`、F5 收口、transmittance 256×64）· **M10.2**=multi-scatter 表 32×32（binding 11）· **M10.3**=sky-view **三张**表 192×128（bindings 12–14，相位函数留在表外读取时施加，逐帧烘）· **M10.4**=aerial-perspective froxel 64×36×64（binding 15）。rmiss 用 `sampleSkyView`，CPU 推「未染色峰值」、GPU 端 `dyeCelestialLight` 染色 |
-| M13.2/.3 | 体积可见性 + 能量标定 + 随机阴影线 | ✅ | 可见性网格 64×32×64（0.072 ms）；`MULTI_SCATTER_RETURN` 删除、`AMBIENT_FOG_FRACTION` 0.25→0.05；雾默认 1 条抖动太阳阴影线；水分层抖动化 |
+| M13.2/.3 | 体积可见性 + 能量标定 + 随机阴影线 | ✅ | 可见性网格 64×32×64（0.072 ms）；`MULTI_SCATTER_RETURN` 删除、当时 `AMBIENT_FOG_FRACTION` 0.25→0.05（M16 已退役）；雾默认 1 条抖动太阳阴影线；水分层抖动化 |
 | M11 | 体积云 | ⛔ 未开始 | 设计规格 §8.1；HP 对比表 §6.3；**挂进 M15 统一框架后动工** |
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；水天空开放度结构性缺陷记入 M17（2026-08-03） | §7，决策依据 §10 D1–D16 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 代码完成、待游戏内/性能验收；水天空开放度结构性缺陷记入 M17（2026-08-04） | §7，决策依据 §10 D1–D19 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -72,6 +72,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | `sky_transmittance.comp.slang` | 256×64 透射表（一次性烘焙） |
 | `sky_multiscatter.comp.slang` | 32×32 大气多重散射表（一次性） |
 | `sky_view.comp.slang` | 192×128 sky-view 表（**三张**：相位函数在读取时施加而非烘入——Mie 前向尖峰窄于方位轴分辨率；**逐帧**——依赖太阳） |
+| `sky_medium_reduce.comp.slang` | M16：完整 sky-view 上半球按立体角做 `1/(4π)` reduction，写一份空气/水共享的 `mediumSkyRadiance`（逐帧、单 256-lane workgroup） |
 | `sky_froxel.comp.slang` | 64×36×64 相机前缀雾/空气透视 froxel（含大气项；自发光线，**不读**可见性网格） |
 | `volume_visibility.comp.slang` | 64×32×64 世界空间可见性网格（R=太阳、G=天顶，各一条光线/cell，cell 中心写入） |
 | `world_layout_probe.slang` | 仅构建期反射探针，不打包 |
@@ -102,6 +103,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 |---|---|---|---|
 | `PackedPathSegment` | **48 B** | `RtPathSegmentLayoutTest` | std430 量化到 16B 倍数：**只剩一个空 uint lane**；再加一个字段进位到 64B = 1440p 下 **+118 MB**。`pathFlags` bits 0–13 已用（9/10 water、12/13 ambient），新 flag 永远优先用位不用 lane |
 | `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 `uint64_t` 地址 + 3 uint（M15.0 删 `skyLightAddr`：112→104）；Vulkan 保证 128B，**余量 24B**（下一个地址花 8）。每加一个 uint 由 closest-hit 每次命中付费 |
+| `WorldPushData` | **736 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`，由 reduction 写、froxel/raygen 共读 |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移全部钉死 |
 | `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney 十个标量打进三个 float4；测试断言**逐 lane 偏移** |
 | `Light` | 32 B | — | 32 整除 64B cache line（48B 时代一半记录跨行、双倍事务）；面积不存储（`4·|halfU×halfV|` 反推） |
@@ -114,12 +116,12 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 |---|---|---|
 | 透射率 | 闭式 `exp(-σt·t)` | 闭式（高度积分 `ambientHeightIntegral`，剖面**在基准高度以下饱和**） |
 | 太阳项 | `enclosedSingleScatter`：Snell 折射太阳方向 + 路径缩放；3 条分层**抖动**阴影线（τ=0/1.25/2.5，段内 jitter；`water.sun-shadow` 默认 false 只弃透射率、射线仍发——`waterHitT` 要用） | 闭式源 × `4π·hg`；默认 1 条抖动阴影线（`volumetrics.sun-shadow-rays=1`），0 = 读可见性网格；太阳路径用扩散衰减 σ（multi-scatter 开时） |
-| 天空项 | `waterAmbient(=0.05×lightRadiance)` × 上射线深度 × 可见性网格开阔度 ×深度衰减积分 | `fogAmbient(=0.05×lightRadiance)×sunT + multiScatterLUT×SUN_INTENSITY`；天顶开阔度门控（网格 march 子步，telescoping 恒等式保证网格关闭=闭式 no-op） |
+| 天空项 | 共享 `mediumSkyRadiance` × 上射线深度 × 可见性网格开阔度 × 深度衰减积分 | 同一 `mediumSkyRadiance`；天顶开阔度门控（网格 march 子步，telescoping 恒等式保证网格关闭=闭式 no-op） |
 | 多重散射近似 | `effectiveAnisotropy`（g_eff = g^(1/(1−ω))）+ `diffuseAttenuation`（K=√(3σa·σtr) 钳 [σa,σt]） | 大气 MS LUT + 扩散衰减；**局部雾自身 MS 无模型（已知 limitation）** |
 | 相位 | HG×95% + Rayleigh×5%（`enclosedPhase`） | HG（`fogScatter.w`，默认 0.55） |
 | 相机前缀 | Pass B 零消光积分（Pass A 已扣吸收） | **froxel**（64×36×64，指数深度轴，含大气项） |
 
-**M15.2（2026-08-03）已收口的分叉**：froxel 与 marched 共用 `volume_source.slang`；局部雾太阳自衰减补进 froxel，`fogScatter` 两边统一为 albedo。froxel 独有的行星大气项是有意口径差。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐。
+**M16（2026-08-04）已收口的源分叉**：froxel、marched fog 与 water 共读 `mediumSkyRadiance`；旧 `waterAmbient/fogAmbient.xyz` 清零，只保留各自 `.w` 搭载的无关参数。**M15.2（2026-08-03）已收口的估计器分叉**：froxel 与 marched 共用 `volume_source.slang`；局部雾太阳自衰减补进 froxel，`fogScatter` 两边统一为 albedo。froxel 独有的行星大气介质积分是有意口径差。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐。
 
 ---
 
@@ -184,8 +186,8 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 
 | 锚点 | 铁律 |
 |---|---|
-| `RtSky.java` | LUT 是**链**（transmittance → multi-scatter → sky-view → froxel），顺序封在 `recordBakeIfNeeded` 里「没有调用者能弄错因为没有调用者能看见」。一次性烘焙是**性质不是缓存**：太阳进入的是采样处不是烘焙处 |
-| `sky_view.comp.slang` | 唯一逐帧的表（依赖太阳），紧挨着「其他表烘一次」的坚持大声写明 |
+| `RtSky.java` | LUT 是**链**（transmittance → multi-scatter → sky-view → medium-sky reduction → froxel）；相邻依赖的 barrier 与 dispatch 同封装。前两张一次性，后三项逐帧 |
+| `sky_view.comp.slang` | 逐帧表（依赖太阳）；完成后立刻被 `sky_medium_reduce.comp.slang` 全表读取，二者之间 compute barrier 不得外移 |
 | `atmosphere_lut.slang` | 相位函数**留在 LUT 外**（Mie 前向尖峰窄于方位轴分辨率；两相位只依赖视线-太阳角，因子化精确）；binding 与数学分离的理由（bake 的描述符集只有一个 binding） |
 | `world.rmiss.slang` | miss 里**零维度分支**（M14 原则）：LUT 是唯一接口。日月盘门控：镜面弹射后开、漫反射 NEE 顶点后关（防萤火虫双计） |
 | `RtComposite.skyPush` | 推**未染色峰值**，大气染色在 GPU 逐消费点做（`dyeCelestialLight`）——「一份实现而不是两份手工同步」（F5 收口后的形态） |
@@ -381,13 +383,14 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 **剩余验收**：`visibility-cell-size=0` 的 telescoping 归零测试仍成立；`RtPathSegmentLayoutTest` 仍 48；同会话比值 `bench` ≈1.0×（重构应中性）；**顺带偿还 M9 欠账：`bench-water` 两机位首采**，数字进 §4.2 作 M16/M17 的基线。水天空开放度的视觉出口改由 M17 条目定义，M15 不用临时补丁伪装通过。
 
-### M16 散射源 Radiance 化 — LUT 档（D1-A）
+### M16 散射源 Radiance 化 — LUT 档（D1-A；2026-08-04 代码完成，待游戏内/性能验收）
 
-- 水天空项：`waterAmbient = 0.05×lightRadiance` 退役，源改为与雾同源的 LUT 辐射（`sampleMultiScatter×SUN_INTENSITY` + sky-view LUT 半球均值项；均值经小型 reduce pass 或推送常量——实现方式落地时定）。已有的上射线深度 + 可见性网格开阔度门控保留。
-- 雾天空项：`fogAmbient×sunT` 残余常数同规则退役（`fogAmbient.w` 是 SSS 厚度，字段不能删只清 xyz 用途）。
-- ⚖ **请示点**：`water.ambient-scale`/`AMBIENT_FOG_FRACTION` 按旋钮退役规则处置（保留为倍率 1.0 还是删除）——带观感对比图请示。
+- 水、雾天空项统一读取 `mediumSkyRadiance`。`sky_medium_reduce.comp.slang` 用一个 256-lane workgroup 遍历完整 192×128 三表，按 LUT 的折叠方位与非线性高度轴求精确 cell 立体角，并积成 `1/(4π)∫上半球 Lsky dω`。已有水上射线深度、开阔度与深度衰减门控保留。
+- reduction 在合成时施加 Rayleigh/Mie phase，并直接包含 sky-view multi 表；原先单独相加的 `sampleMultiScatter×SUN_INTENSITY` 删除，避免把已在 sky-view 路径积分过的能量再加一次。
+- D17/9A：`water.ambient-scale` 与 `AMBIENT_FOG_FRACTION` 删除，不保留艺术倍率；旧 TOML 键在下一次正常保存时移除。`fogAmbient.xyz`/`waterAmbient.xyz` 清零，`.w` 的 SSS thickness/caustic dispersion 继续使用。
+- D19/11A：`WorldPushData` 新增唯一 `mediumSkyRadiance`（720→736B）；sky-view→reduction、reduction→froxel 两个 compute barrier 封在 `RtSky.recordSkyViewBake` 内。无新增 RT descriptor 或逐射线纹理读取。
 - **可观察改进**：夜晚/黄昏水下亮度随 LUT 正确衰减（旧常数是太阳峰值比例，日落后偏亮）。
-- **验收**：全天时段扫描 A/B（黎明→正午→黄昏→夜，R9 同款——NEE 光色敏感的改动会在几个里程碑后被归错因，所以当场留档）；debugView 8/10 对账水雾量级；lang 11 份随 UI 变化更新。
+- **验收**：全天时段扫描（黎明→正午→黄昏→夜，R9 同款）；debugView 8/10 对账水雾量级；确认水/雾随同一天空色温变化且夜晚不残留固定亮度；`gpu.skyBake` 记录 reduction 合并后的成本，`bench`/`bench-water` 同会话留档。lang 11 份已删除退役 UI 键。
 
 ### M17 体积散射顶点 + NEE — 质量档（D1-C）
 
@@ -586,6 +589,14 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | D15 | 水天空开放度跳变（用户选 7C） | **不做逐层网格临时修补；M17 在真实散射顶点求局部天空方向与可见性，并把 MIS 方向纳入请示** | 现状以段起点单标量门控整段，物理误差可整屏放大；临时多格采样会花射线但仍采错位置。M17 预计至少 +1 visibility ray/散射顶点，纳入 +2~5 ms 成本闸门后再决定档位 |
 | D16 | 水体散射/吸收颜色与强度（用户选 8A） | **算术均值强度 × mean-normalized RGB shape；旧配置自动迁移且最终 RGB 系数逐位等价** | 颜色只控制光谱形状、强度单独控制平均系数；CPU-only、shader ABI/GPU 成本为零。全黑 shape 采用中性灰，强度 0 才是关闭，避免除零与“颜色暗度偷偷改强度” |
 
+### 2026-08-04 M16 Radiance 源裁决（D17–D19，用户逐项选定）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D17 | 旧天空亮度倍率（用户选 9A） | **删除 `water.ambient-scale` 与 `AMBIENT_FOG_FRACTION`，LUT Radiance 直接进入积分器** | 最物理且不会用艺术倍率掩盖源错误；旧键单位是“太阳比例”，不能重解释为 LUT multiplier。无 GPU 成本，代价是旧观感倍率不兼容 |
+| D18 | sky-view 积分（用户选 10A） | **完整 192×128 三表按立体角 reduction，输出 `1/(4π)` 上半球积分；不再额外加 multi-scatter LUT** | 对当前各向同性天空近似是离散 LUT 上最准确的确定性积分；避免多重散射双计。每帧 24,576 texel×3 读取、单 workgroup reduction，成本并入 `gpu.skyBake` 实测 |
+| D19 | 统一源的传输（用户选 11A） | **`WorldPushData` 增加唯一 `mediumSkyRadiance`，GPU reduction 写，空气/水共读** | +16B/frame-slot；不占 128B push constants，不增加 RT descriptor/逐射线采样。两个 compute barrier 是必须同步成本 |
+
 **同日确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 
-**当前待请示清单**（动工时逐个触发）：M16 旋钮处置 · M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。
+**当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。

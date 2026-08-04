@@ -99,7 +99,7 @@ public final class RtVideoOptions {
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
                                         FluoriteConfig.Rt.Water.SUN_SHADOW),
-                                waterAmbientScale(), waterPhaseG()),
+                                waterPhaseG()),
                         Section.titled("fluorite.options.rt.section.waterScatter",
                                 waterScatterStrength(), waterScatterR(), waterScatterG(), waterScatterB()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
@@ -241,23 +241,6 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Integer> waterAbsorbB() {
         return byteSlider("fluorite.options.rt.waterAbsorbB", FluoriteConfig.Rt.Water.ABSORB_B);
-    }
-
-    /**
-     * How bright the sky is inside the water. The single brightness control for the murk: deep water
-     * saturates at albedo times this, so it is half of why the water was ever too pale.
-     */
-    private static OptionInstance<Integer> waterAmbientScale() {
-        FloatSetting setting = FluoriteConfig.Rt.Water.AMBIENT_SCALE;
-        return new OptionInstance<>(
-            "fluorite.options.rt.waterAmbient",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("fluorite.options.rt.waterAmbient.tooltip")),
-            (caption, v) -> Options.genericValueLabel(caption,
-                    Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
-            new OptionInstance.IntRange(0, 100),
-            Math.clamp(Math.round(setting.value() * 100f), 0, 100),
-            v -> setting.set(v / 100.0f));
     }
 
     /**

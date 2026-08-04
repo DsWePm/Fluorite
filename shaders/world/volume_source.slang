@@ -86,18 +86,18 @@ public struct AmbientRadianceSource {
 
 /**
  * One source expression for both estimators. `directTransmittance` includes every directional path
- * already represented at the call site: raygen passes local fog attenuation because its light values
- * were already atmosphere-dyed; the froxel passes atmosphere LUT attenuation times that same local fog
- * attenuation because it reads the undyed WorldPush buffer. Planetary multiple scattering is isotropic
- * sky radiance and therefore does not take the directional path's local-fog attenuation.
+ * already represented at the call site: raygen passes local fog attenuation because its directional
+ * light was already atmosphere-dyed; the froxel passes atmosphere LUT attenuation times that same local
+ * fog attenuation because it reads the undyed WorldPush buffer. The sky is an independent, GPU-reduced
+ * radiance source and therefore never takes the sun direction's transmittance.
  */
 public AmbientRadianceSource evaluateAmbientRadianceSource(
         float3 viewDir, float3 sunDir, float phaseG,
         float3 lightRadiance, float3 directTransmittance,
-        float3 fogAmbient, float3 atmosphereMultiScatter) {
+        float3 mediumSkyRadiance) {
     AmbientRadianceSource source;
     source.sun = lightRadiance * directTransmittance
             * (4.0 * VOLUME_PI * volumeHg(dot(viewDir, sunDir), phaseG));
-    source.sky = fogAmbient * directTransmittance + atmosphereMultiScatter;
+    source.sky = mediumSkyRadiance;
     return source;
 }

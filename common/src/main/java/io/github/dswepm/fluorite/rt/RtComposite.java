@@ -182,13 +182,6 @@ public final class RtComposite {
     }
 
     /**
-     * The isotropic radiance the fog is lit by besides the sun.
-     *
-     * <p>Derived from the NEE light rather than authored, so fog tracks time of day without a second set
-     * of numbers to keep in sync: at night the sun term is the moon's and this floor follows it down. The
-     * sky LUT work will replace this with the real ambient term.
-     */
-    /**
      * Water's scattering coefficient and phase anisotropy.
      *
      * <p>One value for every water body. Per-biome character lives in the absorption, which the tint
@@ -225,15 +218,11 @@ public final class RtComposite {
      * thing. Extinction adds the scattered part on top, so it rises with turbidity while the ratio
      * between channels does not.
      *
-     * <p>The last line is the one to read when the water looks too bright. Deep enough water saturates:
-     * sigma_t cancels out of the single-scattering integral and what is left converges to
-     * {@code albedo * source}, so that number IS the colour a deep view settles on, and it can be
-     * compared against the sky radiance printed beside it. The source is currently the AIR FOG'S ambient
-     * term, which is where the suspicion lies — fog runs at 0.0016 extinction per block, so its
-     * {@code 1 - T} never gets far from zero and the source's magnitude barely shows; water runs at
-     * ~0.37, saturates within a few blocks, and puts the whole product on screen.
+     * <p>M16 moved the source to a GPU reduction of the sky-view LUT, so this CPU diagnostic deliberately
+     * stops at coefficients and albedo. Reading the source back would either stall the frame or report a
+     * stale value, and either would make a performance diagnostic less trustworthy than no number.
      */
-    private void logWaterCoefficients(float r, float g, float b, SkyPush sky) {
+    private void logWaterCoefficients(float r, float g, float b) {
         if (!FluoriteConfig.Rt.FrameStats.ENABLED.value()) {
             return;
         }
@@ -270,8 +259,6 @@ public final class RtComposite {
         float albR = s[0] / (ar + s[0]);
         float albG = s[1] / (ag + s[1]);
         float albB = s[2] / (ab + s[2]);
-        Float4 radiance = sky.lightRadiance();
-        Float4 ambient = waterAmbient(sky);
         FluoriteMod.LOGGER.info(
                 "Water: tint=({}, {}, {}) absorption=({}, {}, {}) scattering=({}, {}, {})"
                         + " extinction=({}, {}, {}) scatterAlbedo=({}, {}, {})",
@@ -280,23 +267,6 @@ public final class RtComposite {
                 fmt(s[0]), fmt(s[1]), fmt(s[2]),
                 fmt(ar + s[0]), fmt(ag + s[1]), fmt(ab + s[2]),
                 fmt(albR), fmt(albG), fmt(albB));
-        // Straight-down deep limit: albedo * ambientSource / 2, the 1/2 being the sky's own path down
-        // plus the view path back out (see depthAttenuatedIntegral). Printed rather than left to be
-        // worked out by hand, because the question it answers — is the water bright because of the
-        // coefficients or because of the source — is the one that keeps coming back.
-        // These three are the light's UNDYED peak, before the atmosphere. Since M10.1 the transmittance
-        // is applied on the GPU (dyeCelestialLight), so at sunset the screen is a large fraction darker
-        // and redder than these numbers, and comparing them raw against a sunset frame will overstate the
-        // source every time. They are still the right numbers to print — the peak is what the config
-        // actually sets, and a sunset multiplier no line of Java can see would only make the log
-        // unreproducible — but the caveat has to travel with them.
-        FluoriteMod.LOGGER.info(
-                "Water source (undyed peak; GPU applies atmospheric transmittance):"
-                        + " lightRadiance=({}, {}, {}) ambient=({}, {}, {}) deepLimit=({}, {}, {})",
-                fmt(radiance.x()), fmt(radiance.y()), fmt(radiance.z()),
-                fmt(ambient.x()), fmt(ambient.y()), fmt(ambient.z()),
-                fmt(albR * ambient.x() * 0.5f), fmt(albG * ambient.y() * 0.5f),
-                fmt(albB * ambient.z() * 0.5f));
     }
 
     private static String fmt(float v) {
@@ -325,31 +295,14 @@ public final class RtComposite {
         return new Float4(s[0], s[1], s[2], FluoriteConfig.Rt.Water.PHASE_G.value());
     }
 
-    /**
-     * The sky, as the water sees it.
-     *
-     * <p>Separate from {@link #fogAmbient} rather than shared, because they are not the same quantity
-     * even though both are named "ambient": the fog's is a quarter of the sun's irradiance, which is far
-     * too large to be a sky radiance and never showed because fog's {@code 1 - T} stays near zero.
-     * Water's optical depth is tens of times higher, saturates within a few blocks, and puts the whole
-     * {@code albedo * source} product on screen — which is what made deep water read as bright grey.
-     */
-    private static Float4 waterAmbient(SkyPush sky) {
-        Float4 radiance = sky.lightRadiance();
-        float k = FluoriteConfig.Rt.Water.AMBIENT_SCALE.value();
-        // w carries the caustic dispersion strength — an unrelated scalar riding a spare lane rather
-        // than growing WorldPush for one float. Named at both ends so the pairing is searchable.
-        return new Float4(radiance.x() * k, radiance.y() * k, radiance.z() * k,
-                FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
+    /** Legacy xyz retired by M16; w still carries caustic dispersion without growing another field. */
+    private static Float4 waterAux() {
+        return new Float4(0f, 0f, 0f, FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
     }
 
-    private static Float4 fogAmbient(SkyPush sky) {
-        Float4 radiance = sky.lightRadiance();
-        // w carries the thin-shell subsurface thickness — an unrelated scalar on a spare lane rather
-        // than growing WorldPush for one float, named at both ends so the pairing is searchable.
-        return new Float4(radiance.x() * AMBIENT_FOG_FRACTION, radiance.y() * AMBIENT_FOG_FRACTION,
-                radiance.z() * AMBIENT_FOG_FRACTION,
-                FluoriteConfig.Rt.Bsdf.SUBSURFACE_THICKNESS.value());
+    /** Legacy xyz retired by M16; w still carries thin-shell subsurface thickness. */
+    private static Float4 fogAux() {
+        return new Float4(0f, 0f, 0f, FluoriteConfig.Rt.Bsdf.SUBSURFACE_THICKNESS.value());
     }
 
     /**
@@ -362,28 +315,6 @@ public final class RtComposite {
     private static final int WATER_SURFACE_SCAN_LIMIT = 512;
 
     private static final float BASE_FOG_DENSITY = 0.0016f;   // extinction per block at the reference height
-    /**
-     * The sky's radiance as a share of the sun's, for the fog's isotropic source.
-     *
-     * <p><b>Was 0.25, which this codebase had already recorded as wrong in two separate places</b> —
-     * {@link #waterAmbient}'s javadoc calls it "far too large to be a sky radiance", and
-     * Rt.Water.AMBIENT_SCALE's calls it "about five times too large; it goes unnoticed there only because
-     * fog's optical depth is ~0.0016 per block". Both notes end with the same escape clause: it never
-     * showed because fog's {@code 1 - T} stayed near zero. Raise the density to 10 and it stops being
-     * near zero, and then it shows all at once.
-     *
-     * <p>0.05 is not a new guess. It is the value water settled on for the SAME physical quantity
-     * (Rt.Water.AMBIENT_SCALE), tuned in the one place whose optical depth is high enough for the
-     * magnitude to be visible on screen. The two terms differing by 5x was never a decision; it was the
-     * fog's copy never being revisited after water's was measured.
-     *
-     * <p>What this changes: at density 10 the isotropic source falls from 0.6x the sun's radiance (0.25
-     * ambient + 0.35 returned) to 0.05x. Sideways, the sun's own lobe is 0.16x — so the shaft goes from
-     * being outnumbered four to one by a flat glow to standing above it, which is what makes a light
-     * shaft visible from the side at all. See volume.slang for why the returned term is gone entirely.
-     */
-    private static final float AMBIENT_FOG_FRACTION = 0.05f;
-
     /**
      * Shading switches the closest-hit reads. Inline in the push constant rather than in WorldPush
      * because the hit shader never dereferences that struct — one BDA load per hit to read a bit would
@@ -1331,11 +1262,10 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
-            // After skyPush, because the diagnostic reports the water's coefficients ALONGSIDE the source
-            // that lights them, and the source comes from here. Reading either on its own is what let a
-            // wrong magnitude sit unnoticed.
+            // Coefficients remain CPU-visible; M16's source is reduced on the GPU later and is deliberately
+            // not read back into this frame-stats diagnostic (see logWaterCoefficients).
             if (level != null) {
-                logWaterCoefficients(wtr, wtg, wtb, sky);
+                logWaterCoefficients(wtr, wtg, wtb);
             }
             new WorldPushData(
                     frameInvViewProj,
@@ -1373,10 +1303,13 @@ public final class RtComposite {
                     fogParams(),
                     fogExtinction(),
                     fogScatter(),
-                    fogAmbient(sky),
+                    fogAux(),
+                    // Written by sky_medium_reduce.comp later in this command buffer. Initial zero is
+                    // deliberate: it prevents a stale prior-frame source if recording stops before bake.
+                    new Float4(0f, 0f, 0f, 0f),
                     waterScatter(),
                     waterAbsorbOverride(),
-                    waterAmbient(sky),
+                    waterAux(),
                     visibilityGridOrigin(camX, camY, camZ, terrain)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
@@ -1425,7 +1358,8 @@ public final class RtComposite {
             // every tick anyway, and a test that let one stale frame through would show as the sky
             // lagging the sun, which is exactly the kind of fault nobody attributes correctly later.
             skyLuts.recordSkyViewBake(cmd, sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(),
-                    FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value());
+                    FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value(),
+                    pushBuf.deviceAddress);
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);

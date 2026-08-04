@@ -51,8 +51,6 @@
   "fluorite.options.rt.waterSunShadow.tooltip": "Use the transmittance measured by water's fixed three stratified rays. Off still traces those rays for water depth but treats the sun as unoccluded — independent of air-fog visibility.",
   "fluorite.options.rt.section.waterScatter": "Dispersión",
   "fluorite.options.rt.section.waterAbsorb": "Absorción",
-  "fluorite.options.rt.waterAmbient": "Cielo en el agua",
-  "fluorite.options.rt.waterAmbient.tooltip": "Cuánto brilla el cielo dentro del agua, como fracción del sol. El agua profunda se asienta en el albedo de dispersión por este valor, así que es el único control de brillo de la turbidez.",
   "fluorite.options.rt.waterPhaseG": "Fase del agua",
   "fluorite.options.rt.waterPhaseG.tooltip": "Sesgo hacia delante de la dispersión del agua. Positivo crea un halo alrededor del sol visto desde abajo. El agua muy dispersiva tiende a isótropa por sí sola.",
   "fluorite.options.rt.waterScatterStrength": "Scattering Strength",

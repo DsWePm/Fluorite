@@ -692,10 +692,9 @@ static const uint DEBUG_VIEW_SKY_VIEW_REFERENCE = 15u;
 // The dye actually applied to this frame's celestial light, as a flat colour, beside the sky it is
 // supposed to match.
 //
-// The report that separates these two is precise and cannot be explained by them sharing a multiplier:
-// the WATER reads redder than the LIGHT, yet dyeCelestialLight multiplies lightRadiance and waterAmbient
-// by the same transmittance. So either the dye is not red — which this view answers directly — or the
-// direct light is red and something else is diluting it on the way to the eye.
+// This view answers whether the direct celestial light's atmosphere dye agrees with the sky toward it.
+// M16's diffuse medium source now comes from a separate full-sky integral, so a water/direct-light hue
+// difference is no longer expected to be explained by both sharing a fixed multiplier.
 //
 //   left  : sampleTransmittanceToSpace(lightDir), flat — the dye, nothing else
 //   right : the sky toward the light direction, for scale

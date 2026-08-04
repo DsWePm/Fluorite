@@ -51,8 +51,6 @@
   "fluorite.options.rt.waterSunShadow.tooltip": "Use the transmittance measured by water's fixed three stratified rays. Off still traces those rays for water depth but treats the sun as unoccluded — a diagnostic independent of the air-fog visibility setting.",
   "fluorite.options.rt.section.waterScatter": "Scattering",
   "fluorite.options.rt.section.waterAbsorb": "Absorption",
-  "fluorite.options.rt.waterAmbient": "Sky In Water",
-  "fluorite.options.rt.waterAmbient.tooltip": "How bright the sky is inside the water, as a fraction of the sun. Deep water settles on scattering albedo times this, so it is the single brightness control for the murk.",
   "fluorite.options.rt.waterPhaseG": "Water Phase",
   "fluorite.options.rt.waterPhaseG.tooltip": "Forward bias of the water's scattering. Positive puts a halo around the sun seen from below. Strongly scattering water is driven toward isotropic on its own, since light that reaches the eye from deep down has been redirected many times.",
   "fluorite.options.rt.waterScatterStrength": "Scattering Strength",

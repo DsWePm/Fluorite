@@ -61,7 +61,7 @@ public final class FluoriteConfig {
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
             Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
-            Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.AMBIENT_SCALE, Rt.Water.ABSORB_OVERRIDE,
+            Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.ABSORB_OVERRIDE,
             Rt.Water.SCATTER_R,
         };
     }
@@ -994,32 +994,15 @@ public final class FluoriteConfig {
         /** Enclosed participating media: what water does besides absorb. */
         public static final class Water {
             /**
-             * How bright the sky is inside the water, as a fraction of the sun's radiance.
-             *
-             * <p>The one number that sets how bright the murk is. Deep water saturates — sigma_t cancels
-             * out of the single-scattering integral — and what is left is {@code albedo * source}, so
-             * this and the scattering colour below are jointly the whole answer to "why is the water so
-             * pale".
-             *
-             * <p>The default is a sky RADIANCE, roughly E_sky/pi with a clear sky's E_sky at a sixth of
-             * the sun's. The air fog uses 0.25 for the same quantity, which is not a radiance and is
-             * about five times too large; it goes unnoticed there only because fog's optical depth is
-             * ~0.0016 per block, so its {@code 1 - T} never leaves the neighbourhood of zero and the
-             * source's magnitude never shows. Water runs 20-70x that and shows all of it.
-             */
-            public static final FloatSetting AMBIENT_SCALE =
-                    clampedFloat("fluorite.rt.water.ambientScale", "water.ambient-scale", 0.05f, 0.0f, 1.0f);
-
-            /**
              * Which of the two sources feeds the water's single scattering: {@code both}, {@code sun},
              * {@code sky}, {@code none}.
              *
              * <p>A measurement switch, not a look. The scattering has two independent sources with
              * independent occlusion models — the sun through shadow rays, the sky through the sky-light
              * grid — and when the result misbehaves the first question is always which of them did it.
-             * Setting AMBIENT_SCALE to zero silences the sky but there was no matching way to silence
-             * the sun, so every investigation so far has had to reason about the sum. Isolating a term
-             * is the difference between measuring and guessing.
+             * Before this switch existed there was no matching way to silence the sun, so every
+             * investigation had to reason about the sum. Isolating a term is the difference between
+             * measuring and guessing.
              *
              * <p>{@code none} is not redundant with turning scattering off through the coefficients:
              * this leaves sigma_s (and therefore the extinction, and therefore visibility) exactly as
@@ -1188,6 +1171,10 @@ public final class FluoriteConfig {
                             0.0f, SCATTER_FULL_SCALE);
 
             static {
+                // D17/9A: the retired value was a fraction of peak sun radiance. M16's source is an
+                // actual phase-integrated sky-view radiance, so reusing the same key would give one
+                // number incompatible units. The next normal options save persists this removal.
+                FILE.remove("water.ambient-scale");
                 // One-time compatibility path. Before D16 the RGB sliders were coefficients, so their
                 // arithmetic mean was also their hidden strength. If the new scalar is absent, recover
                 // that mean from the already-resolved legacy values. The next save writes the scalar;

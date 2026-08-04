@@ -51,8 +51,6 @@
   "fluorite.options.rt.waterSunShadow.tooltip": "是否使用水體固定三層射線測得的透射率。關閉後仍會發射這些射線測量水深，但太陽按無遮擋處理；它與空氣霧可見性選項完全獨立。",
   "fluorite.options.rt.section.waterScatter": "散射",
   "fluorite.options.rt.section.waterAbsorb": "吸收",
-  "fluorite.options.rt.waterAmbient": "水中的天空",
-  "fluorite.options.rt.waterAmbient.tooltip": "水下天空有多亮，以太陽為基準的比例。深水最終收斂到散射反照率乘以這個值，所以它是混濁亮度的唯一控制。",
   "fluorite.options.rt.waterPhaseG": "水的相位",
   "fluorite.options.rt.waterPhaseG.tooltip": "水散射的前向偏置。正值會在水下看到的太陽周圍形成光暈。散射很強的水會自行趨向等向性。",
   "fluorite.options.rt.waterScatterStrength": "散射強度",

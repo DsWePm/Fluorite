@@ -16,8 +16,6 @@
 
 import math;
 import medium;
-import atmosphere;      // PLANET_R, ATMOS_VIEW_ALTITUDE, SUN_INTENSITY
-import atmosphere_lut;  // sampleMultiScatter: the fog's isotropic source, same table the froxel reads
 import trace;
 import volume_source;
 import volume_visibility;
@@ -71,7 +69,7 @@ public float sampleFreeFlight(float sigmaT, inout uint seed, out float pdf) {
 // fogParams     x density at the reference height, y height scale, z reference height, w cull distance
 // fogExtinction xyz per-channel extinction tint, w near cutoff in blocks
 // fogScatter    xyz single-scattering albedo, w Henyey-Greenstein g for the sun lobe
-// fogAmbient    xyz isotropic source radiance (the sky's contribution to what the fog is lit by)
+// mediumSkyRadiance xyz shared phase-integrated sky-view source for air and enclosed media
 
 /**
  * Optical depth of the ambient medium over [start, end] along a ray, before the per-channel tint.
@@ -703,7 +701,7 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
     }
 
     // Sky light, arriving from overhead, so its path to depth d is d. The water's own source, not the
-    // fog's (see worldPush.waterAmbient) — and gated by OPENNESS (the volumetric visibility grid's
+    // shared medium sky radiance — and gated by OPENNESS (the volumetric visibility grid's
     // zenith channel, sampled just above the measured surface below), which is what makes an underwater
     // cave dark while shadowed surface water keeps its glow: openness is a property of the column above
     // a point, not of the sun's direction, so a hill's shadow does not remove it but a cave roof does.
@@ -756,7 +754,7 @@ float3 enclosedSingleScatter(Medium medium, float3 albedo, float3 ro, float3 rd,
         // question actually being posed. That is also why this needs no instance mask for water.
         float3 gateP = float3(ro.x, ro.y + skyDepth + 0.5, ro.z);
         float skyOpen = sampleVolumeVisibility(gateP).y;
-        total += worldPush.waterAmbient.xyz * skyOpen
+        total += worldPush.mediumSkyRadiance.xyz * skyOpen
                 * depthAttenuatedIntegral(skySigmaSource, sigmaT, skyDepth, rd.y, 1.0, tEnd);
     }
 
@@ -846,12 +844,11 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // — they are added together on screen, so a disagreement between them would show up as a seam
             // at whatever depth the camera's prefix segment happens to end.
             //
-            // M15.2: both estimators call evaluateAmbientRadianceSource. This marched path passes local
-            // fog attenuation because dyeCelestialLight already applied the atmosphere to its private
-            // WorldPush copy; the froxel reads the undyed buffer and passes atmosphere LUT * local fog.
+            // M15.2/M16: both estimators call evaluateAmbientRadianceSource. This marched path passes
+            // local fog attenuation for the directional light because dyeCelestialLight already applied
+            // the atmosphere to its private WorldPush copy; the froxel reads the undyed buffer and passes
+            // atmosphere LUT * local fog. Both read the same GPU-reduced mediumSkyRadiance for the sky.
             // The froxel additionally integrates the planetary atmosphere itself over the camera prefix.
-            // That extra medium is intentional; the local fog's albedo and radiance-source semantics are
-            // now identical on both paths.
             //
             // The ad-hoc "extinguished light returns as glow" term that used to sit here is gone. It
             // returned 0.35x the sun's RADIANCE isotropically and grew with density, so at density 10 it
@@ -864,13 +861,12 @@ public SegmentIntegral integrateSegment(MediumStack stack, float3 ro, float3 rd,
             // multiple scattering, over kilometres. The local fog's own multiple scattering — what makes
             // real pea soup glow white — is not modelled by anything here now. A single-scattering
             // renderer cannot have it, and a constant standing in for it is what this change removed.
-            float atmosR = PLANET_R + ATMOS_VIEW_ALTITUDE;
-            float3 atmosphereMultiScatter = sampleMultiScatter(
-                    atmosR, clamp(worldPush.lightDir.y, -1.0, 1.0)) * SUN_INTENSITY;
+            // Atmospheric multiple scattering is already inside the complete sky-view LUT reduction;
+            // adding sampleMultiScatter here again would count the same energy twice.
             AmbientRadianceSource radianceSource = evaluateAmbientRadianceSource(
                     rd, worldPush.lightDir.xyz, phaseG,
                     worldPush.lightRadiance.xyz, sunTransmittance,
-                    worldPush.fogAmbient.xyz, atmosphereMultiScatter);
+                    worldPush.mediumSkyRadiance.xyz);
             float3 sunSource = radianceSource.sun;
             float3 skySource = radianceSource.sky;
             // Bit 16 (Rt.Volumetrics.SEGMENT_SOURCE): silence the fog in-scatter on MARCHED segments.

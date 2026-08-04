@@ -51,8 +51,6 @@
   "fluorite.options.rt.waterSunShadow.tooltip": "Use the transmittance measured by water's fixed three stratified rays. Off still traces those rays for water depth but treats the sun as unoccluded — independent of air-fog visibility.",
   "fluorite.options.rt.section.waterScatter": "散乱",
   "fluorite.options.rt.section.waterAbsorb": "吸収",
-  "fluorite.options.rt.waterAmbient": "水中の空",
-  "fluorite.options.rt.waterAmbient.tooltip": "水中での空の明るさ（太陽に対する割合）。深い水は散乱アルベド×この値に収束するため、濁りの明るさを決める唯一の設定です。",
   "fluorite.options.rt.waterPhaseG": "水の位相",
   "fluorite.options.rt.waterPhaseG.tooltip": "水の散乱の前方寄り具合。正の値は水中から見た太陽の周りにハローを作ります。散乱が強い水は自然と等方的になります。",
   "fluorite.options.rt.waterScatterStrength": "Scattering Strength",

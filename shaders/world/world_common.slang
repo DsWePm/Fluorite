@@ -95,8 +95,11 @@ public struct WorldPush {
     public float4   fogParams;        // x density at reference height, y height scale, z reference height, w cull distance
     public float4   fogExtinction;    // xyz per-channel extinction tint
     public float4   fogScatter;       // xyz single-scattering albedo, w Henyey-Greenstein g for the sun lobe
-    public float4   fogAmbient;       // xyz isotropic source radiance the fog is lit by besides the sun,
-                                      // w thin-shell subsurface thickness (unrelated; see math.slang)
+    public float4   fogAmbient;       // xyz retired in M16; w thin-shell subsurface thickness (see math.slang)
+    // One GPU-derived source shared by every participating medium. The sky-view reduction writes xyz
+    // after the CPU upload and before either froxel or ray tracing reads this buffer. It is already the
+    // 1/(4*pi) upper-hemisphere integral, including Rayleigh, Mie and atmospheric multiple scattering.
+    public float4   mediumSkyRadiance; // xyz phase-integrated sky source; w reserved
     // Enclosed media. Absorption and scattering are TWO INDEPENDENTLY AUTHORED spectral coefficients,
     // not one derived from the other. A single "turbidity" scalar that only raised sigma_s was tried and
     // is the reason this comment is here: the deep-water limit of the single-scattering integral is
@@ -111,12 +114,9 @@ public struct WorldPush {
     // reason M9 never had to spend the record's last spare uint. Per-biome character lives in sigma_a.
     public float4   waterScatter;     // xyz scattering coefficient per block, w Henyey-Greenstein g
     public float4   waterAbsorbOverride; // xyz fixed absorption, w != 0 to use it instead of the biome
-    // Isotropic source the water volume is lit by besides the sun, i.e. the downwelling sky. Its own
-    // field rather than reusing fogAmbient: the fog's source is 0.25x the sun's irradiance, which is not
-    // a sky RADIANCE (that is closer to E_sky/pi, a few percent of E_sun) and only passes unnoticed in
-    // fog because fog's 1-T never leaves the neighbourhood of zero. Water saturates within a few blocks
-    // and puts the whole albedo*source product on screen, so the same constant arrives ~5x too bright.
-    public float4   waterAmbient;     // xyz sky source radiance inside water, w unused
+    // xyz retired in M16: water and fog now read mediumSkyRadiance. w remains the caustic-dispersion
+    // strength; preserving the lane avoids unrelated ABI churn while the two old xyz slots stay zero.
+    public float4   waterAmbient;
     // The volumetric visibility grid (M13.2), baked on the GPU with two rays per cell: R sun visibility,
     // G sky openness. Read by the BAKE that fills it and by every segment that samples it, which is why
     // the placement lives here rather than in either one's push constants — a grid origin that two shaders

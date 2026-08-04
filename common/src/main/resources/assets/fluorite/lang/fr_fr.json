@@ -51,8 +51,6 @@
   "fluorite.options.rt.waterSunShadow.tooltip": "Use the transmittance measured by water's fixed three stratified rays. Off still traces those rays for water depth but treats the sun as unoccluded — independent of air-fog visibility.",
   "fluorite.options.rt.section.waterScatter": "Diffusion",
   "fluorite.options.rt.section.waterAbsorb": "Absorption",
-  "fluorite.options.rt.waterAmbient": "Ciel dans l'eau",
-  "fluorite.options.rt.waterAmbient.tooltip": "Luminosité du ciel sous l'eau, en fraction du soleil. L'eau profonde converge vers l'albédo de diffusion multiplié par cette valeur : c'est le seul réglage de luminosité de la turbidité.",
   "fluorite.options.rt.waterPhaseG": "Phase de l'eau",
   "fluorite.options.rt.waterPhaseG.tooltip": "Biais vers l'avant de la diffusion. Positif crée un halo autour du soleil vu d'en dessous. Une eau très diffusante devient isotrope d'elle-même.",
   "fluorite.options.rt.waterScatterStrength": "Scattering Strength",
