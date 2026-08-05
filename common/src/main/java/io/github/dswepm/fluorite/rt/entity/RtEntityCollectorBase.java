@@ -40,6 +40,7 @@ import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.client.resources.model.ModelBakery;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.core.Direction;
 import net.minecraft.core.BlockPos;
@@ -84,6 +85,13 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     // Vanilla leash constants (LeashFeatureRenderer.LEASH_RENDER_STEPS / LEASH_WIDTH).
     private static final int LEASH_STEPS = 24;
     private static final float LEASH_WIDTH = 0.05f;
+    // FlameFeatureRenderer's constants. The two 1.4s are unrelated quantities that happen to share a
+    // value: one widens the flame past the entity's own box, the other is a quad's height in that scaled
+    // space. Emission 1 is this pipeline's "fully emissive" convention, standing in for the fullbright
+    // light coords vanilla draws fire with -- the same substitution the block-model path makes.
+    private static final float FLAME_WIDTH_SCALE = 1.4f;
+    private static final float FLAME_QUAD_HEIGHT = 1.4f;
+    private static final float FLAME_EMISSION = 1.0f;
     // Shared all-zero UV quad for untextured geometry (leash/line ribbons on the white slot).
     private static final float[] ZERO_UV = new float[4];
 
@@ -568,8 +576,85 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         }
     }
 
+    // Fire on a burning entity. Vanilla's FlameFeatureRenderer stacks camera-facing quads up the entity's
+    // bounding box, alternating the fire_0/fire_1 sprites and mirroring every other pair, and draws them
+    // fullbright on the block atlas. Replicated here as real cutout geometry carrying per-prim emission,
+    // which is the whole reason to bother: a path tracer can then see the flames in reflections and in
+    // the light a burning creeper casts on the floor, neither of which a screen-space decal can do. The
+    // empty override this replaces dropped fire from the ray-traced world entirely.
+    //
+    // These quads billboard to the camera, which is the same property that keeps name tags OUT of the
+    // capture (see RtEntities): a camera turn moves them in local space, so a burning entity that is
+    // otherwise still stops matching its rigid-reuse reference and takes the full upload path. That is
+    // accepted rather than worked around. The reuse test compares captured positions, so the failure
+    // mode is a lost optimisation, never a flame frozen facing the wrong way — and the alternative that
+    // would preserve reuse, a separate raster pass, is exactly what cannot appear in a reflection.
     @Override
     public void submitFlame(PoseStack poseStack, EntityRenderState renderState, Quaternionf rotation) {
+        if (capture == null) {
+            return;
+        }
+        TextureAtlasSprite fire0 = Minecraft.getInstance().getAtlasManager().get(ModelBakery.FIRE_0);
+        TextureAtlasSprite fire1 = Minecraft.getInstance().getAtlasManager().get(ModelBakery.FIRE_1);
+        if (fire0 == null || fire1 == null) {
+            return;
+        }
+        float scale = renderState.boundingBoxWidth * FLAME_WIDTH_SCALE;
+        float remaining = renderState.boundingBoxHeight / scale;
+        // Vanilla divides by this width and steps the loop by a constant, so a zero-width entity spins
+        // forever rather than drawing nothing. Guarded here because the capture is on the render thread
+        // and a non-finite position would poison the motion and hash passes downstream besides.
+        if (!(scale > 1.0e-6f) || !Float.isFinite(remaining)) {
+            return;
+        }
+        capture.clearUvRemap(); // sprite UVs below are already atlas-space
+        capture.currentOrder = 0;
+        capture.currentOverlay = 0; // fire is its own layer; the wearer's hurt flash does not tint it
+        capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(TextureAtlas.LOCATION_BLOCKS);
+        capture.currentMaterialId = RtMaterialRegistry.INSTANCE.entityFallbackId(false);
+        capture.currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT; // cutout: the sprite is mostly empty
+
+        // Same construction as FlameFeatureRenderer.prepare, on a copy of the pose so the caller's stack
+        // is left as we found it.
+        PoseStack.Pose pose = poseStack.last().copy();
+        pose.scale(scale, scale, scale);
+        pose.rotate(rotation);
+        pose.translate(0.0f, 0.0f, 0.3f - (int) remaining * 0.02f);
+        Matrix4f flamePose = pose.pose();
+        float half = 0.5f;
+        float yOff = 0.0f;
+        float z = 0.0f;
+        for (int i = 0; remaining > 0.0f; i++) {
+            TextureAtlasSprite sprite = i % 2 == 0 ? fire0 : fire1;
+            float u0 = sprite.getU0();
+            float u1 = sprite.getU1();
+            if (i / 2 % 2 == 0) { // vanilla mirrors alternate pairs so the stack does not read as tiled
+                float swap = u0;
+                u0 = u1;
+                u1 = swap;
+            }
+            float v0 = sprite.getV0();
+            float v1 = sprite.getV1();
+            flameVertex(flamePose, 0, -half, -yOff, z, u1, v1);
+            flameVertex(flamePose, 1, half, -yOff, z, u0, v1);
+            flameVertex(flamePose, 2, half, FLAME_QUAD_HEIGHT - yOff, z, u0, v0);
+            flameVertex(flamePose, 3, -half, FLAME_QUAD_HEIGHT - yOff, z, u1, v0);
+            capture.addDirectQuad(meshX, meshY, meshZ, meshU, meshV, 0f, 0f, 0f, -1, FLAME_EMISSION);
+            remaining -= 0.45f;
+            yOff -= 0.45f;
+            half *= 0.9f;
+            z -= 0.03f;
+        }
+    }
+
+    /** Stage one pose-transformed flame corner into the shared quad scratch. */
+    private void flameVertex(Matrix4f pose, int corner, float x, float y, float z, float u, float v) {
+        pose.transformPosition(x, y, z, meshPos);
+        meshX[corner] = meshPos.x;
+        meshY[corner] = meshPos.y;
+        meshZ[corner] = meshPos.z;
+        meshU[corner] = u;
+        meshV[corner] = v;
     }
 
     // Leashes/leads: replicate LeashFeatureRenderer's geometry — a 24-segment curve with two crossed
