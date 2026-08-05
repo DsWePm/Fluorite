@@ -132,6 +132,12 @@ public VisibilityResult visibilityThroughAmbient(float3 mediumExtinction, uint m
 public struct SegmentIntegral {
     public float3 transmittance;
     public float3 inScatter;
+    // M17: the segment's sampled scattering event, for the estimators that cannot run here. Emitter NEE
+    // needs the light grid, and lighting.slang imports THIS module -- the dependency runs one way only,
+    // so the vertex is handed out and the caller, which sees both, does that half. Zero weight means no
+    // event was sampled: the mode is off, or the segment scatters nothing.
+    public float3 scatterPos;
+    public float3 scatterWeight;
 };
 
 // ---- Shared volume sun-visibility sampler (M15.1).
@@ -236,6 +242,110 @@ VolumeSunShadowSample traceVolumeSunShadow(float3 ro, float3 rd, float sampleT,
             : float3(1.0, 1.0, 1.0);
     sample.waterHitT = shadow.waterHitT;
     return sample;
+}
+
+// ---- The single scattering vertex (M17).
+//
+// One point per segment, drawn with probability proportional to sigma_t * T -- the density of scattering
+// events along the ray. Where the closed form evaluates albedo * S * (1 - T) for a source it must assume
+// CONSTANT, this evaluates S once at a point drawn from that same distribution, and the two agree in
+// expectation exactly: with S constant and unoccluded, E[weight * S] = albedo * S * (1 - T). That
+// identity is what gives the switch a meaning -- off must return the published picture, and on must
+// change only what a constant source could never have expressed.
+//
+// Why a point at all, when the closed form is exact for what it models: a point can be ASKED things a
+// segment cannot. Which emitters are nearby and in what direction, and how much sky reaches THIS depth
+// rather than the depth the segment happened to start at, are functions of position, and a segment has
+// no position to offer them.
+
+/** Bit 27 (Rt.Volumetrics.SCATTER_VERTEX): sample one scattering vertex instead of assuming the source. */
+bool scatterVertexOn() {
+    return (worldPush.flags & (1u << 27u)) != 0u;
+}
+
+/** Bit 28: let block emitters light that event. Nested under bit 27, which supplies the event. */
+public bool volumeEmitterNeeOn() {
+    return (worldPush.flags & (1u << 28u)) != 0u;
+}
+
+public struct ScatterVertex {
+    public float3 pos;
+    // Multiply a source radiance evaluated at pos by this to get the segment's in-scatter from it.
+    // Zero means the segment scatters nothing, which is also how every caller skips the estimator.
+    public float3 weight;
+};
+
+ScatterVertex noScatterVertex() {
+    ScatterVertex vertex;
+    vertex.pos = float3(0.0, 0.0, 0.0);
+    vertex.weight = float3(0.0, 0.0, 0.0);
+    return vertex;
+}
+
+/**
+ * Optical depth of the sampled event, drawn from the truncated exponential over [0, tauTotal].
+ *
+ * Truncated rather than open-ended because the segment ends: a draw past its end would describe an event
+ * that happens somewhere this segment does not own. `survive` = 1 - exp(-tauTotal) is both the
+ * normalisation and, once the spectral correction below cancels, the closed form's own (1 - T).
+ */
+float sampleScatterTau(float tauTotal, inout uint seed) {
+    float survive = 1.0 - exp(-tauTotal);
+    return -log(max(1.0 - rndf(seed) * survive, 1.0e-7));
+}
+
+/**
+ * f/pdf for the sampled event, shared by both media.
+ *
+ * Both integrands become the same expression after changing variables to the density-integrated depth:
+ * homogeneous water has density 1 so that depth IS distance, and the height field folds its profile into
+ * exactly that integral. So one weight serves both and only the tau -> position mapping differs, which
+ * is the same split the sun-shadow strata already use.
+ *
+ * The scalar sigmaBar drives the pdf while the RGB coefficients drive f, and the ratio between them IS
+ * the spectral correction -- a strongly coloured medium stays unbiased without sampling three times. For
+ * a grey medium the two cancel and this collapses to albedo * (1 - T), the closed form exactly.
+ */
+float3 scatterVertexWeight(float3 sigmaT, float3 albedo, float sigmaBar, float tauScalar, float tauTotal) {
+    float survive = 1.0 - exp(-tauTotal);
+    float tauBase = tauScalar / max(sigmaBar, 1.0e-4);
+    float pdf = max(sigmaBar, 1.0e-4) * exp(-tauScalar);
+    return albedo * sigmaT * exp(-sigmaT * tauBase) * (survive / max(pdf, 1.0e-12));
+}
+
+/** Scattering vertex of a homogeneous segment: tau maps to distance by a constant. */
+ScatterVertex sampleHomogeneousScatterVertex(float3 sigmaT, float3 albedo, float3 ro, float3 rd,
+                                             float tEnd, inout uint seed) {
+    float sigmaBar = max(luminance(sigmaT), 1.0e-4);
+    float tauTotal = sigmaBar * tEnd;
+    if (tauTotal <= 1.0e-6) {
+        return noScatterVertex();
+    }
+    float tauScalar = sampleScatterTau(tauTotal, seed);
+    ScatterVertex vertex;
+    vertex.pos = ro + rd * min(tauScalar / sigmaBar, tEnd);
+    vertex.weight = scatterVertexWeight(sigmaT, albedo, sigmaBar, tauScalar, tauTotal);
+    return vertex;
+}
+
+/**
+ * Scattering vertex of the height field: tau maps to distance through the same bisection the strata use.
+ *
+ * The bisection is the only extra arithmetic the ambient case pays over the homogeneous one, and it runs
+ * once per segment rather than once per stratum.
+ */
+ScatterVertex sampleAmbientScatterVertex(float3 sigmaT, float3 albedo, float3 ro, float3 rd,
+                                         float2 window, float baseTau, inout uint seed) {
+    float sigmaBar = max(luminance(sigmaT), 1.0e-4);
+    float tauTotal = sigmaBar * baseTau;
+    if (tauTotal <= 1.0e-6) {
+        return noScatterVertex();
+    }
+    float tauScalar = sampleScatterTau(tauTotal, seed);
+    ScatterVertex vertex;
+    vertex.pos = ro + rd * ambientDistanceAtOpticalDepth(ro, rd, window, sigmaBar, tauScalar);
+    vertex.weight = scatterVertexWeight(sigmaT, albedo, sigmaBar, tauScalar, tauTotal);
+    return vertex;
 }
 
 /**
@@ -547,8 +657,89 @@ public static const int WATER_SUN_VIS_STRATA = 3;
  * one filling the screen. When the camera is not in water at all, the segment's own start is the
  * surface crossing, which is exactly right for looking down into a pond.
  */
+/**
+ * Water in-scatter from ONE sampled scattering vertex (M17, decision D29).
+ *
+ * Written beside the stratified estimator rather than woven into it, so the switch's off position is the
+ * published code path unchanged rather than a claim about a shared one.
+ *
+ * <p>What this buys, and it is not resolution: the sky term can finally ask its question WHERE THE LIGHT
+ * SCATTERS. The stratified path probes upward from the segment's start and gates the whole segment by
+ * that one scalar, so a camera under water shares one probe across every primary ray -- one block over
+ * the eye zeroed the scattering across the entire screen, and a cell-aligned grid turned a cave mouth
+ * into a one-block step (D15). Here depth and openness are both properties of the sampled point, so a
+ * block overhead darkens the water under that block and nothing else.
+ *
+ * <p>Ray budget is unchanged, not merely bounded: one shadow ray for the sun and one upward probe, the
+ * same two the stratified path already casts per stratum and per segment respectively.
+ */
+float3 enclosedScatterVertexInScatter(ScatterVertex vertex, float3 sigmaT, uint mediumFlags,
+                                      float3 albedo, float3 ro, float3 rd, float d0,
+                                      bool sunSourceOn, bool skySourceOn, inout uint seed) {
+    if (all(vertex.weight <= 0.0)) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float phaseG = mediumPhaseGFlags(mediumFlags);
+    // Depth of the event itself. The fallback surface still anchors it, but the descent is measured from
+    // the sampled position rather than integrated along the whole segment.
+    float vertexDepth = max(d0 - (vertex.pos.y - ro.y), 0.0);
+    float3 sigmaSource = multiScatterOn()
+            ? volumeDiffuseAttenuation(sigmaT, albedo, phaseG)
+            : sigmaT;
+    float3 source = float3(0.0, 0.0, 0.0);
+
+    if (sunSourceOn) {
+        // Same finite emitter, Snell refraction and phase as the stratified path -- only the position
+        // the question is asked from differs. Consume all three random dimensions before the visibility
+        // decision, for the same reason as there: the sequence must not change across sunrise.
+        SquareLightSample lightSample = sampleSquareLight(
+                worldPush.lightDir.xyz, worldPush.celestial.xyz, worldPush.lightDir.w, seed);
+        float3 airLightDir = lightSample.direction;
+        if (airLightDir.y > 0.0) {
+            float sinAir = sqrt(max(0.0, 1.0 - airLightDir.y * airLightDir.y));
+            float sinWater = sinAir / WATER_IOR;
+            float cosWater = sqrt(max(1.0e-4, 1.0 - sinWater * sinWater));
+            float sunPathScale = 1.0 / cosWater;
+            float3 lightHoriz = float3(airLightDir.x, 0.0, airLightDir.z);
+            float horizLen = max(length(lightHoriz), 1.0e-6);
+            float3 refractedLight = (lightHoriz / horizLen) * sinWater + float3(0.0, cosWater, 0.0);
+            bool useVisibility = (worldPush.flags & 32768u) == 0u;
+            VisibilityResult shadow = visibilityMasked(CULL_SECONDARY_NO_SELF, vertex.pos,
+                                                       refractedLight, RAY_FAR);
+            float3 vis = useVisibility ? shadow.transmittance : float3(1.0, 1.0, 1.0);
+            float sunWaterPath = shadow.waterHitT > 0.0
+                    ? shadow.waterHitT
+                    : vertexDepth * sunPathScale;
+            float3 sampledIrradiance = sampleCelestialIrradiance(
+                    undyedCelestialIrradiance, airLightDir);
+            source += sampledIrradiance
+                    * (4.0 * PI * enclosedPhase(dot(rd, refractedLight), phaseG, albedo))
+                    * vis * exp(-sigmaSource * sunWaterPath);
+        }
+    }
+
+    if (skySourceOn) {
+        // THE D15 FIX. Both the column above the event and how open that column is are measured from the
+        // event, so neither is shared with any other pixel or any other part of this segment.
+        VisibilityResult up = visibilityMasked(CULL_SECONDARY_NO_SELF, vertex.pos,
+                                               float3(0.0, 1.0, 0.0), RAY_FAR);
+        float skyDepth = up.waterHitT > 0.0 ? up.waterHitT : vertexDepth;
+        float3 skySigmaSource = multiScatterOn()
+                ? volumeDiffuseAttenuation(sigmaT, albedo, phaseG)
+                : sigmaT;
+        // Sampled a hand's breadth above the measured surface for the same reason as the stratified
+        // path: the grid's zenith ray treats the water surface as an occluder, so asked from below it
+        // answers "roofed" everywhere.
+        float3 gateP = float3(vertex.pos.x, vertex.pos.y + skyDepth + 0.5, vertex.pos.z);
+        source += worldPush.mediumSkyRadiance.xyz * sampleVolumeVisibility(gateP).y
+                * exp(-skySigmaSource * skyDepth);
+    }
+
+    return vertex.weight * source;
+}
+
 float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 albedo,
-                             float3 ro, float3 rd, float tEnd,
+                             float3 ro, float3 rd, float tEnd, ScatterVertex vertex,
                              inout uint seed) {
     float3 sigmaT = mediumSigmaTFields(mediumExtinction, mediumFlags, ro);
     // FALLBACK ONLY. Both scattering terms measure the light's path through the water with a ray now
@@ -570,6 +761,14 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
     uint scatterSource = (worldPush.flags >> 13u) & 3u;
     bool sunSourceOn = scatterSource == 0u || scatterSource == 1u;
     bool skySourceOn = scatterSource == 0u || scatterSource == 2u;
+
+    // One sampled event replaces both closed forms below when the mode is on. Returning here rather than
+    // interleaving is deliberate: everything past this line is the code that shipped, so "off" is that
+    // picture by construction and not by argument.
+    if (scatterVertexOn()) {
+        return enclosedScatterVertexInScatter(vertex, sigmaT, mediumFlags, albedo, ro, rd, d0,
+                                              sunSourceOn, skySourceOn, seed);
+    }
 
     // The sun, reaching depth d after travelling d / cos(refracted zenith angle) through the water.
     //
@@ -808,6 +1007,8 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
     SegmentIntegral seg;
     seg.transmittance = float3(1.0, 1.0, 1.0);
     seg.inScatter = float3(0.0, 0.0, 0.0);
+    seg.scatterPos = float3(0.0, 0.0, 0.0);
+    seg.scatterWeight = float3(0.0, 0.0, 0.0);
 
     uint profile = mediumProfileFlags(currentFlags);
 
@@ -827,8 +1028,19 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                 // stratum jitter and the fog's cannot draw the same numbers on the same pixel.
                 uint waterSeed = seed ^ 0x85EBCA6Bu;
                 waterSeed = pcg(waterSeed);
+                // Sampled HERE rather than inside the estimator so the segment has exactly one event:
+                // the sun term below and the caller's emitter NEE describe the same scattering, and two
+                // independently drawn points would be two different scatterings sharing one segment.
+                ScatterVertex vertex = noScatterVertex();
+                if (scatterVertexOn()) {
+                    vertex = sampleHomogeneousScatterVertex(sigmaT, scatterAlbedo, ro, rd, tEnd,
+                                                            waterSeed);
+                    seg.scatterPos = vertex.pos;
+                    seg.scatterWeight = vertex.weight;
+                }
                 seg.inScatter += enclosedSingleScatter(currentExtinction, currentFlags,
-                                                       scatterAlbedo, ro, rd, tEnd, waterSeed);
+                                                       scatterAlbedo, ro, rd, tEnd, vertex,
+                                                       waterSeed);
             }
         }
     }
@@ -842,6 +1054,17 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
         if (tau > 0.0) {
             float3 fogT = exp(-worldPush.fogExtinction.xyz * tau);
             seg.transmittance *= fogT;
+            // Sampled before either source is evaluated, and independently of the sun's ray budget: the
+            // caller's emitter NEE wants an event even where sun-shadow-rays is 0 and the sun is reading
+            // the grid. One event per segment, shared by everything that describes it.
+            if (scatterVertexOn()) {
+                uint vertexSeed = seed ^ 0xC2B2AE3Du; // pcg takes an inout, so it needs a variable
+                vertexSeed = pcg(vertexSeed);
+                ScatterVertex ambientVertex = sampleAmbientScatterVertex(
+                        worldPush.fogExtinction.xyz, scatterAlbedo, ro, rd, window, tau, vertexSeed);
+                seg.scatterPos = ambientVertex.pos;
+                seg.scatterWeight = ambientVertex.weight;
+            }
             // The sunlight lighting the fog has itself crossed the fog to get here. Without that term
             // a low sun grew a halo that brightened with exactly the depth that ought to be
             // extinguishing it.
@@ -969,9 +1192,31 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                     // from the same seed.
                     uint fogSeed = seed ^ 0x9E3779B9u; // pcg takes an inout, so it needs a variable
                     fogSeed = pcg(fogSeed);
-                    seg.inScatter += sunInScatterStochastic(ro, rd, window, scatterAlbedo,
-                                                             phaseG, sunSigma,
-                                                             int(sunRays), fogSeed);
+                    if (scatterVertexOn() && any(seg.scatterWeight > 0.0)) {
+                        // One sampled event instead of the stratified sweep (M17, D29). The stratified
+                        // form keeps closed-form weights per stratum and samples only the source inside
+                        // each; this keeps ONE sample and pays for it with the exact f/pdf weight, so it
+                        // is a strict Monte Carlo estimator where the other is a controlled approximation
+                        // (D9). Noisier per frame by construction, and the reason the switch exists.
+                        //
+                        // The sun's transmittance is measured from the EVENT, not from the segment's
+                        // origin as the closed form must. That was previously ruled out because a
+                        // deterministic midpoint made the answer depend on segment length and came out as
+                        // blotches; a sampled position depends on a random number instead, so the same
+                        // error becomes noise the denoiser converges.
+                        SquareLightSample lightSample = sampleSquareLight(
+                                worldPush.lightDir.xyz, worldPush.celestial.xyz,
+                                worldPush.lightDir.w, fogSeed);
+                        float3 vertexSunSource = sampledAmbientSunSource(
+                                seg.scatterPos, rd, lightSample.direction, phaseG, sunSigma);
+                        float3 vis = visibilityMasked(CULL_SECONDARY_NO_SELF, seg.scatterPos,
+                                                      lightSample.direction, RAY_FAR).transmittance;
+                        seg.inScatter += seg.scatterWeight * vertexSunSource * vis;
+                    } else if (!scatterVertexOn()) {
+                        seg.inScatter += sunInScatterStochastic(ro, rd, window, scatterAlbedo,
+                                                                 phaseG, sunSigma,
+                                                                 int(sunRays), fogSeed);
+                    }
                 }
             }
         }

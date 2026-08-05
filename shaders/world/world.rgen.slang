@@ -193,6 +193,17 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // In-scatter first: it is what the segment added to the radiance arriving along it, so it is
         // weighted by the throughput reaching the segment rather than the throughput leaving it.
         L += throughput * segIntegral.inScatter;
+        // Emitter light reaching the segment's sampled scattering event (M17). Wired here rather than
+        // inside integrateSegment because lighting.slang imports volume.slang: this pass sees both, and
+        // the dependency runs one way only. The weight the segment handed out already carries the
+        // albedo, the view transmittance and the sampling pdf, so this multiplies a plain radiance.
+        if (volumeEmitterNeeOn() && any(segIntegral.scatterWeight > 0.0)) {
+            L += throughput * segIntegral.scatterWeight
+                    * volumeNee(currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
+                                segIntegral.scatterPos, rd,
+                                mediumPhaseGFlags(activeCurrentMediumFlags(activeMediumFlags)),
+                                seed, proposalSeed);
+        }
         throughput *= segIntegral.transmittance;
 
         if (payload.hitT < 0.0) {

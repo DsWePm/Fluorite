@@ -107,7 +107,8 @@ public final class RtVideoOptions {
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
                 case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                        fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter()));
+                        fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter(),
+                        fogScatterVertex(), fogVolumeEmitterNee()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
@@ -390,6 +391,27 @@ public final class RtVideoOptions {
      */
     private static OptionInstance<Boolean> fogMultiScatter() {
         return bool("fluorite.options.rt.fogMultiScatter", FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER);
+    }
+
+    /**
+     * Sample one scattering event per segment instead of assuming a constant source along it.
+     *
+     * <p>In the UI for the same reason as the two above: it trades noise for the ability to ask questions
+     * at a position, and both halves of that trade have to be judged by flipping it at a fixed camera
+     * position inside one session.
+     */
+    private static OptionInstance<Boolean> fogScatterVertex() {
+        return bool("fluorite.options.rt.fogScatterVertex", FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
+    }
+
+    /**
+     * Let block emitters light the medium at the sampled scattering event.
+     *
+     * <p>Beside the vertex switch it depends on, so the pair reads as the one feature it is.
+     */
+    private static OptionInstance<Boolean> fogVolumeEmitterNee() {
+        return bool("fluorite.options.rt.fogVolumeEmitterNee",
+                FluoriteConfig.Rt.Volumetrics.VOLUME_EMITTER_NEE);
     }
 
     /**

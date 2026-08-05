@@ -313,6 +313,80 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
     return r;
 }
 
+/**
+ * One emitter sample for a volume scattering event (M17), returning radiance per unit in-scatter weight.
+ *
+ * <p>This is the reuse M6 reserved and described: the SELECTION machinery is taken wholesale — the same
+ * jittered grid cell, the same power-weighted alias tables, the same reconstructed mixture pdf — and only
+ * the target changes. A point in a medium has no normal and no BRDF, so the phase function stands where
+ * the cosine-weighted lobe stands on a surface, and the emitter's own cosine keeps the geometry term.
+ *
+ * <p><b>It stays clear of everything ReSTIR will rewrite.</b> M is one, there is no reservoir, no temporal
+ * or spatial reuse, and no analytic MIS weight against emitter sampling — and it does not touch
+ * evalSampleContrib, whose per-candidate cost is the measured hot path. When ReSTIR lands it should
+ * replace how this sample is CHOSEN without touching what it is worth.
+ *
+ * <p>Unshadowed emitters are not double counted: this is the only estimator that ever samples them for a
+ * volume, because the closed forms carry the sun and sky alone.
+ */
+public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, float3 rd,
+                        float phaseG, inout uint seed, inout uint proposalSeed) {
+    if (pc.lightBufAddr == 0 || worldPush.lightCount == 0u || worldPush.risCandidates == 0u) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    LightGridCell gridCell;
+    int3 gridCellCoord;
+    float3 gridLookup = pos;
+    if (pc.lightGridCellAddr != 0) {
+        gridLookup += (float3(rndf(proposalSeed), rndf(proposalSeed), rndf(proposalSeed)) - 0.5)
+                * worldPush.lightGridOrigin.w;
+    }
+    bool hasGridCell = findLightGridCell(gridLookup, gridCell, gridCellCoord);
+    uint lightIndex;
+    selectLightGridLight(gridCell, hasGridCell, proposalSeed, lightIndex);
+    Light lg = ConstPtr<Light>(pc.lightBufAddr)[lightIndex];
+    // Same uniform point on the rectangle, same rebase, same pdf 1/area as the surface estimator.
+    float s = rndf(seed) * 2.0 - 1.0;
+    float t = rndf(seed) * 2.0 - 1.0;
+    float3 sp = lg.pos + worldPush.lightRebase.xyz + s * lightHalfU(lg) + t * lightHalfV(lg);
+    float3 le = lightRadiance(lg);
+    float3 toL = sp - pos;
+    float dist2 = max(dot(toL, toL), 1.0e-6);
+    float dist = sqrt(dist2);
+    float3 wi = toL / dist;
+    // The emitter's own foreshortening. No receiver cosine: an isotropic point in a medium has no facing.
+    float cosL = max(0.0, dot(lightGeometricNormal(lg), -wi));
+    if (cosL <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    // localProbability is 1 when a cell was found, matching the single local proposal drawn above; the
+    // mixture reconstruction is otherwise identical to the surface path's.
+    float sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, hasGridCell ? 1.0 : 0.0);
+    if (sourcePdf <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    // 4*PI undoes hg()'s sphere normalisation for the same reason the sun terms do it: what is wanted is
+    // the gain relative to isotropic, since the in-scatter weight already carries the albedo.
+    float phase = 4.0 * PI * hg(dot(rd, wi), phaseG);
+    float3 contrib = le * (phase * cosL * lightArea(lg) / dist2) / sourcePdf;
+    if (all(contrib <= 0.0)) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    // D31 measured which half of this function is expensive, and the answer was NOT the ray: silencing
+    // it made the frame 5.2 ms SLOWER (62.85 against 57.67), a negative cost that can only be the
+    // observer effect F15 records -- removing the trace changed register live ranges and cost occupancy.
+    // What that rules out is worth keeping: optimising the RAY cannot help this function. Distance
+    // culling, an irradiance early-out and a shorter tmax are all answers to the wrong question. The
+    // cost is the walk above and the pressure this function creates, and both say the same thing --
+    // invoke it less often rather than make the invocation cheaper.
+    //
+    // Through the ambient wrapper like every other shadow ray, so an emitter beyond the fog is behind it.
+    // No surface bias to apply: the origin is a point in a medium, not on a face.
+    VisibilityResult shadow = visibilityThroughAmbient(
+            mediumExtinction, mediumFlags, pos, wi, dist * 0.999);
+    return contrib * shadow.transmittance;
+}
+
 // Shade a finalized reservoir: recompute the survivor's contribution at (hitPos,n,v), cast ONE shadow
 // ray, and return throughput-free radiance contrib*vis*W. The one ray serves whichever term fired for
 // the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the

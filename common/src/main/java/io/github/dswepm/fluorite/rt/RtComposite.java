@@ -1313,6 +1313,14 @@ public final class RtComposite {
                 // Bit 26: the source decays at the diffusion rate rather than the beam's.
                 flags |= 1 << 26;
             }
+            if (FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX.value()) {
+                flags |= 1 << 27; // sample one scattering event per segment (M17)
+                if (FluoriteConfig.Rt.Volumetrics.VOLUME_EMITTER_NEE.value()) {
+                    // Bit 28: emitters light the medium at that event. Requires the event, so it is
+                    // nested rather than independent -- the shader would have nowhere to put it.
+                    flags |= 1 << 28;
+                }
+            }
 
             // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
