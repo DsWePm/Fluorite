@@ -372,6 +372,14 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
     if (all(contrib <= 0.0)) {
         return float3(0.0, 0.0, 0.0);
     }
+    // D31 measured which half of this function is expensive, and the answer was NOT the ray: silencing
+    // it made the frame 5.2 ms SLOWER (62.85 against 57.67), a negative cost that can only be the
+    // observer effect F15 records -- removing the trace changed register live ranges and cost occupancy.
+    // What that rules out is worth keeping: optimising the RAY cannot help this function. Distance
+    // culling, an irradiance early-out and a shorter tmax are all answers to the wrong question. The
+    // cost is the walk above and the pressure this function creates, and both say the same thing --
+    // invoke it less often rather than make the invocation cheaper.
+    //
     // Through the ambient wrapper like every other shadow ray, so an emitter beyond the fog is behind it.
     // No surface bias to apply: the origin is a point in a medium, not on a face.
     VisibilityResult shadow = visibilityThroughAmbient(

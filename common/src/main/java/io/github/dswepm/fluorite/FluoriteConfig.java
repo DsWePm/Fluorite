@@ -867,11 +867,18 @@ public final class FluoriteConfig {
              * where surface shading runs it per shading vertex, and a path has far more segments than
              * shading vertices.
              *
-             * <p><b>That is a hypothesis, not a conclusion</b>, and the experiment that settles it is
-             * cheap: silence the shadow ray and keep the grid lookup and pdf reconstruction. Still
-             * expensive means the chain, and the fix is structural — once per path rather than once per
-             * segment, or waiting for ReSTIR's presampled pool. Cheap means the ray, and the fix is
-             * ordinary optimisation. Do not rebuild this on a guess about which.
+             * <p><b>D31 ran that experiment and the ray is exonerated.</b> Silencing it while keeping the
+             * lookup made the frame 5.2 ms SLOWER, not faster (62.85 against 57.67 at the same build,
+             * same batch) — a negative cost, which can only be F15's observer effect: removing the trace
+             * changed register live ranges. What that rules out is the useful part. <b>Optimising the ray
+             * cannot help.</b> Distance culling, an irradiance early-out, a shorter tmax: all answers to
+             * the wrong question. The cost is the walk and the pressure this function creates, and both
+             * point one way — invoke it less often rather than make the invocation cheaper.
+             *
+             * <p>So the candidates are structural: once per PATH instead of once per segment (biased —
+             * later segments would get no emitter light), first segment only (same bias, smaller), or
+             * ReSTIR's presampled pool, which is where D3 already decided the sampling side belongs.
+             * None of them is worth building before ReSTIR's shape is known.
              */
             public static final BooleanSetting VOLUME_EMITTER_NEE =
                     bool("fluorite.rt.fog.volumeEmitterNee", "volumetrics.emitter-nee", false);
