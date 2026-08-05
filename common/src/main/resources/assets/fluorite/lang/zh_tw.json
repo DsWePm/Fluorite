@@ -35,6 +35,8 @@
   "fluorite.options.rt.entities.tooltip": "將實體和方塊實體加入光追場景。",
   "fluorite.options.rt.particles": "光追粒子",
   "fluorite.options.rt.particles.tooltip": "在追蹤場景中，將粒子繪製為面向相機射線的看板。",
+  "fluorite.options.rt.particleShadows": "Particle Shadows",
+  "fluorite.options.rt.particleShadows.tooltip": "Let particles cast shadows, so a column of campfire smoke darkens the ground beneath it. Shadow rays only: particles stay out of reflections and GI, where a camera-facing billboard would be seen edge-on. Costs any-hit work on every shadow ray that crosses a particle.",
   "fluorite.options.rt.glow": "實體發光輪廓",
   "fluorite.options.rt.glow.tooltip": "為發光實體繪製原版發光效果輪廓（可穿牆顯示）。",
   "fluorite.options.rt.waterWaves": "動態水面",

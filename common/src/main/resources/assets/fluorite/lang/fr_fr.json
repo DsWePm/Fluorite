@@ -35,6 +35,8 @@
   "fluorite.options.rt.entities.tooltip": "Inclut les entités et entités de bloc dans la scène en lancer de rayons.",
   "fluorite.options.rt.particles": "Particules en lancer de rayons",
   "fluorite.options.rt.particles.tooltip": "Dessine les particules comme des billboards alignés sur les rayons de caméra dans la scène tracée.",
+  "fluorite.options.rt.particleShadows": "Particle Shadows",
+  "fluorite.options.rt.particleShadows.tooltip": "Let particles cast shadows, so a column of campfire smoke darkens the ground beneath it. Shadow rays only: particles stay out of reflections and GI, where a camera-facing billboard would be seen edge-on. Costs any-hit work on every shadow ray that crosses a particle.",
   "fluorite.options.rt.glow": "Contour lumineux des entités",
   "fluorite.options.rt.glow.tooltip": "Dessine le contour vanilla de l'effet Luminescence (à travers les murs) autour des entités lumineuses.",
   "fluorite.options.rt.waterWaves": "Eau animée",

@@ -35,6 +35,8 @@
   "fluorite.options.rt.entities.tooltip": "Включает сущности и блочные сущности в сцену с трассировкой лучей.",
   "fluorite.options.rt.particles": "Трассируемые частицы",
   "fluorite.options.rt.particles.tooltip": "Рисует частицы как билборды вдоль лучей камеры внутри трассируемой сцены.",
+  "fluorite.options.rt.particleShadows": "Particle Shadows",
+  "fluorite.options.rt.particleShadows.tooltip": "Let particles cast shadows, so a column of campfire smoke darkens the ground beneath it. Shadow rays only: particles stay out of reflections and GI, where a camera-facing billboard would be seen edge-on. Costs any-hit work on every shadow ray that crosses a particle.",
   "fluorite.options.rt.glow": "Контур свечения сущностей",
   "fluorite.options.rt.glow.tooltip": "Рисует ванильный контур эффекта свечения (сквозь стены) вокруг светящихся сущностей.",
   "fluorite.options.rt.waterWaves": "Анимированная вода",

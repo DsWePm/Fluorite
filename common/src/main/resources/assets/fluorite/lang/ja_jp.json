@@ -35,6 +35,8 @@
   "fluorite.options.rt.entities.tooltip": "エンティティとブロックエンティティをレイトレーシングシーンに含めます。",
   "fluorite.options.rt.particles": "レイトレーシング対象パーティクル",
   "fluorite.options.rt.particles.tooltip": "トレースされたシーン内で、パーティクルをカメラレイに沿ったビルボードとして描画します。",
+  "fluorite.options.rt.particleShadows": "Particle Shadows",
+  "fluorite.options.rt.particleShadows.tooltip": "Let particles cast shadows, so a column of campfire smoke darkens the ground beneath it. Shadow rays only: particles stay out of reflections and GI, where a camera-facing billboard would be seen edge-on. Costs any-hit work on every shadow ray that crosses a particle.",
   "fluorite.options.rt.glow": "エンティティの発光アウトライン",
   "fluorite.options.rt.glow.tooltip": "発光中のエンティティに、バニラの発光効果アウトライン（壁越し）を描画します。",
   "fluorite.options.rt.waterWaves": "アニメーションする水",

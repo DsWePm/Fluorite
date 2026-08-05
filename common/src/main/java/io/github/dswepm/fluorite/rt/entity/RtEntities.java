@@ -104,8 +104,24 @@ public final class RtEntities {
     private static final int MASK_SELF = 0x04;
     /** Default mask: visible to every ray (terrain and ordinary entities use this). */
     private static final int MASK_ALL = 0xFF;
-    /** Particles are primary-ray-only: visible/lit by the camera path, invisible to shadows/GI/reflections. */
-    private static final int PARTICLE_MASK = MASK_PRIMARY;
+    /**
+     * Particles in SHADOW rays, on their own bit (matches CULL_PARTICLE_SHADOW in trace.slang).
+     *
+     * <p>Separate from {@link #MASK_SECONDARY} because "blocks light" and "appears in a reflection" are
+     * different questions, and a camera-facing billboard is where they diverge most: reflected, the quad
+     * is edge-on to the ray that found it. A column of smoke casting a shadow is worth a ray; putting
+     * that billboard into mirrors and GI is a different feature at a different cost, so the two are
+     * staged apart instead of arriving together the moment bit 0 is set.
+     */
+    private static final int MASK_PARTICLE_SHADOW = 0x08;
+    /** Primary always; shadow rays when enabled. Never GI or reflections yet — see MASK_PARTICLE_SHADOW. */
+    private static int particleMask() {
+        return MASK_PRIMARY | (particleShadows() ? MASK_PARTICLE_SHADOW : 0);
+    }
+
+    public static boolean particleShadows() {
+        return FluoriteConfig.Rt.Entities.PARTICLE_SHADOWS.value();
+    }
     public static boolean particlesEnabled() {
         return FluoriteConfig.Rt.Entities.PARTICLES_ENABLED.value();
     }
@@ -947,7 +963,7 @@ public final class RtEntities {
      * {@link #particleScratch} (its billboard quad), funneled through {@link #particleCapture} into the
      * shared {@code capture}, and its quad center cached by identity in {@link #particlePrev}. Per-layer
      * texture slot comes from the layer's atlas (block/item/particle) via the bindless registry. One
-     * {@code PARTICLE_BIT} instance with mask {@link #PARTICLE_MASK} (primary-ray only).
+     * {@code PARTICLE_BIT} instance with mask {@link #particleMask()} (primary, plus shadows when enabled).
      */
     private void captureParticles(RtContext ctx, FrameBuild build, Minecraft mc, float partial,
                                   int rbx, int rby, int rbz, Matrix4f projection, Matrix4f viewRotation) {
@@ -1066,7 +1082,7 @@ public final class RtEntities {
         }
         long dispAddr = uploadDisp(ctx, build, particleDisp);
         appendCapture(ctx, build, new Motion(dispAddr, 0f, 0f, 0f),
-                -1, PARTICLE_BIT, PARTICLE_MASK, IDENTITY); // one combined mesh, per-particle MV
+                -1, PARTICLE_BIT, particleMask(), IDENTITY); // one combined mesh, per-particle MV
     }
 
     /** Average (rebase-space) position of a captured particle's verts — approximates the particle center. */

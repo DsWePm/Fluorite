@@ -20,6 +20,13 @@ public static const uint CULL_SECONDARY_NO_SELF = 0x01u;
 public static const uint CULL_SELF = 0x04u;
 public static const uint CULL_SECONDARY = CULL_SECONDARY_NO_SELF | CULL_SELF;
 public static const uint CULL_PRIMARY = 0x02u;
+// Particles, for SHADOW rays only. Its own bit for the same reason CULL_SELF has one: "blocks light" and
+// "appears in a reflection" are different questions, and a billboard that always faces the camera is the
+// instance where they diverge most — reflected, it is edge-on to the ray that finds it. Giving smoke a
+// shadow is worth a ray; putting a camera-facing quad into a mirror is a different feature with a
+// different cost, so the two are staged apart rather than arriving together on bit 0.
+public static const uint CULL_PARTICLE_SHADOW = 0x08u;
+public static const uint CULL_SHADOW_NO_SELF = CULL_SECONDARY_NO_SELF | CULL_PARTICLE_SHADOW;
 
 // worldPush.flags bit 12: hide the first-person body from every secondary ray this frame. Set while the
 // eye is inside a water block — see secondaryCullMask.
@@ -137,9 +144,12 @@ public VisibilityResult visibilityMasked(uint cullMask, float3 origin, float3 di
     return result;
 }
 
-/** Shadow ray from a shading point: the ordinary secondary mask, so the body shadows like any other. */
+/**
+ * Shadow ray from a shading point: the ordinary secondary mask, so the body shadows like any other, plus
+ * particles — which are otherwise primary-ray-only and would let a column of smoke cast no shadow at all.
+ */
 public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
-    return visibilityMasked(secondaryCullMask(), origin, dir, tmax);
+    return visibilityMasked(secondaryCullMask() | CULL_PARTICLE_SHADOW, origin, dir, tmax);
 }
 
 // `valid` is false when the point projects behind the previous camera, where the perspective divide
