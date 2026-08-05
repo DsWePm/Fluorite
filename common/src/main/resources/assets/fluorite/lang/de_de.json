@@ -141,6 +141,8 @@
   "fluorite.options.rt.fogScatterVertex.tooltip": "Sample one scattering event per segment instead of assuming light is constant along it. Lets the water's sky term ask how open the sky is where the light actually scatters, instead of probing once at the segment's start and gating the whole segment by it. Noisier per frame: a single sampled event carries the exact weight where the stratified estimator it replaces keeps closed-form weights. Off is the shipped behaviour.",
   "fluorite.options.rt.fogVolumeEmitterNee": "Emitters Light Volumes",
   "fluorite.options.rt.fogVolumeEmitterNee.tooltip": "Let lava, torches and campfires light the fog and the water, not only the surfaces around them. Requires Volumetric Scatter Vertex, which supplies the point the emitter is sampled from. One emitter and one shadow ray per scattering segment, reusing the same light grid the surfaces use.",
+  "fluorite.options.rt.clouds": "Volumetric Clouds",
+  "fluorite.options.rt.clouds.tooltip": "A marched cloud deck on a spherical shell, so it curves away at the horizon and appears in reflections as well as overhead. First slice: the shape is there but the lighting is ambient only, so the clouds are lit and flat until the sun term and multiple scattering land.",
   "fluorite.options.rt.waterMediumTrace": "Water Medium Runtime Log",
   "fluorite.options.rt.waterMediumTrace.tooltip": "Writes low-rate centre-ray water radiance, segment length, visibility and terrain-streaming telemetry to latest.log. Diagnostic only; adds one upward ray per frame while enabled.",
   "fluorite.options.rt.fogSegmentSource": "Fog Segment Source",

@@ -109,7 +109,7 @@ public final class RtVideoOptions {
                 case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
                         fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter(),
-                        fogScatterVertex(), fogVolumeEmitterNee()));
+                        fogScatterVertex(), fogVolumeEmitterNee(), clouds()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
@@ -410,6 +410,14 @@ public final class RtVideoOptions {
      * at a position, and both halves of that trade have to be judged by flipping it at a fixed camera
      * position inside one session.
      */
+    /**
+     * Volumetric clouds. In the UI because slice one exists to be priced, and a cost is only meaningful
+     * flipped at a fixed camera position inside one session.
+     */
+    private static OptionInstance<Boolean> clouds() {
+        return bool("fluorite.options.rt.clouds", FluoriteConfig.Rt.Volumetrics.CLOUDS);
+    }
+
     private static OptionInstance<Boolean> fogScatterVertex() {
         return bool("fluorite.options.rt.fogScatterVertex", FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
     }

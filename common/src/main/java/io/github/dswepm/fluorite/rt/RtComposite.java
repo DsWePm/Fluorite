@@ -966,6 +966,7 @@ public final class RtComposite {
                     skyLuts.skyViewMultiView(), lutSampler(ctx));
             worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
             worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
+            worldPipeline.setCloudNoise(skyLuts.cloudNoiseView(), lutSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1312,6 +1313,9 @@ public final class RtComposite {
             if (FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER.value()) {
                 // Bit 26: the source decays at the diffusion rate rather than the beam's.
                 flags |= 1 << 26;
+            }
+            if (FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
+                flags |= 1 << 30; // volumetric clouds (M11)
             }
             if (FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX.value()) {
                 flags |= 1 << 27; // sample one scattering event per segment (M17)

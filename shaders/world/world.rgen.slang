@@ -25,6 +25,7 @@ import bsdf;
 import medium;
 import volume;
 import volume_visibility; // debug view 18 reads the grid directly
+import cloud;
 import segment;
 import water;
 import trace;
@@ -217,7 +218,12 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             if (misActive && bsdfPdf >= 0.0 && (payload.flags & PAYLOAD_ANALYTIC_LIGHT) != 0u) {
                 sky += float3(payload.f0) * pdfLight * powerHeuristic(bsdfPdf, pdfLight);
             }
-            L += throughput * sky; // escaped to sky
+            // Clouds sit between this ray and everything it just found in the sky (M11, D33). Composited
+            // HERE rather than in the miss shader because this is the only place that knows the ray's own
+            // origin, which is what the shell intersection and the step schedule are measured from — and
+            // it is what puts clouds in a reflection: a mirror's ray escapes through this same line.
+            CloudResult clouds = traceClouds(ro, rd, RAY_FAR, seed);
+            L += throughput * (clouds.inScatter + clouds.transmittance * sky); // escaped to sky
             break;
         }
 

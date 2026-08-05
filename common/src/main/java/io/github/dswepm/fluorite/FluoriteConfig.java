@@ -843,6 +843,18 @@ public final class FluoriteConfig {
              * stratified estimator, 7.56 ms under this one. That figure is M9's oldest outstanding debt
              * and had never been measured before this switch gave it a denominator.
              */
+            /**
+             * Volumetric clouds (M11).
+             *
+             * <p>A spherical deck marched on the segment that escapes to sky, so it appears in
+             * reflections as well as overhead. DEFAULT OFF: this is the first slice of three — the shape
+             * is there and the lighting is ambient only, so the clouds are lit but flat until the sun
+             * term, the self-shadow march and phi_fwd land. R19 names this milestone's cost as its main
+             * risk, and slicing it this way is what lets the march be priced before any of that is built.
+             */
+            public static final BooleanSetting CLOUDS =
+                    bool("fluorite.rt.fog.clouds", "volumetrics.clouds", false);
+
             public static final BooleanSetting SCATTER_VERTEX =
                     bool("fluorite.rt.fog.scatterVertex", "volumetrics.scatter-vertex", true);
 

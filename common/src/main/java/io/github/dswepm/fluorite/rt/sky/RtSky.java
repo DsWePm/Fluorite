@@ -88,6 +88,7 @@ public final class RtSky {
     private final Bake mediumSkyReduceBake;
     private final Bake froxelBake;
     private final Bake visibilityBake;
+    private final Bake cloudNoiseBake;
     private final RtOverlayPipelines.AccelStructureSet froxelTlas;
     private final RtOverlayPipelines.AccelStructureSet visibilityTlas;
     private final long lutSampler;
@@ -98,13 +99,17 @@ public final class RtSky {
     private RtImage skyViewMulti;
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
+    private RtImage cloudNoise;
+    /** Must equal CLOUD_NOISE_DIM in cloud_noise.comp.slang, and numthreads there. */
+    private static final int CLOUD_NOISE_DIM = 128;
+    private static final int CLOUD_NOISE_GROUP = 4;
     private boolean baked;
 
     private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
                   Bake mediumSkyReduceBake, Bake froxelBake,
                   RtOverlayPipelines.AccelStructureSet froxelTlas,
                   Bake visibilityBake, RtOverlayPipelines.AccelStructureSet visibilityTlas,
-                  long lutSampler) {
+                  Bake cloudNoiseBake, long lutSampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
         this.multiScatterBake = multiScatterBake;
@@ -113,6 +118,7 @@ public final class RtSky {
         this.froxelBake = froxelBake;
         this.froxelTlas = froxelTlas;
         this.visibilityBake = visibilityBake;
+        this.cloudNoiseBake = cloudNoiseBake;
         this.visibilityTlas = visibilityTlas;
         this.lutSampler = lutSampler;
     }
@@ -176,6 +182,14 @@ public final class RtSky {
             // The volumetric visibility grid (M13.2). Its own TLAS ring rather than a second bind of the
             // froxel's: a ring slot is claimed per bind, and binding one ring twice a frame is exactly the
             // kind of arithmetic that works right up until the ring wraps.
+            // The cloud noise (M11.1): one storage image out, nothing in. Once-ever like the
+            // transmittance table, and for the same reason -- nothing in it depends on the time of day or
+            // the camera. It lives on this bake chain rather than in its own object because the chain's
+            // whole value is that the ORDER is settled in one place; a second owner would be a second
+            // opinion about when things are ready.
+            Bake cloudNoiseBake = createBake(ctx, stack, "cloud_noise.comp.spv", "cloud noise",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
+
             RtOverlayPipelines.AccelStructureSet visibilityTlas = RtOverlayPipelines.accelStructureSet(
                     ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "volume visibility TLAS");
             Bake visibilityBake = createBake(ctx, stack, "volume_visibility.comp.spv", "volume visibility",
@@ -184,7 +198,7 @@ public final class RtSky {
 
             RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
                     mediumSkyReduceBake, froxelBake, froxelTlas,
-                    visibilityBake, visibilityTlas, sampler);
+                    visibilityBake, visibilityTlas, cloudNoiseBake, sampler);
             // The images are allocated HERE rather than lazily inside the bake, so the views exist from
             // the moment this object does. Creating them in the bake made a view's availability depend on
             // whether the bake had run, which in turn made the ray-tracing pipeline's binding depend on
@@ -218,6 +232,12 @@ public final class RtSky {
                     sky.skyViewMie.view, sampler);
             writeSampledImage(vk, stack, mediumSkyReduceBake.descriptorSet(), 2,
                     sky.skyViewMulti.view, sampler);
+
+            // 128^3 RGBA8, 8 MB. Eight bits per channel because both channels are a density in [0,1]
+            // read through a filter -- the octaves are summed at bake time, so nothing here needs range.
+            sky.cloudNoise = ctx.createStorageImage3D(CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_DIM,
+                    VK10.VK_FORMAT_R8G8B8A8_UNORM, "cloud noise volume");
+            writeStorageImage(vk, stack, cloudNoiseBake.descriptorSet(), 0, sky.cloudNoise.view);
 
             sky.aerialPerspective = ctx.createStorageImage3D(FROXEL_W, FROXEL_H, FROXEL_D,
                     VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "aerial perspective froxel");
@@ -268,6 +288,11 @@ public final class RtSky {
     /** M13.2 visibility grid: R sun, G sky, BA visibility-weighted celestial sample coordinates. */
     public long visibilityGridView() {
         return visibilityGrid == null ? 0L : visibilityGrid.view;
+    }
+
+    /** M11.1 cloud noise: R the billow that shapes a cloud, G the detail that erodes its edges. */
+    public long cloudNoiseView() {
+        return cloudNoise == null ? 0L : cloudNoise.view;
     }
 
     /**
@@ -408,6 +433,10 @@ public final class RtSky {
             VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier, null, null);
             dispatch(cmd, stack, multiScatterBake, MULTISCATTER_N, MULTISCATTER_N);
+            // The cloud noise shares this once-ever pass but nothing in the chain above it: no barrier
+            // between them because neither reads what the other writes.
+            dispatch3D(cmd, stack, cloudNoiseBake,
+                    CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_GROUP);
         }
         baked = true;
         return true;
@@ -452,11 +481,16 @@ public final class RtSky {
             visibilityGrid.destroy();
             visibilityGrid = null;
         }
+        if (cloudNoise != null) {
+            cloudNoise.destroy();
+            cloudNoise = null;
+        }
         if (lutSampler != 0L) {
             VK10.vkDestroySampler(vk, lutSampler, null);
         }
         visibilityTlas.destroy(vk);
         visibilityBake.destroy(vk);
+        cloudNoiseBake.destroy(vk);
         froxelTlas.destroy(vk);
         froxelBake.destroy(vk);
         mediumSkyReduceBake.destroy(vk);
@@ -470,6 +504,15 @@ public final class RtSky {
         VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, bake.pipelineLayout(), 0,
                 stack.longs(bake.descriptorSet()), null);
         VK10.vkCmdDispatch(cmd, (w + BAKE_GROUP - 1) / BAKE_GROUP, (h + BAKE_GROUP - 1) / BAKE_GROUP, 1);
+    }
+
+    /** Three-dimensional dispatch, for the bakes whose output is a volume rather than a table. */
+    private static void dispatch3D(VkCommandBuffer cmd, MemoryStack stack, Bake bake,
+                                   int w, int h, int d, int group) {
+        VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, bake.pipeline());
+        VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, bake.pipelineLayout(), 0,
+                stack.longs(bake.descriptorSet()), null);
+        VK10.vkCmdDispatch(cmd, (w + group - 1) / group, (h + group - 1) / group, (d + group - 1) / group);
     }
 
     private static void shaderWriteToComputeReadBarrier(VkCommandBuffer cmd, MemoryStack stack) {
