@@ -812,6 +812,32 @@ public final class FluoriteConfig {
             public static final BooleanSetting MULTI_SCATTER =
                     bool("fluorite.rt.fog.multiScatter", "volumetrics.multi-scatter", true);
 
+            /**
+             * Sample ONE scattering event per segment instead of assuming the source is constant along it.
+             *
+             * <p>DEFAULT OFF, and off is the shipped picture by construction rather than by argument: the
+             * estimator lives beside the closed forms and returns before any of them, so nothing on the
+             * off path changed.
+             *
+             * <p>What a point buys that a segment cannot have is the ability to be ASKED things. How much
+             * sky reaches THIS depth, and which emitters are nearby and where, are functions of position,
+             * and a closed form over a whole segment has no position to offer them. That is why the water's
+             * sky openness stops being one probe fired from the segment's start and gating everything after
+             * it -- the artifact where a single block over a submerged camera zeroed the scattering across
+             * the whole screen (D15).
+             *
+             * <p>The trade is variance. The stratified sun estimator this replaces keeps closed-form
+             * weights per stratum and samples only the source inside each, so it is quieter per frame; a
+             * single event with the exact f/pdf weight is a strict Monte Carlo estimator and noisier. Both
+             * are correct in expectation, and with a constant unoccluded source they agree exactly -- which
+             * is the identity to check first if the two ever disagree by more than noise.
+             *
+             * <p>Ray budget is unchanged: the same shadow ray and upward probe the stratified path already
+             * casts, asked from the sampled point instead.
+             */
+            public static final BooleanSetting SCATTER_VERTEX =
+                    bool("fluorite.rt.fog.scatterVertex", "volumetrics.scatter-vertex", false);
+
             /** Bits 23-25 of worldPush.flags. */
             public static int sunShadowRays() {
                 return Math.clamp(SUN_SHADOW_RAYS.value(), 0, 7);
