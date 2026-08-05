@@ -43,7 +43,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04） | §7，决策依据 §10 D1–D27 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04）；**M19 overlay + 火焰代码完成待游戏内验收，glint 请示点未动工（2026-08-05）** | §7，决策依据 §10 D1–D27 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -431,13 +431,21 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - ⚖ **请示点**：S3 死工作处置——`RtLightCollector` 逐帧算好又被 `RtLightHierarchy` 丢弃的 UV lanes（7/11/15/19：`materialId`/`uvHu`/`uvHv`/`uvCenter`，本为 exact-Le fetch 准备）：停算省 CPU，还是保留待 ReSTIR。
 - **验收**：新增 debug 视图列出动态光数量/位置；画面 bit-identical（因为不采样）。
 
-### M19 实体 overlay 同步（D6：per-prim aux lane）
+### M19 实体 overlay 同步（D6：per-prim aux lane）— **2026-08-05 代码完成，待游戏内验收**
 
-- 数据通路（现状四层丢弃逐层接通）：`RtEntityCollectorBase.submitModel` 解码 `overlayCoords`（vanilla 语义：红 lerp 轴 hurt + 白闪轴）→ collector 状态；`RtEntityCapture.addVertex` 已存在但被忽略的 `overlay` 参数接通 → 打包 overlay RGBA 进 `Prim.aux0`（现恒 0，**零结构增长**，实体 mesh 每帧重建数据天然新鲜）；`RtCuboidEmitter.emit` 增加 overlay 参数（快路径覆盖绝大多数生物）；`world.rchit.slang` 实体分支 `albedo = lerp(albedo, overlay.rgb, overlay.a)`。
-- `submitFlame` 实现：火焰层捕获为真实发光 cutout 几何进实体 mesh（`Prim.emission=1`，火 sprite 动画来自方块图集）——火自动进反射/GI。
-- 冰冻（powder snow 覆盖层）走同一 overlay/额外层机制；隐身保持整体跳过（「隐身生物穿甲不可见」记为已知简化）。
-- ⚖ **请示点**：附魔 glint 的近似方案（albedo/emission 调制 vs 完整双层滚动 UV——后者列为可选 feature）带效果图请示。
-- **验收**：受伤红闪对照 vanilla 截图；着火实体的火在水面反射里可见；无 overlay 时逐位不变。
+- **overlay 数据通路已接通**（`9401ae6`）：`submitModel` / `submitBlockModel` / `submitItem` 解码 `overlayCoords` → `RtEntityCapture.currentOverlay`（**提交级状态**，进入时设、退出时清零，防止 leash/告示牌文本等无 overlay 的提交继承上一个生物的红洗）→ `Prim.aux0`/`aux1` → `world.rchit` 实体分支混合。
+  - **落地时的两处实测修正**（照 §9.4 规矩回写）：
+    1. **`RtCuboidEmitter` 不需要新参数**。计划假设快路径要加 overlay 形参；实际把 overlay 做成 capture 的提交级状态（与 `currentTexSlot`/`currentMaterialId`/`currentAlphaBucket` 同构）后，`emit()` 走 `addDirectQuad → appendQuad` 自动带上，签名不动。
+    2. **单 lane 存 RGBA8 不可行**。lane 以 float 传输、以 uint 读回，而 overlay 的白色 RGB 必然把 1 填进 float 指数位：alpha=127 时编码为 `0x7FFFFFFF` = NaN（JVM 允许规范化 NaN 位型 ⇒ 静默改色），而 alpha=127 正是白闪斜坡上的普通取值（u=10）。改为**颜色进 aux0（`0x00RRGGBB`，上限 `0x00FFFFFF` 不可能是 NaN）、强度进 aux1（真 float）**。是 round-trip 测试抓到的，事前推理没有。
+  - **vanilla 语义（查证自 jar，非记忆）**：`entity.fsh` 是 `color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)`，**alpha=1 表示无 overlay**；`v<8` 全行是 `0xB2FF0000`（纯红 alpha 178/255 ≈ 30% 红洗，u 轴此时无效），`v≥8` 是白色 alpha `(int)((1−u/15×0.75)×255)`（u=0 恒等、u=15 为 75% 白闪）。存进 lane 的是 **1−alpha**，于是两个 lane 都是零即恒等，任何不设 overlay 的路径默认正确。
+  - **混合在 sRGB 空间**（线性化之前）：本效果的验收基准是「对照 vanilla 截图」，同样的 30% 红洗在线性空间混合会更暗更饱和。非白 tint 的实体其 overlay 会被 tint 二次调制，而所有真正被注意到的红闪都是白 tint，那里与 vanilla 逐位同构。
+- **`submitFlame` 已实现**（`9c72ebd`）：按 `FlameFeatureRenderer` 的构造（bounding box 上堆叠面向相机的 quad、fire_0/fire_1 交替、隔对镜像、每级缩 10% 步进 0.45）捕获为真实 cutout 几何进实体 mesh，`Prim.emission=1`。火因此照亮地面并进入反射/GI。
+  - **已知代价**：billboard 进 capture 会让燃烧中的静止实体失去 rigid-reuse（相机一转顶点就动）。判定按捕获顶点比对，所以失败模式是「少一次复用」而非「火焰朝向卡住」；能保住复用的替代方案（独立光栅 pass）恰恰是进不了反射的那种。
+  - 零宽实体已挡（vanilla 用宽度作除数且按常量步进，宽度 0 会死循环）。
+- **冰冻：计划前提不成立，本里程碑不做**。overlay 由 `hasRedOverlay` 驱动，而它是 `hurtTime > 0 || deathTime > 0`；26.2 既无 `powder_snow_outline` 贴图也无引用它的渲染器。若将来要做冰冻，那是独立机制而非本条通路的扩展。
+- 隐身保持整体跳过（「隐身生物穿甲不可见」记为已知简化）。
+- ⚖ **请示点（未动工）**：附魔 glint 的近似方案（albedo/emission 调制 vs 完整双层滚动 UV——后者列为可选 feature）带效果图请示。
+- **验收（待用户游戏内执行）**：受伤红闪对照 vanilla 截图；创造模式点燃生物，火在水面反射里可见、并照亮周围地面；无 overlay 的实体逐位不变。
 
 ### M20 粒子完善（D4-A：几何路线分步）
 
@@ -555,6 +563,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | F13 | 计划里的定量缓解手段必须先测量或标注未测 |
 | F14 | shader 编译、`spirv-val` 与源码结构测试只能证明静态契约；Slang 后端聚合量错编必须由真实 GPU 边界 probe 裁决 |
 | F15 | shader probe 会改变寄存器活跃性与优化结果；带 probe 的连续成功必须在删掉一次性观察点后复验。“进入世界几秒后变化”不能自动归因给 pipeline cache、GC、区块/TLAS 或时域后处理 |
+| F16 | **以 float lane 搬运整数位型的 ABI，必须对全取值域做 round-trip 测试。** M19 的 overlay 单 lane 存 `0xAARRGGBB` 时，白色 RGB 把 1 填进 float 指数位，alpha=127 编码成 `0x7FFFFFFF`（NaN，JVM 允许规范化 ⇒ 静默改色），而 alpha=127 是白闪斜坡上的普通取值。**穷举测试抓到，事前推理没有**——同一风险适用于 `materialId` 之外任何新占用的 lane |
 
 仪器教训：曝光日志 `now - Long.MIN_VALUE` 溢出为负 ⇒ 永久沉默——「为回答『源是否过亮』而造的仪器整个会话什么都没报，沉默看起来和『没变化』一样」；水系数诊断打印了**被拒模型**的数字（该被对账的那行本身错了）；只记录 post 值会把传输/复制/调用三个边界混在一起；启动早期 probe 可能来自上一代缓存 pipeline；验证层无 messenger 时静默（`vk_layer_settings.txt` 的存在理由）；归档文件名不带配置 ⇒ 拿游走档比 thin 档差点报回归。
 
