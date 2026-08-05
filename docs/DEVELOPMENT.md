@@ -43,7 +43,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04） | §7，决策依据 §10 D1–D27 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04）；**M19（overlay + 火焰 + glint 近似档）2026-08-05 游戏内验收通过 ✅** | §7，决策依据 §10 D1–D28 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -216,6 +216,8 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | `RtEntities` | 名牌不进 RT mesh（billboard 每帧毁掉 rigid-reuse/MV）；假 blob 阴影正确丢弃（RT 有真阴影）；`isInvisible()` 整体跳过 |
 | `RtParticleCapture` | 粒子颜色作 raw albedo 直通，**vanilla lightmap 刻意不烘进**（RT 自己打光）；相机相对坐标经每帧 offset 转 rebased 空间 ⇒ TLAS identity |
 | `RtGlowOutlineFeature` | 「Never makes the entity itself emissive」——glow 是光栅轮廓 |
+| `Prim.normal.w` + `evaluateMaterial` | **它是遮罩，不是强度。** 真实 HDR 强度烘在材质头里（`EMISSIVE_STRENGTH=5` 基线、上限 32），`evaluateMaterial` 结尾把两者相乘。所以给自发光实体几何挑材质时**必须挑一个本身带强度的**——`entityFallbackId` 是 `emissionSource=NONE` 编译的，强度 0，遮罩给 1 也照样不发光（M19 火焰踩过）。同理，shader 里任何新的自发光量都要用同一 HDR 量纲，别按 0–1 乘子写 |
+| 实体不是 NEE 光源 | `RtLightCollector` 只收地形自发光 quad。**实体自发光只在直击与偶然打到它的 GI 光线里生效**，照不亮房间——这是结构现状不是缺陷，真光源要 M18 收集层 + ReSTIR 采样（D3） |
 | `RtWorldOverlay` | overlay 必须画在 display 分辨率（细线过不了 DLSS-RR）；feature 从共享池拿 scratch，**never own one-off pools** |
 | `RtBlockOutlineFeature` | 遮挡用 inline `rayQueryEXT` 打 TLAS，不用深度缓冲（`gDepth` 在 RR 内部分辨率） |
 
@@ -261,6 +263,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | 雾太阳阴影线 | 2 条 ≈ +2.0±0.2 ms（+13%）；1 条≈一半 | 同会话翻开关；1 与 2 视觉难分 ⇒ 默认 1 |
 | M9 无条件 CPU（天光网格时代） | ≈0（测不出） | `bench` 世界；该网格已于 M15.0 删除 |
 | **M9 水段散射本身** | **从未测量** | `bench-water` 两机位未建——M15 验收时首采（§7） |
+| 室内帧数下降（未定位） | 进世界后 `gpu.traceIndirect` 后半程中位 **21.36 ms** | 2026-08-05 在 `f855d31`（M19 之前）采到，**机位/分辨率/配置均未记录，不可作基准**。用户实测确认 M19 之前就存在，归因到更早的改动，**按用户决定推迟到 ReSTIR 之后再查**。记在这里只为防止它日后被误认成新引入的回归 |
 
 ### 4.3 A/B 与验收纪律
 
@@ -431,13 +434,27 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - ⚖ **请示点**：S3 死工作处置——`RtLightCollector` 逐帧算好又被 `RtLightHierarchy` 丢弃的 UV lanes（7/11/15/19：`materialId`/`uvHu`/`uvHv`/`uvCenter`，本为 exact-Le fetch 准备）：停算省 CPU，还是保留待 ReSTIR。
 - **验收**：新增 debug 视图列出动态光数量/位置；画面 bit-identical（因为不采样）。
 
-### M19 实体 overlay 同步（D6：per-prim aux lane）
+### M19 实体 overlay 同步（D6：per-prim aux lane）— **2026-08-05 代码完成，待游戏内验收**
 
-- 数据通路（现状四层丢弃逐层接通）：`RtEntityCollectorBase.submitModel` 解码 `overlayCoords`（vanilla 语义：红 lerp 轴 hurt + 白闪轴）→ collector 状态；`RtEntityCapture.addVertex` 已存在但被忽略的 `overlay` 参数接通 → 打包 overlay RGBA 进 `Prim.aux0`（现恒 0，**零结构增长**，实体 mesh 每帧重建数据天然新鲜）；`RtCuboidEmitter.emit` 增加 overlay 参数（快路径覆盖绝大多数生物）；`world.rchit.slang` 实体分支 `albedo = lerp(albedo, overlay.rgb, overlay.a)`。
-- `submitFlame` 实现：火焰层捕获为真实发光 cutout 几何进实体 mesh（`Prim.emission=1`，火 sprite 动画来自方块图集）——火自动进反射/GI。
-- 冰冻（powder snow 覆盖层）走同一 overlay/额外层机制；隐身保持整体跳过（「隐身生物穿甲不可见」记为已知简化）。
-- ⚖ **请示点**：附魔 glint 的近似方案（albedo/emission 调制 vs 完整双层滚动 UV——后者列为可选 feature）带效果图请示。
-- **验收**：受伤红闪对照 vanilla 截图；着火实体的火在水面反射里可见；无 overlay 时逐位不变。
+- **overlay 数据通路已接通**（`9401ae6`）：`submitModel` / `submitBlockModel` / `submitItem` 解码 `overlayCoords` → `RtEntityCapture.currentOverlay`（**提交级状态**，进入时设、退出时清零，防止 leash/告示牌文本等无 overlay 的提交继承上一个生物的红洗）→ `Prim.aux0`/`aux1` → `world.rchit` 实体分支混合。
+  - **落地时的两处实测修正**（照 §9.4 规矩回写）：
+    1. **`RtCuboidEmitter` 不需要新参数**。计划假设快路径要加 overlay 形参；实际把 overlay 做成 capture 的提交级状态（与 `currentTexSlot`/`currentMaterialId`/`currentAlphaBucket` 同构）后，`emit()` 走 `addDirectQuad → appendQuad` 自动带上，签名不动。
+    2. **单 lane 存 RGBA8 不可行**。lane 以 float 传输、以 uint 读回，而 overlay 的白色 RGB 必然把 1 填进 float 指数位：alpha=127 时编码为 `0x7FFFFFFF` = NaN（JVM 允许规范化 NaN 位型 ⇒ 静默改色），而 alpha=127 正是白闪斜坡上的普通取值（u=10）。改为**颜色进 aux0（`0x00RRGGBB`，上限 `0x00FFFFFF` 不可能是 NaN）、强度进 aux1（真 float）**。是 round-trip 测试抓到的，事前推理没有。
+  - **vanilla 语义（查证自 jar，非记忆）**：`entity.fsh` 是 `color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)`，**alpha=1 表示无 overlay**；`v<8` 全行是 `0xB2FF0000`（纯红 alpha 178/255 ≈ 30% 红洗，u 轴此时无效），`v≥8` 是白色 alpha `(int)((1−u/15×0.75)×255)`（u=0 恒等、u=15 为 75% 白闪）。存进 lane 的是 **1−alpha**，于是两个 lane 都是零即恒等，任何不设 overlay 的路径默认正确。
+  - **混合在 sRGB 空间**（线性化之前）：本效果的验收基准是「对照 vanilla 截图」，同样的 30% 红洗在线性空间混合会更暗更饱和。非白 tint 的实体其 overlay 会被 tint 二次调制，而所有真正被注意到的红闪都是白 tint，那里与 vanilla 逐位同构。
+- **`submitFlame` 已实现**（`9c72ebd`）：按 `FlameFeatureRenderer` 的构造（bounding box 上堆叠面向相机的 quad、fire_0/fire_1 交替、隔对镜像、每级缩 10% 步进 0.45）捕获为真实 cutout 几何进实体 mesh，`Prim.emission=1`。火因此照亮地面并进入反射/GI。
+  - **已知代价**：billboard 进 capture 会让燃烧中的静止实体失去 rigid-reuse（相机一转顶点就动）。判定按捕获顶点比对，所以失败模式是「少一次复用」而非「火焰朝向卡住」；能保住复用的替代方案（独立光栅 pass）恰恰是进不了反射的那种。
+  - 零宽实体已挡（vanilla 用宽度作除数且按常量步进，宽度 0 会死循环）。
+- **冰冻：计划前提不成立，本里程碑不做**。overlay 由 `hasRedOverlay` 驱动，而它是 `hurtTime > 0 || deathTime > 0`；26.2 既无 `powder_snow_outline` 贴图也无引用它的渲染器。若将来要做冰冻，那是独立机制而非本条通路的扩展。
+- 隐身保持整体跳过（「隐身生物穿甲不可见」记为已知简化）。
+- **附魔 glint：按 D28 走近似档，已实现**（`Prim.flags` bit0 = `ENTITY_PRIM_GLINT`）。`submitItem` 的 `foilType`（此前收到即丢弃）与 `submitModel` 的四个 glint RenderType（`entityGlint`/`armorEntityGlint`/`glint`/`glintTranslucent`，按单例身份比较，沿用 `RenderTypes.lines()` 的既有范式）都置位；glint pass 与 banner pattern 同样拿一个 decal rank，因为它是**与本体完全共面的重复网格**，不给 rank 会在 BVH 里打平手。shader 把它渲染成会呼吸的紫色 sheen（tint 混合 + 自发光），而不是把滚动贴图当 albedo 着色。
+  - **相位用 `pc.frameIndex` 而非世界时钟**：rchit 的铁律是绝不解引用 `WorldPush`（§3.6），而 `frameIndex` 本就在每次命中都读的 push constants 里。代价是微光速率跟随帧率而非世界时间——这是不为一个装饰性效果增加逐命中 BDA load 的诚实定价。
+  - 常数标注 **PROVISIONAL**（`GLINT_TINT` 等）：按「读起来像 vanilla 的紫」选的，无推导。
+- **2026-08-05 首轮游戏内验收结果**：受伤红闪 ✅；火焰在反射里可见 ✅；但火焰与 glint **都「看得见却不发光」**。两个不同根因，均已修（`95468c6`）：
+  1. **火焰**：`Prim.normal.w` 在本管线里**只是遮罩**，`evaluateMaterial` 用材质头里的强度去乘它；而火焰当时用的 `entityFallbackId` 是 `emissionSource=NONE` 编译的，强度为 0 ⇒ 遮罩 1 × 强度 0 = 不发光。改用**火焰精灵自己的块图集材质**（火是光照 15 的方块，发光编译器本就给了它真实强度）——顺带让实体火焰与火焰方块共用同一材质。
+  2. **glint**：常数单位写错。管线的发光是 HDR 量纲（满发光纹素 = `EMISSIVE_STRENGTH` 5，上限 32），而我按 0–1 乘子写了 0.30，比任何会发光的东西暗一个数量级。改为 2.0（刻意低于基线，让附魔物是 sheen 而不是灯）。
+- **结构性事实，不是 bug**：实体**永远不进光源 buffer**（`RtLightCollector` 只收地形自发光 quad）。所以燃烧实体会亮、在反射里亮、并通过**恰好打到它的 GI 光线**给附近表面一点间接光，但**不会被 NEE 采样**，因此照不亮房间。要让它成为真光源＝ M18 收集层 + ReSTIR 采样（D3 明确推迟）。用户反馈里的「没有光参与」一半是上述 bug、一半是这条。
+- **2026-08-05 复测：全部通过，M19 验收完成**。火焰自发光并在水面反射里发光、附魔物有紫色微光、受伤红闪与无 overlay 实体维持首轮结果、附魔盔甲的 glint decal rank 未出现共面闪烁。运行日志零异常（唯一报错是离线开发环境的鉴权 401，与 M19 之前那次同源）。
 
 ### M20 粒子完善（D4-A：几何路线分步）
 
@@ -493,7 +510,8 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 - **粒子烟雾体积化（D4-B）**：烟雾/云雾/爆炸尘类粒子把密度注入统一 Medium 非均质场（真体积感：透光、自阴影、雾内相位），火焰类仍为发光几何。依赖：M15 march 路径 + 粒子分类表 + 密度注入网格。**等缺失项补全 + ReSTIR + 首个正式版后再定**（2026-08-02 用户原话）。
 - 非 `SingleQuadParticle` 粒子捕获（物品拾取、elder guardian 等，现静默跳过）。
-- 名牌 ghost 穿墙显示（现只隐藏，v1 简化）；附魔 glint 完整双层滚动 UV；隐身生物穿甲显示。
+- 名牌 ghost 穿墙显示（现只隐藏，v1 简化）；隐身生物穿甲显示。
+- **附魔 glint 完整双层滚动 UV（2026-08-05 用户裁定：先按近似档走，此项作为后续改进保留）**：复制 vanilla 的两层不同速度/角度 UV 滚动 + 叠加混合，用真 glint 贴图。视觉最忠实；代价是要给每个附魔物额外几何层或在 rchit 多采一张贴图并传 UV 变换，需要占新的 lane/材质位，工作量比现档大一级。**有想法后再评估**，届时按 §10 流程请示。
 - 焦散 `CAUSTIC_MAX` 夹平重审（色散显色阈值 ~100× 的嫌疑，动它会改变焦散观感）。
 - 发光体 MIS（ReSTIR 自带，不单独做）。
 - NRD + FSR（AMD 可玩性）、LOD（README TODO）。
@@ -555,6 +573,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | F13 | 计划里的定量缓解手段必须先测量或标注未测 |
 | F14 | shader 编译、`spirv-val` 与源码结构测试只能证明静态契约；Slang 后端聚合量错编必须由真实 GPU 边界 probe 裁决 |
 | F15 | shader probe 会改变寄存器活跃性与优化结果；带 probe 的连续成功必须在删掉一次性观察点后复验。“进入世界几秒后变化”不能自动归因给 pipeline cache、GC、区块/TLAS 或时域后处理 |
+| F16 | **以 float lane 搬运整数位型的 ABI，必须对全取值域做 round-trip 测试。** M19 的 overlay 单 lane 存 `0xAARRGGBB` 时，白色 RGB 把 1 填进 float 指数位，alpha=127 编码成 `0x7FFFFFFF`（NaN，JVM 允许规范化 ⇒ 静默改色），而 alpha=127 是白闪斜坡上的普通取值。**穷举测试抓到，事前推理没有**——同一风险适用于 `materialId` 之外任何新占用的 lane |
 
 仪器教训：曝光日志 `now - Long.MIN_VALUE` 溢出为负 ⇒ 永久沉默——「为回答『源是否过亮』而造的仪器整个会话什么都没报，沉默看起来和『没变化』一样」；水系数诊断打印了**被拒模型**的数字（该被对账的那行本身错了）；只记录 post 值会把传输/复制/调用三个边界混在一起；启动早期 probe 可能来自上一代缓存 pipeline；验证层无 messenger 时静默（`vk_layer_settings.txt` 的存在理由）；归档文件名不带配置 ⇒ 拿游走档比 thin 档差点报回归。
 
@@ -653,6 +672,12 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 21A/D27 把 current/outer flags 压入唯一活动字并直接从 queue `pathFlags` 解码。`codex-neoforge-21A-packed-flags-raw-stdout.log` 共 197 条，current code 恒为 1、`firstScatter>0`，terrain resident 由 38 增至 2604；删除 raw 读取并恢复普通 profile 后，`codex-neoforge-21A-final-clean-stdout.log` 共 211 条、0 异常，profile 恒为 1、散射非零，resident 至 2252。它通过了 observer-effect cleanup 闸门。
 - `diagnostics.water-medium-trace` 继续作为通用运行期仪器。每条 `RT water-medium probe` 记录 `prefixLen`、`prefixScatter`、`prefixT`、`leaf`、`composite`、`prefixFraction`、`mediumSkyRadiance`、`skyOpen`、向上 `waterHitT`、fallback depth、surface Y、首叶首段的 `firstSegmentLen/firstScatter/firstT/firstHit/escaped/mediumProfile`，以及 resident/published/desired/inFlight/missing/instances。一次性 `[DEBUG-medium-flags]` 与 raw `firstMediumCode` 已删除。证据日志包括 `codex-neoforge-{19A-prepost,20A-authoritative-stack,20B-scalar-state,20B-scalar-state-rerun,20B-final-clean,20B-clean-rawflag,21A-packed-flags-raw,21A-final-clean}-stdout.log`。
 
-**同日确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
+### 2026-08-05 M19 实体 overlay 裁决（D28，用户选定）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D28 | 附魔 glint 方案（用户选 A，B 留档） | **近似档：`Prim.flags` 一个 bit + shader 紫色 sheen（tint 混合 + 自发光呼吸）**；完整双层滚动 UV 记入 §8.6 可选区，「后面有想法了再说」 | 零新几何、零新贴图采样、不动 ABI（`flags` lane 本就恒 0），且附魔物在反射与 GI 里也发光——vanilla 的屏幕空间 pass 在那里根本不存在。与 vanilla 的差距：没有那层斜向滑动的条纹质感，只是「在发光」。相位用 `pc.frameIndex` 是为守住「rchit 不解引用 WorldPush」的铁律，代价是速率跟随帧率 |
+
+**2026-08-02 确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 
 **当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。

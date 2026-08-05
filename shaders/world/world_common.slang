@@ -394,6 +394,10 @@ public static const uint MATERIAL_WATER = 1u;
 public static const uint MATERIAL_PARTICLE = 2u;
 public static const uint MATERIAL_DIELECTRIC = 3u;
 
+// Entity prim flags (Prim.flags). Bit 0: this submission carried an enchantment foil, so the hit shader
+// gives it a violet sheen instead of shading the glint pass as ordinary albedo.
+public static const uint ENTITY_PRIM_GLINT = 1u;
+
 // Entity per-triangle record (48 B). The final lane mirrors TerrainPrim's integer material metadata.
 public struct Prim {
     public float4 normal; // xyz = geometric normal, w = per-primitive emission strength

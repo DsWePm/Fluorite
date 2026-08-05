@@ -50,6 +50,20 @@ static const float RAY_CONE_MIN_WIDTH = 1.0e-5;
 static const float RAY_CONE_MIN_TEXEL_FOOTPRINT = 1.0e-4;
 static const float RAY_CONE_MAX_LOD = 12.0;
 
+// Enchantment foil, approximated (see the entity branch). PROVISIONAL: chosen to read as vanilla's
+// violet without a scrolling texture, not derived from anything. The phase axis is deliberately
+// irrational-ish so neighbouring faces of a cube do not pulse in lockstep, and the rate is per FRAME
+// because the hit shader may not read the world clock.
+static const float3 GLINT_TINT = float3(0.62, 0.36, 0.96);
+static const float3 GLINT_PHASE_AXIS = float3(1.7, 1.3, 1.1);
+static const float GLINT_TINT_WEIGHT = 0.35;
+// In the SAME HDR units the material pipeline emits in, where EMISSIVE_STRENGTH = 5 is what a fully
+// emissive texel gets and 32 is the ceiling. The first version used 0.30 as though this were a plain
+// 0..1 multiplier, which put the sheen an order of magnitude under anything else that glows -- visible
+// as a tint, invisible as light. Kept well under the baseline so a foil reads as a sheen, not a lamp.
+static const float GLINT_EMISSION = 2.0;
+static const float GLINT_RATE = 0.02;
+
 float2 texSizePx(Sampler2D t) {
     uint w, h;
     t.GetDimensions(w, h);
@@ -329,7 +343,42 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float4 entityTexel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(euvCoord, entityLod);
         MaterialHeader header = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
         uint material = header.model;
-        float3 baseAlbedo = srgbToLinear(entityTexel.rgb) * pr.tint.rgb;
+        // Vanilla's hurt / flash colour overlay. The CPU resolved which texel of vanilla's overlay
+        // texture applies (RtEntityCapture.packOverlay) and split it across two lanes: aux0 carries the
+        // colour as 0x00RRGGBB, aux1 the strength as an ordinary float. Vanilla's own blend is
+        //
+        //     color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)      -- entity.fsh
+        //
+        // whose alpha runs backwards (1 means NO overlay); the strength here is already 1 - alpha, so
+        // BOTH lanes are zero-is-identity and a prim from any path that never sets one stays untouched.
+        //
+        // Blended in the texture's own sRGB space, before linearisation, because the reference for this
+        // effect is what vanilla draws rather than a transport argument: the same 30% wash mixed in
+        // linear comes out darker and more saturated than the flash players recognise. An entity whose
+        // tint is not white then modulates the overlay by that tint, while every hurt flash that matters
+        // is white-tinted -- where this is vanilla's arithmetic exactly.
+        float overlayStrength = asfloat(pr.aux1);
+        float3 overlayRgb = float3(float((pr.aux0 >> 16) & 0xFFu),
+                                   float((pr.aux0 >> 8) & 0xFFu),
+                                   float(pr.aux0 & 0xFFu)) * (1.0 / 255.0);
+        float3 entitySrgb = lerp(entityTexel.rgb, overlayRgb, overlayStrength);
+        // Enchantment foil. Approximated as a violet sheen that breathes, rather than replicating
+        // vanilla's two counter-scrolling copies of the glint texture: this costs no extra geometry, no
+        // second texture fetch and no new lane, and an enchanted item reads as enchanted in reflections
+        // and in GI, where vanilla's screen-space pass never appeared at all. The scrolling-UV version
+        // is recorded as an optional feature.
+        //
+        // Phased on pc.frameIndex rather than a world clock BECAUSE THE HIT SHADER MUST NOT DEREFERENCE
+        // WorldPush (see the note at the top of this file): frameIndex is already in the push constants
+        // read on every hit. The cost is a shimmer whose rate follows the frame rate rather than world
+        // time, which is the honest price of not adding a per-hit BDA load for a decorative effect.
+        float glintSheen = 0.0;
+        if ((pr.flags & ENTITY_PRIM_GLINT) != 0u) {
+            float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+            glintSheen = 0.5 + 0.5 * sin(dot(hitPos, GLINT_PHASE_AXIS) + float(pc.frameIndex) * GLINT_RATE);
+            entitySrgb = lerp(entitySrgb, GLINT_TINT, GLINT_TINT_WEIGHT * glintSheen);
+        }
+        float3 baseAlbedo = srgbToLinear(entitySrgb) * pr.tint.rgb;
         float3 albedo = material == MATERIAL_DIELECTRIC
                 ? lerp(float3(1.0, 1.0, 1.0), baseAlbedo, entityTexel.a) : baseAlbedo;
         Surface surface = evaluateMaterial(header, euvCoord, entityLod, albedo, n,
@@ -351,6 +400,9 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         }
         payload.f0 = half3(surface.f0);
         float emission = material == MATERIAL_OPAQUE ? surface.emission : 0.0;
+        // The sheen glows in its own right, so an enchanted item is visible as enchanted in a dark room.
+        // max rather than +: a foil on an already-emissive material must not stack into a firefly.
+        emission = max(emission, GLINT_EMISSION * glintSheen);
         float sss = material == MATERIAL_OPAQUE ? surface.sss : 0.0;
         payloadSetPacked(payload, material, surface.roughness, surface.metalness,
                 emission, sss, header.params.z, header.params.w,
