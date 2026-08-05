@@ -43,7 +43,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04）；**M19 overlay + 火焰代码完成待游戏内验收，glint 请示点未动工（2026-08-05）** | §7，决策依据 §10 D1–D27 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04）；**M19（overlay + 火焰 + glint 近似档）2026-08-05 游戏内验收通过 ✅** | §7，决策依据 §10 D1–D28 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -216,6 +216,8 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | `RtEntities` | 名牌不进 RT mesh（billboard 每帧毁掉 rigid-reuse/MV）；假 blob 阴影正确丢弃（RT 有真阴影）；`isInvisible()` 整体跳过 |
 | `RtParticleCapture` | 粒子颜色作 raw albedo 直通，**vanilla lightmap 刻意不烘进**（RT 自己打光）；相机相对坐标经每帧 offset 转 rebased 空间 ⇒ TLAS identity |
 | `RtGlowOutlineFeature` | 「Never makes the entity itself emissive」——glow 是光栅轮廓 |
+| `Prim.normal.w` + `evaluateMaterial` | **它是遮罩，不是强度。** 真实 HDR 强度烘在材质头里（`EMISSIVE_STRENGTH=5` 基线、上限 32），`evaluateMaterial` 结尾把两者相乘。所以给自发光实体几何挑材质时**必须挑一个本身带强度的**——`entityFallbackId` 是 `emissionSource=NONE` 编译的，强度 0，遮罩给 1 也照样不发光（M19 火焰踩过）。同理，shader 里任何新的自发光量都要用同一 HDR 量纲，别按 0–1 乘子写 |
+| 实体不是 NEE 光源 | `RtLightCollector` 只收地形自发光 quad。**实体自发光只在直击与偶然打到它的 GI 光线里生效**，照不亮房间——这是结构现状不是缺陷，真光源要 M18 收集层 + ReSTIR 采样（D3） |
 | `RtWorldOverlay` | overlay 必须画在 display 分辨率（细线过不了 DLSS-RR）；feature 从共享池拿 scratch，**never own one-off pools** |
 | `RtBlockOutlineFeature` | 遮挡用 inline `rayQueryEXT` 打 TLAS，不用深度缓冲（`gDepth` 在 RR 内部分辨率） |
 
@@ -452,7 +454,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
   1. **火焰**：`Prim.normal.w` 在本管线里**只是遮罩**，`evaluateMaterial` 用材质头里的强度去乘它；而火焰当时用的 `entityFallbackId` 是 `emissionSource=NONE` 编译的，强度为 0 ⇒ 遮罩 1 × 强度 0 = 不发光。改用**火焰精灵自己的块图集材质**（火是光照 15 的方块，发光编译器本就给了它真实强度）——顺带让实体火焰与火焰方块共用同一材质。
   2. **glint**：常数单位写错。管线的发光是 HDR 量纲（满发光纹素 = `EMISSIVE_STRENGTH` 5，上限 32），而我按 0–1 乘子写了 0.30，比任何会发光的东西暗一个数量级。改为 2.0（刻意低于基线，让附魔物是 sheen 而不是灯）。
 - **结构性事实，不是 bug**：实体**永远不进光源 buffer**（`RtLightCollector` 只收地形自发光 quad）。所以燃烧实体会亮、在反射里亮、并通过**恰好打到它的 GI 光线**给附近表面一点间接光，但**不会被 NEE 采样**，因此照不亮房间。要让它成为真光源＝ M18 收集层 + ReSTIR 采样（D3 明确推迟）。用户反馈里的「没有光参与」一半是上述 bug、一半是这条。
-- **验收（待用户复测）**：暗处点燃生物——火本身应明显发光并在水面反射里发光；暗处看附魔物应有紫色微光；受伤红闪与无 overlay 实体维持首轮结果。
+- **2026-08-05 复测：全部通过，M19 验收完成**。火焰自发光并在水面反射里发光、附魔物有紫色微光、受伤红闪与无 overlay 实体维持首轮结果、附魔盔甲的 glint decal rank 未出现共面闪烁。运行日志零异常（唯一报错是离线开发环境的鉴权 401，与 M19 之前那次同源）。
 
 ### M20 粒子完善（D4-A：几何路线分步）
 
