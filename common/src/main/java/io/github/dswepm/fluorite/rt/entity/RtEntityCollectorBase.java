@@ -628,9 +628,20 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         capture.clearUvRemap(); // sprite UVs below are already atlas-space
         capture.currentOrder = 0;
         capture.currentOverlay = 0; // fire is its own layer; the wearer's hurt flash does not tint it
+        capture.currentGlint = false;
         capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(TextureAtlas.LOCATION_BLOCKS);
-        capture.currentMaterialId = RtMaterialRegistry.INSTANCE.entityFallbackId(false);
         capture.currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT; // cutout: the sprite is mostly empty
+        // The fire sprites' OWN block-atlas materials, not the entity fallback, and the difference is the
+        // whole reason the first version of this drew fire that lit nothing. Prim.normal.w is only a MASK
+        // here: evaluateMaterial multiplies it by the emission strength baked into the material header,
+        // and the entity fallback is compiled with emissionSource NONE, so its strength is zero and a
+        // mask of 1 resolves to no light whatsoever. Fire is a light-15 block whose sprites the emission
+        // compiler already gives a real strength — so this is the same material the fire BLOCK is shaded
+        // with, which is also the answer to "why should an entity's flames and a campfire's agree".
+        setSpriteMaterial(fire0, false);
+        int fire0Material = capture.currentMaterialId;
+        setSpriteMaterial(fire1, false);
+        int fire1Material = capture.currentMaterialId;
 
         // Same construction as FlameFeatureRenderer.prepare, on a copy of the pose so the caller's stack
         // is left as we found it.
@@ -643,7 +654,9 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         float yOff = 0.0f;
         float z = 0.0f;
         for (int i = 0; remaining > 0.0f; i++) {
-            TextureAtlasSprite sprite = i % 2 == 0 ? fire0 : fire1;
+            boolean even = i % 2 == 0;
+            TextureAtlasSprite sprite = even ? fire0 : fire1;
+            capture.currentMaterialId = even ? fire0Material : fire1Material;
             float u0 = sprite.getU0();
             float u1 = sprite.getU1();
             if (i / 2 % 2 == 0) { // vanilla mirrors alternate pairs so the stack does not read as tiled

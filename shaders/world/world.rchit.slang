@@ -57,7 +57,11 @@ static const float RAY_CONE_MAX_LOD = 12.0;
 static const float3 GLINT_TINT = float3(0.62, 0.36, 0.96);
 static const float3 GLINT_PHASE_AXIS = float3(1.7, 1.3, 1.1);
 static const float GLINT_TINT_WEIGHT = 0.35;
-static const float GLINT_EMISSION = 0.30;
+// In the SAME HDR units the material pipeline emits in, where EMISSIVE_STRENGTH = 5 is what a fully
+// emissive texel gets and 32 is the ceiling. The first version used 0.30 as though this were a plain
+// 0..1 multiplier, which put the sheen an order of magnitude under anything else that glows -- visible
+// as a tint, invisible as light. Kept well under the baseline so a foil reads as a sheen, not a lamp.
+static const float GLINT_EMISSION = 2.0;
 static const float GLINT_RATE = 0.02;
 
 float2 texSizePx(Sampler2D t) {
