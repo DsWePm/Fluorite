@@ -417,7 +417,15 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - **D20 成本与物理边界**：不增加阴影射线预算；surface NEE 复用既有 2 个 RNG，水/compute 估计器增加相同的 2 个 RNG，另有方向构造及逐方向 LUT/解析运算；地平线下零贡献样本可少发射线。默认 marched、water、froxel 是所选有限天体分布下的随机估计，误差应表现为可被时域降噪的噪点而非整屏跳变；既有 D9 分层近似仍非严格 `f/pdf`。`sun-shadow-rays=0` 的网格档把 BA 存为可见样本坐标一阶矩，再在过滤后的均值方向求非线性颜色/相位，属于有意的低成本有偏近似，不宣称与逐射线档等价。
 - **验收**：以默认非零太阳角半径缓慢跨越日出、日落各一次；水下、开阔地空气雾、室内洞口和 froxel/marched 切换都不得再出现全屏同帧蓝↔橙或亮度阶跃。暂时关闭 RR/时域积累时，允许看到逐像素/逐 froxel 随机噪声，若仍是整块/整屏同刻翻转则失败。`sun-angular-radius=0` 会退化为点光源硬切，不能拿来判定面积光连续性。另记录 `gpu.froxelBake`、`gpu.visBake`、`bench` 与 `bench-water` 同会话 A/B；性能数字回来后再请示是否需要质量档调整。11 份语言 JSON 已删除退役 UI 键。
 
-### M17 体积散射顶点 + NEE — 质量档（D1-C）
+### M17 体积散射顶点 + NEE — 质量档（D1-C）— **2026-08-05 代码完成，待游戏内验收与性能实测**
+
+**已落地**（`0c005b3` + `765abfb`，两个默认关的开关）：
+- `volumetrics.scatter-vertex`：每段按 σt·T 采一个散射事件。**两种介质共用同一个 `f/pdf` 权重**——换元到密度积分深度后高度雾的被积函数变成均质的形式，只有 τ→位置的映射不同（均质是常数、ambient 复用分层用的八步二分）。标量 σ 驱动 pdf、RGB 系数驱动 f，二者之比即光谱修正；灰介质下相消为 `albedo·(1−T)`，与闭式恒等。
+- **D15 结构性缺陷已修**：水的天空项不再从段起点探一次并用单标量门控整段，深度与开放度都成为采样点自身的属性——头顶一方块只压暗它下面的水，不再整屏归零，深水洞口也不再一方块级跳变。
+- `volumetrics.emitter-nee`（嵌套在顶点开关下）：`volumeNee` 住在 `lighting.slang`、由 raygen 调用（`lighting` 导入 `volume`，依赖单向），复用 M6 预留的全部**选择**机制（抖动网格 cell、功率 alias、混合 pdf 重建），只把目标换成相位函数。**M=1、无 reservoir、无复用、无解析 MIS 权重、不碰 `evalSampleContrib`**——守 ReSTIR 前向约束。
+- 事件由 `integrateSegment` 统一采一次经 `SegmentIntegral` 导出：太阳项与发光体项描述的是**同一次散射**，各采各的等于一段里塞两次散射。
+
+**待办**：⚖ 相位采样 vs 光源采样的 MIS（按实测噪声带图请示）· ⚖ 默认档位（按实测成本请示）· 成本闸门 `bench` + `bench-water`（后者仍未建立，见 §4.4）· 游戏内验收。
 
 - 新开关（如 `volumetrics.scatter-vertex`，默认关）：每段按 τ 均匀逆采样一个散射距离（雾的高度积分解析可逆——采样 τ 均匀即按 σt·T 重要性；水均质更简单），在散射点做：
   - 太阳 NEE：1 条阴影线，相位加权（与 15.1 采样器共用纪律）；
@@ -671,6 +679,12 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 删除 caller/pre/post lanes 后，通用 probe 连续 200 条仍为 profile=2/散射零；随后不增加 layout、只把既有 `firstHit.w` 暂时改记 raw current flags，连续 44 条均为 3。结论：诊断读取改变了 flags 的活跃性/寄存器分配并偶然压住 Slang 错编，前两轮是 observer effect，不是修复；pipeline cache、GC 与 terrain 阈值仍未被这组数据证明为时间现象根因。
 - 21A/D27 把 current/outer flags 压入唯一活动字并直接从 queue `pathFlags` 解码。`codex-neoforge-21A-packed-flags-raw-stdout.log` 共 197 条，current code 恒为 1、`firstScatter>0`，terrain resident 由 38 增至 2604；删除 raw 读取并恢复普通 profile 后，`codex-neoforge-21A-final-clean-stdout.log` 共 211 条、0 异常，profile 恒为 1、散射非零，resident 至 2252。它通过了 observer-effect cleanup 闸门。
 - `diagnostics.water-medium-trace` 继续作为通用运行期仪器。每条 `RT water-medium probe` 记录 `prefixLen`、`prefixScatter`、`prefixT`、`leaf`、`composite`、`prefixFraction`、`mediumSkyRadiance`、`skyOpen`、向上 `waterHitT`、fallback depth、surface Y、首叶首段的 `firstSegmentLen/firstScatter/firstT/firstHit/escaped/mediumProfile`，以及 resident/published/desired/inFlight/missing/instances。一次性 `[DEBUG-medium-flags]` 与 raw `firstMediumCode` 已删除。证据日志包括 `codex-neoforge-{19A-prepost,20A-authoritative-stack,20B-scalar-state,20B-scalar-state-rerun,20B-final-clean,20B-clean-rawflag,21A-packed-flags-raw,21A-final-clean}-stdout.log`。
+
+### 2026-08-05 M17 散射顶点职责边界（D29，用户选定 B）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D29 | 散射顶点承载哪些源（用户选 B，**在我提出保留意见后仍选定**） | **顶点承载全部三项**：太阳、水天空开放度、发光体 NEE；开档时闭式/分层太阳项严格关闭防双计 | 概念最统一，未来云与非均质介质天然复用同一个事件。**我提的保留意见并已确认成立**：这是换估计器——现有分层形式保留逐层精确闭式权重、只在层内采源，方差更低；单事件带精确 `f/pdf` 是严格 Monte Carlo，逐帧更噪，且会改变刚验收通过的观感。因此做成默认关的开关，且估计器**并列**而非编织进闭式路径，使「关档＝已发布代码路径」成为结构事实而非论断。射线预算不变（同样一条阴影线 + 一条向上探测，只是从采样点问）。灰介质下两者恒等于 `albedo·(1−T)`——这是二者若差异超出噪声时第一个该查的恒等式 |
 
 ### 2026-08-05 M19 实体 overlay 裁决（D28，用户选定）
 
