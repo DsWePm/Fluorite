@@ -716,6 +716,14 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 21A/D27 把 current/outer flags 压入唯一活动字并直接从 queue `pathFlags` 解码。`codex-neoforge-21A-packed-flags-raw-stdout.log` 共 197 条，current code 恒为 1、`firstScatter>0`，terrain resident 由 38 增至 2604；删除 raw 读取并恢复普通 profile 后，`codex-neoforge-21A-final-clean-stdout.log` 共 211 条、0 异常，profile 恒为 1、散射非零，resident 至 2252。它通过了 observer-effect cleanup 闸门。
 - `diagnostics.water-medium-trace` 继续作为通用运行期仪器。每条 `RT water-medium probe` 记录 `prefixLen`、`prefixScatter`、`prefixT`、`leaf`、`composite`、`prefixFraction`、`mediumSkyRadiance`、`skyOpen`、向上 `waterHitT`、fallback depth、surface Y、首叶首段的 `firstSegmentLen/firstScatter/firstT/firstHit/escaped/mediumProfile`，以及 resident/published/desired/inFlight/missing/instances。一次性 `[DEBUG-medium-flags]` 与 raw `firstMediumCode` 已删除。证据日志包括 `codex-neoforge-{19A-prepost,20A-authoritative-stack,20B-scalar-state,20B-scalar-state-rerun,20B-final-clean,20B-clean-rawflag,21A-packed-flags-raw,21A-final-clean}-stdout.log`。
 
+### 2026-08-05 M11 体积云动工前裁决（D33–D35，§6.2 政策要求，用户逐项选定）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D33 | 云的行进挂载点 | **独立 `cloud.slang` 纯光线函数，只在射线逃逸到天空的那一段调用**（仍在 sky break 之前，所以反射里成立） | **动工前才发现的事实**：`MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT` 名为非均质，但高度雾是**闭式积分**的——云是这套框架第一个真正需要数值 march 的客户，所以「挂进去」并非零成本的复用。而 M17 实测 raygen 逐段热路径极贵（发光体 NEE 一条阴影线 +20.9 ms），把 march 放进 `integrateSegment` 会让**每条弹射段都付寄存器与 ALU**，即使它在地面附近根本碰不到云层，还要把云壳剪裁塞进共享积分器。与 D2 同构：**接口统一、估计器分派**，「统一」只到接口层是有意的 |
+| D34 | 云的光照源档位 | **太阳自阴影短行进 + 双叶 HG + phi_fwd 扩散项 + LUT 环境（`mediumSkyRadiance`）** | phi_fwd 的推导前提就是「扩散衰减＝光学厚度 × 编译期常数」，能**搭在本来就要跑的太阳自阴影行进上**，边际代价约每步 2 exp + 1 rcp。不走 M17 散射顶点：云的 τ≫1，单事件估计器方差极大——**云专用近似存在的理由正是这个区间**（D5）。不走最简档：τ=20 时 Beer 已归零而真实云心仍亮，那正是 phi_fwd 里「只有吸收才真正移除光子」要解决的 |
+| D35 | 交付切分 | **分三片各自验收**：① 噪声烘焙 + 密度场 + 行进（能看见白云）② 光照：太阳自阴影 + 相位 + phi_fwd ③ 双层 + 相机邻近淡出 + 反射策略 | 每片可单独验收与回退；且**第①片就能把成本测出来**，而成本正是 R19 点名的风险（云的开销压垮已经很重的 trace）。一次性交付会让「超支时是哪一部分贵」无从定位——这正是 M17 发光体 NEE 花了一轮判据实验才排除射线的那类问题 |
+
 ### 2026-08-05 M20 粒子发光判定（D32，用户选定 A）
 
 | # | 议题 | 决策 | 物理与性能理由 |
