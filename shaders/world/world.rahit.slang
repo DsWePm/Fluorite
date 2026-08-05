@@ -81,6 +81,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
             stochasticAlpha = (materialHeader.features & MATERIAL_FEATURE_STOCHASTIC_ALPHA) != 0u;
             materialModel = materialHeader.model;
             materialTransmission = materialHeader.params.w;
+        } else {
+            // Particles have no material record to carry the feature, so it rides in the prim flags —
+            // set from SingleQuadParticle.Layer.translucent, which is vanilla's own classification. Every
+            // particle took the binary cutoff below before this, which is what made smoke end in a hard
+            // edge instead of thinning out.
+            stochasticAlpha = (epr.flags & PRIM_STOCHASTIC_ALPHA) != 0u;
         }
         if (stochasticAlpha) {
             uint salt = pid * 1664525u

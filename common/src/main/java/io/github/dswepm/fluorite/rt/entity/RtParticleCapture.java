@@ -31,8 +31,25 @@ public final class RtParticleCapture implements VertexConsumer {
     private int color = 0xFFFFFFFF;
     private int light = FULL_BRIGHT;
 
+    // Highest block-light level this particle reported for itself, across all its vertices and layers.
+    // Vanilla glowing particles raise this above the world's own value in getLightCoords —
+    // LavaParticle forces block 15, FlameParticle adds a smooth emission — so the EXCESS over the world
+    // light at the particle's position is its self-emission, and the ambient part cancels out. Taking the
+    // max rather than an average because the quantity is a property of the particle, not of a corner.
+    private int maxBlockLight;
+
     public RtParticleCapture(RtEntityCapture out) {
         this.out = out;
+    }
+
+    /** Start accumulating a fresh particle's reported light. */
+    public void beginParticle() {
+        maxBlockLight = 0;
+    }
+
+    /** Highest block-light level (0..15) this particle claimed for itself. */
+    public int maxBlockLight() {
+        return maxBlockLight;
     }
 
     /** Camera-relative → rebased-space offset (camPos − rebaseOrigin), added to every captured vertex. */
@@ -48,6 +65,8 @@ public final class RtParticleCapture implements VertexConsumer {
             return;
         }
         out.addVertex(x, y, z, color, u, v, 0, 0, 0f, 0f, 0f);
+        // Block occupies bits 4-7 of the packed lightmap (sky is bits 20-23) — LightCoordsUtil.block.
+        maxBlockLight = Math.max(maxBlockLight, (light >> 4) & 15);
         pending = false;
     }
 

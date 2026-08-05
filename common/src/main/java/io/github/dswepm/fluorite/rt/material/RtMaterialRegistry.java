@@ -58,7 +58,13 @@ public final class RtMaterialRegistry {
     // (formerly duplicated as a literal in world.rgen.slang and RtLightCollector). Baked into every
     // emissive RtMaterialDesc.emissionStrength at compile time (compileDesc/compileEntityDesc), times
     // any resource-pack emission.strength multiplier; see header()'s packing and RtMaterialOverrides.
-    private static final float EMISSIVE_STRENGTH = 5.0f;
+    /**
+     * The pipeline's HDR baseline for a fully emissive texel, and the unit every emissive path must
+     * speak in. Public because particles carry no material record to bake it into: their emission goes
+     * straight into the payload, so the capture has to reach the same number the material compiler uses
+     * or the two would glow at different rates for the same fire.
+     */
+    public static final float EMISSIVE_STRENGTH = 5.0f;
     private static final int EMISSION_STRENGTH_SHIFT = 8;
     private static final int EMISSION_STRENGTH_MASK = 65535;
     private static final float MAX_EMISSION_STRENGTH = 32.0f;
