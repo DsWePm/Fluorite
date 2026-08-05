@@ -35,6 +35,8 @@
   "fluorite.options.rt.entities.tooltip": "Include entities and block entities in the ray-traced scene.",
   "fluorite.options.rt.particles": "Ray-Traced Particles",
   "fluorite.options.rt.particles.tooltip": "Draw particles as camera-ray billboards inside the traced scene.",
+  "fluorite.options.rt.particleShadows": "Particle Shadows",
+  "fluorite.options.rt.particleShadows.tooltip": "Let particles cast shadows, so a column of campfire smoke darkens the ground beneath it. Shadow rays only: particles stay out of reflections and GI, where a camera-facing billboard would be seen edge-on. Costs any-hit work on every shadow ray that crosses a particle.",
   "fluorite.options.rt.glow": "Entity Glow Outline",
   "fluorite.options.rt.glow.tooltip": "Draw the vanilla Glowing-effect outline (through walls) around glowing entities.",
   "fluorite.options.rt.waterWaves": "Animated Water",

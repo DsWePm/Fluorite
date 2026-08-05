@@ -1329,6 +1329,21 @@ public final class FluoriteConfig {
             public static final BooleanSetting ENABLED = bool("fluorite.rt.entities", "entities.enabled", true);
             public static final BooleanSetting PARTICLES_ENABLED =
                     bool("fluorite.rt.particles", "particles.enabled", true);
+            /**
+             * Let particles cast shadows.
+             *
+             * <p>Particles are primary-ray-only otherwise, so a column of campfire smoke darkens nothing
+             * beneath it. This puts them in SHADOW rays only, on their own TLAS mask bit — reflections
+             * and GI stay off, because a camera-facing billboard seen from a reflected ray is edge-on and
+             * that is a different feature with a different cost. Staged deliberately (M20.3).
+             *
+             * <p>Costs any-hit work on every shadow ray that crosses a particle, and particles are alpha
+             * -tested, so the cost lands in the hottest shader in the frame. Measured before the default
+             * moves.
+             */
+            public static final BooleanSetting PARTICLE_SHADOWS =
+                    bool("fluorite.rt.entities.particleShadows", "entities.particle-shadows", false);
+
             public static final BooleanSetting GLOW_ENABLED =
                     bool("fluorite.rt.glow", "entities.glow.enabled", true);
             public static final BooleanSetting NAME_TAGS_ENABLED =

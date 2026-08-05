@@ -35,6 +35,8 @@
   "fluorite.options.rt.entities.tooltip": "Entitäten und Blockentitäten in die Raytracing-Szene einbeziehen.",
   "fluorite.options.rt.particles": "Raytracing-Partikel",
   "fluorite.options.rt.particles.tooltip": "Zeichnet Partikel als Billboards entlang der Kamerastrahlen in der berechneten Szene.",
+  "fluorite.options.rt.particleShadows": "Particle Shadows",
+  "fluorite.options.rt.particleShadows.tooltip": "Let particles cast shadows, so a column of campfire smoke darkens the ground beneath it. Shadow rays only: particles stay out of reflections and GI, where a camera-facing billboard would be seen edge-on. Costs any-hit work on every shadow ray that crosses a particle.",
   "fluorite.options.rt.glow": "Leuchtkontur von Entitäten",
   "fluorite.options.rt.glow.tooltip": "Zeichnet die Vanilla-Kontur des Glowing-Effekts (durch Wände) um leuchtende Entitäten.",
   "fluorite.options.rt.waterWaves": "Animiertes Wasser",

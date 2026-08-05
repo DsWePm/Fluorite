@@ -235,7 +235,7 @@ VolumeSunShadowSample traceVolumeSunShadow(float3 ro, float3 rd, float sampleT,
                                             float3 sunDir, bool useTransmittance) {
     VolumeSunShadowSample sample;
     sample.t = sampleT;
-    VisibilityResult shadow = visibilityMasked(CULL_SECONDARY_NO_SELF, ro + rd * sample.t,
+    VisibilityResult shadow = visibilityMasked(CULL_SHADOW_NO_SELF, ro + rd * sample.t,
                                                  sunDir, RAY_FAR);
     sample.transmittance = useTransmittance
             ? shadow.transmittance
@@ -704,7 +704,7 @@ float3 enclosedScatterVertexInScatter(ScatterVertex vertex, float3 sigmaT, uint 
             float horizLen = max(length(lightHoriz), 1.0e-6);
             float3 refractedLight = (lightHoriz / horizLen) * sinWater + float3(0.0, cosWater, 0.0);
             bool useVisibility = (worldPush.flags & 32768u) == 0u;
-            VisibilityResult shadow = visibilityMasked(CULL_SECONDARY_NO_SELF, vertex.pos,
+            VisibilityResult shadow = visibilityMasked(CULL_SHADOW_NO_SELF, vertex.pos,
                                                        refractedLight, RAY_FAR);
             float3 vis = useVisibility ? shadow.transmittance : float3(1.0, 1.0, 1.0);
             float sunWaterPath = shadow.waterHitT > 0.0
@@ -1209,7 +1209,7 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                                 worldPush.lightDir.w, fogSeed);
                         float3 vertexSunSource = sampledAmbientSunSource(
                                 seg.scatterPos, rd, lightSample.direction, phaseG, sunSigma);
-                        float3 vis = visibilityMasked(CULL_SECONDARY_NO_SELF, seg.scatterPos,
+                        float3 vis = visibilityMasked(CULL_SHADOW_NO_SELF, seg.scatterPos,
                                                       lightSample.direction, RAY_FAR).transmittance;
                         seg.inScatter += seg.scatterWeight * vertexSunSource * vis;
                     } else if (!scatterVertexOn()) {

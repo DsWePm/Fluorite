@@ -43,7 +43,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M12 | 交互水体仿真 | ⛔ 未开始 | 设计规格 §8.2 |
 | M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04）；**M19（overlay + 火焰 + glint）与 M17（散射顶点 + 发光体 NEE + D15 修复）均于 2026-08-05 游戏内验收通过 ✅**，M17 性能已实测（散射顶点 0.930× 反而更快、发光体 NEE +20.9 ms 挂起） | §7，决策依据 §10 D1–D31 |
+| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04）；**M19（overlay + 火焰 + glint）与 M17（散射顶点 + 发光体 NEE + D15 修复）均于 2026-08-05 游戏内验收通过 ✅**，M17 性能已实测（散射顶点 0.930× 反而更快、发光体 NEE +20.9 ms 挂起）；**M20 的 20.1/20.2/20.3 同日验收通过**，粒子阴影成本两次未能测出（需 `bench-particles` 世界），默认保持关 | §7，决策依据 §10 D1–D32 |
 | — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
 
 ---
@@ -492,13 +492,20 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - **结构性事实，不是 bug**：实体**永远不进光源 buffer**（`RtLightCollector` 只收地形自发光 quad）。所以燃烧实体会亮、在反射里亮、并通过**恰好打到它的 GI 光线**给附近表面一点间接光，但**不会被 NEE 采样**，因此照不亮房间。要让它成为真光源＝ M18 收集层 + ReSTIR 采样（D3 明确推迟）。用户反馈里的「没有光参与」一半是上述 bug、一半是这条。
 - **2026-08-05 复测：全部通过，M19 验收完成**。火焰自发光并在水面反射里发光、附魔物有紫色微光、受伤红闪与无 overlay 实体维持首轮结果、附魔盔甲的 glint decal rank 未出现共面闪烁。运行日志零异常（唯一报错是离线开发环境的鉴权 401，与 M19 之前那次同源）。
 
-### M20 粒子完善（D4-A：几何路线分步）
+### M20 粒子完善（D4-A：几何路线分步）— **2026-08-05 20.1/20.2/20.3 游戏内验收通过 ✅**
 
-- **20.1 发光**：粒子类型→emission 表（`flame`/`soul_fire_flame`/`lava`/`end_rod`…）+ 仅对表内类型的贴图亮度启发（遵守「eligibility external」纪律，§3.1）；`world.rchit.slang` `MATERIAL_PARTICLE` 分支允许 emission（现硬编码 0），值走 Prim emission lane（粒子路径现写 0）。
-- **20.2 半透明**：`world.rahit.slang` 把 `PARTICLE_BIT` 纳入 stochastic alpha（现仅 `ENTITY_BIT`，粒子落在二值 `ENTITY_ALPHA_CUTOFF=0.1`——烟雾硬边的根因）。
-- **20.3 mask 分步开放**：先让粒子进阴影线 cull mask（烟雾投影），⚖ **请示点**：实测 any-hit 成本后带数字请示是否继续开反射/GI 位；`MAX_PARTICLES=1024` 上限重评。
-- **20.4** 发光粒子聚合喂 M18 收集层（被采样等 ReSTIR）。
-- **验收**：篝火/火焰粒子发光；烟雾边缘软化对照 vanilla；阴影 A/B + bench 数字；非 `SingleQuadParticle` 跳过记为已知缺口（§8.6）。
+三个缺陷共用一个根源：**粒子不携带材质记录**，所以一切经 `MaterialHeader` 到达其他几何的机制，在它们这里全部断掉。
+
+- **20.1 发光（D32：超额法，非类型表）**：粒子分支此前无条件写 emission=0。vanilla 标记发光粒子的方式是**在 `getLightCoords` 里把自己的方块光抬到世界光之上**（`LavaParticle` 强制 15、`FlameParticle` 用 `addSmoothBlockEmission`），而捕获侧把 `setLight` 整个丢弃了。现在存的是**粒子自报值减去它所在位置的世界方块光**——只有这个差额属于粒子自己：火焰在暗洞与火把旁都发光，而飘过火把的烟雾自报的正是火把的光、减完为零、保持不发光。**加上就等于把火把重复计一次**，路径追踪已经在照亮那团烟。
+  - **计划前提的修正**：路线图原写「粒子类型→emission 表」。超额法让 **vanilla 决定什么发光**（与 §3.1 `RtEmissionHeuristic` 的「资格判定外置」同构），不必维护会随版本失效的类型表，且**模组粒子自动正确**。
+  - **与 M19 的陷阱正好相反**：实体火焰需要一个自带强度的材质（`evaluateMaterial` 用材质头强度乘遮罩）；粒子**不索引材质表**，没有东西可乘，所以捕获侧写的是**最终 HDR 值**。为此把 `EMISSIVE_STRENGTH` 提为 public，免得两条路径为同一团火用不同的发光速率。
+- **20.2 半透明**：粒子过去全部掉进二值 `ENTITY_ALPHA_CUTOFF=0.1`（any-hit 从材质头读 stochastic-alpha 特性，而粒子从不索引该表）——这就是烟雾硬边的根因。现在 `SingleQuadParticle.Layer.translucent`（vanilla 自己的分类）经 prim flags 传入，驱动与实体相同的抖动。M19 的 `currentGlint` 布尔顺带泛化成 flags 字：两个独立布尔写同一条 lane，正是 D11 在别处消除掉的形状。
+- **20.3 阴影：独立 mask 位，只进阴影线**。粒子过去只对主光线可见。现在经 `CULL_PARTICLE_SHADOW`（TLAS 位 3）进入阴影线，**反射与 GI 仍关闭**——「挡光」与「出现在反射里」是两个问题，而面向相机的 billboard 正是两者分歧最大的情形（从反射光线看过去它是侧对的）。设共享的 bit 0 会让两个特性一起上线，且无法分别定价。
+  - **八处 masked visibility 里三处刻意不动**：水路径的向上探测测的是水柱深度与天空开放度，一团飘过的烟雾不该改变这两个答案——含进去不是多花钱，是**静默的物理错误**。
+  - **成本未测，默认保持关**（F13）。两次尝试都失败，原因不同：第一次采集脚本把键插进 `[particles]` 段，而设置声明在 `entities.particle-shadows`，于是写出一个没人读的孤儿键——**若没被打断，它会「成功」报出「零成本」**（§9.5 仪器教训）。第二次采集器已能验证键确实翻动，但 `bench` 世界的粒子只出现在约 15% 的帧、最多 64 个，且不确定是否位于光路上；有粒子帧的差值 **+0.003 ms 比无粒子帧的噪声零点 −0.007 ms 还小**。这是 §4.4「在没有大水体的世界里测水」的原样重演。
+  - **待办**：`--adopt bench-particles`（烟柱位于阳光与地面之间的固定机位）后重采 · `MAX_PARTICLES=1024` 上限重评 · ⚖ 反射/GI 位是否继续开放，等成本数字。
+- **20.4** 发光粒子聚合喂 M18 收集层（被采样等 ReSTIR）——未做。
+- **已知缺口**：非 `SingleQuadParticle` 粒子（物品拾取、远古守卫者）仍整个跳过（§8.6）。
 
 ---
 
@@ -612,7 +619,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | F17 | **同一位姿、同一构建，跨批次仍然不可比；每批的第一次运行必须整个丢弃。** 实测：首次运行的 `froxelBake` 0.582 vs 同批其余 0.253，两批之间 `tracePrimary` 0.61 vs 0.93 且 `traceIndirect` 方向相反（降频解释不了）。比值的分子分母必须同批且均非首次运行——第一次 M17 采集就因此报出两个后来收回的数。详见 §4.4.1 |
 | F16 | **以 float lane 搬运整数位型的 ABI，必须对全取值域做 round-trip 测试。** M19 的 overlay 单 lane 存 `0xAARRGGBB` 时，白色 RGB 把 1 填进 float 指数位，alpha=127 编码成 `0x7FFFFFFF`（NaN，JVM 允许规范化 ⇒ 静默改色），而 alpha=127 是白闪斜坡上的普通取值。**穷举测试抓到，事前推理没有**——同一风险适用于 `materialId` 之外任何新占用的 lane |
 
-仪器教训：曝光日志 `now - Long.MIN_VALUE` 溢出为负 ⇒ 永久沉默——「为回答『源是否过亮』而造的仪器整个会话什么都没报，沉默看起来和『没变化』一样」；水系数诊断打印了**被拒模型**的数字（该被对账的那行本身错了）；只记录 post 值会把传输/复制/调用三个边界混在一起；启动早期 probe 可能来自上一代缓存 pipeline；验证层无 messenger 时静默（`vk_layer_settings.txt` 的存在理由）；归档文件名不带配置 ⇒ 拿游走档比 thin 档差点报回归。
+仪器教训：**采集脚本改 TOML 时必须验证改的是真键**——M20.3 的采集脚本按「找不到就插到 `[particles]` 段」的逻辑写入 `particle-shadows`，而该项声明的路径是 `entities.particle-shadows`，于是它插了一个没人读的孤儿键。**若那轮基准没被打断，它会「成功」跑完并报出「粒子阴影零成本」**——两次运行读的都是同一个默认值，开关从未被翻动。判据：采集前后 grep 一次目标键，确认它在预期段内且值确实变了；曝光日志 `now - Long.MIN_VALUE` 溢出为负 ⇒ 永久沉默——「为回答『源是否过亮』而造的仪器整个会话什么都没报，沉默看起来和『没变化』一样」；水系数诊断打印了**被拒模型**的数字（该被对账的那行本身错了）；只记录 post 值会把传输/复制/调用三个边界混在一起；启动早期 probe 可能来自上一代缓存 pipeline；验证层无 messenger 时静默（`vk_layer_settings.txt` 的存在理由）；归档文件名不带配置 ⇒ 拿游走档比 thin 档差点报回归。
 
 ### 9.6 硬件 / 平台
 
@@ -708,6 +715,12 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 删除 caller/pre/post lanes 后，通用 probe 连续 200 条仍为 profile=2/散射零；随后不增加 layout、只把既有 `firstHit.w` 暂时改记 raw current flags，连续 44 条均为 3。结论：诊断读取改变了 flags 的活跃性/寄存器分配并偶然压住 Slang 错编，前两轮是 observer effect，不是修复；pipeline cache、GC 与 terrain 阈值仍未被这组数据证明为时间现象根因。
 - 21A/D27 把 current/outer flags 压入唯一活动字并直接从 queue `pathFlags` 解码。`codex-neoforge-21A-packed-flags-raw-stdout.log` 共 197 条，current code 恒为 1、`firstScatter>0`，terrain resident 由 38 增至 2604；删除 raw 读取并恢复普通 profile 后，`codex-neoforge-21A-final-clean-stdout.log` 共 211 条、0 异常，profile 恒为 1、散射非零，resident 至 2252。它通过了 observer-effect cleanup 闸门。
 - `diagnostics.water-medium-trace` 继续作为通用运行期仪器。每条 `RT water-medium probe` 记录 `prefixLen`、`prefixScatter`、`prefixT`、`leaf`、`composite`、`prefixFraction`、`mediumSkyRadiance`、`skyOpen`、向上 `waterHitT`、fallback depth、surface Y、首叶首段的 `firstSegmentLen/firstScatter/firstT/firstHit/escaped/mediumProfile`，以及 resident/published/desired/inFlight/missing/instances。一次性 `[DEBUG-medium-flags]` 与 raw `firstMediumCode` 已删除。证据日志包括 `codex-neoforge-{19A-prepost,20A-authoritative-stack,20B-scalar-state,20B-scalar-state-rerun,20B-final-clean,20B-clean-rawflag,21A-packed-flags-raw,21A-final-clean}-stdout.log`。
+
+### 2026-08-05 M20 粒子发光判定（D32，用户选定 A）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D32 | 粒子发光的判定机制 | **超额法**：粒子自报方块光 − 该位置世界方块光 = 自发光 | 这正是 vanilla 编码的量（它把两者相加写进 `getLightCoords`）。火焰在暗洞与火把旁都发光，飘过火把的烟雾减完为零保持不发光——**直接用方块光当发光会把火把重复计一次**，因为路径追踪已经在照亮那团烟。相对路线图原定的「类型表」：**vanilla 决定什么发光**（同 §3.1 的资格外置纪律），模组粒子自动正确，无需维护随版本失效的表。代价：每粒子一次 `level.getBrightness`（M9 实测这类查询本质是数组索引，比预期便宜） |
 
 ### 2026-08-05 M17 散射顶点职责边界（D29，用户选定 B）
 

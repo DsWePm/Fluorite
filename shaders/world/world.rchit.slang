@@ -301,8 +301,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
             payload.motionPrev = half3(g.rigidDisp.xyz);
         }
         payload.f0 = half3(0.0h, 0.0h, 0.0h);
-        payloadSetPacked(payload, MATERIAL_PARTICLE, 1.0, 0.0, 0.0, 0.0,
-                1.0, 0.0, EMISSION_SOURCE_NONE, 0u); // particles carry no material record
+        // Emission straight from the prim lane, NOT a mask. Everywhere else a lane like this is a mask
+        // that evaluateMaterial multiplies by the strength baked into a MaterialHeader — and particles
+        // carry no material record, so there is nothing to multiply by and the capture writes the final
+        // HDR value in the pipeline's own units instead. That asymmetry is the whole reason the entity
+        // flames needed a real material and these do not.
+        float particleEmission = pr.normal.w;
+        payloadSetPacked(payload, MATERIAL_PARTICLE, 1.0, 0.0, particleEmission, 0.0,
+                1.0, 0.0, particleEmission > 0.0 ? EMISSION_SOURCE_UNIFORM : EMISSION_SOURCE_NONE, 0u);
         return;
     }
     // Dynamic entities: instances with this custom-index flag bit carry real captured ModelPart

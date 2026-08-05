@@ -84,7 +84,8 @@ public final class RtVideoOptions {
         /** Freshly built, in display order. Paired two-per-row by {@code OptionsList.addSmall}. */
         public List<Section> sections() {
             return switch (this) {
-                case TRACING -> List.of(Section.of(spp(), maxBounces(), sunSize(), entities(), particles()));
+                case TRACING -> List.of(Section.of(spp(), maxBounces(), sunSize(), entities(), particles(),
+                        particleShadows()));
                 case EXPOSURE -> List.of(Section.of(exposureMode(), manualEv()));
                 case MATERIAL -> List.of(
                         Section.of(sunMis(), anisotropy()),
@@ -116,6 +117,15 @@ public final class RtVideoOptions {
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE)));
             };
         }
+    }
+
+    /**
+     * Let particles cast shadows. In the UI because it is the A/B lever for its own cost: the work lands
+     * in the any-hit shader, which is the hottest in the frame, so it has to be judged by flipping it at
+     * a fixed camera position rather than compared across sessions.
+     */
+    private static OptionInstance<Boolean> particleShadows() {
+        return bool("fluorite.options.rt.particleShadows", FluoriteConfig.Rt.Entities.PARTICLE_SHADOWS);
     }
 
     private static OptionInstance<String> exposureMode() {

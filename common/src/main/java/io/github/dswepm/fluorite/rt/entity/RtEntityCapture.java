@@ -55,12 +55,14 @@ public final class RtEntityCapture implements VertexConsumer {
     // hit shader. Submission state rather than a per-quad argument because it is uniform over a
     // submitModel call, which is also what lets the direct cuboid path carry it without a new parameter.
     int currentOverlay;
-    // Whether this submission carried an enchantment foil. Stored as ENTITY_PRIM_GLINT in the prim's
-    // flags lane; the hit shader turns it into a violet sheen rather than shading the glint texture as
-    // if it were albedo.
-    boolean currentGlint;
-    /** Must equal ENTITY_PRIM_GLINT in world_common.slang — the flags lane's only entity bit so far. */
-    private static final int ENTITY_PRIM_GLINT = 1;
+    // Prim.flags for this submission. One word rather than a boolean per bit: they all land in the same
+    // lane, and two independent flags writing one lane is the implicit-consistency shape D11 removed
+    // elsewhere. Cleared per submission by whoever sets it, like every other current* field.
+    int currentPrimFlags;
+    /** Must equal ENTITY_PRIM_GLINT in world_common.slang. */
+    static final int ENTITY_PRIM_GLINT = 1;
+    /** Must equal PRIM_STOCHASTIC_ALPHA in world_common.slang. */
+    static final int PRIM_STOCHASTIC_ALPHA = 2;
     // When a model textures from an atlas sprite (block entities: chests/signs/beds via a Material),
     // its ModelPart UVs are 0..1 in a virtual texture and must be remapped into the sprite's atlas
     // region — the work vanilla's sprite-coordinate-expander VertexConsumer does, which we bypass.
@@ -96,7 +98,7 @@ public final class RtEntityCapture implements VertexConsumer {
         currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
         currentOrder = 0;
         currentOverlay = 0;
-        currentGlint = false;
+        currentPrimFlags = 0;
         uvRemap = false;
     }
 
@@ -151,7 +153,7 @@ public final class RtEntityCapture implements VertexConsumer {
         target.currentAlphaBucket = currentAlphaBucket;
         target.currentOrder = currentOrder;
         target.currentOverlay = currentOverlay;
-        target.currentGlint = currentGlint;
+        target.currentPrimFlags = currentPrimFlags;
         target.uvRemap = uvRemap;
         target.uvU0 = uvU0;
         target.uvV0 = uvV0;
@@ -476,10 +478,23 @@ public final class RtEntityCapture implements VertexConsumer {
             prim.add(tb);
             prim.add((float) currentTexSlot); // tint.w = bindless texture slot
             prim.add(Float.intBitsToFloat(currentMaterialId));
-            prim.add(Float.intBitsToFloat(currentGlint ? ENTITY_PRIM_GLINT : 0)); // flags
+            prim.add(Float.intBitsToFloat(currentPrimFlags)); // flags
             prim.add(Float.intBitsToFloat(overlayRgb(currentOverlay))); // aux0 = overlay colour 0x00RRGGBB
             prim.add(overlayStrength(currentOverlay)); // aux1 = overlay strength, 0 = none
             alphaBuckets.add(currentAlphaBucket);
+        }
+    }
+
+    /**
+     * Overwrite the per-prim emission lane for every triangle appended since {@code primStart}.
+     *
+     * <p>For the particle path, which learns how emissive a particle is only after its quads are built:
+     * the strength comes from the light the particle reported for itself while its vertices streamed
+     * through, so it cannot be submission state the way the entity paths' emission is.
+     */
+    void setEmissionFrom(int primStart, float emission) {
+        for (int i = primStart + 3; i < prim.size(); i += 12) { // 12 floats/triangle, normal.w is index 3
+            prim.set(i, emission);
         }
     }
 

@@ -23,6 +23,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.HitResult;
@@ -42,6 +43,7 @@ import io.github.dswepm.fluorite.rt.RtGpuExecutor.GraphicsUseWaiter;
 import io.github.dswepm.fluorite.rt.RtGpuExecutor.TrackedGraphicsUse;
 import io.github.dswepm.fluorite.rt.accel.RtAccel;
 import io.github.dswepm.fluorite.rt.accel.RtBuffer;
+import io.github.dswepm.fluorite.rt.material.RtMaterialRegistry;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
 
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
@@ -102,8 +104,24 @@ public final class RtEntities {
     private static final int MASK_SELF = 0x04;
     /** Default mask: visible to every ray (terrain and ordinary entities use this). */
     private static final int MASK_ALL = 0xFF;
-    /** Particles are primary-ray-only: visible/lit by the camera path, invisible to shadows/GI/reflections. */
-    private static final int PARTICLE_MASK = MASK_PRIMARY;
+    /**
+     * Particles in SHADOW rays, on their own bit (matches CULL_PARTICLE_SHADOW in trace.slang).
+     *
+     * <p>Separate from {@link #MASK_SECONDARY} because "blocks light" and "appears in a reflection" are
+     * different questions, and a camera-facing billboard is where they diverge most: reflected, the quad
+     * is edge-on to the ray that found it. A column of smoke casting a shadow is worth a ray; putting
+     * that billboard into mirrors and GI is a different feature at a different cost, so the two are
+     * staged apart instead of arriving together the moment bit 0 is set.
+     */
+    private static final int MASK_PARTICLE_SHADOW = 0x08;
+    /** Primary always; shadow rays when enabled. Never GI or reflections yet — see MASK_PARTICLE_SHADOW. */
+    private static int particleMask() {
+        return MASK_PRIMARY | (particleShadows() ? MASK_PARTICLE_SHADOW : 0);
+    }
+
+    public static boolean particleShadows() {
+        return FluoriteConfig.Rt.Entities.PARTICLE_SHADOWS.value();
+    }
     public static boolean particlesEnabled() {
         return FluoriteConfig.Rt.Entities.PARTICLES_ENABLED.value();
     }
@@ -945,7 +963,7 @@ public final class RtEntities {
      * {@link #particleScratch} (its billboard quad), funneled through {@link #particleCapture} into the
      * shared {@code capture}, and its quad center cached by identity in {@link #particlePrev}. Per-layer
      * texture slot comes from the layer's atlas (block/item/particle) via the bindless registry. One
-     * {@code PARTICLE_BIT} instance with mask {@link #PARTICLE_MASK} (primary-ray only).
+     * {@code PARTICLE_BIT} instance with mask {@link #particleMask()} (primary, plus shadows when enabled).
      */
     private void captureParticles(RtContext ctx, FrameBuild build, Minecraft mc, float partial,
                                   int rbx, int rby, int rbz, Matrix4f projection, Matrix4f viewRotation) {
@@ -998,12 +1016,22 @@ public final class RtEntities {
                     int ub = capture.uvList.size(), prb = capture.prim.size(), abb = capture.alphaBuckets.size();
                     int vertBefore = vb / 3;
                     particleScratch.clear();
+                    particleCapture.beginParticle();
                     sq.extract(particleScratch, cam, partial);
                     for (SingleQuadParticle.Layer layer : particleScratch.layers()) {
                         capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(layer.textureAtlasLocation());
+                        // Vanilla already decided whether this layer is translucent or cutout, so the
+                        // classification is taken rather than guessed. It has to travel in the prim flags
+                        // because particles carry NO material record — the any-hit shader reads the
+                        // stochastic-alpha feature off a MaterialHeader for entities, and a particle never
+                        // indexes that table, which is why every particle until now fell through to the
+                        // binary 0.1 cutoff that gave smoke its hard edge.
+                        capture.currentPrimFlags = layer.translucent()
+                                ? RtEntityCapture.PRIM_STOCHASTIC_ALPHA : 0;
                         particleScratch.buildLayer(layer, particleCapture);
                         particleCapture.flush();
                     }
+                    capture.currentPrimFlags = 0;
                     int vertAfter = capture.verts.size() / 3;
                     if (vertAfter == vertBefore) {
                         continue; // nothing captured for this particle
@@ -1017,6 +1045,23 @@ public final class RtEntities {
                         capture.prim.size(prb);
                         capture.alphaBuckets.size(abb);
                         continue;
+                    }
+                    // SELF-emission, which is the particle's own claim MINUS what the world was already
+                    // giving it. Vanilla adds the two together in getLightCoords, so the difference is
+                    // the only part that belongs to the particle: a flame keeps its glow in a dark cave
+                    // and beside a torch alike, while smoke drifting past that torch reports the torch's
+                    // light, matches the world, and stays unlit — which is right, because the path tracer
+                    // is already lighting it and adding this would count the torch twice.
+                    //
+                    // Vanilla decides what glows, exactly as RtEmissionHeuristic requires of the block
+                    // path: no list of particle classes to keep in step with the game, and a modded
+                    // particle that lights itself is handled without knowing it exists.
+                    int worldBlock = mc.level == null ? 0 : mc.level.getBrightness(LightLayer.BLOCK,
+                            BlockPos.containing(particleCenterScratch[0] + rbx,
+                                    particleCenterScratch[1] + rby, particleCenterScratch[2] + rbz));
+                    int excess = particleCapture.maxBlockLight() - worldBlock;
+                    if (excess > 0) {
+                        capture.setEmissionFrom(prb, excess / 15.0f * RtMaterialRegistry.EMISSIVE_STRENGTH);
                     }
                     appendParticleMv(p, particleCenterScratch, vertBefore, vertAfter, rbx, rby, rbz, cur);
                     build.logicalCount++;
@@ -1037,7 +1082,7 @@ public final class RtEntities {
         }
         long dispAddr = uploadDisp(ctx, build, particleDisp);
         appendCapture(ctx, build, new Motion(dispAddr, 0f, 0f, 0f),
-                -1, PARTICLE_BIT, PARTICLE_MASK, IDENTITY); // one combined mesh, per-particle MV
+                -1, PARTICLE_BIT, particleMask(), IDENTITY); // one combined mesh, per-particle MV
     }
 
     /** Average (rebase-space) position of a captured particle's verts — approximates the particle center. */

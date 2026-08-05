@@ -169,7 +169,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         // shading that scrolling texture as albedo.
         boolean glint = isGlint(renderType);
         capture.currentOrder = pendingOrder + (isBannerPattern(renderType) || glint ? 1 : 0);
-        capture.currentGlint = glint;
+        capture.currentPrimFlags = glint ? RtEntityCapture.ENTITY_PRIM_GLINT : 0;
         pendingOrder = 0;
         // Vanilla's hurt/flash overlay for this submission, resolved to the texel it selects. Set here and
         // cleared at the end rather than left standing, so a submission that carries no overlay of its own
@@ -278,7 +278,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             }
         }
         capture.currentOverlay = 0;
-        capture.currentGlint = false;
+        capture.currentPrimFlags = 0;
     }
 
     /**
@@ -628,7 +628,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         capture.clearUvRemap(); // sprite UVs below are already atlas-space
         capture.currentOrder = 0;
         capture.currentOverlay = 0; // fire is its own layer; the wearer's hurt flash does not tint it
-        capture.currentGlint = false;
+        capture.currentPrimFlags = 0;
         capture.currentTexSlot = RtEntityTextures.INSTANCE.slotForAtlas(TextureAtlas.LOCATION_BLOCKS);
         capture.currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT; // cutout: the sprite is mostly empty
         // The fire sprites' OWN block-atlas materials, not the entity fallback, and the difference is the
@@ -927,9 +927,10 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         // The foil the enchanted-item glow is drawn from. Vanilla gives it its own scrolling pass; here
         // it becomes a flag on the item's own prims and a violet sheen in the hit shader, so an enchanted
         // sword reads as enchanted without a second coplanar copy of its geometry.
-        capture.currentGlint = foilType != ItemStackRenderState.FoilType.NONE;
+        capture.currentPrimFlags = foilType != ItemStackRenderState.FoilType.NONE
+                ? RtEntityCapture.ENTITY_PRIM_GLINT : 0;
         addQuads(poseStack.last().pose(), quads, tintLayers);
-        capture.currentGlint = false;
+        capture.currentPrimFlags = 0;
         capture.currentOverlay = 0;
     }
 

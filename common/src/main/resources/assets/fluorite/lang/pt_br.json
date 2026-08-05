@@ -35,6 +35,8 @@
   "fluorite.options.rt.entities.tooltip": "Inclui entidades e entidades de bloco na cena com traçado de raios.",
   "fluorite.options.rt.particles": "Partículas com traçado de raios",
   "fluorite.options.rt.particles.tooltip": "Desenha partículas como billboards de raio da câmera dentro da cena traçada.",
+  "fluorite.options.rt.particleShadows": "Particle Shadows",
+  "fluorite.options.rt.particleShadows.tooltip": "Let particles cast shadows, so a column of campfire smoke darkens the ground beneath it. Shadow rays only: particles stay out of reflections and GI, where a camera-facing billboard would be seen edge-on. Costs any-hit work on every shadow ray that crosses a particle.",
   "fluorite.options.rt.glow": "Contorno brilhante de entidades",
   "fluorite.options.rt.glow.tooltip": "Desenha o contorno vanilla do efeito Brilhante (através de paredes) ao redor de entidades brilhantes.",
   "fluorite.options.rt.waterWaves": "Água animada",

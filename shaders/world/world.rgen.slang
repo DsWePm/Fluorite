@@ -1080,7 +1080,7 @@ float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
         }
         float3 hitPos = seg.ro + seg.rd * segmentEnd;
         float3 lightDir = worldPush.lightDir.xyz;
-        VisibilityResult sh = visibilityMasked(CULL_SECONDARY_NO_SELF,
+        VisibilityResult sh = visibilityMasked(CULL_SHADOW_NO_SELF,
                 hitPos - seg.rd * SURF_BIAS, lightDir, RAY_FAR);
         if (sh.waterHitT <= 0.0) {
             return float3(0.0, 0.0, 0.0);
@@ -1092,7 +1092,7 @@ float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
     if (pc.debugView == DEBUG_VIEW_VOLUME_SUNVIS) {
         // The shadow ray enclosedSingleScatter casts, on its own. Black here means the scattering has no
         // sun term at all, whatever the rest of the arithmetic does.
-        return visibilityMasked(CULL_SECONDARY_NO_SELF, seg.ro,
+        return visibilityMasked(CULL_SHADOW_NO_SELF, seg.ro,
                                 worldPush.lightDir.xyz, RAY_FAR).transmittance;
     }
     // What the segment added, with nothing the path did afterwards. A water medium is never ambient, so

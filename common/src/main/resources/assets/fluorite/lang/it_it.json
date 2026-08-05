@@ -35,6 +35,8 @@
   "fluorite.options.rt.entities.tooltip": "Include entità ed entità blocco nella scena con ray tracing.",
   "fluorite.options.rt.particles": "Particelle con ray tracing",
   "fluorite.options.rt.particles.tooltip": "Disegna le particelle come billboard dei raggi della telecamera nella scena tracciata.",
+  "fluorite.options.rt.particleShadows": "Particle Shadows",
+  "fluorite.options.rt.particleShadows.tooltip": "Let particles cast shadows, so a column of campfire smoke darkens the ground beneath it. Shadow rays only: particles stay out of reflections and GI, where a camera-facing billboard would be seen edge-on. Costs any-hit work on every shadow ray that crosses a particle.",
   "fluorite.options.rt.glow": "Contorno luminoso entità",
   "fluorite.options.rt.glow.tooltip": "Disegna il contorno vanilla dell'effetto Luminescenza (attraverso i muri) attorno alle entità luminose.",
   "fluorite.options.rt.waterWaves": "Acqua animata",
