@@ -815,9 +815,16 @@ public final class FluoriteConfig {
             /**
              * Sample ONE scattering event per segment instead of assuming the source is constant along it.
              *
-             * <p>DEFAULT OFF, and off is the shipped picture by construction rather than by argument: the
-             * estimator lives beside the closed forms and returns before any of them, so nothing on the
-             * off path changed.
+             * <p><b>DEFAULT ON since the measurement (2026-08-05).</b> It was expected to cost something
+             * and to be judged on whether the fix was worth it; it is instead <b>2.93 ms cheaper</b> at
+             * bench-water-bottom (38.812 against 41.744, 0.930x, same batch, terrain-settled window).
+             * The reason is that the estimator it replaces casts up to WATER_SUN_VIS_STRATA shadow rays
+             * per water segment and this casts one — so the claim that the ray budget was unchanged,
+             * which this comment used to make, was wrong for water and right only for fog at one ray.
+             *
+             * <p>Off remains the previous estimator exactly: it lives beside the closed forms and returns
+             * before any of them, so flipping this back is the shipped picture rather than an
+             * approximation of it. That is also the A/B lever for the noise trade below.
              *
              * <p>What a point buys that a segment cannot have is the ability to be ASKED things. How much
              * sky reaches THIS depth, and which emitters are nearby and where, are functions of position,
@@ -832,11 +839,12 @@ public final class FluoriteConfig {
              * are correct in expectation, and with a constant unoccluded source they agree exactly -- which
              * is the identity to check first if the two ever disagree by more than noise.
              *
-             * <p>Ray budget is unchanged: the same shadow ray and upward probe the stratified path already
-             * casts, asked from the sampled point instead.
+             * <p>Water's in-scatter, measured the same way: 10.49 ms of a 41.74 ms frame under the
+             * stratified estimator, 7.56 ms under this one. That figure is M9's oldest outstanding debt
+             * and had never been measured before this switch gave it a denominator.
              */
             public static final BooleanSetting SCATTER_VERTEX =
-                    bool("fluorite.rt.fog.scatterVertex", "volumetrics.scatter-vertex", false);
+                    bool("fluorite.rt.fog.scatterVertex", "volumetrics.scatter-vertex", true);
 
             /**
              * Let block emitters light the fog and the water, not just the surfaces around them.
@@ -852,7 +860,18 @@ public final class FluoriteConfig {
              * hot path either. When ReSTIR lands it should change how this sample is CHOSEN and leave what
              * it is worth alone.
              *
-             * <p>Costs one shadow ray per segment that scatters, on top of the sun's.
+             * <p><b>PARKED, and the number is why: +20.9 ms</b> at bench-water-bottom (59.707 against
+             * 38.812 with the vertex alone, 1.538x, same batch). One shadow ray does not cost twenty
+             * milliseconds, so the suspicion is the light grid's dependent-load chain rather than the ray
+             * — lighting.slang records that walk at 5.9 ms of an 18 ms frame, and this runs it PER SEGMENT
+             * where surface shading runs it per shading vertex, and a path has far more segments than
+             * shading vertices.
+             *
+             * <p><b>That is a hypothesis, not a conclusion</b>, and the experiment that settles it is
+             * cheap: silence the shadow ray and keep the grid lookup and pdf reconstruction. Still
+             * expensive means the chain, and the fix is structural — once per path rather than once per
+             * segment, or waiting for ReSTIR's presampled pool. Cheap means the ray, and the fix is
+             * ordinary optimisation. Do not rebuild this on a guess about which.
              */
             public static final BooleanSetting VOLUME_EMITTER_NEE =
                     bool("fluorite.rt.fog.volumeEmitterNee", "volumetrics.emitter-nee", false);
