@@ -55,6 +55,12 @@ public final class RtEntityCapture implements VertexConsumer {
     // hit shader. Submission state rather than a per-quad argument because it is uniform over a
     // submitModel call, which is also what lets the direct cuboid path carry it without a new parameter.
     int currentOverlay;
+    // Whether this submission carried an enchantment foil. Stored as ENTITY_PRIM_GLINT in the prim's
+    // flags lane; the hit shader turns it into a violet sheen rather than shading the glint texture as
+    // if it were albedo.
+    boolean currentGlint;
+    /** Must equal ENTITY_PRIM_GLINT in world_common.slang — the flags lane's only entity bit so far. */
+    private static final int ENTITY_PRIM_GLINT = 1;
     // When a model textures from an atlas sprite (block entities: chests/signs/beds via a Material),
     // its ModelPart UVs are 0..1 in a virtual texture and must be remapped into the sprite's atlas
     // region — the work vanilla's sprite-coordinate-expander VertexConsumer does, which we bypass.
@@ -90,6 +96,7 @@ public final class RtEntityCapture implements VertexConsumer {
         currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
         currentOrder = 0;
         currentOverlay = 0;
+        currentGlint = false;
         uvRemap = false;
     }
 
@@ -144,6 +151,7 @@ public final class RtEntityCapture implements VertexConsumer {
         target.currentAlphaBucket = currentAlphaBucket;
         target.currentOrder = currentOrder;
         target.currentOverlay = currentOverlay;
+        target.currentGlint = currentGlint;
         target.uvRemap = uvRemap;
         target.uvU0 = uvU0;
         target.uvV0 = uvV0;
@@ -468,7 +476,7 @@ public final class RtEntityCapture implements VertexConsumer {
             prim.add(tb);
             prim.add((float) currentTexSlot); // tint.w = bindless texture slot
             prim.add(Float.intBitsToFloat(currentMaterialId));
-            prim.add(0f); // flags
+            prim.add(Float.intBitsToFloat(currentGlint ? ENTITY_PRIM_GLINT : 0)); // flags
             prim.add(Float.intBitsToFloat(overlayRgb(currentOverlay))); // aux0 = overlay colour 0x00RRGGBB
             prim.add(overlayStrength(currentOverlay)); // aux1 = overlay strength, 0 = none
             alphaBuckets.add(currentAlphaBucket);

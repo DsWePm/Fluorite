@@ -163,7 +163,13 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         // Vanilla gives the base-colour banner pass order 0 even though it is drawn after an uncoloured,
         // exactly coplanar cloth pass. Move every banner-pattern pass out one rank: base colour becomes 1,
         // and the explicitly ordered emblem layers become 2+. Otherwise the BVH can select white cloth.
-        capture.currentOrder = pendingOrder + (isBannerPattern(renderType) ? 1 : 0);
+        // An enchantment foil arrives as its own submission: the same model again, exactly coplanar, drawn
+        // with the glint texture. It gets a decal rank for the same reason banner patterns do — coplanar
+        // duplicates tie in the BVH — and a flag so the hit shader treats it as a sheen rather than
+        // shading that scrolling texture as albedo.
+        boolean glint = isGlint(renderType);
+        capture.currentOrder = pendingOrder + (isBannerPattern(renderType) || glint ? 1 : 0);
+        capture.currentGlint = glint;
         pendingOrder = 0;
         // Vanilla's hurt/flash overlay for this submission, resolved to the texel it selects. Set here and
         // cleared at the end rather than left standing, so a submission that carries no overlay of its own
@@ -272,6 +278,18 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             }
         }
         capture.currentOverlay = 0;
+        capture.currentGlint = false;
+    }
+
+    /**
+     * Vanilla's enchantment foil render types. Identity comparison against the accessors, the same shape
+     * submitCustomGeometry already uses for {@code RenderTypes.lines()} — they are static singletons.
+     */
+    private static boolean isGlint(RenderType renderType) {
+        return renderType == RenderTypes.entityGlint()
+                || renderType == RenderTypes.armorEntityGlint()
+                || renderType == RenderTypes.glint()
+                || renderType == RenderTypes.glintTranslucent();
     }
 
     private static int countVisibleCuboids(ModelPart part) {
@@ -893,7 +911,12 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             return;
         }
         capture.currentOverlay = RtEntityCapture.packOverlay(overlayCoords);
+        // The foil the enchanted-item glow is drawn from. Vanilla gives it its own scrolling pass; here
+        // it becomes a flag on the item's own prims and a violet sheen in the hit shader, so an enchanted
+        // sword reads as enchanted without a second coplanar copy of its geometry.
+        capture.currentGlint = foilType != ItemStackRenderState.FoilType.NONE;
         addQuads(poseStack.last().pose(), quads, tintLayers);
+        capture.currentGlint = false;
         capture.currentOverlay = 0;
     }
 

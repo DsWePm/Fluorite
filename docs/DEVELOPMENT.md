@@ -444,7 +444,9 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
   - 零宽实体已挡（vanilla 用宽度作除数且按常量步进，宽度 0 会死循环）。
 - **冰冻：计划前提不成立，本里程碑不做**。overlay 由 `hasRedOverlay` 驱动，而它是 `hurtTime > 0 || deathTime > 0`；26.2 既无 `powder_snow_outline` 贴图也无引用它的渲染器。若将来要做冰冻，那是独立机制而非本条通路的扩展。
 - 隐身保持整体跳过（「隐身生物穿甲不可见」记为已知简化）。
-- ⚖ **请示点（未动工）**：附魔 glint 的近似方案（albedo/emission 调制 vs 完整双层滚动 UV——后者列为可选 feature）带效果图请示。
+- **附魔 glint：按 D28 走近似档，已实现**（`Prim.flags` bit0 = `ENTITY_PRIM_GLINT`）。`submitItem` 的 `foilType`（此前收到即丢弃）与 `submitModel` 的四个 glint RenderType（`entityGlint`/`armorEntityGlint`/`glint`/`glintTranslucent`，按单例身份比较，沿用 `RenderTypes.lines()` 的既有范式）都置位；glint pass 与 banner pattern 同样拿一个 decal rank，因为它是**与本体完全共面的重复网格**，不给 rank 会在 BVH 里打平手。shader 把它渲染成会呼吸的紫色 sheen（tint 混合 + 自发光），而不是把滚动贴图当 albedo 着色。
+  - **相位用 `pc.frameIndex` 而非世界时钟**：rchit 的铁律是绝不解引用 `WorldPush`（§3.6），而 `frameIndex` 本就在每次命中都读的 push constants 里。代价是微光速率跟随帧率而非世界时间——这是不为一个装饰性效果增加逐命中 BDA load 的诚实定价。
+  - 常数标注 **PROVISIONAL**（`GLINT_TINT` 等）：按「读起来像 vanilla 的紫」选的，无推导。
 - **验收（待用户游戏内执行）**：受伤红闪对照 vanilla 截图；创造模式点燃生物，火在水面反射里可见、并照亮周围地面；无 overlay 的实体逐位不变。
 
 ### M20 粒子完善（D4-A：几何路线分步）
@@ -501,7 +503,8 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 - **粒子烟雾体积化（D4-B）**：烟雾/云雾/爆炸尘类粒子把密度注入统一 Medium 非均质场（真体积感：透光、自阴影、雾内相位），火焰类仍为发光几何。依赖：M15 march 路径 + 粒子分类表 + 密度注入网格。**等缺失项补全 + ReSTIR + 首个正式版后再定**（2026-08-02 用户原话）。
 - 非 `SingleQuadParticle` 粒子捕获（物品拾取、elder guardian 等，现静默跳过）。
-- 名牌 ghost 穿墙显示（现只隐藏，v1 简化）；附魔 glint 完整双层滚动 UV；隐身生物穿甲显示。
+- 名牌 ghost 穿墙显示（现只隐藏，v1 简化）；隐身生物穿甲显示。
+- **附魔 glint 完整双层滚动 UV（2026-08-05 用户裁定：先按近似档走，此项作为后续改进保留）**：复制 vanilla 的两层不同速度/角度 UV 滚动 + 叠加混合，用真 glint 贴图。视觉最忠实；代价是要给每个附魔物额外几何层或在 rchit 多采一张贴图并传 UV 变换，需要占新的 lane/材质位，工作量比现档大一级。**有想法后再评估**，届时按 §10 流程请示。
 - 焦散 `CAUSTIC_MAX` 夹平重审（色散显色阈值 ~100× 的嫌疑，动它会改变焦散观感）。
 - 发光体 MIS（ReSTIR 自带，不单独做）。
 - NRD + FSR（AMD 可玩性）、LOD（README TODO）。
@@ -662,6 +665,12 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 21A/D27 把 current/outer flags 压入唯一活动字并直接从 queue `pathFlags` 解码。`codex-neoforge-21A-packed-flags-raw-stdout.log` 共 197 条，current code 恒为 1、`firstScatter>0`，terrain resident 由 38 增至 2604；删除 raw 读取并恢复普通 profile 后，`codex-neoforge-21A-final-clean-stdout.log` 共 211 条、0 异常，profile 恒为 1、散射非零，resident 至 2252。它通过了 observer-effect cleanup 闸门。
 - `diagnostics.water-medium-trace` 继续作为通用运行期仪器。每条 `RT water-medium probe` 记录 `prefixLen`、`prefixScatter`、`prefixT`、`leaf`、`composite`、`prefixFraction`、`mediumSkyRadiance`、`skyOpen`、向上 `waterHitT`、fallback depth、surface Y、首叶首段的 `firstSegmentLen/firstScatter/firstT/firstHit/escaped/mediumProfile`，以及 resident/published/desired/inFlight/missing/instances。一次性 `[DEBUG-medium-flags]` 与 raw `firstMediumCode` 已删除。证据日志包括 `codex-neoforge-{19A-prepost,20A-authoritative-stack,20B-scalar-state,20B-scalar-state-rerun,20B-final-clean,20B-clean-rawflag,21A-packed-flags-raw,21A-final-clean}-stdout.log`。
 
-**同日确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
+### 2026-08-05 M19 实体 overlay 裁决（D28，用户选定）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D28 | 附魔 glint 方案（用户选 A，B 留档） | **近似档：`Prim.flags` 一个 bit + shader 紫色 sheen（tint 混合 + 自发光呼吸）**；完整双层滚动 UV 记入 §8.6 可选区，「后面有想法了再说」 | 零新几何、零新贴图采样、不动 ABI（`flags` lane 本就恒 0），且附魔物在反射与 GI 里也发光——vanilla 的屏幕空间 pass 在那里根本不存在。与 vanilla 的差距：没有那层斜向滑动的条纹质感，只是「在发光」。相位用 `pc.frameIndex` 是为守住「rchit 不解引用 WorldPush」的铁律，代价是速率跟随帧率 |
+
+**2026-08-02 确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 
 **当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。
