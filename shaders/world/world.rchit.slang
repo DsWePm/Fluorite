@@ -329,7 +329,26 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float4 entityTexel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(euvCoord, entityLod);
         MaterialHeader header = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
         uint material = header.model;
-        float3 baseAlbedo = srgbToLinear(entityTexel.rgb) * pr.tint.rgb;
+        // Vanilla's hurt / flash colour overlay. The CPU resolved which texel of vanilla's overlay
+        // texture applies (RtEntityCapture.packOverlay) and split it across two lanes: aux0 carries the
+        // colour as 0x00RRGGBB, aux1 the strength as an ordinary float. Vanilla's own blend is
+        //
+        //     color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)      -- entity.fsh
+        //
+        // whose alpha runs backwards (1 means NO overlay); the strength here is already 1 - alpha, so
+        // BOTH lanes are zero-is-identity and a prim from any path that never sets one stays untouched.
+        //
+        // Blended in the texture's own sRGB space, before linearisation, because the reference for this
+        // effect is what vanilla draws rather than a transport argument: the same 30% wash mixed in
+        // linear comes out darker and more saturated than the flash players recognise. An entity whose
+        // tint is not white then modulates the overlay by that tint, while every hurt flash that matters
+        // is white-tinted -- where this is vanilla's arithmetic exactly.
+        float overlayStrength = asfloat(pr.aux1);
+        float3 overlayRgb = float3(float((pr.aux0 >> 16) & 0xFFu),
+                                   float((pr.aux0 >> 8) & 0xFFu),
+                                   float(pr.aux0 & 0xFFu)) * (1.0 / 255.0);
+        float3 entitySrgb = lerp(entityTexel.rgb, overlayRgb, overlayStrength);
+        float3 baseAlbedo = srgbToLinear(entitySrgb) * pr.tint.rgb;
         float3 albedo = material == MATERIAL_DIELECTRIC
                 ? lerp(float3(1.0, 1.0, 1.0), baseAlbedo, entityTexel.a) : baseAlbedo;
         Surface surface = evaluateMaterial(header, euvCoord, entityLod, albedo, n,

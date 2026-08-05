@@ -157,6 +157,10 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         // and the explicitly ordered emblem layers become 2+. Otherwise the BVH can select white cloth.
         capture.currentOrder = pendingOrder + (isBannerPattern(renderType) ? 1 : 0);
         pendingOrder = 0;
+        // Vanilla's hurt/flash overlay for this submission, resolved to the texel it selects. Set here and
+        // cleared at the end rather than left standing, so a submission that carries no overlay of its own
+        // — a leash, sign text, custom geometry — cannot inherit the red wash from the mob before it.
+        capture.currentOverlay = RtEntityCapture.packOverlay(overlayCoords);
         if (profileDynamicEntity) {
             RtFrameStats.FRAME.count("entityModelSubmissions", 1);
         }
@@ -259,6 +263,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
                 RtFrameStats.FRAME.endStage("entity.capture.submit.parity", parityStart);
             }
         }
+        capture.currentOverlay = 0;
     }
 
     private static int countVisibleCuboids(ModelPart part) {
@@ -719,6 +724,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         if (capture == null) {
             return;
         }
+        capture.currentOverlay = RtEntityCapture.packOverlay(overlayCoords);
         Matrix4f pose = poseStack.last().pose();
         for (BlockStateModelPart part : parts) {
             addQuads(pose, part.getQuads(null), tintLayers);
@@ -726,6 +732,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
                 addQuads(pose, part.getQuads(d), tintLayers);
             }
         }
+        capture.currentOverlay = 0;
     }
 
     protected void addQuadView(Matrix4f pose, RtQuadView quad, int[] tintLayers, boolean itemMesh,
@@ -800,7 +807,9 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         if (capture == null) {
             return;
         }
+        capture.currentOverlay = RtEntityCapture.packOverlay(overlayCoords);
         addQuads(poseStack.last().pose(), quads, tintLayers);
+        capture.currentOverlay = 0;
     }
 
     @Override

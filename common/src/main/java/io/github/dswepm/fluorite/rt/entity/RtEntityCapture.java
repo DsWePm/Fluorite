@@ -50,6 +50,11 @@ public final class RtEntityCapture implements VertexConsumer {
     // Decal-stacking rank for the current submission (0 = no offset). Set by the collector from
     // SubmitNodeCollector#order(int) — see emitQuad's coincident-layer push.
     int currentOrder;
+    // Vanilla's entity colour overlay for this submission, already resolved to the texel it selects:
+    // 0xAARRGGBB, or 0 for "no overlay" (see packOverlay). Stored per-prim in aux0 and applied by the
+    // hit shader. Submission state rather than a per-quad argument because it is uniform over a
+    // submitModel call, which is also what lets the direct cuboid path carry it without a new parameter.
+    int currentOverlay;
     // When a model textures from an atlas sprite (block entities: chests/signs/beds via a Material),
     // its ModelPart UVs are 0..1 in a virtual texture and must be remapped into the sprite's atlas
     // region — the work vanilla's sprite-coordinate-expander VertexConsumer does, which we bypass.
@@ -84,6 +89,7 @@ public final class RtEntityCapture implements VertexConsumer {
         currentMaterialId = 0;
         currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
         currentOrder = 0;
+        currentOverlay = 0;
         uvRemap = false;
     }
 
@@ -137,6 +143,7 @@ public final class RtEntityCapture implements VertexConsumer {
         target.currentMaterialId = currentMaterialId;
         target.currentAlphaBucket = currentAlphaBucket;
         target.currentOrder = currentOrder;
+        target.currentOverlay = currentOverlay;
         target.uvRemap = uvRemap;
         target.uvU0 = uvU0;
         target.uvV0 = uvV0;
@@ -339,6 +346,67 @@ public final class RtEntityCapture implements VertexConsumer {
         appendQuad(x, y, z, corners, u, v, nx, ny, nz, color, uvRemap, 0f);
     }
 
+    /**
+     * Resolve vanilla's packed overlay coordinates to the texel they select, as 0xAARRGGBB — or 0 when
+     * the overlay leaves the colour untouched.
+     *
+     * <p>Decoded here rather than in the shader, the same discipline the material pipeline follows: one
+     * CPU function knows what vanilla's overlay texture contains, and no shader does.
+     *
+     * <p><b>Alpha is inverted from the usual reading, which is the whole reason this lives in one
+     * place.</b> {@code OverlayTexture} builds a 16x16 image and {@code entity.fsh} applies it as
+     * {@code color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)} — so alpha 1 means NO
+     * overlay and alpha 0 would replace the colour outright:
+     *
+     * <ul>
+     *   <li>v &lt; 8 (hurt): every texel is 0xB2FF0000 — pure red at alpha 178/255, i.e. a ~30% red
+     *       wash. The u axis does nothing while hurt; those rows are uniform.</li>
+     *   <li>v &gt;= 8: white at alpha {@code (int)((1 - u/15 * 0.75) * 255)}. u = 0 gives alpha 255,
+     *       which is {@code NO_OVERLAY}; u = 15 gives alpha 63, a 75% white flash (creeper charge-up).
+     *       </li>
+     * </ul>
+     *
+     * <p>Returns 0 for the identity case. The two lanes it is split across ({@link #overlayRgb} and
+     * {@link #overlayStrength}) are both zero-is-identity, so a prim written by any path that never
+     * heard of overlays stays correct.
+     */
+    public static int packOverlay(int overlayCoords) {
+        int u = Math.clamp(overlayCoords & 0xFFFF, 0, 15);
+        int v = (overlayCoords >>> 16) & 0xFFFF;
+        if (v < 8) {
+            return 0xB2FF0000;
+        }
+        int alpha = (int) ((1.0f - (float) u / 15.0f * 0.75f) * 255.0f);
+        return alpha >= 255 ? 0 : (alpha << 24) | 0x00FFFFFF;
+    }
+
+    /**
+     * Overlay colour for the aux0 lane: 0x00RRGGBB, 0 when there is no overlay.
+     *
+     * <p><b>The alpha is deliberately NOT packed in with it.</b> A lane travels to the GPU as a float
+     * and is read back as a uint, and 0xAARRGGBB puts the overlay's white RGB straight into the float
+     * exponent: alpha 127 encodes 0x7FFFFFFF, which is a NaN the JVM is permitted to canonicalise, and
+     * alpha 127 is an ordinary point on the creeper's flash ramp rather than a corner case. Splitting
+     * the colour off caps this lane at 0x00FFFFFF, which cannot be NaN. Found by the round-trip test,
+     * not by reasoning about it in advance.
+     */
+    static int overlayRgb(int texel) {
+        return texel & 0x00FFFFFF;
+    }
+
+    /**
+     * Overlay strength for the aux1 lane: {@code 1 - alpha}, as a genuine float rather than a bit
+     * pattern.
+     *
+     * <p>Inverted because vanilla's alpha runs the opposite way — {@code entity.fsh} treats alpha 1 as
+     * NO overlay — and a lane whose zero meant "replace the colour entirely" would turn every prim
+     * written before this existed, and every path that never sets one, solid black. Zero is identity
+     * here, like every other unused lane in the record.
+     */
+    static float overlayStrength(int texel) {
+        return texel == 0 ? 0f : 1f - ((texel >>> 24) & 0xFF) * (1f / 255f);
+    }
+
     private void appendQuad(float[] x, float[] y, float[] z, int[] corners, float[] u, float[] v,
                             float nx, float ny, float nz, int color, boolean remapUv, float emission) {
         // Authored model normal (pose-transformed by compile); planar quad, so vertex 0's normal is the
@@ -401,8 +469,8 @@ public final class RtEntityCapture implements VertexConsumer {
             prim.add((float) currentTexSlot); // tint.w = bindless texture slot
             prim.add(Float.intBitsToFloat(currentMaterialId));
             prim.add(0f); // flags
-            prim.add(0f); // aux0
-            prim.add(0f); // aux1
+            prim.add(Float.intBitsToFloat(overlayRgb(currentOverlay))); // aux0 = overlay colour 0x00RRGGBB
+            prim.add(overlayStrength(currentOverlay)); // aux1 = overlay strength, 0 = none
             alphaBuckets.add(currentAlphaBucket);
         }
     }
