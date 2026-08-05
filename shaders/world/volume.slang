@@ -132,6 +132,12 @@ public VisibilityResult visibilityThroughAmbient(float3 mediumExtinction, uint m
 public struct SegmentIntegral {
     public float3 transmittance;
     public float3 inScatter;
+    // M17: the segment's sampled scattering event, for the estimators that cannot run here. Emitter NEE
+    // needs the light grid, and lighting.slang imports THIS module -- the dependency runs one way only,
+    // so the vertex is handed out and the caller, which sees both, does that half. Zero weight means no
+    // event was sampled: the mode is off, or the segment scatters nothing.
+    public float3 scatterPos;
+    public float3 scatterWeight;
 };
 
 // ---- Shared volume sun-visibility sampler (M15.1).
@@ -255,6 +261,11 @@ VolumeSunShadowSample traceVolumeSunShadow(float3 ro, float3 rd, float sampleT,
 /** Bit 27 (Rt.Volumetrics.SCATTER_VERTEX): sample one scattering vertex instead of assuming the source. */
 bool scatterVertexOn() {
     return (worldPush.flags & (1u << 27u)) != 0u;
+}
+
+/** Bit 28: let block emitters light that event. Nested under bit 27, which supplies the event. */
+public bool volumeEmitterNeeOn() {
+    return (worldPush.flags & (1u << 28u)) != 0u;
 }
 
 public struct ScatterVertex {
@@ -662,10 +673,9 @@ public static const int WATER_SUN_VIS_STRATA = 3;
  * <p>Ray budget is unchanged, not merely bounded: one shadow ray for the sun and one upward probe, the
  * same two the stratified path already casts per stratum and per segment respectively.
  */
-float3 enclosedScatterVertexInScatter(float3 sigmaT, uint mediumFlags, float3 albedo,
-                                      float3 ro, float3 rd, float tEnd, float d0,
+float3 enclosedScatterVertexInScatter(ScatterVertex vertex, float3 sigmaT, uint mediumFlags,
+                                      float3 albedo, float3 ro, float3 rd, float d0,
                                       bool sunSourceOn, bool skySourceOn, inout uint seed) {
-    ScatterVertex vertex = sampleHomogeneousScatterVertex(sigmaT, albedo, ro, rd, tEnd, seed);
     if (all(vertex.weight <= 0.0)) {
         return float3(0.0, 0.0, 0.0);
     }
@@ -729,7 +739,7 @@ float3 enclosedScatterVertexInScatter(float3 sigmaT, uint mediumFlags, float3 al
 }
 
 float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 albedo,
-                             float3 ro, float3 rd, float tEnd,
+                             float3 ro, float3 rd, float tEnd, ScatterVertex vertex,
                              inout uint seed) {
     float3 sigmaT = mediumSigmaTFields(mediumExtinction, mediumFlags, ro);
     // FALLBACK ONLY. Both scattering terms measure the light's path through the water with a ray now
@@ -756,7 +766,7 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
     // interleaving is deliberate: everything past this line is the code that shipped, so "off" is that
     // picture by construction and not by argument.
     if (scatterVertexOn()) {
-        return enclosedScatterVertexInScatter(sigmaT, mediumFlags, albedo, ro, rd, tEnd, d0,
+        return enclosedScatterVertexInScatter(vertex, sigmaT, mediumFlags, albedo, ro, rd, d0,
                                               sunSourceOn, skySourceOn, seed);
     }
 
@@ -997,6 +1007,8 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
     SegmentIntegral seg;
     seg.transmittance = float3(1.0, 1.0, 1.0);
     seg.inScatter = float3(0.0, 0.0, 0.0);
+    seg.scatterPos = float3(0.0, 0.0, 0.0);
+    seg.scatterWeight = float3(0.0, 0.0, 0.0);
 
     uint profile = mediumProfileFlags(currentFlags);
 
@@ -1016,8 +1028,19 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                 // stratum jitter and the fog's cannot draw the same numbers on the same pixel.
                 uint waterSeed = seed ^ 0x85EBCA6Bu;
                 waterSeed = pcg(waterSeed);
+                // Sampled HERE rather than inside the estimator so the segment has exactly one event:
+                // the sun term below and the caller's emitter NEE describe the same scattering, and two
+                // independently drawn points would be two different scatterings sharing one segment.
+                ScatterVertex vertex = noScatterVertex();
+                if (scatterVertexOn()) {
+                    vertex = sampleHomogeneousScatterVertex(sigmaT, scatterAlbedo, ro, rd, tEnd,
+                                                            waterSeed);
+                    seg.scatterPos = vertex.pos;
+                    seg.scatterWeight = vertex.weight;
+                }
                 seg.inScatter += enclosedSingleScatter(currentExtinction, currentFlags,
-                                                       scatterAlbedo, ro, rd, tEnd, waterSeed);
+                                                       scatterAlbedo, ro, rd, tEnd, vertex,
+                                                       waterSeed);
             }
         }
     }
@@ -1031,6 +1054,17 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
         if (tau > 0.0) {
             float3 fogT = exp(-worldPush.fogExtinction.xyz * tau);
             seg.transmittance *= fogT;
+            // Sampled before either source is evaluated, and independently of the sun's ray budget: the
+            // caller's emitter NEE wants an event even where sun-shadow-rays is 0 and the sun is reading
+            // the grid. One event per segment, shared by everything that describes it.
+            if (scatterVertexOn()) {
+                uint vertexSeed = seed ^ 0xC2B2AE3Du; // pcg takes an inout, so it needs a variable
+                vertexSeed = pcg(vertexSeed);
+                ScatterVertex ambientVertex = sampleAmbientScatterVertex(
+                        worldPush.fogExtinction.xyz, scatterAlbedo, ro, rd, window, tau, vertexSeed);
+                seg.scatterPos = ambientVertex.pos;
+                seg.scatterWeight = ambientVertex.weight;
+            }
             // The sunlight lighting the fog has itself crossed the fog to get here. Without that term
             // a low sun grew a halo that brightened with exactly the depth that ought to be
             // extinguishing it.
@@ -1158,7 +1192,7 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                     // from the same seed.
                     uint fogSeed = seed ^ 0x9E3779B9u; // pcg takes an inout, so it needs a variable
                     fogSeed = pcg(fogSeed);
-                    if (scatterVertexOn()) {
+                    if (scatterVertexOn() && any(seg.scatterWeight > 0.0)) {
                         // One sampled event instead of the stratified sweep (M17, D29). The stratified
                         // form keeps closed-form weights per stratum and samples only the source inside
                         // each; this keeps ONE sample and pays for it with the exact f/pdf weight, so it
@@ -1170,19 +1204,15 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // deterministic midpoint made the answer depend on segment length and came out as
                         // blotches; a sampled position depends on a random number instead, so the same
                         // error becomes noise the denoiser converges.
-                        ScatterVertex vertex = sampleAmbientScatterVertex(
-                                worldPush.fogExtinction.xyz, scatterAlbedo, ro, rd, window, tau, fogSeed);
-                        if (any(vertex.weight > 0.0)) {
-                            SquareLightSample lightSample = sampleSquareLight(
-                                    worldPush.lightDir.xyz, worldPush.celestial.xyz,
-                                    worldPush.lightDir.w, fogSeed);
-                            float3 vertexSunSource = sampledAmbientSunSource(
-                                    vertex.pos, rd, lightSample.direction, phaseG, sunSigma);
-                            float3 vis = visibilityMasked(CULL_SECONDARY_NO_SELF, vertex.pos,
-                                                          lightSample.direction, RAY_FAR).transmittance;
-                            seg.inScatter += vertex.weight * vertexSunSource * vis;
-                        }
-                    } else {
+                        SquareLightSample lightSample = sampleSquareLight(
+                                worldPush.lightDir.xyz, worldPush.celestial.xyz,
+                                worldPush.lightDir.w, fogSeed);
+                        float3 vertexSunSource = sampledAmbientSunSource(
+                                seg.scatterPos, rd, lightSample.direction, phaseG, sunSigma);
+                        float3 vis = visibilityMasked(CULL_SECONDARY_NO_SELF, seg.scatterPos,
+                                                      lightSample.direction, RAY_FAR).transmittance;
+                        seg.inScatter += seg.scatterWeight * vertexSunSource * vis;
+                    } else if (!scatterVertexOn()) {
                         seg.inScatter += sunInScatterStochastic(ro, rd, window, scatterAlbedo,
                                                                  phaseG, sunSigma,
                                                                  int(sunRays), fogSeed);

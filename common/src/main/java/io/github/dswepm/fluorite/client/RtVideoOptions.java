@@ -108,7 +108,7 @@ public final class RtVideoOptions {
                 case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
                         fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter(),
-                        fogScatterVertex()));
+                        fogScatterVertex(), fogVolumeEmitterNee()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
@@ -402,6 +402,16 @@ public final class RtVideoOptions {
      */
     private static OptionInstance<Boolean> fogScatterVertex() {
         return bool("fluorite.options.rt.fogScatterVertex", FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
+    }
+
+    /**
+     * Let block emitters light the medium at the sampled scattering event.
+     *
+     * <p>Beside the vertex switch it depends on, so the pair reads as the one feature it is.
+     */
+    private static OptionInstance<Boolean> fogVolumeEmitterNee() {
+        return bool("fluorite.options.rt.fogVolumeEmitterNee",
+                FluoriteConfig.Rt.Volumetrics.VOLUME_EMITTER_NEE);
     }
 
     /**

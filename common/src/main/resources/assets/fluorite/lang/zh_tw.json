@@ -137,6 +137,8 @@
   "fluorite.options.rt.fogMultiScatter.tooltip": "讓到達散射點的光按擴散率而非光束消光率衰減。修正濃霧變黑、深水變黑——散射把光移出光束，卻沒有移出介質。關閉精確回到舊行為。",
   "fluorite.options.rt.fogScatterVertex": "Volumetric Scatter Vertex",
   "fluorite.options.rt.fogScatterVertex.tooltip": "Sample one scattering event per segment instead of assuming light is constant along it. Lets the water's sky term ask how open the sky is where the light actually scatters, instead of probing once at the segment's start and gating the whole segment by it. Noisier per frame: a single sampled event carries the exact weight where the stratified estimator it replaces keeps closed-form weights. Off is the shipped behaviour.",
+  "fluorite.options.rt.fogVolumeEmitterNee": "Emitters Light Volumes",
+  "fluorite.options.rt.fogVolumeEmitterNee.tooltip": "Let lava, torches and campfires light the fog and the water, not only the surfaces around them. Requires Volumetric Scatter Vertex, which supplies the point the emitter is sampled from. One emitter and one shadow ray per scattering segment, reusing the same light grid the surfaces use.",
   "fluorite.options.rt.waterMediumTrace": "水體介質執行記錄",
   "fluorite.options.rt.waterMediumTrace.tooltip": "將中心視線的水體 Radiance、段長、可見度和區塊載入狀態低頻寫入 latest.log。僅用於診斷；開啟時每幀增加一條向上探測光線。",
   "fluorite.options.rt.fogSegmentSource": "霧內散射來源",

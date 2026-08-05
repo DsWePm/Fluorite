@@ -838,6 +838,25 @@ public final class FluoriteConfig {
             public static final BooleanSetting SCATTER_VERTEX =
                     bool("fluorite.rt.fog.scatterVertex", "volumetrics.scatter-vertex", false);
 
+            /**
+             * Let block emitters light the fog and the water, not just the surfaces around them.
+             *
+             * <p>Lava, a torch and a campfire have never reached a participating medium in this renderer:
+             * the closed forms carry the sun and the sky and nothing else, because a segment cannot ask
+             * where an emitter is. So this requires {@link #SCATTER_VERTEX} — it samples ONE emitter at
+             * that segment's sampled event, reusing the same power-weighted grid, alias tables and mixture
+             * pdf the surface estimator uses, with the phase function standing in for the BRDF.
+             *
+             * <p>Deliberately clear of everything ReSTIR will rewrite: M is one, there is no reservoir, no
+             * reuse, and no analytic MIS weight against emitter sampling. It does not touch the measured
+             * hot path either. When ReSTIR lands it should change how this sample is CHOSEN and leave what
+             * it is worth alone.
+             *
+             * <p>Costs one shadow ray per segment that scatters, on top of the sun's.
+             */
+            public static final BooleanSetting VOLUME_EMITTER_NEE =
+                    bool("fluorite.rt.fog.volumeEmitterNee", "volumetrics.emitter-nee", false);
+
             /** Bits 23-25 of worldPush.flags. */
             public static int sunShadowRays() {
                 return Math.clamp(SUN_SHADOW_RAYS.value(), 0, 7);
