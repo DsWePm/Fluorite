@@ -207,6 +207,24 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         }
         throughput *= segIntegral.transmittance;
 
+        // Clouds over the segment this ray ACTUALLY TRAVELLED, whether or not it ended on geometry
+        // (M11, D33). This used to sit inside the escape-to-sky branch below, which quietly assumed the
+        // camera is always under the deck: a downward ray then ends on terrain with no cloud in between,
+        // so skipping it cost nothing. Fly up to cloud altitude and the assumption fails -- looking down
+        // at the ground from inside or above the deck, the clouds between eye and ground were simply not
+        // there, while looking up still worked. Integrating over the segment covers both, and it is the
+        // same thing the participating medium above already does.
+        //
+        // Composited HERE rather than in the miss shader because this is the only place that knows the
+        // ray's own origin, which is what the shell intersection and the step schedule are measured from
+        // — and it is what puts clouds in a reflection: a mirror's ray passes through this same line.
+        {
+            float cloudMaxT = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
+            CloudResult clouds = traceClouds(ro, rd, cloudMaxT, seed);
+            L += throughput * clouds.inScatter;
+            throughput *= clouds.transmittance;
+        }
+
         if (payload.hitT < 0.0) {
             // world.rmiss writes sky radiance (gradient + drawn sun/moon sprite + stars) into
             // payload.albedo. The packed show-celestial flag decides whether this path segment may see
@@ -218,12 +236,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             if (misActive && bsdfPdf >= 0.0 && (payload.flags & PAYLOAD_ANALYTIC_LIGHT) != 0u) {
                 sky += float3(payload.f0) * pdfLight * powerHeuristic(bsdfPdf, pdfLight);
             }
-            // Clouds sit between this ray and everything it just found in the sky (M11, D33). Composited
-            // HERE rather than in the miss shader because this is the only place that knows the ray's own
-            // origin, which is what the shell intersection and the step schedule are measured from — and
-            // it is what puts clouds in a reflection: a mirror's ray escapes through this same line.
-            CloudResult clouds = traceClouds(ro, rd, RAY_FAR, seed);
-            L += throughput * (clouds.inScatter + clouds.transmittance * sky); // escaped to sky
+            // The throughput already carries what the clouds let through.
+            L += throughput * sky; // escaped to sky
             break;
         }
 
