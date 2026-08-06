@@ -268,6 +268,21 @@ public final class RtComposite {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_DETAIL_SCALE.value());
     }
 
+    /**
+     * How the clouds are lit: phase asymmetry, single-scattering albedo, and the self-shadow step count.
+     *
+     * <p>The albedo is the one with physical weight — the multiple-scattering term decays at
+     * {@code sqrt(3*(1-albedo))} times the optical depth, so it alone decides how deep light reaches into
+     * a cloud. The step count is the milestone's cost dial: those steps run per in-cloud sample, so they
+     * multiply the expensive path rather than adding to it.
+     */
+    private static Float4 cloudLighting() {
+        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_PHASE_G.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_ALBEDO.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_SUN_STEPS.value(),
+                0f);
+    }
+
     /** Single-scattering albedo and the sun lobe's anisotropy. */
     private static Float4 fogScatter() {
         float[] tint = FluoriteConfig.Rt.Volumetrics.scatterTintRgb();
@@ -1419,6 +1434,12 @@ public final class RtComposite {
             }
             if (FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
+                if (FluoriteConfig.Rt.Volumetrics.CLOUD_MULTI_SCATTER.value()) {
+                    // Bit 29: the diffusion term that keeps a thick cloud's interior bright. Nested under
+                    // the clouds themselves rather than independent, so the off state of the pair is one
+                    // state rather than two that differ only in dead work.
+                    flags |= 1 << 29;
+                }
             }
             if (FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX.value()) {
                 flags |= 1 << 27; // sample one scattering event per segment (M17)
@@ -1532,7 +1553,8 @@ public final class RtComposite {
                     visibilityGridOrigin(camX, camY, camZ, terrain),
                     cloudParams(level),
                     cloudShape(),
-                    cloudRebase(terrain, level)
+                    cloudRebase(terrain, level),
+                    cloudLighting()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

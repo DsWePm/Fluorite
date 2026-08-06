@@ -117,7 +117,9 @@ public final class RtVideoOptions {
                                 clouds(), cloudWeather(), cloudCoverage(), cloudType(), cloudDensity(),
                                 cloudExtinction(), cloudAltitude(), cloudThickness(),
                                 cloudFieldScale(), cloudBaseScale(), cloudDetailScale(),
-                                cloudWindSpeed(), cloudWindAngle()));
+                                cloudWindSpeed(), cloudWindAngle()),
+                        Section.titled("fluorite.options.rt.section.cloudLighting",
+                                cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
@@ -334,6 +336,17 @@ public final class RtVideoOptions {
             setting::set);
     }
 
+    /** A plain integer count, labelled with the bare number. */
+    private static OptionInstance<Integer> countSlider(String key, IntSetting setting, int min, int max) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(setting.value(), min, max),
+            setting::set);
+    }
+
     /** A physical mean coefficient in inverse blocks, exposed in thousandths for useful water steps. */
     private static OptionInstance<Integer> coefficientSlider(String key, FloatSetting setting, int maxMilli) {
         return new OptionInstance<>(
@@ -520,6 +533,53 @@ public final class RtVideoOptions {
     private static OptionInstance<Boolean> volumeScatterVertex() {
         return bool("fluorite.options.rt.volumeScatterVertex",
                 FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
+    }
+
+    /** Forward asymmetry of the cloud's phase function — how hard a backlit rim glows. */
+    private static OptionInstance<Integer> cloudPhaseG() {
+        return biasSlider("fluorite.options.rt.cloudPhaseG", FluoriteConfig.Rt.Volumetrics.CLOUD_PHASE_G);
+    }
+
+    /**
+     * Single-scattering albedo, in thousandths, over the top half of its range only.
+     *
+     * <p>Its own slider rather than a shared helper because everything interesting happens between 0.99
+     * and 1: the diffusion rate goes as the square root of one minus this, so the last percent of the
+     * range is worth more than the first half, and a linear 0..1 slider would spend nearly all its travel
+     * on values that make clouds look like soot. So the travel is logarithmic in {@code 1 - albedo} —
+     * every 250 units is another factor of ten closer to a pure scatterer.
+     *
+     * <p>The range starts at 75 rather than 0 because that is where the mapping reaches the setting's own
+     * lower clamp of 0.5. A slider whose travel runs past the clamp behind it stops responding partway
+     * along, which reads as a bug rather than as a limit.
+     */
+    private static OptionInstance<Integer> cloudAlbedo() {
+        String key = "fluorite.options.rt.cloudAlbedo";
+        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_ALBEDO;
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.4f", albedoFromSlider(v)))),
+            new OptionInstance.IntRange(75, 1000),
+            Math.clamp((int) Math.round(-250.0 * Math.log10(Math.max(1.0e-4, 1.0 - setting.value()))),
+                    75, 1000),
+            v -> setting.set((float) albedoFromSlider(v)));
+    }
+
+    private static double albedoFromSlider(int v) {
+        return 1.0 - Math.pow(10.0, -v / 250.0);
+    }
+
+    /** Steps in the cloud self-shadow march. The milestone's cost dial; 0 flattens every cloud. */
+    private static OptionInstance<Integer> cloudSunSteps() {
+        return countSlider("fluorite.options.rt.cloudSunSteps",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_SUN_STEPS, 0, 8);
+    }
+
+    private static OptionInstance<Boolean> cloudMultiScatter() {
+        return bool("fluorite.options.rt.cloudMultiScatter",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_MULTI_SCATTER);
     }
 
     /**

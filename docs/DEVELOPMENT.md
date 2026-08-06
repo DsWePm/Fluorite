@@ -103,7 +103,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 |---|---|---|---|
 | `PackedPathSegment` | **48 B** | `RtPathSegmentLayoutTest` | std430 量化到 16B 倍数：**只剩一个空 uint lane**；再加一个字段进位到 64B = 1440p 下 **+118 MB**。`pathFlags` bits 0–13 已用（9/10 water、12/13 ambient），新 flag 永远优先用位不用 lane |
 | `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 `uint64_t` 地址 + 3 uint（M15.0 删 `skyLightAddr`：112→104）；Vulkan 保证 128B，**余量 24B**（下一个地址花 8）。每加一个 uint 由 closest-hit 每次命中付费 |
-| `WorldPushData` | **768 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`（reduction 写、froxel/raygen 共读），M11 再加 32B 的 `cloudParams`/`cloudShape`（CPU 每帧写、raygen 只读，逐射线零成本——见 D37） |
+| `WorldPushData` | **784 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`（reduction 写、froxel/raygen 共读），M11 再加 48B 的 `cloudParams`/`cloudShape`/`cloudLighting`（CPU 每帧写、raygen 只读，逐射线零成本——见 D37） |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移全部钉死 |
 | `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney 十个标量打进三个 float4；测试断言**逐 lane 偏移** |
 | `Light` | 32 B | — | 32 整除 64B cache line（48B 时代一半记录跨行、双倍事务）；面积不存储（`4·|halfU×halfV|` 反推） |
@@ -578,7 +578,27 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - **原版天气联动**（此前**一行都没有**）：`RtComposite.cloudParams` 读 `getRainLevel/getThunderLevel`（按 partial tick 插值，否则慢坡会被量化到 20 Hz，在铺满屏幕的天空上看得见）。**雨驱动云量与密度、雷暴驱动云型**，两条独立轴——单个「风暴度」标量会把它们绑死，就永远做不出真正不同的两种天空（铺满地平线的阴雨 vs 晴空里孤零零一座雷暴云）；vanilla 自己也是分开的（可以下雨不打雷）。两者都是**叠加**而非替换：替换会让天气一变全天空的云变成同一个值，读起来是「拨了个开关」而不是「风暴来了」。开关 `volumetrics.cloud-weather` 默认开；关掉它滑条才是可用的创作工具（开着时滑条量到的是自己 + 天气）。
 - **`cloudDensity` 按成本排序**：所有因子相乘 ⇒ 任一个归零即可返回。先做**免费**的云壳高度剔除（多数射线的多数步在这里就出局），再一次 fetch 云量，最后才 fetch 云型——云型自己**剔除不了任何东西**，所以尽管高度剖面现在拿它当参数，也**故意不上提**；上提等于让天上每一个空步都付一次纹理读。
 
-**待办**：切片②光照（太阳自阴影 + 双叶 HG + phi_fwd）· 切片③双层+相机淡出+反射策略 · **成本采集**（R19 点名的风险，切片①就该测；云壳加深后更要测）· 游戏内验收。
+**已落地（切片②：光照，D34 的落实）**：源从「只有 ambient」换成云真正有的三项，全部按 `evaluateAmbientRadianceSource` 的**「相对各向同性的增益」约定**表达（相位乘 4π、天空项裸用，因为 `mediumSkyRadiance` 已经是 1/(4π) 球面积分——两项约定不一致就是 12× 的误差，而那正是参考实现常数的来历）：
+
+| 项 | 表达式 | 作用 |
+|---|---|---|
+| 直射太阳 | `lightRadiance · exp(−τ_sun) · 4π·phase(cosθ)` | 云有亮面与暗面；背光时亮边 |
+| 多次散射 | `lightRadiance · exp(−K·τ_sun)`，各向同性 | 厚云内部不发黑（K≈0.055 时比直射束深入约 18 倍） |
+| 天空 | `mediumSkyRadiance · exp(−K·τ_up)` | 云顶亮、云底暗 |
+
+- **phi_fwd 就地重推**（未翻参考代码）：τ≫1 时 RTE 退化为扩散方程，格林函数 `e^{−Kr}/(4πDr)`，`K = √(3σaσtr)`；g→0 时 σtr→σt、σa=(1−ω)σt ⇒ **`K = σt·√(3(1−ω))`**，于是**沿任意路径 ∫K ds = 该路径普通光学厚度 × 一个标量**。这就是它几乎免费的原因：太阳自阴影行进已经把光学厚度算出来了，扩散项只是同一个数再取一次 exp。ω=0.999 ⇒ 标量 0.055。同一恒等式的逐通道带钳版本就是 `volumeDiffuseAttenuation`（雾/水用）；云这边塌缩成标量（灰色云滴、单一 σt）。
+- **双叶 HG 用 lerp 而非相加**：每个 hg() 本身球面积分为 1，凸组合仍为 1 ⇒ **结构上就能量守恒**。参考实现是相加且漏 1/(4π)，那 ~4π 的能量误差正是 R20 说的「照抄亮 12×」的源头。前向叶 g 默认 0.8（水滴实测不对称因子，是物理不是观感），后向叶 g = −0.6g、权重 0.2（**我们自己的拟合**：真实 Mie 有次级后向峰即 glory，单叶 HG 根本表达不了，没有它顺光云是一张灰纸）。
+- **太阳自阴影行进**：步长逐步加倍，`s0 = thickness/(2^steps − 1)` ⇒ **改步数只改近场精度、不改覆盖范围**（恒为一个云层厚度）。覆盖范围刻意不设成「直到出壳」——低太阳时穿壳路径长达数千方块且几乎全在云外。用 `cheap` 密度（不取侵蚀）：这是个低频量，决定云内多暗而不是云边在哪。
+- **关档纪律**：`cloud-multi-scatter` 关 ⇒ 扩散叶**整项去掉**且天空遮蔽换回束流消光。若只把扩散率设回 1 而保留该项，那不是「关掉多次散射」，而是**再叠加一份各向同性的直射项**。
+- 新增 `cloudLighting` float4（phase g / 单散射反照率 / 自阴影步数 / 保留），**768 → 784 B**；flags bit 29 = 云多次散射（嵌在 bit 30 之下）。
+
+**本片的近似与待核查项（评审时请裁决）**：
+
+1. **天空遮蔽没有第二次行进**，用「局部密度 × 到本云型剖面顶的垂直距离」估 τ_up，上界取 `cloudProfileTop(type)` 而非云层顶——否则层云会被埋在三百方块的空气底下变黑。代价：把采样点的局部密度当整列的代表，塔底会略高估、塔顶略低估。备选是真的再 march 一次（成本翻倍）或烘一张垂直光学厚度图（要新资源 + 与天气同步）。
+2. `CLOUD_ALBEDO` 默认 0.999，UI 滑条走 `1−albedo` 的对数刻度（每 250 格一个数量级）——线性刻度会把几乎全部行程花在「云像煤灰」的区间。
+3. **成本仍未测**。自阴影步数是乘在云内采样点上的，是 R19 风险的具体形态；`cloud-sun-steps` 就是为此留的 A/B 旋钮（0 = 关掉整个自阴影）。
+
+**待办**：切片③双层+相机淡出+反射策略 · **成本采集**（R19 点名的风险；云壳加深 + 自阴影行进后更要测）· 游戏内验收（切片①②一起看）。
 
 - **唯一硬规则（R18）**：`traceClouds(ro, rd, tMax, seed)` 内**禁止出现相机位置**——密度场、层序全部逐光线判断（层序逐光线比较两层 `meanDistance`）。验收专项：站在水边看天上的云与倒影，高度形状一致。
 - 结构：`cloud.slang` 纯光线函数 + `cloud_noise.comp.slang` 启动烘焙 3D 噪声（构建 glob 已覆盖 `**/*.comp.slang`）；挂統一 Medium ambient 非均质分支（D2）。
@@ -847,4 +867,4 @@ for p in sorted(glob.glob('common/src/main/resources/assets/fluorite/lang/*.json
     print(os.path.basename(p), len(same), same[:5])
 ```
 
-**当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。
+**当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M20.3 粒子 mask 成本 · **M11 切片②的天空遮蔽近似**（§8.1 三条待核查项，评审时裁决）。M11 §6.4 表中两项「请示」已由 D33/D34 结清。
