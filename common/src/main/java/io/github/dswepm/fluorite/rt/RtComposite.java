@@ -221,6 +221,20 @@ public final class RtComposite {
      * it, whatever its type. The thickness is what a cumulonimbus has to grow into, so it is deep, and it
      * costs march steps only where a tall cloud actually exists.
      */
+    /**
+     * The terrain rebase origin, so the clouds can be placed in the world rather than around the player.
+     *
+     * <p>Everything the ray tracer sees is relative to this, and it follows the camera — it is reset
+     * whenever the camera drifts more than {@code terrain.rebase-distance-blocks} from it. The cloud
+     * altitude is authored as an absolute height, so without this the deck sat at that height ABOVE THE
+     * PLAYER: it climbed with them, could not be entered or flown above, and the whole pattern jumped
+     * sideways at every rebase. Same reason {@code visibilityGridOrigin} snaps in absolute coordinates
+     * before rebasing, and the same class of fault R18 exists to prevent.
+     */
+    private static Float4 cloudRebase(RtTerrain terrain) {
+        return new Float4(terrain.blockX, terrain.blockY, terrain.blockZ, 0f);
+    }
+
     private static Float4 cloudShape() {
         return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_ALTITUDE.value(),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_THICKNESS.value(),
@@ -1491,7 +1505,8 @@ public final class RtComposite {
                     waterAux(),
                     visibilityGridOrigin(camX, camY, camZ, terrain),
                     cloudParams(level),
-                    cloudShape()
+                    cloudShape(),
+                    cloudRebase(terrain)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

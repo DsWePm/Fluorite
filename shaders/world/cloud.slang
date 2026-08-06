@@ -15,6 +15,12 @@
 // one makes the clouds in a reflection sit at a different height from the clouds above it, so a lake and
 // the sky above it contradict each other. There is no camera here to be tempted by.
 //
+// WORLD-ANCHORED, and that took a fix rather than a comment. Every coordinate the ray tracer handles is
+// relative to a terrain rebase origin that follows the camera, so evaluating the density field on those
+// coordinates directly anchored the clouds to the PLAYER: the deck rode along at its authored altitude
+// above them, unreachable, and the whole pattern jumped whenever the origin reset. worldOf() adds the
+// origin back; nothing else in this file may sample the field without it.
+//
 // Structure is HPVolumeCloud's (weather map x 3D noise x height profile, adaptive stepping); no constant
 // is. See R20: its Intensity carries units of m^-2 and every number here is chosen for this world's scale.
 
@@ -46,6 +52,18 @@ public static const float CLOUD_TYPE_SCALE = 26000.0;
 //   cloudShape  = (deck bottom altitude, deck thickness, base feature size, detail feature size)
 // Authored rather than constant because the vanilla weather system has to be able to move them — see
 // RtComposite.cloudParams, where rain drives coverage and thunder drives type.
+/**
+ * A rebased position in ABSOLUTE world blocks.
+ *
+ * <p>Everything the ray tracer handles is expressed relative to the terrain rebase origin, and that
+ * origin FOLLOWS THE CAMERA. Sampling the density field at rebased coordinates therefore anchors the
+ * clouds to the player rather than to the world: the deck climbs with them, so an altitude of 192 means
+ * "192 blocks above wherever you are" and can never be reached, and the whole cloud pattern jumps
+ * sideways every time the origin is reset. This one addition is what the file's world-anchored claim
+ * actually rests on.
+ */
+float3 worldOf(float3 p) { return p + worldPush.cloudRebase.xyz; }
+
 float cloudBottom() { return worldPush.cloudShape.x; }
 float cloudThickness() { return max(worldPush.cloudShape.y, 1.0); }
 float cloudTop() { return cloudBottom() + cloudThickness(); }
@@ -76,7 +94,12 @@ public bool cloudsOn() {
  * that construction reads the RAY's origin, never the camera's.
  */
 float2 cloudShellSpan(float3 ro, float3 rd) {
-    float3 centreRelative = ro + float3(0.0, PLANET_R, 0.0);
+    // Vertically anchored to the WORLD: the centre sits a planet radius below world y = 0, so the radii
+    // below are absolute altitudes and the deck stays where it was authored however far the player
+    // climbs. Horizontally it stays under the rebase origin, which is within a rebase distance of the
+    // camera -- that is what gives each ray its own horizon, and the curvature error from those a
+    // hundred-odd blocks is a thousandth of a block.
+    float3 centreRelative = ro + float3(0.0, PLANET_R + worldPush.cloudRebase.y, 0.0);
     float rBottom = PLANET_R + cloudBottom();
     float rTop = PLANET_R + cloudTop();
     float2 inner = raySphere(centreRelative, rd, rBottom);
@@ -163,7 +186,7 @@ float cloudHeightProfile(float altitude, float type) {
  * same ground as the ray that finds it moves — which is the property the whole file exists to protect.
  */
 float cloudCoverage(float3 p) {
-    float2 w = p.xz / CLOUD_WEATHER_SCALE;
+    float2 w = worldOf(p).xz / CLOUD_WEATHER_SCALE;
     float m = cloudNoise.SampleLevel(float3(w.x, 0.37, w.y), 0.0).r;
     // Widened around the middle so the sky is broken rather than either overcast or empty. The authored
     // bias then shifts the whole field, which is how rain overcasts a sky: one number, not a second field.
@@ -182,7 +205,7 @@ float cloudCoverage(float3 p) {
  * switch being thrown rather than as a storm arriving.
  */
 float cloudType(float3 p) {
-    float2 w = p.xz / CLOUD_TYPE_SCALE;
+    float2 w = worldOf(p).xz / CLOUD_TYPE_SCALE;
     float m = cloudNoise.SampleLevel(float3(w.x, 0.61, w.y), 0.0).b;
     // Scaled below 1 so fair weather stays in the sheet-to-heap half of the range and the tower is
     // something the weather has to ask for.
@@ -202,7 +225,8 @@ float cloudType(float3 p) {
  * step in the sky for a texture read that only matters inside a cloud.
  */
 float cloudDensity(float3 p, bool cheap) {
-    if (p.y < cloudBottom() || p.y > cloudTop()) {
+    float3 pw = worldOf(p);
+    if (pw.y < cloudBottom() || pw.y > cloudTop()) {
         return 0.0; // outside the deck: no type can put cloud here
     }
     float coverage = cloudCoverage(p);
@@ -210,11 +234,11 @@ float cloudDensity(float3 p, bool cheap) {
         return 0.0;
     }
     float type = cloudType(p);
-    float profile = cloudHeightProfile(p.y, type);
+    float profile = cloudHeightProfile(pw.y, type);
     if (profile <= 0.0) {
         return 0.0;
     }
-    float shape = cloudNoise.SampleLevel(p / max(worldPush.cloudShape.z, 1.0), 0.0).r;
+    float shape = cloudNoise.SampleLevel(pw / max(worldPush.cloudShape.z, 1.0), 0.0).r;
     // Coverage raises the whole field rather than masking it, so a cloud grows from its centre outward
     // instead of appearing with hard edges where the mask crosses a threshold.
     float density = saturate(shape + coverage - 1.0) * profile;
@@ -226,7 +250,7 @@ float cloudDensity(float3 p, bool cheap) {
     if (density <= 0.0 || cheap) {
         return density * gain;
     }
-    float erosion = cloudNoise.SampleLevel(p / max(worldPush.cloudShape.w, 1.0), 0.0).g;
+    float erosion = cloudNoise.SampleLevel(pw / max(worldPush.cloudShape.w, 1.0), 0.0).g;
     // Erosion only bites where the cloud is already thin, so the body keeps its shape while the edges
     // break up. Subtracting everywhere would hollow the cloud out.
     return saturate(density - erosion * 0.35 * (1.0 - density)) * gain;
@@ -356,12 +380,13 @@ public float3 cloudDebugProbe(float3 ro, float3 rd) {
     float step = (span.y - span.x) / 64.0;
     for (int i = 0; i < 64; ++i) {
         float3 p = ro + rd * (span.x + step * (float(i) + 0.5));
-        if (p.y >= cloudBottom() && p.y <= cloudTop()) {
+        float3 pw = worldOf(p);
+        if (pw.y >= cloudBottom() && pw.y <= cloudTop()) {
             inDeck += 1.0;
             float type = cloudType(p);
             maxCoverage = max(maxCoverage, cloudCoverage(p));
-            maxProfile = max(maxProfile, cloudHeightProfile(p.y, type));
-            maxShape = max(maxShape, cloudNoise.SampleLevel(p / max(worldPush.cloudShape.z, 1.0), 0.0).r);
+            maxProfile = max(maxProfile, cloudHeightProfile(pw.y, type));
+            maxShape = max(maxShape, cloudNoise.SampleLevel(pw / max(worldPush.cloudShape.z, 1.0), 0.0).r);
         }
         float d = cloudDensity(p, true);
         maxDensity = max(maxDensity, d);

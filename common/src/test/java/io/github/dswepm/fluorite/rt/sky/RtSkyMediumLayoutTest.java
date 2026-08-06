@@ -13,10 +13,11 @@ final class RtSkyMediumLayoutTest {
     void worldPushCarriesOneSharedMediumSkyRadiance() {
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
                 .anyMatch(component -> component.getName().equals("mediumSkyRadiance")));
-        // 736 through M16, 768 since M11 added the two authored cloud vectors. This buffer is not the
-        // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit
-        // — but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(768, WorldPushData.BYTE_SIZE);
+        // 736 through M16; 768 when M11 added the two authored cloud vectors, 784 with the rebase origin
+        // that anchors them to the world instead of to the player. This buffer is not the 128-byte
+        // push-constant block, so its size is a per-frame upload cost rather than a hard limit — but it
+        // is pinned here so growth is a decision rather than a side effect.
+        assertEquals(784, WorldPushData.BYTE_SIZE);
     }
 
     /**
@@ -32,5 +33,6 @@ final class RtSkyMediumLayoutTest {
                 .toList();
         assertTrue(names.contains("cloudParams"), names.toString());
         assertTrue(names.contains("cloudShape"), names.toString());
+        assertTrue(names.contains("cloudRebase"), names.toString());
     }
 }

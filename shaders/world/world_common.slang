@@ -138,6 +138,13 @@ public struct WorldPush {
     // the weather would have been the alternative, and the storm is most of the point.
     public float4   cloudParams;      // x coverage bias, y density scale, z type bias, w extinction/block
     public float4   cloudShape;       // x deck bottom (blocks), y deck thickness, z base size, w detail size
+    // The terrain rebase origin, in ABSOLUTE blocks. Everything the ray tracer sees is expressed
+    // relative to this, and it FOLLOWS THE CAMERA -- it is reset whenever the camera drifts more than
+    // terrain.rebase-distance-blocks from it. So a cloud deck placed at a rebased altitude is a cloud
+    // deck that climbs with the player: authored at 192, it sits 192 blocks above wherever they are,
+    // and can never be entered or flown above. Adding this back is what makes the density field
+    // world-anchored in fact rather than only in the comments.
+    public float4   cloudRebase;      // xyz terrain rebase origin (absolute blocks), w reserved
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
