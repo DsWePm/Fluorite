@@ -677,6 +677,7 @@ public final class RtComposite {
     private boolean waterWaveTimeValid;
     private long atlasSampler;
     private long lutSampler;
+    private long tilingSampler;
     // The atmosphere's precomputed tables (M10). Baked once, then sampled by world.rmiss and world.rgen.
     private RtSky skyLuts;
     private boolean failed;
@@ -1025,7 +1026,10 @@ public final class RtComposite {
                     skyLuts.skyViewMultiView(), lutSampler(ctx));
             worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
             worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
-            worldPipeline.setCloudNoise(skyLuts.cloudNoiseView(), lutSampler(ctx));
+            // NOT the LUT sampler. Every table above is a parameterisation over [0,1] and must clamp;
+            // the cloud noise is sampled at WORLD COORDINATES divided by a feature size, which leaves
+            // that range immediately and has to wrap. See tilingSampler.
+            worldPipeline.setCloudNoise(skyLuts.cloudNoiseView(), tilingSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1930,6 +1934,13 @@ public final class RtComposite {
             }
             atlasSampler = 0L;
         }
+        if (tilingSampler != 0L) {
+            RtContext ctx = RtContext.currentOrNull();
+            if (ctx != null) {
+                VK10.vkDestroySampler(ctx.vk(), tilingSampler, null);
+            }
+            tilingSampler = 0L;
+        }
     }
 
     /**
@@ -1960,6 +1971,42 @@ public final class RtComposite {
             }
         }
         return lutSampler;
+    }
+
+    /**
+     * A REPEAT sampler, for volumes read at world coordinates rather than at a parameterisation.
+     *
+     * <p>Separate from {@link #lutSampler} because the two requirements are opposites and neither can
+     * serve the other. Every atmosphere table is a function of angles and altitudes mapped onto [0,1],
+     * where wrapping would join the zenith to the horizon; the cloud noise is a tileable volume sampled
+     * at {@code worldPosition / featureSize}, which leaves [0,1] within one feature and has to wrap.
+     *
+     * <p><b>This is what the noise bake's tiling exists for.</b> cloud_noise.comp.slang hashes its cells
+     * on coordinates wrapped to each octave's own period specifically so the volume repeats seamlessly;
+     * that work only pays off through an address mode that repeats. Bound with the clamping LUT sampler
+     * instead, the whole visible sky read a single clamped corner of the volume, so coverage came out
+     * near-constant and {@code shape + coverage - 1} never rose above zero — no clouds at all, at any
+     * setting.
+     */
+    private long tilingSampler(RtContext ctx) {
+        if (tilingSampler == 0L) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
+                        .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                        .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .minLod(0f).maxLod(0f);
+                LongBuffer p = stack.mallocLong(1);
+                if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                    throw new IllegalStateException("vkCreateSampler(tiling volume) failed");
+                }
+                tilingSampler = p.get(0);
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, tilingSampler, "tiling volume sampler");
+            }
+        }
+        return tilingSampler;
     }
 
     private long atlasSampler(RtContext ctx) {
