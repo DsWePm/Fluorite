@@ -111,6 +111,7 @@
   "fluorite.options.rt.debugView.19": "가시성 프로파일 (그리드 대 광선)",
   "fluorite.options.rt.debugView.20": "카메라 구간 인스캐터",
   "fluorite.options.rt.debugView.21": "합성 프리픽스 A/B",
+  "fluorite.options.rt.debugView.22": "구름 체인 프로브",
   "fluorite.options.rt.fog": "볼류메트릭 안개",
   "fluorite.options.rt.fog.tooltip": "월드의 주변 참여 매질입니다. 경로 세그먼트마다 적분하므로 직접 시야뿐 아니라 반사와 굴절 안에도 나타납니다.",
   "fluorite.options.rt.fogDensity": "안개 밀도",

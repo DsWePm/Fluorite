@@ -111,6 +111,7 @@
   "fluorite.options.rt.debugView.19": "Perfil de visibilidad (rejilla vs rayo)",
   "fluorite.options.rt.debugView.20": "Dispersión entrante del prefijo de cámara",
   "fluorite.options.rt.debugView.21": "Prefijo compuesto A/B",
+  "fluorite.options.rt.debugView.22": "Sonda de la cadena de nubes",
   "fluorite.options.rt.fog": "Niebla volumétrica",
   "fluorite.options.rt.fog.tooltip": "El medio participante ambiental del mundo. Se integra por segmento de trayecto, así que aparece también en reflejos y refracciones, no solo en la vista directa.",
   "fluorite.options.rt.fogDensity": "Densidad de niebla",

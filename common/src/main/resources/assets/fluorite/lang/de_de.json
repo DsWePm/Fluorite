@@ -111,6 +111,7 @@
   "fluorite.options.rt.debugView.19": "Sichtbarkeitsprofil (Gitter vs. Strahl)",
   "fluorite.options.rt.debugView.20": "Einstreuung im Kamera-Präfix",
   "fluorite.options.rt.debugView.21": "Komposit-Präfix A/B",
+  "fluorite.options.rt.debugView.22": "Wolkenketten-Sonde",
   "fluorite.options.rt.fog": "Volumetrischer Nebel",
   "fluorite.options.rt.fog.tooltip": "Das umgebende beteiligte Medium der Welt. Pro Pfadsegment integriert, erscheint also auch in Reflexionen und Brechungen, nicht nur im direkten Blick.",
   "fluorite.options.rt.fogDensity": "Nebeldichte",

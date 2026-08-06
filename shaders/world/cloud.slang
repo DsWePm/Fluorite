@@ -77,25 +77,46 @@ public bool cloudsOn() {
  */
 float2 cloudShellSpan(float3 ro, float3 rd) {
     float3 centreRelative = ro + float3(0.0, PLANET_R, 0.0);
-    float2 inner = raySphere(centreRelative, rd, PLANET_R + cloudBottom());
-    float2 outer = raySphere(centreRelative, rd, PLANET_R + cloudTop());
+    float rBottom = PLANET_R + cloudBottom();
+    float rTop = PLANET_R + cloudTop();
+    float2 inner = raySphere(centreRelative, rd, rBottom);
+    float2 outer = raySphere(centreRelative, rd, rTop);
     if (outer.y <= 0.0) {
         return float2(0.0, -1.0); // the shell is entirely behind this ray
     }
+    // BRANCH ON THE ORIGIN'S RADIUS, not on the signs of the roots. This was the bug that made the sky
+    // empty at every setting: the old test asked whether the inner sphere's NEAR root was ahead, meaning
+    // to detect "below the deck, looking up" -- but a ray starting below cloud base is INSIDE the inner
+    // sphere, so its near root is always behind it and that test never fired. Every such ray fell into
+    // the "already inside the deck" case and got the span from the camera up to the underside: hundreds
+    // of blocks of clear air, sampled dutifully, all of it below the deck, density zero everywhere.
+    float radius = length(centreRelative);
     float enter;
     float exit;
-    if (inner.x > 0.0) {
-        // Below the deck looking up: the crossing runs from the inner sphere to the outer one.
-        enter = inner.x;
+    if (radius < rBottom) {
+        // Below the deck. The crossing starts where the ray passes UP through the underside, which is
+        // the FAR root of the inner sphere. A downward ray has no such crossing within reach: its far
+        // root is on the other side of the planet, and the distance clamp below turns that into an
+        // empty span on its own.
+        if (inner.y <= 0.0) {
+            return float2(0.0, -1.0);
+        }
+        enter = inner.y;
         exit = outer.y;
-    } else if (inner.y > 0.0) {
-        // Inside the deck: from here to whichever boundary is met first.
+    } else if (radius <= rTop) {
+        // Inside the deck: from here to whichever boundary is met first. Looking down, that is the
+        // underside, and the inner sphere is genuinely ahead so its near root is positive. Looking up,
+        // the inner sphere is behind and the ray leaves through the top.
         enter = 0.0;
-        exit = min(inner.y, outer.y);
+        exit = inner.x > 0.0 ? inner.x : outer.y;
     } else {
-        // Above the deck, or looking down at it from within the outer sphere.
-        enter = max(outer.x, 0.0);
-        exit = outer.y;
+        // Above the deck. Enter through the top, then leave either through the underside or, for a
+        // grazing ray that never reaches it, back out through the top.
+        if (outer.x <= 0.0) {
+            return float2(0.0, -1.0);
+        }
+        enter = outer.x;
+        exit = inner.x > 0.0 ? inner.x : outer.y;
     }
     return float2(max(enter, 0.0), min(exit, CLOUD_MAX_DIST));
 }
@@ -280,4 +301,78 @@ public CloudResult traceClouds(float3 ro, float3 rd, float tMax, uint seed) {
     result.inScatter = gathered;
     result.transmittance = transmittance;
     return result;
+}
+
+/**
+ * Debug view 22: name the first stage of the cloud chain that fails, as a flat colour.
+ *
+ * <p>Exists because "there are no clouds" was diagnosed twice by reading call graphs, and the second
+ * diagnosis was wrong. Every stage below can independently produce an empty sky, they all look identical
+ * on screen, and none of them logs anything. One launch and one screenshot should say which it is.
+ *
+ * <ul>
+ *   <li><b>RED</b> — the enable bit never reached the shader. Config, flags packing, or push upload.</li>
+ *   <li><b>MAGENTA</b> — the noise volume reads zero everywhere. Bake never ran, descriptor never
+ *       written, or the binding index disagrees between pipeline layout and shader.</li>
+ *   <li><b>BLUE</b> — the ray never enters the shell. Geometry: altitude, thickness, or the span.</li>
+ *   <li><b>YELLOW</b> — inside the shell, but density is zero along the whole crossing. The density
+ *       field's own balance: coverage, shape, profile or the type axis.</li>
+ *   <li><b>GREY</b> — clouds exist here; brightness is 1 - transmittance, so white is opaque cloud.
+ *       If this view is grey and the world is not, the failure is in the LIGHTING, not the shape.</li>
+ * </ul>
+ */
+public float3 cloudDebugProbe(float3 ro, float3 rd) {
+    if (!cloudsOn()) {
+        return float3(1.0, 0.0, 0.0);
+    }
+    // Four widely separated taps rather than one: a single tap could legitimately land on a zero, and
+    // reporting "the texture is dead" because of that would send the search to exactly the wrong place.
+    float noise = cloudNoise.SampleLevel(float3(0.11, 0.37, 0.23), 0.0).r
+            + cloudNoise.SampleLevel(float3(0.61, 0.13, 0.79), 0.0).r
+            + cloudNoise.SampleLevel(float3(0.29, 0.83, 0.41), 0.0).g
+            + cloudNoise.SampleLevel(float3(0.73, 0.51, 0.07), 0.0).b;
+    if (noise <= 0.0) {
+        return float3(1.0, 0.0, 1.0);
+    }
+
+    float2 span = cloudShellSpan(ro, rd);
+    if (span.y <= span.x) {
+        return float3(0.0, 0.0, 1.0);
+    }
+
+    // A fixed uniform walk, deliberately unlike the real march: this has to be able to disagree with it.
+    // If the field has density and the real march still shows nothing, the fault is in the march.
+    //
+    // The three factors are tracked SEPARATELY as well as multiplied. They all multiply, so any one of
+    // them being zero empties the sky and the product alone cannot say which -- and a CPU replica of the
+    // density field said all three should be healthy, which was wrong about something. This reports the
+    // maxima instead of asserting them.
+    float maxDensity = 0.0;
+    float maxCoverage = 0.0;
+    float maxProfile = 0.0;
+    float maxShape = 0.0;
+    float inDeck = 0.0;
+    float tau = 0.0;
+    float step = (span.y - span.x) / 64.0;
+    for (int i = 0; i < 64; ++i) {
+        float3 p = ro + rd * (span.x + step * (float(i) + 0.5));
+        if (p.y >= cloudBottom() && p.y <= cloudTop()) {
+            inDeck += 1.0;
+            float type = cloudType(p);
+            maxCoverage = max(maxCoverage, cloudCoverage(p));
+            maxProfile = max(maxProfile, cloudHeightProfile(p.y, type));
+            maxShape = max(maxShape, cloudNoise.SampleLevel(p / max(worldPush.cloudShape.z, 1.0), 0.0).r);
+        }
+        float d = cloudDensity(p, true);
+        maxDensity = max(maxDensity, d);
+        tau += d * worldPush.cloudParams.w * step;
+    }
+    if (maxDensity <= 0.0) {
+        // Not a flat yellow any more: R is the best coverage seen, G the best height profile, B the best
+        // shape sample. Black means the walk never landed inside the deck at all, which would make the
+        // shell span and the density field disagree about where the deck is.
+        return inDeck <= 0.0 ? float3(0.0, 0.0, 0.0)
+                             : float3(maxCoverage, maxProfile, maxShape);
+    }
+    return float3(1.0 - exp(-tau));
 }

@@ -18,7 +18,7 @@ Minecraft 26.2 的 Vulkan 硬件光追渲染 mod（Fabric + NeoForge，包名 `i
 ## 常用工具速查
 
 - 基准：`tools/bench-world.sh [name]` 还原世界 → `./gradlew :fabric:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=<name>`，配 `-Dfluorite.rt.frameStats=true`。
-- 诊断：视频设置 → Fluorite Settings → 诊断 → debug view 8–19（体积/水/LUT/可见性）；隔离开关 `water.scatter-source`、`volumetrics.segment-source` 等。
+- 诊断：视频设置 → Fluorite Settings → 诊断 → debug view 8–22（体积/水/LUT/可见性；**22 = 云链路探针**，逐环指认空天空断在哪）；隔离开关 `water.scatter-source`、`volumetrics.segment-source` 等。
 - 构建硬要求：slangc ≥ 2026.14（`docs/developer_guide.md`）；`-Xss16m` 必须是直接 vmArg。
 
 语言约定：代码注释英文；`docs/DEVELOPMENT.md` 中文正文 + 英文符号名。
