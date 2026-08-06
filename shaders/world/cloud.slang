@@ -160,8 +160,8 @@ CloudResult overCloud(CloudResult front, CloudResult back) {
  *
  * <p>Two instances exist. The LOW deck is convective — it has a cloud-type dimension, real depth, and
  * self-shadowing worth marching. The HIGH one is cirrus: ice crystals sheared into streaks, thin enough
- * that its optical depth never gets far from zero, so it has no type, no self-shadow march, and a fade
- * that dissolves it when a ray starts near it.
+ * that its optical depth never gets far from zero, so it has no type, no self-shadow march, and a bound
+ * on how long a crossing it may hand the march.
  *
  * <p>One struct rather than two code paths because everything downstream of the density field — the
  * march, the phase function, the diffusion term, the compositing — is the same physics either way. What
@@ -526,33 +526,22 @@ CloudBudget cloudBudget(CloudLayer layer, bool secondary) {
 }
 
 /**
- * How much of this layer a ray starting near it may see, in [0, 1].
+ * How long a crossing this layer may hand the march, in blocks.
  *
- * <p>TWO MULTIPLICATIVE TERMS, and neither alone is enough. A thin sheet modelled as a shell breaks down
- * when it is nearby, in two different ways:
+ * <p>NOT A FADE, and the difference matters. An earlier version dissolved the cirrus sheet as a ray
+ * approached it, taken from the plan's "camera-proximity fade" -- but that was describing vanilla's flat
+ * cloud TEXTURE, which vanishes when you fly into it. A volumetric cloud has no reason to disappear when
+ * approached, and being able to fly into one is most of the point of having them.
  *
- * <ul>
- *   <li><b>Height proximity</b>: a ray whose origin is inside or just under the sheet has no volume left
- *       to integrate through, and is instead sitting inside a fog that fills its whole field of view.</li>
- *   <li><b>Ray proximity</b>: a ray that begins its crossing very close to its own origin is grazing
- *       along the sheet rather than passing through it, so the crossing is enormously long and every
- *       neighbouring pixel gets a wildly different answer from it.</li>
- * </ul>
- *
- * <p>Both are measured from THE RAY'S OWN ORIGIN (R18). The reference implementation used the camera for
- * this, which makes a reflected cloud fade according to where the viewer happens to be standing rather
- * than where the reflected ray starts — so a lake fades its clouds out while the sky above it keeps them.
- *
- * <p>Only the cirrus layer takes this. The convective deck has real depth and is meant to be flown into.
+ * <p>What the fade was covering for is real and stays, in the shape the problem actually has: a ray that
+ * begins its crossing at its own origin is grazing ALONG the sheet rather than passing through it, so the
+ * crossing is enormously long, the adaptive step grows to match, and neighbouring pixels disagree wildly
+ * about a sheet that is only tens of blocks thick. That is a march-budget problem and it gets a budget --
+ * the crossing is capped at a multiple of the layer's own thickness, which is as far through a sheet as a
+ * ray can travel and still be describing that sheet.
  */
-float layerProximityFade(CloudLayer layer, float3 ro, float tEnter) {
-    if (!layer.cirrus) {
-        return 1.0;
-    }
-    float centre = layer.bottom + layer.thickness * 0.5;
-    float heightFade = smoothstep(0.0, layer.thickness * 3.0, abs(worldOf(ro).y - centre));
-    float rayFade = smoothstep(0.0, layer.thickness * 4.0, tEnter);
-    return heightFade * rayFade;
+float layerCrossingLimit(CloudLayer layer) {
+    return layer.cirrus ? layer.thickness * 24.0 : CLOUD_MAX_DIST;
 }
 
 /**
@@ -598,10 +587,8 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     if (tExit <= tEnter) {
         return result;
     }
-    float fade = layerProximityFade(layer, ro, tEnter);
-    if (fade <= 0.0) {
-        return result;
-    }
+    // Grazing rays get a bounded crossing rather than a dissolve -- see layerCrossingLimit.
+    tExit = min(tExit, tEnter + layerCrossingLimit(layer));
 
     float3 ambient = worldPush.mediumSkyRadiance.xyz;
     float3 lightDir = worldPush.lightDir.xyz;
@@ -658,7 +645,6 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
         if (budget.erosion) {
             density = cloudDensity(layer, p, false);
         }
-        density *= fade;
         if (density > 0.0) {
             float sigmaT = density * layer.extinction;
             float stepT = exp(-sigmaT * step);
