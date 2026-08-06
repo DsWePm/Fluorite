@@ -87,5 +87,11 @@ void main(uint3 id: SV_DispatchThreadID) {
     float3 p = (float3(id) + 0.5) / float(CLOUD_NOISE_DIM);
     float shape = cellularFbm(p, 4, 3);   // low frequency: the cloud's body
     float erosion = cellularFbm(p, 12, 3); // high frequency: what bites into its edges
-    cloudNoiseOut[int3(id)] = float4(shape, erosion, 0.0, 1.0);
+    // The weather map's second channel: which KIND of cloud stands here, sampled far more slowly than
+    // coverage so a storm cell covers a region rather than alternating with fair weather every few
+    // hundred blocks. One octave at the lowest period the volume can hold, deliberately smooth — this is
+    // the field a height profile is selected by, and a noisy one would put a cumulonimbus tower next to a
+    // sheet of stratus with nothing in between.
+    float type = cellularFbm(p, 2, 1);
+    cloudNoiseOut[int3(id)] = float4(shape, erosion, type, 1.0);
 }

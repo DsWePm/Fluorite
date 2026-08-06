@@ -103,7 +103,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 |---|---|---|---|
 | `PackedPathSegment` | **48 B** | `RtPathSegmentLayoutTest` | std430 量化到 16B 倍数：**只剩一个空 uint lane**；再加一个字段进位到 64B = 1440p 下 **+118 MB**。`pathFlags` bits 0–13 已用（9/10 water、12/13 ambient），新 flag 永远优先用位不用 lane |
 | `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 `uint64_t` 地址 + 3 uint（M15.0 删 `skyLightAddr`：112→104）；Vulkan 保证 128B，**余量 24B**（下一个地址花 8）。每加一个 uint 由 closest-hit 每次命中付费 |
-| `WorldPushData` | **736 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`，由 reduction 写、froxel/raygen 共读 |
+| `WorldPushData` | **768 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`（reduction 写、froxel/raygen 共读），M11 再加 32B 的 `cloudParams`/`cloudShape`（CPU 每帧写、raygen 只读，逐射线零成本——见 D37） |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移全部钉死 |
 | `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney 十个标量打进三个 float4；测试断言**逐 lane 偏移** |
 | `Light` | 32 B | — | 32 整除 64B cache line（48B 时代一半记录跨行、双倍事务）；面积不存储（`4·|halfU×halfV|` 反推） |
@@ -568,9 +568,17 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 ### 8.1 M11 体积云（前置：M15；方法对比见 §6.4，动工裁决 D33–D35）— **切片① 2026-08-05 落地，待验收**
 
-**已落地（切片①：形状）**：`cloud_noise.comp.slang` 一次性烘 128³ RGBA8（R 云体billow、G 边缘侵蚀；按各倍频自己的周期取模哈希以真正可平铺——只靠采样器 REPEAT 会平铺纹理却让格点在接缝处跳变）；`cloud.slang` 纯光线函数挂在**逃逸段、sky break 之前**；**球壳而非平板**（球心在光线起点下方一个行星半径处，远处云随地平线下沉）；自适应步长与空段跳跃；源为 ambient-only（`mediumSkyRadiance`），所以云**有形状但平**。烘焙挂在 `RtSky` 链上（一次性、不依赖太阳或相机，与 transmittance 同类；该类的价值就是 order 只有一个权威）。binding 17，RAYGEN-only。开关 `volumetrics.clouds` 默认关。
+**已落地（切片①：形状）**：`cloud_noise.comp.slang` 一次性烘 128³ RGBA8（R 云体 billow、G 边缘侵蚀、**B 云型**；按各倍频自己的周期取模哈希以真正可平铺——只靠采样器 REPEAT 会平铺纹理却让格点在接缝处跳变）；`cloud.slang` 纯光线函数挂在**逃逸段、sky break 之前**；**球壳而非平板**（球心在光线起点下方一个行星半径处，远处云随地平线下沉）；自适应步长与空段跳跃；源为 ambient-only（`mediumSkyRadiance`），所以云**有形状但平**。烘焙挂在 `RtSky` 链上（一次性、不依赖太阳或相机，与 transmittance 同类；该类的价值就是 order 只有一个权威）。binding 17，RAYGEN-only。开关 `volumetrics.clouds` 默认关。
 
-**待办**：切片②光照（太阳自阴影 + 双叶 HG + phi_fwd）· 切片③双层+相机淡出+反射策略 · **成本采集**（R19 点名的风险，切片①就该测）· 游戏内验收。
+**已落地（切片①补：云型 + 参数化 + 天气联动，D36–D38）**：
+
+- **云型维度**。`cloudHeightProfile(altitude, type)` 由一条 [0,1] 轴选形，两段插值（0 层云薄片 → 0.5 晴天积云 → 1 积雨云）。积雨云在 t≈0.6–0.8 处**重新变宽**（砧状顶：上升气流撞上稳定层后向侧面铺开）——没有这一段，风暴云读起来是一根柱子而不是一场风暴。三者共享平底，因为凝结高度在一个区域内是同一个值，云野的下表面本来就是一个平面。云型同时**抬密度**（`1 + type*1.6`）：积雨云不是「高一点的积云」，是「光穿不过去的积云」，而后者才是从底下看它像风暴的原因。云型场自己一片噪声（B 通道，周期 26000 blocks ≫ 云量的 9000），所以「阴天」与「雷暴」是两个独立轴。
+- **云壳加深**：140 → 380 blocks（`CLOUD_ALTITUDE` 180 + `CLOUD_THICKNESS` 380），积雨云要有地方站。层云只占最下面约 18%，加深只在**真的长出高云的地方**才多花行进步数（空段跳跃走完其余部分）。
+- **九个编译期常数提为逐帧参数**：`WorldPush` 新增 `cloudParams`（云量偏置 / 密度缩放 / 云型偏置 / 每方块消光）与 `cloudShape`（底面高度 / 厚度 / 云朵尺度 / 细节尺度），**736 → 768 B**（`RtSkyMediumLayoutTest` 已更新并加钉 `cloudParams`/`cloudShape` 存在）。留在 `cloud.slang` 里的只有两个：`CLOUD_WEATHER_SCALE`、`CLOUD_TYPE_SCALE`——它们不是「观感」，是天空允许与自己不同的尺度。
+- **原版天气联动**（此前**一行都没有**）：`RtComposite.cloudParams` 读 `getRainLevel/getThunderLevel`（按 partial tick 插值，否则慢坡会被量化到 20 Hz，在铺满屏幕的天空上看得见）。**雨驱动云量与密度、雷暴驱动云型**，两条独立轴——单个「风暴度」标量会把它们绑死，就永远做不出真正不同的两种天空（铺满地平线的阴雨 vs 晴空里孤零零一座雷暴云）；vanilla 自己也是分开的（可以下雨不打雷）。两者都是**叠加**而非替换：替换会让天气一变全天空的云变成同一个值，读起来是「拨了个开关」而不是「风暴来了」。开关 `volumetrics.cloud-weather` 默认开；关掉它滑条才是可用的创作工具（开着时滑条量到的是自己 + 天气）。
+- **`cloudDensity` 按成本排序**：所有因子相乘 ⇒ 任一个归零即可返回。先做**免费**的云壳高度剔除（多数射线的多数步在这里就出局），再一次 fetch 云量，最后才 fetch 云型——云型自己**剔除不了任何东西**，所以尽管高度剖面现在拿它当参数，也**故意不上提**；上提等于让天上每一个空步都付一次纹理读。
+
+**待办**：切片②光照（太阳自阴影 + 双叶 HG + phi_fwd）· 切片③双层+相机淡出+反射策略 · **成本采集**（R19 点名的风险，切片①就该测；云壳加深后更要测）· 游戏内验收。
 
 - **唯一硬规则（R18）**：`traceClouds(ro, rd, tMax, seed)` 内**禁止出现相机位置**——密度场、层序全部逐光线判断（层序逐光线比较两层 `meanDistance`）。验收专项：站在水边看天上的云与倒影，高度形状一致。
 - 结构：`cloud.slang` 纯光线函数 + `cloud_noise.comp.slang` 启动烘焙 3D 噪声（构建 glob 已覆盖 `**/*.comp.slang`）；挂統一 Medium ambient 非均质分支（D2）。
@@ -807,6 +815,16 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | # | 议题 | 决策 | 物理与性能理由 |
 |---|---|---|---|
 | D28 | 附魔 glint 方案（用户选 A，B 留档） | **近似档：`Prim.flags` 一个 bit + shader 紫色 sheen（tint 混合 + 自发光呼吸）**；完整双层滚动 UV 记入 §8.6 可选区，「后面有想法了再说」 | 零新几何、零新贴图采样、不动 ABI（`flags` lane 本就恒 0），且附魔物在反射与 GI 里也发光——vanilla 的屏幕空间 pass 在那里根本不存在。与 vanilla 的差距：没有那层斜向滑动的条纹质感，只是「在发光」。相位用 `pc.frameIndex` 是为守住「rchit 不解引用 WorldPush」的铁律，代价是速率跟随帧率 |
+
+### 2026-08-06 M11 云型 / 参数化 / 天气联动（D36–D38，用户选 A「并入切片①，现在就做」）
+
+起因：用户三问——「当前的云 3D 噪声支持积雨云吗、有留接口控制云的形状密度吗、有与原版天气系统联动吗」。核对结果**三个都是「没有」**：高度剖面是写死的 `smoothstep(0,0.12,t)*(1-smoothstep(0.45,1,t))`（一条积云/层积云曲线），140 blocks 的云壳装不下高塔；九个常数全是编译期的，只有一个开关；`grep getRainLevel|getThunderLevel|isRaining|isThundering` 在 `common/src/main/java` **零命中**。三者是同一条链（天气 → 云型 + 云量 → 高度剖面），所以并作一片做。
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D36 | 云型如何进入密度场 | **加一条 [0,1] 云型轴**（噪声 B 通道，自有周期 26000 blocks），`cloudHeightProfile(altitude, type)` 两段插值：层云 → 积云 → 积雨云，积雨云带砧状顶；云型同时抬密度 `1+type*1.6` | §6.4 的方法对比本来就写着「2D 天气图（覆盖度/类型）」，缺的正是类型那一维。**只加高不加密做不出雷暴**：积雨云与积云的差别一大半在光穿不过去，从底下看那才是「风暴」的观感。砧状顶不是装饰——上升气流撞上稳定层向侧面铺开，没有它风暴云读起来是一根柱子。云型与云量分两片噪声：「阴天」与「雷暴」是独立的两件事，共用一片就永远只能同时发生。成本：**每步多一次 3D fetch，且只在云壳内、云量非零之后才付**（见 D38） |
+| D37 | 参数暴露到哪一层 | **`WorldPush` 加 `cloudParams`/`cloudShape` 两个 float4，736 → 768 B**；九个常数全部提为配置项 + UI 滑条 + 11 份 lang | 这个 buffer 光追只读不写，**加 32 B 是每帧一次上传，逐射线零成本**；不占 128 B push-constant 上限（D19 同理由）。备选「保持编译期常数」的代价是天气永远动不了云，而风暴正是这次要的东西。留在 shader 里的两个常数是尺度不是观感，提出来只会变成误配的入口 |
+| D38 | 天气如何驱动 | **雨 → 云量 + 密度，雷暴 → 云型**，两条独立轴，**叠加**而非替换；按 partial tick 插值；`volumetrics.cloud-weather` 默认开 | 单个「风暴度」标量会把两轴绑死，做不出真正不同的两种天空（铺满地平线的阴雨 vs 晴空里一座孤立雷暴云）——**vanilla 自己就是分开的**（可以下雨不打雷，且它的 thunder level 只在下雨时才抬），所以读这一对而不是把它压成一个数。叠加而非替换：替换会让天气一变全天空的云变成同一个值，读起来是「拨了个开关」。partial tick 插值：vanilla 的 rain level 逐 tick 更新，取 tick 边界值会把慢坡量化到 20 Hz，在铺满屏幕的天空上看得见。默认开、但**滑条创作时必须关**——开着时滑条量到的是自己 + 天气，这是把开关放进 UI 而不是配置文件的理由 |
 
 **2026-08-02 确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 

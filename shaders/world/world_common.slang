@@ -129,6 +129,15 @@ public struct WorldPush {
     // sampleVolumeVisibility then reports everything lit, which is what the renderer did before this
     // existed.
     public float4   visGridOrigin;    // xyz snapped minimum corner (rebased), w cell size in blocks
+    // Volumetric clouds (M11). Authored per frame rather than compiled in, because vanilla's weather has
+    // to be able to move them: rain drives coverage, thunder drives type. See cloud.slang for what each
+    // lane means to the density field, and RtComposite.cloudParams for where the weather enters.
+    //
+    // These are the last two lanes of a buffer that is read but never written by the ray tracer, so
+    // adding them costs 32 B of a per-frame upload and nothing per ray. A cloud that could not respond to
+    // the weather would have been the alternative, and the storm is most of the point.
+    public float4   cloudParams;      // x coverage bias, y density scale, z type bias, w extinction/block
+    public float4   cloudShape;       // x deck bottom (blocks), y deck thickness, z base size, w detail size
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

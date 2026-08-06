@@ -21,6 +21,7 @@ import io.github.dswepm.fluorite.rt.gen.WorldPushData.Float3;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData.Float4;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData.Int4;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -167,6 +168,64 @@ public final class RtComposite {
         double oz = Math.floor(camZ / cell) * cell - halfZ;
         return new Float4((float) (ox - terrain.blockX), (float) (oy - terrain.blockY),
                 (float) (oz - terrain.blockZ), cell);
+    }
+
+    // ---- Volumetric clouds (M11). What the density field is allowed to be, and what the weather makes
+    // of it. Everything here is authored per frame rather than compiled into cloud.slang, because the
+    // vanilla weather system has to be able to move it.
+
+    /**
+     * Coverage bias, density scale, type bias and extinction — and where vanilla's weather enters.
+     *
+     * <p><b>Rain drives coverage, thunder drives type,</b> and those are two different axes on purpose.
+     * Rain means the sky filled in; thunder means the clouds grew upward. A single "storminess" scalar
+     * would tie them together and could never produce the two skies that actually differ — an overcast
+     * drizzle, which is a flat sheet from horizon to horizon, and a thunderhead over an otherwise open
+     * sky. Vanilla itself keeps them separate for the same reason (it can rain without thundering, and
+     * its thunder level is only ever raised while it is raining), so this reads the pair rather than
+     * collapsing it.
+     *
+     * <p>Both are ADDED to the noise fields rather than replacing them, so a storm arrives over a sky
+     * still made of individual cells. Replacing would make every cloud identical the instant the weather
+     * changed, which reads as a switch being thrown instead of as weather.
+     *
+     * <p>Rain also raises density, because the visible difference between a fair-weather sky and a rainy
+     * one is not only how much of it is covered — it is that you can no longer see through any of it.
+     *
+     * <p>Interpolated at the frame's partial tick. Vanilla ramps these over many ticks, so the value is
+     * already smooth; sampling it at the tick boundary instead would quantise a slow ramp to 20 Hz, which
+     * is visible on a sky that covers the screen.
+     *
+     * @param level the client level, or null on a title screen — the sliders then stand alone
+     */
+    private static Float4 cloudParams(ClientLevel level) {
+        float coverage = FluoriteConfig.Rt.Volumetrics.CLOUD_COVERAGE.value();
+        float density = FluoriteConfig.Rt.Volumetrics.CLOUD_DENSITY.value();
+        float type = FluoriteConfig.Rt.Volumetrics.CLOUD_TYPE.value();
+        if (level != null && FluoriteConfig.Rt.Volumetrics.CLOUD_WEATHER.value()) {
+            float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+            float rain = level.getRainLevel(partial);
+            float thunder = level.getThunderLevel(partial);
+            coverage += rain * 0.55f;
+            density *= 1.0f + rain * 0.8f;
+            type += thunder * 0.75f;
+        }
+        return new Float4(coverage, density, type,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_EXTINCTION.value());
+    }
+
+    /**
+     * Where the deck sits and how big its features are: bottom altitude, thickness, base and detail size.
+     *
+     * <p>The bottom is a condensation altitude and therefore a plane — every cloud's flat base lands on
+     * it, whatever its type. The thickness is what a cumulonimbus has to grow into, so it is deep, and it
+     * costs march steps only where a tall cloud actually exists.
+     */
+    private static Float4 cloudShape() {
+        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_ALTITUDE.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_THICKNESS.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_BASE_SCALE.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_DETAIL_SCALE.value());
     }
 
     /** Single-scattering albedo and the sun lobe's anisotropy. */
@@ -1426,7 +1485,9 @@ public final class RtComposite {
                     waterScatter(),
                     waterAbsorbOverride(),
                     waterAux(),
-                    visibilityGridOrigin(camX, camY, camZ, terrain)
+                    visibilityGridOrigin(camX, camY, camZ, terrain),
+                    cloudParams(level),
+                    cloudShape()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

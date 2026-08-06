@@ -28,22 +28,27 @@ import world_core;
 
 [[vk::binding(17, 0)]] Sampler3D cloudNoise;
 
-// The shell, in blocks above the world's zero. Minecraft's own clouds sit at 192; this is a band around
-// that, thick enough for a march to have something to integrate through.
-public static const float CLOUD_BOTTOM = 180.0;
-public static const float CLOUD_TOP = 320.0;
 // How far along a ray clouds are still worth sampling. Beyond this the shell is below the horizon for any
 // upward ray and the remaining crossing is grazing, where the march would spend its whole budget on a
 // sliver of nearly transparent volume.
 public static const float CLOUD_MAX_DIST = 40000.0;
 
-// Feature sizes, in blocks. The base is the width of a cloud, the detail the size of the bites taken out
-// of its edge; both are periods of the baked volume mapped onto the world.
-public static const float CLOUD_BASE_SCALE = 2400.0;
-public static const float CLOUD_DETAIL_SCALE = 340.0;
+// The one feature size that stays fixed: the weather map's period, in blocks. It is not authored because
+// it is not a look, it is the scale at which the sky is allowed to be different from itself — roughly a
+// render distance across, so a player sees a few cells and not a texture.
 public static const float CLOUD_WEATHER_SCALE = 9000.0;
+// Cloud TYPE varies far more slowly still. A storm covers a region; it does not alternate with fair
+// weather every kilometre.
+public static const float CLOUD_TYPE_SCALE = 26000.0;
 
-public static const float CLOUD_EXTINCTION = 0.045; // per block, at full density
+// Everything else is authored per frame, from worldPush:
+//   cloudParams = (coverage bias, density scale, type bias, extinction per block at full density)
+//   cloudShape  = (deck bottom altitude, deck thickness, base feature size, detail feature size)
+// Authored rather than constant because the vanilla weather system has to be able to move them — see
+// RtComposite.cloudParams, where rain drives coverage and thunder drives type.
+float cloudBottom() { return worldPush.cloudShape.x; }
+float cloudThickness() { return max(worldPush.cloudShape.y, 1.0); }
+float cloudTop() { return cloudBottom() + cloudThickness(); }
 
 public struct CloudResult {
     public float3 inScatter;
@@ -72,8 +77,8 @@ public bool cloudsOn() {
  */
 float2 cloudShellSpan(float3 ro, float3 rd) {
     float3 centreRelative = ro + float3(0.0, PLANET_R, 0.0);
-    float2 inner = raySphere(centreRelative, rd, PLANET_R + CLOUD_BOTTOM);
-    float2 outer = raySphere(centreRelative, rd, PLANET_R + CLOUD_TOP);
+    float2 inner = raySphere(centreRelative, rd, PLANET_R + cloudBottom());
+    float2 outer = raySphere(centreRelative, rd, PLANET_R + cloudTop());
     if (outer.y <= 0.0) {
         return float2(0.0, -1.0); // the shell is entirely behind this ray
     }
@@ -95,12 +100,39 @@ float2 cloudShellSpan(float3 ro, float3 rd) {
     return float2(max(enter, 0.0), min(exit, CLOUD_MAX_DIST));
 }
 
-/** 0 at both boundaries of the shell, 1 through the middle, with the flat base a cloud has. */
-float cloudHeightProfile(float altitude) {
-    float t = saturate((altitude - CLOUD_BOTTOM) / (CLOUD_TOP - CLOUD_BOTTOM));
-    // Asymmetric on purpose: convective cloud has a flat bottom and a rounded top, so the lower edge
-    // sharpens quickly and the upper one tapers.
-    return saturate(smoothstep(0.0, 0.12, t) * (1.0 - smoothstep(0.45, 1.0, t)));
+/**
+ * Vertical profile, selected by cloud TYPE — which is the difference between weather and wallpaper.
+ *
+ * <p>One deck, three shapes blended along a single axis, because from the ground the families that read
+ * differently are a sheet, a heap and a tower:
+ *
+ * <ul>
+ *   <li><b>0, stratus</b>: a shallow sheet lying on the deck's floor, flat above as well as below. It is
+ *       a layer, not an object, so it occupies only the lowest tenth of the deck.</li>
+ *   <li><b>0.5, cumulus</b>: flat-bottomed, rounded on top, filling the lower half. Fair weather.</li>
+ *   <li><b>1, cumulonimbus</b>: the full depth, still flat-bottomed, and WIDENING again near the top.
+ *       That late flare is the anvil — the tower reaches stable air and spreads sideways instead of
+ *       continuing to climb. Without it a storm cloud reads as a column rather than as a storm.</li>
+ * </ul>
+ *
+ * <p>All three share the flat base for one physical reason: convective cloud condenses at the altitude
+ * where rising air reaches saturation, and that altitude is the same across a region, so the underside of
+ * a cloud field is a plane. The tops differ because a top is wherever that particular parcel ran out of
+ * lift.
+ *
+ * <p>Blended in two halves rather than by a single lerp between the extremes, so the middle of the range
+ * is cumulus rather than a half-height average of a sheet and a tower.
+ */
+float cloudHeightProfile(float altitude, float type) {
+    float t = saturate((altitude - cloudBottom()) / cloudThickness());
+    float stratus = smoothstep(0.0, 0.03, t) * (1.0 - smoothstep(0.07, 0.18, t));
+    float cumulus = smoothstep(0.0, 0.05, t) * (1.0 - smoothstep(0.30, 0.62, t));
+    float anvil = smoothstep(0.60, 0.78, t) * (1.0 - smoothstep(0.92, 1.0, t));
+    float cumulonimbus = max(smoothstep(0.0, 0.04, t) * (1.0 - smoothstep(0.68, 0.95, t)), anvil * 0.9);
+    float profile = type < 0.5
+            ? lerp(stratus, cumulus, saturate(type * 2.0))
+            : lerp(cumulus, cumulonimbus, saturate(type * 2.0 - 1.0));
+    return saturate(profile);
 }
 
 /**
@@ -112,34 +144,71 @@ float cloudHeightProfile(float altitude) {
 float cloudCoverage(float3 p) {
     float2 w = p.xz / CLOUD_WEATHER_SCALE;
     float m = cloudNoise.SampleLevel(float3(w.x, 0.37, w.y), 0.0).r;
-    // Widened around the middle so the sky is broken rather than either overcast or empty.
-    return saturate((m - 0.42) * 2.6);
+    // Widened around the middle so the sky is broken rather than either overcast or empty. The authored
+    // bias then shifts the whole field, which is how rain overcasts a sky: one number, not a second field.
+    return saturate((m - 0.42) * 2.6 + worldPush.cloudParams.x);
+}
+
+/**
+ * Which family of cloud stands over this column, in [0,1] — the argument to cloudHeightProfile.
+ *
+ * <p>Its own slice of the volume, at its own much longer period, so type and coverage are independent:
+ * an overcast sky can be a flat sheet or a wall of towers, and those are different weather.
+ *
+ * <p>The authored bias is ADDITIVE and saturating rather than a replacement, so a thunderstorm pushes the
+ * whole sky toward towers while the field still decides where the individual cells stand. Replacing the
+ * field would make every cloud in the sky identical the moment the weather changed, which reads as a
+ * switch being thrown rather than as a storm arriving.
+ */
+float cloudType(float3 p) {
+    float2 w = p.xz / CLOUD_TYPE_SCALE;
+    float m = cloudNoise.SampleLevel(float3(w.x, 0.61, w.y), 0.0).b;
+    // Scaled below 1 so fair weather stays in the sheet-to-heap half of the range and the tower is
+    // something the weather has to ask for.
+    return saturate(m * 0.75 + worldPush.cloudParams.z);
 }
 
 /**
  * Density at a point. `cheap` skips the erosion fetch, which is what makes the empty-space skip pay for
  * itself: most steps along most rays are outside any cloud, and they only need to know that.
+ *
+ * <p>ORDERED BY COST, and that ordering is load-bearing rather than tidy. Every factor below multiplies,
+ * so any one of them reaching zero ends the function — which makes it worth asking the free question
+ * first and the expensive one last. The deck bounds are arithmetic on p.y and reject the majority of
+ * steps along the majority of rays; coverage is one fetch and rejects most of what survives; type is a
+ * second fetch and cannot reject anything by itself, so it is deliberately NOT hoisted above the height
+ * test even though the height profile now takes it as an argument. Hoisting it would charge every empty
+ * step in the sky for a texture read that only matters inside a cloud.
  */
 float cloudDensity(float3 p, bool cheap) {
-    float profile = cloudHeightProfile(p.y);
-    if (profile <= 0.0) {
-        return 0.0;
+    if (p.y < cloudBottom() || p.y > cloudTop()) {
+        return 0.0; // outside the deck: no type can put cloud here
     }
     float coverage = cloudCoverage(p);
     if (coverage <= 0.0) {
         return 0.0;
     }
-    float shape = cloudNoise.SampleLevel(p / CLOUD_BASE_SCALE, 0.0).r;
+    float type = cloudType(p);
+    float profile = cloudHeightProfile(p.y, type);
+    if (profile <= 0.0) {
+        return 0.0;
+    }
+    float shape = cloudNoise.SampleLevel(p / max(worldPush.cloudShape.z, 1.0), 0.0).r;
     // Coverage raises the whole field rather than masking it, so a cloud grows from its centre outward
     // instead of appearing with hard edges where the mask crosses a threshold.
     float density = saturate(shape + coverage - 1.0) * profile;
+    // Type raises density as well as height, because a cumulonimbus is not a tall cumulus — it is a tall
+    // cumulus that light struggles to get through, and that opacity is most of what makes a storm read as
+    // one from underneath. Applied AFTER the erosion below rather than here: the erosion term is written
+    // against a density normalised to [0,1] and would invert if a gain pushed its argument past one.
+    float gain = worldPush.cloudParams.y * (1.0 + type * 1.6);
     if (density <= 0.0 || cheap) {
-        return density;
+        return density * gain;
     }
-    float erosion = cloudNoise.SampleLevel(p / CLOUD_DETAIL_SCALE, 0.0).g;
+    float erosion = cloudNoise.SampleLevel(p / max(worldPush.cloudShape.w, 1.0), 0.0).g;
     // Erosion only bites where the cloud is already thin, so the body keeps its shape while the edges
     // break up. Subtracting everywhere would hollow the cloud out.
-    return saturate(density - erosion * 0.35 * (1.0 - density));
+    return saturate(density - erosion * 0.35 * (1.0 - density)) * gain;
 }
 
 /**
@@ -193,7 +262,7 @@ public CloudResult traceClouds(float3 ro, float3 rd, float tMax, uint seed) {
         emptySteps = 0;
         density = cloudDensity(p, false);
         if (density > 0.0) {
-            float sigmaT = density * CLOUD_EXTINCTION;
+            float sigmaT = density * worldPush.cloudParams.w;
             float stepT = exp(-sigmaT * step);
             // The same closed form the fog's sub-steps use: for a source taken as constant over the step,
             // the in-scatter integrates exactly to source * (1 - T), and doing it this way keeps a long

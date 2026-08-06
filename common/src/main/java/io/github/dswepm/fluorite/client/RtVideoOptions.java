@@ -106,10 +106,15 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
-                case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
-                        fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                        fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter(),
-                        fogScatterVertex(), fogVolumeEmitterNee(), clouds()));
+                case FOG -> List.of(
+                        Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
+                                fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
+                                fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter(),
+                                fogScatterVertex(), fogVolumeEmitterNee()),
+                        Section.titled("fluorite.options.rt.section.clouds",
+                                clouds(), cloudWeather(), cloudCoverage(), cloudDensity(), cloudType(),
+                                cloudExtinction(), cloudAltitude(), cloudThickness(),
+                                cloudBaseScale(), cloudDetailScale()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
@@ -418,6 +423,55 @@ public final class RtVideoOptions {
         return bool("fluorite.options.rt.clouds", FluoriteConfig.Rt.Volumetrics.CLOUDS);
     }
 
+    /**
+     * Let vanilla's rain and thunder move the sky.
+     *
+     * <p>In the UI beside the sliders it competes with, because with it on the sliders measure themselves
+     * plus the weather — so authoring a sky means turning this off first, and that has to be one click
+     * away rather than a config file away.
+     */
+    private static OptionInstance<Boolean> cloudWeather() {
+        return bool("fluorite.options.rt.cloudWeather", FluoriteConfig.Rt.Volumetrics.CLOUD_WEATHER);
+    }
+
+    private static OptionInstance<Integer> cloudCoverage() {
+        return biasSlider("fluorite.options.rt.cloudCoverage", FluoriteConfig.Rt.Volumetrics.CLOUD_COVERAGE);
+    }
+
+    private static OptionInstance<Integer> cloudDensity() {
+        return scaleSlider("fluorite.options.rt.cloudDensity", FluoriteConfig.Rt.Volumetrics.CLOUD_DENSITY);
+    }
+
+    /** Stratus at the low end, cumulus in the middle, cumulonimbus at the top. */
+    private static OptionInstance<Integer> cloudType() {
+        return biasSlider("fluorite.options.rt.cloudType", FluoriteConfig.Rt.Volumetrics.CLOUD_TYPE);
+    }
+
+    private static OptionInstance<Integer> cloudExtinction() {
+        return coefficientSlider("fluorite.options.rt.cloudExtinction",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_EXTINCTION, 500);
+    }
+
+    private static OptionInstance<Integer> cloudAltitude() {
+        return blockSlider("fluorite.options.rt.cloudAltitude",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_ALTITUDE, 64, 1024);
+    }
+
+    private static OptionInstance<Integer> cloudThickness() {
+        return blockSlider("fluorite.options.rt.cloudThickness",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_THICKNESS, 32, 1024);
+    }
+
+    private static OptionInstance<Integer> cloudBaseScale() {
+        return blockSlider("fluorite.options.rt.cloudBaseScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_BASE_SCALE, 200, 8000);
+    }
+
+    private static OptionInstance<Integer> cloudDetailScale() {
+        return blockSlider("fluorite.options.rt.cloudDetailScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_DETAIL_SCALE, 40, 2000);
+    }
+
     private static OptionInstance<Boolean> fogScatterVertex() {
         return bool("fluorite.options.rt.fogScatterVertex", FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
     }
@@ -482,6 +536,24 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             initial,
             v -> setting.set(v / 10.0f));
+    }
+
+    /**
+     * A slider over a SIGNED bias in [-1, 1], shown in hundredths.
+     *
+     * <p>Signed because the settings it drives are added to a field rather than multiplied into one, and
+     * a bias whose neutral value sits at the middle of its travel is the only kind that can be turned
+     * both up and down from what the world authored.
+     */
+    private static OptionInstance<Integer> biasSlider(String key, FloatSetting setting) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%+.2f", v / 100.0))),
+            new OptionInstance.IntRange(-100, 100),
+            Math.clamp(Math.round(setting.value() * 100.0f), -100, 100),
+            v -> setting.set(v / 100.0f));
     }
 
     /** A slider over a distance in blocks. */
