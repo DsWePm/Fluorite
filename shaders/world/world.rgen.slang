@@ -219,8 +219,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // ray's own origin, which is what the shell intersection and the step schedule are measured from
         // — and it is what puts clouds in a reflection: a mirror's ray passes through this same line.
         {
+            // bounce > 0 is every ray that is not the first of its path — a reflection, a refraction, a
+            // diffuse bounce. It buys a reduced march rather than a different sky: the shells and their
+            // contents are the same world-anchored field either way, so only the budget moves.
             float cloudMaxT = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
-            CloudResult clouds = traceClouds(ro, rd, cloudMaxT, seed);
+            CloudResult clouds = traceClouds(ro, rd, cloudMaxT, seed, bounce > 0);
             L += throughput * clouds.inScatter;
             throughput *= clouds.transmittance;
         }

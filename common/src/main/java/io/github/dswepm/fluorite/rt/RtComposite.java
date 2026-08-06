@@ -283,6 +283,23 @@ public final class RtComposite {
                 0f);
     }
 
+    /**
+     * The high cirrus layer: altitude, thickness, coverage bias and extinction.
+     *
+     * <p>Zero extinction is the disable path, the same pattern the fog's density uses — the shader
+     * returns before intersecting the shell, so switching cirrus off costs one comparison rather than a
+     * shader variant.
+     */
+    private static Float4 cloudCirrus() {
+        if (!FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS.value()) {
+            return new Float4(0f, 0f, 0f, 0f);
+        }
+        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_ALTITUDE.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_THICKNESS.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_COVERAGE.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_EXTINCTION.value());
+    }
+
     /** Single-scattering albedo and the sun lobe's anisotropy. */
     private static Float4 fogScatter() {
         float[] tint = FluoriteConfig.Rt.Volumetrics.scatterTintRgb();
@@ -1434,6 +1451,10 @@ public final class RtComposite {
             }
             if (FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
+                // Bits 2-3: how much march a ray that is not the first of its path may spend. A cost
+                // dial only — every ray intersects the same world-anchored shells from its own origin,
+                // so this cannot move a cloud in a reflection relative to the one overhead.
+                flags |= (FluoriteConfig.Rt.Volumetrics.cloudSecondaryId() & 0b11) << 2;
                 if (FluoriteConfig.Rt.Volumetrics.CLOUD_MULTI_SCATTER.value()) {
                     // Bit 29: the diffusion term that keeps a thick cloud's interior bright. Nested under
                     // the clouds themselves rather than independent, so the off state of the pair is one
@@ -1554,7 +1575,8 @@ public final class RtComposite {
                     cloudParams(level),
                     cloudShape(),
                     cloudRebase(terrain, level),
-                    cloudLighting()
+                    cloudLighting(),
+                    cloudCirrus()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

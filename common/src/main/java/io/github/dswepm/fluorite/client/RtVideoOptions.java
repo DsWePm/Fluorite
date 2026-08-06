@@ -119,7 +119,11 @@ public final class RtVideoOptions {
                                 cloudFieldScale(), cloudBaseScale(), cloudDetailScale(),
                                 cloudWindSpeed(), cloudWindAngle()),
                         Section.titled("fluorite.options.rt.section.cloudLighting",
-                                cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo()));
+                                cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo(),
+                                cloudSecondary()),
+                        Section.titled("fluorite.options.rt.section.cloudCirrus",
+                                cloudCirrus(), cloudCirrusCoverage(), cloudCirrusExtinction(),
+                                cloudCirrusAltitude(), cloudCirrusThickness()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
@@ -580,6 +584,52 @@ public final class RtVideoOptions {
     private static OptionInstance<Boolean> cloudMultiScatter() {
         return bool("fluorite.options.rt.cloudMultiScatter",
                 FluoriteConfig.Rt.Volumetrics.CLOUD_MULTI_SCATTER);
+    }
+
+    private static OptionInstance<Boolean> cloudCirrus() {
+        return bool("fluorite.options.rt.cloudCirrus", FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusAltitude() {
+        return blockSlider("fluorite.options.rt.cloudCirrusAltitude",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_ALTITUDE, 128, 2048);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusThickness() {
+        return blockSlider("fluorite.options.rt.cloudCirrusThickness",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_THICKNESS, 8, 400);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusCoverage() {
+        return biasSlider("fluorite.options.rt.cloudCirrusCoverage",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_COVERAGE);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusExtinction() {
+        return coefficientSlider("fluorite.options.rt.cloudCirrusExtinction",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_EXTINCTION, 100);
+    }
+
+    /**
+     * What clouds a ray that is not the first of its path gets.
+     *
+     * <p>In the UI because it is the cost lever for the whole milestone in reflections, and a cost has to
+     * be measured by flipping it at a fixed camera position inside one session.
+     */
+    private static OptionInstance<String> cloudSecondary() {
+        StringSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_SECONDARY;
+        return new OptionInstance<>(
+            "fluorite.options.rt.cloudSecondary",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.cloudSecondary.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.cloudSecondary." + value),
+            new OptionInstance.Enum<>(List.of("off", "reduced", "full"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    private static OptionInstance<Boolean> fogScatterVertex() {
+        return bool("fluorite.options.rt.fogScatterVertex", FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
     }
 
     /**

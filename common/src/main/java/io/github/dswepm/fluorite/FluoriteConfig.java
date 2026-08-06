@@ -1028,6 +1028,83 @@ public final class FluoriteConfig {
             public static final BooleanSetting CLOUD_MULTI_SCATTER =
                     bool("fluorite.rt.fog.cloudMultiScatter", "volumetrics.cloud-multi-scatter", true);
 
+            /**
+             * The high cirrus layer: a thin ice sheet far above the convective deck.
+             *
+             * <p>A second march, but a cheap one — it is thin enough that its optical depth barely leaves
+             * zero, so it gets no self-shadow march at all, and a ray crosses it once.
+             */
+            public static final BooleanSetting CLOUD_CIRRUS =
+                    bool("fluorite.rt.fog.cloudCirrus", "volumetrics.cloud-cirrus", true);
+
+            /**
+             * Where the cirrus sits, in blocks. Raised to clear the deck below it if it would overlap.
+             *
+             * <p>That clamp is structural rather than cosmetic: the two shells being disjoint is what
+             * makes ordering them by which one a ray reaches first correct, and overlapping shells would
+             * need the two marches interleaved by depth.
+             */
+            public static final FloatSetting CLOUD_CIRRUS_ALTITUDE =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusAltitude", "volumetrics.cloud-cirrus-altitude",
+                            760f, 128f, 2048f);
+
+            /** How deep the cirrus sheet is, in blocks. Thin by nature — it is a sheet, not a deck. */
+            public static final FloatSetting CLOUD_CIRRUS_THICKNESS =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusThickness", "volumetrics.cloud-cirrus-thickness",
+                            60f, 8f, 400f);
+
+            /** Added to the cirrus layer's own coverage field, in [-1, 1]. */
+            public static final FloatSetting CLOUD_CIRRUS_COVERAGE =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusCoverage", "volumetrics.cloud-cirrus-coverage",
+                            0f, -1f, 1f);
+
+            /**
+             * Cirrus extinction per block at full density. 0 turns the layer off, same as the switch.
+             *
+             * <p>An order of magnitude under the deck's, because that is the difference between the two:
+             * you can see the sun through cirrus and read its shape, and you cannot see it through a
+             * cumulus at all.
+             */
+            public static final FloatSetting CLOUD_CIRRUS_EXTINCTION =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusExtinction",
+                            "volumetrics.cloud-cirrus-extinction", 0.004f, 0f, 0.1f);
+
+            /**
+             * What clouds a ray that is not the first of its path gets: {@code off}, {@code reduced} or
+             * {@code full}.
+             *
+             * <p>Purely a cost dial. Every ray finds its clouds by intersecting the same world-anchored
+             * shells from its own origin, so this cannot move a cloud in a reflection relative to the one
+             * overhead — the two can only disagree about how finely the same cloud was integrated. That
+             * separation is what R18 exists to protect, and it is why this can be a budget rather than a
+             * second sky.
+             *
+             * <p>Reduced halves the shadow march, drops the erosion fetch, cuts the step cap from 96 to
+             * 40 and gives up on a nearly opaque path at 0.05 rather than 0.01. Off leaves reflections
+             * showing the bare sky, which is visibly wrong on a lake but is the floor this milestone can
+             * fall back to if the measurement goes badly.
+             */
+            public static final StringSetting CLOUD_SECONDARY =
+                    string("fluorite.rt.fog.cloudSecondary", "volumetrics.cloud-secondary", "reduced",
+                            Volumetrics::sanitizeCloudSecondary);
+
+            private static String sanitizeCloudSecondary(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "off", "full" -> v;
+                    default -> "reduced";
+                };
+            }
+
+            /** 0 off, 1 reduced, 2 full — packed into flags bits 2-3. */
+            public static int cloudSecondaryId() {
+                return switch (CLOUD_SECONDARY.get()) {
+                    case "off" -> 0;
+                    case "full" -> 2;
+                    default -> 1;
+                };
+            }
+
             public static final BooleanSetting SCATTER_VERTEX =
                     bool("fluorite.rt.fog.scatterVertex", "volumetrics.scatter-vertex", true);
 
