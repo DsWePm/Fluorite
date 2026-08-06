@@ -84,18 +84,35 @@ public final class RtVideoOptions {
         /** Freshly built, in display order. Paired two-per-row by {@code OptionsList.addSmall}. */
         public List<Section> sections() {
             return switch (this) {
-                case TRACING -> List.of(Section.of(spp(), maxBounces(), sunSize(), entities(), particles(),
-                        particleShadows()));
+                // The medium estimators sit here rather than under FOG, and that is a correctness point
+                // about the UI rather than a tidiness one: every one of them acts on the fog AND on the
+                // water, so filing them under "fog" told the player something false. MULTI_SCATTER was
+                // built because deep water went black as well as dense fog; SCATTER_VERTEX's default was
+                // settled by a measurement taken UNDERWATER (D30); emitter NEE lights both. A player who
+                // finds them under Fog and concludes their water is unaffected has been misled by the
+                // menu.
+                case TRACING -> List.of(
+                        Section.of(spp(), maxBounces(), sunSize(), entities(), particles(),
+                                particleShadows()),
+                        Section.titled("fluorite.options.rt.section.media",
+                                volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
                 case EXPOSURE -> List.of(Section.of(exposureMode(), manualEv()));
                 case MATERIAL -> List.of(
                         Section.of(sunMis(), anisotropy()),
                         Section.titled("fluorite.options.rt.section.subsurface",
                                 subsurfaceMode(), subsurfaceThickness(), subsurfaceMaxEvents()));
+                // Clouds are sky, not fog. They share a config namespace with the fog for historical
+                // reasons and nothing else: a cloud deck is a thing you look UP at, authored alongside
+                // the sun and the sky it hangs in, while the fog is the air you stand in.
                 case SKY -> List.of(
                         Section.titled("fluorite.options.rt.section.sunArt",
                                 sunIntensity(), sunTemperature()),
                         Section.titled("fluorite.options.rt.section.skyArt",
-                                skyIntensity(), skyTemperature()));
+                                skyIntensity(), skyTemperature()),
+                        Section.titled("fluorite.options.rt.section.clouds",
+                                clouds(), cloudWeather(), cloudCoverage(), cloudDensity(), cloudType(),
+                                cloudExtinction(), cloudAltitude(), cloudThickness(),
+                                cloudBaseScale(), cloudDetailScale()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
@@ -106,15 +123,11 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
-                case FOG -> List.of(
-                        Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
-                                fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                                fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter(),
-                                fogScatterVertex(), fogVolumeEmitterNee()),
-                        Section.titled("fluorite.options.rt.section.clouds",
-                                clouds(), cloudWeather(), cloudCoverage(), cloudDensity(), cloudType(),
-                                cloudExtinction(), cloudAltitude(), cloudThickness(),
-                                cloudBaseScale(), cloudDetailScale()));
+                // What is left is genuinely the fog and only the fog. fogSunShadowRays stays because the
+                // water has its own sun-shadow switch under WATER and these two do not affect each other.
+                case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
+                        fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
+                        fogPhaseG(), fogScatterTint(), fogSunShadowRays()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
@@ -400,12 +413,15 @@ public final class RtVideoOptions {
     /**
      * Let light reaching a scattering point decay at the diffusion rate instead of the beam's.
      *
+     * <p>Acts on EVERY participating medium — it was built because deep water went black as readily as
+     * dense fog did, and both symptoms are the same bug.
+     *
      * <p>In the UI for the same reason the ray count is: off must reproduce the old behaviour exactly, so
      * this is an A/B rather than a dial, and an A/B is only worth anything flipped at a fixed camera
      * position inside one session.
      */
-    private static OptionInstance<Boolean> fogMultiScatter() {
-        return bool("fluorite.options.rt.fogMultiScatter", FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER);
+    private static OptionInstance<Boolean> volumeMultiScatter() {
+        return bool("fluorite.options.rt.volumeMultiScatter", FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER);
     }
 
     /**
@@ -472,8 +488,9 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_DETAIL_SCALE, 40, 2000);
     }
 
-    private static OptionInstance<Boolean> fogScatterVertex() {
-        return bool("fluorite.options.rt.fogScatterVertex", FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
+    private static OptionInstance<Boolean> volumeScatterVertex() {
+        return bool("fluorite.options.rt.volumeScatterVertex",
+                FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
     }
 
     /**
@@ -481,8 +498,8 @@ public final class RtVideoOptions {
      *
      * <p>Beside the vertex switch it depends on, so the pair reads as the one feature it is.
      */
-    private static OptionInstance<Boolean> fogVolumeEmitterNee() {
-        return bool("fluorite.options.rt.fogVolumeEmitterNee",
+    private static OptionInstance<Boolean> volumeEmitterNee() {
+        return bool("fluorite.options.rt.volumeEmitterNee",
                 FluoriteConfig.Rt.Volumetrics.VOLUME_EMITTER_NEE);
     }
 
