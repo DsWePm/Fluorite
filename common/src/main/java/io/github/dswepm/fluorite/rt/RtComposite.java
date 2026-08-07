@@ -301,6 +301,52 @@ public final class RtComposite {
      * <p>Returns false when there is no water surface near the player, which disables the whole thing —
      * cell size zero, and the sampler returns before it reads.
      */
+    /**
+     * The surface of the water the player is actually touching, or NaN if they are not touching any.
+     *
+     * <p>Touching means the body is in water, or is standing on it. Both count: wading is contact, and
+     * so is a boat, and so is standing on the ice-thin top of a pond looking down at it. The player's
+     * own column is the only one examined, because contact is a local fact -- the outward search this
+     * replaces existed to guess at water the player was NOT touching, which is precisely the guess that
+     * kept picking the wrong lake.
+     *
+     * <p>Scanned OUTWARD from the player's feet rather than downward from above, so the surface returned
+     * is the one they are in contact with rather than the highest one in the column. A pool on a ledge
+     * overhead is not what you are standing in.
+     */
+    private static double waterContactSurface(ClientLevel level, BlockPos.MutableBlockPos probe,
+                                              double camX, double camY, double camZ) {
+        int px = (int) Math.floor(camX);
+        int pz = (int) Math.floor(camZ);
+        int feet = (int) Math.floor(camY);
+        // A short reach: contact is by definition close. Two down covers standing on the surface with
+        // the eye a block and a half above it; two up covers being submerged with the eye under.
+        for (int d = 0; d <= WATER_CONTACT_REACH; d++) {
+            for (int sign = 1; sign >= -1; sign -= 2) {
+                int y = feet + sign * d;
+                probe.set(px, y, pz);
+                if (!level.getFluidState(probe).is(FluidTags.WATER)) {
+                    continue;
+                }
+                // Walk up to the top of this body of water: the surface is the first cell above the
+                // column that is not itself water.
+                int top = y;
+                while (top - y < WATER_CONTACT_CLIMB) {
+                    probe.set(px, top + 1, pz);
+                    if (!level.getFluidState(probe).is(FluidTags.WATER)) {
+                        break;
+                    }
+                    top++;
+                }
+                return top + 1.0;
+            }
+            if (d == 0) {
+                continue; // +0 and -0 are the same cell
+            }
+        }
+        return Double.NaN;
+    }
+
     private boolean placeWaterDomain(double camX, double camY, double camZ, ClientLevel level,
                                      RtTerrain terrain) {
         waterReanchor = false;
@@ -308,88 +354,35 @@ public final class RtComposite {
             waterDomain = new Float4(0f, 0f, 0f, 0f);
             return false;
         }
-        // The plane the simulation runs on. Scanned downward from the camera rather than taken from
-        // waterAnchor.w, which only holds a surface when the camera is IN the water -- and the case that
-        // matters most is standing on the shore looking at a lake.
-        double surface = Double.NaN;
+        // WHICH SURFACE THE SIMULATION RUNS ON: latched by CONTACT, not chosen by proximity.
+        //
+        // Searching outward for the nearest surface and damping the result with hysteresis was two
+        // mistakes wearing each other's clothes. The search could pick a surface the player has nothing
+        // to do with, and the hysteresis -- there to stop the choice flickering -- is exactly what made
+        // it stick to a lake you had already walked away from. Every attempt to tune one made the other
+        // worse, because "nearest" changes continuously and a plane must not.
+        //
+        // Contact has neither problem. Touch water and that surface becomes the plane, at once, with no
+        // dead zone to be on the wrong side of. Touch a different one and it switches, at once, for the
+        // same reason. Nothing about it is gradual, so nothing about it can lag.
+        //
+        // Between contacts the last surface is KEPT rather than re-derived, which is what lets ripples
+        // you left behind still be there when you climb out and look back. It is dropped only when it
+        // falls outside the vertical reach, at which point there is no plane and no simulation.
+        double surface = waterSurfaceY;
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
         int reach = waterProbeReach();
-        // VERTICALLY HYSTERETIC, exactly as the horizontal anchor is, and for the same reason: a plane
-        // that re-picked itself every frame would flip between water levels as you flew over terrain
-        // holding more than one, and each flip discards the field. So the plane already chosen is kept
-        // until the camera has climbed or fallen as far as the authored re-anchor distance, and while
-        // that plane is still within reach at all.
-        //
-        // It also means the probe below does not run on most frames, which is where its cost went.
-        // HORIZONTALLY TOO, which the first version of this got wrong. Gating only on vertical movement
-        // meant walking from one lake to another a few blocks lower kept the first lake's plane: the
-        // camera had not risen or fallen, and the old plane was still within reach, so nothing asked
-        // again. The plane is chosen by being NEAREST, and what you are nearest to changes when you walk.
-        double moved = Math.max(Math.abs(camY - waterAnchorCamY),
-                Math.max(Math.abs(camX - waterAnchorCamX), Math.abs(camZ - waterAnchorCamZ)));
-        if (!Double.isNaN(waterSurfaceY)
-                && moved <= FluoriteConfig.Rt.Water.WATER_SIM_REANCHOR.value()
-                && Math.abs(camY - waterSurfaceY) <= reach) {
-            surface = waterSurfaceY;
-        }
-        int top = (int) Math.floor(camY) + reach;
-        int bottom = (int) Math.floor(camY) - reach;
-        // NOT ONLY THE CAMERA'S OWN COLUMN. It used to be, and the comment above already said the case
-        // that matters most is standing on the shore looking at a lake -- which is precisely the case a
-        // single column cannot see, because on the shore there is no water underneath you. The whole
-        // domain switched off, so the ripples did not fade at the edge of anything, they vanished
-        // outright; and since a shoreline is a line, the camera column crossed it within a very narrow
-        // range of angles, which is exactly how it was reported.
-        //
-        // So: the camera's column first, because standing in or over water is the common case and costs
-        // one scan. Failing that, rings outward until water is found. Bounded and cheap -- a few hundred
-        // lookups into loaded chunks, which are an array index, and only on the frames where the near
-        // column came up dry.
-        for (int ring = 0; ring < WATER_SURFACE_RINGS && Double.isNaN(surface); ring++) {
-            int r = ring * WATER_SURFACE_RING_STEP;
-            for (int step = 0; step < (ring == 0 ? 1 : WATER_SURFACE_RING_SAMPLES); step++) {
-                double angle = 2.0 * Math.PI * step / WATER_SURFACE_RING_SAMPLES;
-                int px = (int) Math.floor(camX + r * Math.cos(angle));
-                int pz = (int) Math.floor(camZ + r * Math.sin(angle));
-                // THE NEAREST SURFACE, not the first one found scanning down. A column can hold
-                // several -- a lake, and a pool on a ledge above it -- and taking the topmost meant
-                // standing beside the lake while the simulation ran on the ledge, because the scan starts
-                // a full reach ABOVE the camera. What makes a surface the one you are looking at is that
-                // it is closest to you, so that is the test.
-                //
-                // A surface is a water block with something that is not water directly above it, which is
-                // why this tracks the previous cell rather than breaking on the first hit.
-                boolean aboveWasWater = false;
-                for (int y = top; y >= bottom; y--) {
-                    probe.set(px, y, pz);
-                    boolean isWater = level.getFluidState(probe).is(FluidTags.WATER);
-                    if (isWater && !aboveWasWater) {
-                        double candidate = y + 1.0;
-                        if (Double.isNaN(surface)
-                                || Math.abs(candidate - camY) < Math.abs(surface - camY)) {
-                            surface = candidate;
-                        }
-                    }
-                    aboveWasWater = isWater;
-                    // Below the camera by more than the best candidate's distance, nothing further down
-                    // can beat it.
-                    if (!Double.isNaN(surface) && camY - y > Math.abs(surface - camY)) {
-                        break;
-                    }
-                }
-                if (!Double.isNaN(surface)) {
-                    break;
-                }
-            }
+        double contact = waterContactSurface(level, probe, camX, camY, camZ);
+        if (!Double.isNaN(contact)) {
+            surface = contact;
+        } else if (!Double.isNaN(surface) && Math.abs(camY - surface) > reach) {
+            surface = Double.NaN; // walked out of range of the last water touched
         }
         if (Double.isNaN(surface)) {
             waterDomain = new Float4(0f, 0f, 0f, 0f);
             waterSurfaceY = Double.NaN; // nothing in reach: do not keep a plane that is no longer there
             return false;
         }
-        waterAnchorCamX = camX;
-        waterAnchorCamY = camY;
-        waterAnchorCamZ = camZ;
         // Rebased here, where the terrain origin is in hand, because the shading compares it against a
         // rebased hit position and the two must be in one space.
         waterPlaneRebasedY = (float) (surface - terrain.blockY);
@@ -895,22 +888,16 @@ public final class RtComposite {
     private static int waterProbeReach() {
         return Math.round(FluoriteConfig.Rt.Water.WATER_SIM_HEIGHT.value());
     }
-    // Rings of columns searched outward when the camera is not over water, so that standing on a shore
-    // still finds the lake in front of you. Reaches half the smallest domain, which is as far as a
-    // surface can be and still have any of the grid land on it.
-    private static final int WATER_SURFACE_RINGS = 9;
-    private static final int WATER_SURFACE_RING_STEP = 2;
-    private static final int WATER_SURFACE_RING_SAMPLES = 12;
+    /** How far from the feet still counts as touching water, in blocks. Contact is by definition close. */
+    private static final int WATER_CONTACT_REACH = 2;
+    /** How far up a water column the surface may be from the cell touched. Bounds a deep-ocean walk. */
+    private static final int WATER_CONTACT_CLIMB = 32;
     // Where the water simulation's domain sits, in ABSOLUTE whole cells, and the surface it runs on.
     // Whole cells because a domain that slid continuously with the player would resample the height
     // field at a different phase every frame and smear every ripple into a streak (R22).
     private long waterCellX = Long.MIN_VALUE;
     private long waterCellZ;
     private double waterSurfaceY = Double.NaN;
-    /** Where the camera was when the surface plane was last chosen — the plane anchor's hysteresis. */
-    private double waterAnchorCamX;
-    private double waterAnchorCamY;
-    private double waterAnchorCamZ;
     /** The same plane, rebased, which is the space the shading compares its hits in. */
     private float waterPlaneRebasedY;
     private Float4 waterDomain = new Float4(0f, 0f, 0f, 0f);
