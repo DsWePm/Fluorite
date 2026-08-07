@@ -33,11 +33,11 @@ public static const int WATER_SIM_DIM = 256;
 
 // h at t (read), h at t-dt (read), h at t+dt (written). Bound as separate images rather than one array
 // so the rotation is a descriptor write on the CPU rather than an index the shader has to be told.
-[[vk::binding(0, 0)]] Texture2D<float> heightCur;
-[[vk::binding(1, 0)]] Texture2D<float> heightPrev;
+[[vk::binding(0, 0)]] Sampler2D<float> heightCur;
+[[vk::binding(1, 0)]] Sampler2D<float> heightPrev;
 [[vk::binding(2, 0)]] RWTexture2D<float> heightNext;
 // 0 where a block occupies the cell, 1 where there is open water. Baked by water_obstacle.comp.
-[[vk::binding(3, 0)]] Texture2D<float> obstacle;
+[[vk::binding(3, 0)]] Sampler2D<float> obstacle;
 // The same value as heightNext, in a FIXED image the shading always samples.
 //
 // Written twice rather than rotating what binding 18 points at, and that is a deliberate trade of one
@@ -106,7 +106,7 @@ float neighbour(int2 id, int2 offset, float centre) {
     if (any(q < int2(0, 0)) || any(q >= int2(WATER_SIM_DIM, WATER_SIM_DIM))) {
         return centre;
     }
-    return obstacle[q] < 0.5 ? centre : heightCur[q];
+    return obstacle.Load(int3(q, 0)) < 0.5 ? centre : heightCur.Load(int3(q, 0));
 }
 
 [shader("compute")]
@@ -118,19 +118,19 @@ void main(uint3 id3: SV_DispatchThreadID) {
     }
     // A cell inside a block holds no water and must stay exactly zero: it is the wall the Neumann
     // condition above reflects off, and letting it carry a value would make the wall a source.
-    if (obstacle[id] < 0.5) {
+    if (obstacle.Load(int3(id, 0)) < 0.5) {
         heightNext[id] = 0.0;
         heightDisplay[id] = 0.0;
         return;
     }
 
-    float centre = heightCur[id];
+    float centre = heightCur.Load(int3(id, 0));
     float laplacian = neighbour(id, int2(1, 0), centre)
                     + neighbour(id, int2(-1, 0), centre)
                     + neighbour(id, int2(0, 1), centre)
                     + neighbour(id, int2(0, -1), centre)
                     - 4.0 * centre;
-    float next = 2.0 * centre - heightPrev[id] + pc.courant2 * laplacian;
+    float next = 2.0 * centre - heightPrev.Load(int3(id, 0)) + pc.courant2 * laplacian;
     next *= pc.damping * spongeRetention(id);
 
     // Impulses land on the NEXT state rather than being integrated as a force, because the state of this

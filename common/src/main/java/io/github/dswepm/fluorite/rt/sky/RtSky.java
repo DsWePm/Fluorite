@@ -216,10 +216,14 @@ public final class RtSky {
             Bake[] waterSimBakes = new Bake[3];
             for (int phase = 0; phase < 3; phase++) {
                 waterSimBakes[phase] = createBake(ctx, stack, "water_sim.comp.spv", "water sim " + phase,
-                        new int[]{VK10.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                                  VK10.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                        // COMBINED_IMAGE_SAMPLER, matching Sampler2D on the shader side and
+                        // writeSampledImage on this one. Declaring SAMPLED_IMAGE here while writing a
+                        // combined descriptor into it is a type mismatch the validation layers do not
+                        // always catch and the GPU answers with a device fault.
+                        new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                   VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                  VK10.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                  VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                   VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
                         WATER_SIM_PUSH_BYTES);
             }

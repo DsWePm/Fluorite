@@ -20,7 +20,10 @@ import world_common;
 public static const int WATER_SIM_DIM = 256;
 
 [[vk::binding(0, 0)]] RWTexture2D<float> obstacleOut;
-[[vk::binding(1, 0)]] RaytracingAccelerationStructure tlas;
+// SET ONE, binding zero -- the acceleration-structure set the pipeline layout adds beside this pass's
+// own. Writing it as binding(1, 0) instead points at a slot set zero does not have, and the GPU answers
+// that with a device fault rather than a validation message.
+[[vk::binding(0, 1)]] RaytracingAccelerationStructure tlas;
 
 struct WaterObstaclePush {
     float2 originXZ;   // rebased world position of cell (0,0)'s centre
@@ -62,8 +65,9 @@ void main(uint3 id3: SV_DispatchThreadID) {
 
     // Terminate on the first hit and skip the closest-hit shader entirely: this asks whether anything is
     // there, not what or how far, so there is nothing for a hit shader to compute.
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> q;
-    q.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFFu, ray);
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    q.TraceRayInline(tlas, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                     0xFFu, ray);
     q.Proceed();
     bool blocked = q.CommittedStatus() != COMMITTED_NOTHING;
 
