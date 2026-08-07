@@ -321,8 +321,14 @@ public final class RtComposite {
         // that plane is still within reach at all.
         //
         // It also means the probe below does not run on most frames, which is where its cost went.
+        // HORIZONTALLY TOO, which the first version of this got wrong. Gating only on vertical movement
+        // meant walking from one lake to another a few blocks lower kept the first lake's plane: the
+        // camera had not risen or fallen, and the old plane was still within reach, so nothing asked
+        // again. The plane is chosen by being NEAREST, and what you are nearest to changes when you walk.
+        double moved = Math.max(Math.abs(camY - waterAnchorCamY),
+                Math.max(Math.abs(camX - waterAnchorCamX), Math.abs(camZ - waterAnchorCamZ)));
         if (!Double.isNaN(waterSurfaceY)
-                && Math.abs(camY - waterAnchorCamY) <= FluoriteConfig.Rt.Water.WATER_SIM_REANCHOR.value()
+                && moved <= FluoriteConfig.Rt.Water.WATER_SIM_REANCHOR.value()
                 && Math.abs(camY - waterSurfaceY) <= reach) {
             surface = waterSurfaceY;
         }
@@ -381,7 +387,9 @@ public final class RtComposite {
             waterSurfaceY = Double.NaN; // nothing in reach: do not keep a plane that is no longer there
             return false;
         }
+        waterAnchorCamX = camX;
         waterAnchorCamY = camY;
+        waterAnchorCamZ = camZ;
         // Rebased here, where the terrain origin is in hand, because the shading compares it against a
         // rebased hit position and the two must be in one space.
         waterPlaneRebasedY = (float) (surface - terrain.blockY);
@@ -899,8 +907,10 @@ public final class RtComposite {
     private long waterCellX = Long.MIN_VALUE;
     private long waterCellZ;
     private double waterSurfaceY = Double.NaN;
-    /** Camera height when the surface plane was last chosen — the vertical anchor's hysteresis. */
+    /** Where the camera was when the surface plane was last chosen — the plane anchor's hysteresis. */
+    private double waterAnchorCamX;
     private double waterAnchorCamY;
+    private double waterAnchorCamZ;
     /** The same plane, rebased, which is the space the shading compares its hits in. */
     private float waterPlaneRebasedY;
     private Float4 waterDomain = new Float4(0f, 0f, 0f, 0f);
