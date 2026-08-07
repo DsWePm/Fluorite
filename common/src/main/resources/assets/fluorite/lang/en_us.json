@@ -58,6 +58,8 @@
   "fluorite.options.rt.waterSim.tooltip": "Solve the water surface on a grid so ripples spread, reflect off blocks and interfere. Off leaves the procedural wave spectrum exactly as it was.",
   "fluorite.options.rt.waterSimRange": "Simulation Range",
   "fluorite.options.rt.waterSimRange.tooltip": "How far the simulated water reaches. The grid is a fixed 256 cells, so this is the cell size in disguise: 64 blocks gives ripples down to about half a block, 128 gives twice the reach for half the detail. Reach and detail are two ends of one stick.",
+  "fluorite.options.rt.waterSimHeight": "Simulation Height",
+  "fluorite.options.rt.waterSimHeight.tooltip": "How far above or below you the simulation will look for a water surface. The other half of which water ripples: the range says how wide the domain is, this says how tall a slice of the world it may sit in. Symmetric about you, so it holds whether you are under the surface looking up or flying above it.",
   "fluorite.options.rt.waterSimReanchor": "Re-anchor Distance",
   "fluorite.options.rt.waterSimReanchor.tooltip": "How far you may walk before the domain follows. Re-anchoring is the only thing here that costs more than one dispatch -- it recasts the obstacle mask -- and between re-anchors the domain is completely still. Ripples are damped long before they reach the edge, so there is little to gain from a small value.",
   "fluorite.options.rt.waterSimStrength": "Ripple Strength",

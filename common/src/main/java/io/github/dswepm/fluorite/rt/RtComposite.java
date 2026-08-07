@@ -291,7 +291,9 @@ public final class RtComposite {
         // matters most is standing on the shore looking at a lake.
         double surface = Double.NaN;
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
-        int top = (int) Math.floor(camY) + 2;
+        int reach = waterProbeReach();
+        int top = (int) Math.floor(camY) + reach;
+        int bottom = (int) Math.floor(camY) - reach;
         // NOT ONLY THE CAMERA'S OWN COLUMN. It used to be, and the comment above already said the case
         // that matters most is standing on the shore looking at a lake -- which is precisely the case a
         // single column cannot see, because on the shore there is no water underneath you. The whole
@@ -309,7 +311,7 @@ public final class RtComposite {
                 double angle = 2.0 * Math.PI * step / WATER_SURFACE_RING_SAMPLES;
                 int px = (int) Math.floor(camX + r * Math.cos(angle));
                 int pz = (int) Math.floor(camZ + r * Math.sin(angle));
-                for (int y = top; y >= top - WATER_SIM_PROBE_DEPTH; y--) {
+                for (int y = top; y >= bottom; y--) {
                     probe.set(px, y, pz);
                     if (level.getFluidState(probe).is(FluidTags.WATER)) {
                         surface = y + 1.0;
@@ -809,8 +811,10 @@ public final class RtComposite {
     private static float waterCellSize() {
         return FluoriteConfig.Rt.Water.simRangeBlocks() / RtSky.WATER_SIM_DIM;
     }
-    /** How far below the camera to look for the water surface the domain runs on. */
-    private static final int WATER_SIM_PROBE_DEPTH = 24;
+    /** How far above and below the camera to look for the water surface the domain runs on. */
+    private static int waterProbeReach() {
+        return Math.round(FluoriteConfig.Rt.Water.WATER_SIM_HEIGHT.value());
+    }
     // Rings of columns searched outward when the camera is not over water, so that standing on a shore
     // still finds the lake in front of you. Reaches half the smallest domain, which is as far as a
     // surface can be and still have any of the grid land on it.

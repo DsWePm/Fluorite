@@ -58,6 +58,8 @@
   "fluorite.options.rt.waterSim.tooltip": "在网格上解水面，让涟漪扩散、撞方块反射、相互干涉。关闭后程序化波谱**逐位**回到原样。",
   "fluorite.options.rt.waterSimRange": "仿真范围",
   "fluorite.options.rt.waterSimRange.tooltip": "仿真水面覆盖多远。网格固定 256 格，所以这其实就是格距：64 方块时涟漪能细到约半格，128 方块时范围翻倍而细节减半。**范围与精度是一根棍子的两头**。",
+  "fluorite.options.rt.waterSimHeight": "模擬高度",
+  "fluorite.options.rt.waterSimHeight.tooltip": "模擬向上/向下多遠去尋找水面。這是「哪片水參與漣漪」的另一半：範圍決定域有多寬，這個決定它能落在多高的一層世界裡。以你為中心對稱，所以潛在水下往上看和飛在水面上往下看都成立。",
   "fluorite.options.rt.waterSimReanchor": "重锚距离",
   "fluorite.options.rt.waterSimReanchor.tooltip": "你要走多远域才跟过来。重锚是这套东西里**唯一**比一次 dispatch 更贵的事（它要重投障碍掩码），两次重锚之间域完全静止。涟漪远在抵达域边缘之前就衰减掉了，所以调小没什么好处。",
   "fluorite.options.rt.waterSimStrength": "涟漪强度",

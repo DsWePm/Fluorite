@@ -1409,6 +1409,25 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simRange", "water.sim-range", 64f, 32f, 256f);
 
             /**
+             * How far above or below you the simulation will look for a water surface, in blocks.
+             *
+             * <p>THE OTHER HALF OF WHICH WATER RIPPLES. The range setting says how wide the domain is;
+             * this says how tall a slice of the world it may sit in. Together they are the answer to
+             * "which surface am I simulating" — a lake thirty blocks below is still your lake, a lake two
+             * hundred below is somewhere else entirely.
+             *
+             * <p>Symmetric about you rather than downward only, so it holds while you are under the
+             * surface looking up as well as above it looking down.
+             *
+             * <p>This used to be a hidden constant of 24, scanning downward. Flying up from water you had
+             * just disturbed took you out of its reach in about twenty-six blocks, at which point the
+             * probe found nothing, the domain switched off, and the ripples did not fade — they went out
+             * at once, along with every other ripple in the world.
+             */
+            public static final FloatSetting WATER_SIM_HEIGHT =
+                    clampedFloat("fluorite.rt.water.simHeight", "water.sim-height", 32f, 8f, 128f);
+
+            /**
              * How far the player may walk before the domain is re-anchored, in blocks.
              *
              * <p>Re-anchoring is the only thing in this system that costs anything beyond one dispatch:

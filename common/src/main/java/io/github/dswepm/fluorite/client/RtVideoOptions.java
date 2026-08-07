@@ -140,7 +140,8 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.waterScatter",
                                 waterScatterStrength(), waterScatterR(), waterScatterG(), waterScatterB()),
                         Section.titled("fluorite.options.rt.section.waterSim",
-                                waterSim(), waterSimRange(), waterSimReanchor(), waterSimStrength(),
+                                waterSim(), waterSimRange(), waterSimHeight(), waterSimReanchor(),
+                                waterSimStrength(),
                                 waterSimSpeed(), waterSimDamping(), waterSimImpulse()),
                         // The geometry, separate from the ripples that ride on it: one controls whether
                         // the surface is a shape at all, the others how much of it is and how finely.
@@ -372,6 +373,11 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> waterSimRange() {
         return blockSlider("fluorite.options.rt.waterSimRange",
                 FluoriteConfig.Rt.Water.WATER_SIM_RANGE, 32, 256);
+    }
+
+    private static OptionInstance<Integer> waterSimHeight() {
+        return blockSlider("fluorite.options.rt.waterSimHeight",
+                FluoriteConfig.Rt.Water.WATER_SIM_HEIGHT, 8, 128);
     }
 
     private static OptionInstance<Integer> waterSimReanchor() {
