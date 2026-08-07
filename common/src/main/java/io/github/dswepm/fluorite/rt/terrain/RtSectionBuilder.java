@@ -113,12 +113,13 @@ final class RtSectionBuilder {
             return new PreparedSection(key, positions, indices, uvs, material, upload, waterRest, blas,
                     packed.triBase(), sox, soy, soz, packed.lights(),
                     deform ? packed.waterVertBase() : 0, deform ? packed.waterVertCount() : 0,
-                    updateScratch, new java.util.concurrent.atomic.AtomicBoolean(false));
+                    updateScratch, packed.bucketTris(),
+                    new java.util.concurrent.atomic.AtomicBoolean(false));
         } catch (Throwable t) {
             if (blas != null) {
                 destroy(new PreparedSection(key, positions, indices, uvs, material, upload, waterRest,
                         blas, packed.triBase(), sox, soy, soz, packed.lights(), 0, 0, 0L,
-                        new java.util.concurrent.atomic.AtomicBoolean(false)));
+                        packed.bucketTris(), new java.util.concurrent.atomic.AtomicBoolean(false)));
             } else {
                 if (waterRest != null) waterRest.destroy();
                 if (upload != null) upload.destroy();
@@ -205,6 +206,7 @@ final class RtSectionBuilder {
                            RtAccel.PreparedBlas blas, int[] triBase,
                            int sx, int sy, int sz, float[] lights,
                            int waterVertBase, int waterVertCount, long updateScratchSize,
+                           int[] bucketTris,
                            java.util.concurrent.atomic.AtomicBoolean inputsTransferred) {
         boolean deformable() {
             return waterRest != null;
@@ -240,7 +242,7 @@ final class RtSectionBuilder {
             // buffers the published geometry is still using.
             return new PreparedSection(key, positions, indices, uvs, material, upload, waterRest,
                     replacement, triBase, sx, sy, sz, lights,
-                    waterVertBase, waterVertCount, updateScratchSize, inputsTransferred);
+                    waterVertBase, waterVertCount, updateScratchSize, bucketTris, inputsTransferred);
         }
     }
 }

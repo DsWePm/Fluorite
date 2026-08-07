@@ -2039,6 +2039,27 @@ public final class RtComposite {
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // entity BLAS writes visible to the TLAS build
             }
+            // Water geometry, before the TLAS is built over the bounds it produces. Guarded on the
+            // domain being live: with no plane there is nothing to displace onto.
+            if (FluoriteConfig.Rt.Water.WATER_DEFORM.value() && waterSimLive) {
+                try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("water.deform")) {
+                    float range = FluoriteConfig.Rt.Water.WATER_DEFORM_RANGE.value();
+                    // Section-local xz reaches the wave domain by adding the section origin, dropping the
+                    // terrain rebase and adding back the masked anchor -- the same three-step the shading
+                    // does, assembled here because this is where all three are known (F21).
+                    double waveOffsetX = -terrain.blockX + (terrain.blockX & WATER_ANCHOR_MASK);
+                    double waveOffsetZ = -terrain.blockZ + (terrain.blockZ & WATER_ANCHOR_MASK);
+                    terrain.recordWaterDeform(ctx, cmd, skyLuts,
+                            new float[]{waterDomain.x(), waterDomain.y(), waterDomain.z(), waterDomain.w()},
+                            new float[]{waterPlaneRebasedY, 1.5f, 0f, 0f},
+                            waveOffsetX, waveOffsetZ,
+                            (float) (camX + waveOffsetX), (float) (camZ + waveOffsetZ),
+                            range * 0.75f, range,
+                            waterWaveTime, 1.0f,
+                            FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value());
+                }
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
             RtAccel.PreparedTlas frameTlas;
             try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.prepareTlas")) {
                 frameTlas = RtAccel.prepareTlas(ctx, fe.baseInstances(), fe.dynamicInstances(), tlasRing,

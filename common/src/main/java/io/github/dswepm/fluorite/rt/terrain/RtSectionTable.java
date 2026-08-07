@@ -209,6 +209,15 @@ final class RtSectionTable {
         final int waterVertBase;
         final int waterVertCount;
         final long updateScratchSize;
+        final int[] bucketTris;
+        /**
+         * Scratch for this section's refit, kept between frames and grown on demand.
+         *
+         * <p>Per section rather than one shared buffer, copying the entity path that already works: the
+         * refits are recorded back to back with no barrier between them, so a shared scratch would have
+         * them writing over each other -- and nothing would report it.
+         */
+        RtBuffer refitScratch;
         final int[] triBase;
         final int sx;
         final int sy;
@@ -224,19 +233,20 @@ final class RtSectionTable {
 
         SectionGeom(long key, RtBuffer uvs, RtBuffer material,
                     RtAccel blas, int[] triBase, int sx, int sy, int sz, float[] lights) {
-            this(key, uvs, material, blas, triBase, sx, sy, sz, lights, null, null, null, 0, 0, 0L);
+            this(key, uvs, material, blas, triBase, sx, sy, sz, lights, null, null, null, 0, 0, 0L, null);
         }
 
         SectionGeom(long key, RtBuffer uvs, RtBuffer material,
                     RtAccel blas, int[] triBase, int sx, int sy, int sz, float[] lights,
                     RtBuffer positions, RtBuffer indices, RtBuffer waterRest,
-                    int waterVertBase, int waterVertCount, long updateScratchSize) {
+                    int waterVertBase, int waterVertCount, long updateScratchSize, int[] bucketTris) {
             this.positions = positions;
             this.indices = indices;
             this.waterRest = waterRest;
             this.waterVertBase = waterVertBase;
             this.waterVertCount = waterVertCount;
             this.updateScratchSize = updateScratchSize;
+            this.bucketTris = bucketTris;
             this.key = key;
             this.uvs = uvs;
             this.material = material;
@@ -255,6 +265,9 @@ final class RtSectionTable {
             // A deformable section owns its build inputs for its whole life, so it is also the only one
             // that has to give them back here.
             if (waterRest != null) {
+                if (refitScratch != null) {
+                    refitScratch.destroy();
+                }
                 waterRest.destroy();
                 indices.destroy();
                 positions.destroy();

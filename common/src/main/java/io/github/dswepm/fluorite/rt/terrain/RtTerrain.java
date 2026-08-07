@@ -438,6 +438,68 @@ public final class RtTerrain {
                 wantX, wantY, wantZ, reach);
     }
 
+    /**
+     * Displace every deformable section's water and refit its BLAS, for this frame.
+     *
+     * <p>Ordering, which is the whole of the risk: all the dispatches, then ONE barrier, then all the
+     * refits. The dispatches write disjoint vertex buffers so they need nothing from each other; the
+     * refits read those buffers back as acceleration-structure build inputs, and without the barrier
+     * between the two groups a refit may consume the previous frame's vertices. Per F24 nothing reports
+     * that -- no error, no device loss, just geometry quietly disagreeing with its own shading.
+     *
+     * <p>Called BEFORE the TLAS build. A refit changes a BLAS in place, and the TLAS is built over bounds
+     * derived from its BLASes, so refitting after it would leave those bounds describing the previous
+     * frame's surface. The displacement is centimetres and the error would be too, which is exactly the
+     * kind of wrongness that survives review.
+     *
+     * <p>The cost of that placement is that the interactive ripples are one frame stale here, because the
+     * simulation step is recorded later. The procedural spectrum, which carries 96% of the height, is
+     * evaluated at this frame's time and is not stale at all.
+     *
+     * @param waveOffsetX added to a section-local x to reach the wave coordinate the shading uses
+     */
+    public void recordWaterDeform(RtContext ctx, org.lwjgl.vulkan.VkCommandBuffer cmd,
+                                  io.github.dswepm.fluorite.rt.sky.RtSky sky,
+                                  float[] simDomain, float[] simPlane,
+                                  double waveOffsetX, double waveOffsetZ,
+                                  float fadeCentreX, float fadeCentreZ, float fadeStart, float fadeEnd,
+                                  float time, float cellSize, float amplitude) {
+        if (table.slots.isEmpty()) {
+            return;
+        }
+        List<RtAccel.PreparedBlas> refits = null;
+        for (SectionGeom g : table.slots) {
+            if (g == null || g.waterRest == null || g.waterVertCount <= 0) {
+                continue;
+            }
+            sky.recordWaterDeform(cmd, g.positions.deviceAddress, g.waterRest.deviceAddress,
+                    g.waterVertBase, g.waterVertCount, simDomain, simPlane,
+                    (float) (g.sx + waveOffsetX), (float) (g.sz + waveOffsetZ),
+                    fadeCentreX, fadeCentreZ, fadeStart, fadeEnd, time, cellSize, amplitude);
+            long required = Math.max(g.updateScratchSize, 1L);
+            if (g.refitScratch == null || g.refitScratch.size < required) {
+                if (g.refitScratch != null) {
+                    g.refitScratch.destroy();
+                }
+                g.refitScratch = ctx.createBuffer(required,
+                        org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                                | org.lwjgl.vulkan.VK12.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                        false, "terrain water refit scratch");
+            }
+            if (refits == null) {
+                refits = new ArrayList<>();
+            }
+            refits.add(RtAccel.refitTerrainUpdate(g.blas, g.refitScratch,
+                    g.positions.deviceAddress, g.indices.deviceAddress,
+                    (int) (g.positions.size / 12L), g.bucketTris, "terrain water BLAS refit"));
+        }
+        if (refits == null) {
+            return;
+        }
+        io.github.dswepm.fluorite.rt.sky.RtSky.recordWaterDeformBarrier(cmd);
+        RtAccel.recordBlasBuilds(ctx, cmd, refits);
+    }
+
     public static void markBlocksDirty(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
         RtTerrain terrain = INSTANCE;
         synchronized (terrain.dirtyLock) {
@@ -1626,7 +1688,8 @@ public final class RtTerrain {
                     ? new SectionGeom(ps.key(), ps.uvs(), ps.material(),
                             ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights(),
                             ps.positions(), ps.indices(), ps.waterRest(),
-                            ps.waterVertBase(), ps.waterVertCount(), ps.updateScratchSize())
+                            ps.waterVertBase(), ps.waterVertCount(), ps.updateScratchSize(),
+                            ps.bucketTris())
                     : new SectionGeom(ps.key(), ps.uvs(), ps.material(),
                             ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights());
             if (!desired.contains(ps.key())) {
