@@ -21,6 +21,7 @@ import io.github.dswepm.fluorite.rt.gen.WorldPushData.Float3;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData.Float4;
 import io.github.dswepm.fluorite.rt.gen.WorldPushData.Int4;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -167,6 +168,104 @@ public final class RtComposite {
         double oz = Math.floor(camZ / cell) * cell - halfZ;
         return new Float4((float) (ox - terrain.blockX), (float) (oy - terrain.blockY),
                 (float) (oz - terrain.blockZ), cell);
+    }
+
+    // ---- Volumetric clouds (M11). What the density field is allowed to be, and what the weather makes
+    // of it. Everything here is authored per frame rather than compiled into cloud.slang, because the
+    // vanilla weather system has to be able to move it.
+
+    /**
+     * Coverage bias, density scale, type bias and extinction — and where vanilla's weather enters.
+     *
+     * <p><b>Rain drives coverage, thunder drives type,</b> and those are two different axes on purpose.
+     * Rain means the sky filled in; thunder means the clouds grew upward. A single "storminess" scalar
+     * would tie them together and could never produce the two skies that actually differ — an overcast
+     * drizzle, which is a flat sheet from horizon to horizon, and a thunderhead over an otherwise open
+     * sky. Vanilla itself keeps them separate for the same reason (it can rain without thundering, and
+     * its thunder level is only ever raised while it is raining), so this reads the pair rather than
+     * collapsing it.
+     *
+     * <p>Both are ADDED to the noise fields rather than replacing them, so a storm arrives over a sky
+     * still made of individual cells. Replacing would make every cloud identical the instant the weather
+     * changed, which reads as a switch being thrown instead of as weather.
+     *
+     * <p>Rain also raises density, because the visible difference between a fair-weather sky and a rainy
+     * one is not only how much of it is covered — it is that you can no longer see through any of it.
+     *
+     * <p>Interpolated at the frame's partial tick. Vanilla ramps these over many ticks, so the value is
+     * already smooth; sampling it at the tick boundary instead would quantise a slow ramp to 20 Hz, which
+     * is visible on a sky that covers the screen.
+     *
+     * @param level the client level, or null on a title screen — the sliders then stand alone
+     */
+    private static Float4 cloudParams(ClientLevel level) {
+        float coverage = FluoriteConfig.Rt.Volumetrics.CLOUD_COVERAGE.value();
+        float density = FluoriteConfig.Rt.Volumetrics.CLOUD_DENSITY.value();
+        float type = FluoriteConfig.Rt.Volumetrics.CLOUD_TYPE.value();
+        if (level != null && FluoriteConfig.Rt.Volumetrics.CLOUD_WEATHER.value()) {
+            float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+            float rain = level.getRainLevel(partial);
+            float thunder = level.getThunderLevel(partial);
+            coverage += rain * 0.55f;
+            density *= 1.0f + rain * 0.8f;
+            type += thunder * 0.75f;
+        }
+        return new Float4(coverage, density, type,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_EXTINCTION.value());
+    }
+
+    /**
+     * Where the deck sits and how big its features are: bottom altitude, thickness, base and detail size.
+     *
+     * <p>The bottom is a condensation altitude and therefore a plane — every cloud's flat base lands on
+     * it, whatever its type. The thickness is what a cumulonimbus has to grow into, so it is deep, and it
+     * costs march steps only where a tall cloud actually exists.
+     */
+    /**
+     * The terrain rebase origin, so the clouds can be placed in the world rather than around the player.
+     *
+     * <p>Everything the ray tracer sees is relative to this, and it follows the camera — it is reset
+     * whenever the camera drifts more than {@code terrain.rebase-distance-blocks} from it. The cloud
+     * altitude is authored as an absolute height, so without this the deck sat at that height ABOVE THE
+     * PLAYER: it climbed with them, could not be entered or flown above, and the whole pattern jumped
+     * sideways at every rebase. Same reason {@code visibilityGridOrigin} snaps in absolute coordinates
+     * before rebasing, and the same class of fault R18 exists to prevent.
+     */
+    private static Float4 cloudRebase(RtTerrain terrain, ClientLevel level) {
+        // The wind's accumulated drift, subtracted from the origin. Sampling a field at p + (origin -
+        // drift) is the same thing as sampling a drifting field at p, and doing it this way means the
+        // shader has no notion of wind at all: one addition it already performs to un-rebase the
+        // coordinates now also advects them, so a cloud and its reflection cannot disagree about where
+        // the field is.
+        //
+        // Only xz. The y lane is the pure rebase because cloudShellSpan measures the deck's altitude
+        // from it, and a deck that drifted vertically would be a deck at the wrong height.
+        float driftX = 0f;
+        float driftZ = 0f;
+        if (level != null) {
+            float speed = FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value();
+            if (speed > 0f) {
+                // Game time rather than wall clock, so the sky stops when the game does and resumes
+                // where it left off. Partial-tick interpolated for the same reason the weather is: at 20
+                // Hz the drift of a field that fills the screen is a visible stutter.
+                double partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+                double seconds = (level.getGameTime() + partial) / 20.0;
+                double angle = Math.toRadians(FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE.value());
+                // Kept in double to here: game time reaches millions of ticks on an old world, and the
+                // product with the speed is what a float would start losing blocks off the end of.
+                driftX = (float) (Math.cos(angle) * speed * seconds);
+                driftZ = (float) (Math.sin(angle) * speed * seconds);
+            }
+        }
+        return new Float4(terrain.blockX - driftX, terrain.blockY, terrain.blockZ - driftZ,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_FIELD_SCALE.value());
+    }
+
+    private static Float4 cloudShape() {
+        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_ALTITUDE.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_THICKNESS.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_BASE_SCALE.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_DETAIL_SCALE.value());
     }
 
     /** Single-scattering albedo and the sun lobe's anisotropy. */
@@ -618,6 +717,7 @@ public final class RtComposite {
     private boolean waterWaveTimeValid;
     private long atlasSampler;
     private long lutSampler;
+    private long tilingSampler;
     // The atmosphere's precomputed tables (M10). Baked once, then sampled by world.rmiss and world.rgen.
     private RtSky skyLuts;
     private boolean failed;
@@ -966,6 +1066,10 @@ public final class RtComposite {
                     skyLuts.skyViewMultiView(), lutSampler(ctx));
             worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
             worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
+            // NOT the LUT sampler. Every table above is a parameterisation over [0,1] and must clamp;
+            // the cloud noise is sampled at WORLD COORDINATES divided by a feature size, which leaves
+            // that range immediately and has to wrap. See tilingSampler.
+            worldPipeline.setCloudNoise(skyLuts.cloudNoiseView(), tilingSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1313,6 +1417,9 @@ public final class RtComposite {
                 // Bit 26: the source decays at the diffusion rate rather than the beam's.
                 flags |= 1 << 26;
             }
+            if (FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
+                flags |= 1 << 30; // volumetric clouds (M11)
+            }
             if (FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX.value()) {
                 flags |= 1 << 27; // sample one scattering event per segment (M17)
                 if (FluoriteConfig.Rt.Volumetrics.VOLUME_EMITTER_NEE.value()) {
@@ -1422,7 +1529,10 @@ public final class RtComposite {
                     waterScatter(),
                     waterAbsorbOverride(),
                     waterAux(),
-                    visibilityGridOrigin(camX, camY, camZ, terrain)
+                    visibilityGridOrigin(camX, camY, camZ, terrain),
+                    cloudParams(level),
+                    cloudShape(),
+                    cloudRebase(terrain, level)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1865,6 +1975,13 @@ public final class RtComposite {
             }
             atlasSampler = 0L;
         }
+        if (tilingSampler != 0L) {
+            RtContext ctx = RtContext.currentOrNull();
+            if (ctx != null) {
+                VK10.vkDestroySampler(ctx.vk(), tilingSampler, null);
+            }
+            tilingSampler = 0L;
+        }
     }
 
     /**
@@ -1895,6 +2012,42 @@ public final class RtComposite {
             }
         }
         return lutSampler;
+    }
+
+    /**
+     * A REPEAT sampler, for volumes read at world coordinates rather than at a parameterisation.
+     *
+     * <p>Separate from {@link #lutSampler} because the two requirements are opposites and neither can
+     * serve the other. Every atmosphere table is a function of angles and altitudes mapped onto [0,1],
+     * where wrapping would join the zenith to the horizon; the cloud noise is a tileable volume sampled
+     * at {@code worldPosition / featureSize}, which leaves [0,1] within one feature and has to wrap.
+     *
+     * <p><b>This is what the noise bake's tiling exists for.</b> cloud_noise.comp.slang hashes its cells
+     * on coordinates wrapped to each octave's own period specifically so the volume repeats seamlessly;
+     * that work only pays off through an address mode that repeats. Bound with the clamping LUT sampler
+     * instead, the whole visible sky read a single clamped corner of the volume, so coverage came out
+     * near-constant and {@code shape + coverage - 1} never rose above zero — no clouds at all, at any
+     * setting.
+     */
+    private long tilingSampler(RtContext ctx) {
+        if (tilingSampler == 0L) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
+                        .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                        .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .minLod(0f).maxLod(0f);
+                LongBuffer p = stack.mallocLong(1);
+                if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                    throw new IllegalStateException("vkCreateSampler(tiling volume) failed");
+                }
+                tilingSampler = p.get(0);
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, tilingSampler, "tiling volume sampler");
+            }
+        }
+        return tilingSampler;
     }
 
     private long atlasSampler(RtContext ctx) {

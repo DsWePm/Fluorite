@@ -100,12 +100,13 @@ public final class RtPipeline {
     private final int skyViewBinding;
     private final int froxelBinding;
     private final int visibilityGridBinding;
+    private final int cloudNoiseBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
                        long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
                        int transmittanceBinding, int multiScatterBinding, int skyViewBinding,
-                       int froxelBinding, int visibilityGridBinding) {
+                       int froxelBinding, int visibilityGridBinding, int cloudNoiseBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -134,6 +135,7 @@ public final class RtPipeline {
         this.skyViewBinding = skyViewBinding;
         this.froxelBinding = froxelBinding;
         this.visibilityGridBinding = visibilityGridBinding;
+        this.cloudNoiseBinding = cloudNoiseBinding;
     }
 
     /**
@@ -199,8 +201,15 @@ public final class RtPipeline {
             // in the fog, and the smooth field the trilinear blend produces IS the product.
             int visibilityGridBinding = skyAtlas ? froxelBinding + froxelSamplers : -1;
             int visibilityGridSamplers = skyAtlas ? 1 : 0;
+            // The baked cloud noise (M11.1), binding 17. A 3D sampled image and RAYGEN-only: cloud.slang
+            // is imported by the raygens alone, because the clouds are composited on the segment that
+            // escapes to sky rather than in a miss shader. Filtered, and that is load-bearing rather than
+            // cosmetic — a nearest fetch would put the 128-texel lattice into every cloud edge as steps.
+            int cloudNoiseBinding = skyAtlas ? visibilityGridBinding + visibilityGridSamplers : -1;
+            int cloudNoiseSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
-                    + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers;
+                    + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers
+                    + cloudNoiseSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -233,6 +242,9 @@ public final class RtPipeline {
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
                 binds.get(visibilityGridBinding).binding(visibilityGridBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(cloudNoiseBinding).binding(cloudNoiseBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
@@ -429,7 +441,8 @@ public final class RtPipeline {
             sbt.flush();
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
                     bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
-                    multiScatterBinding, skyViewBinding, froxelBinding, visibilityGridBinding);
+                    multiScatterBinding, skyViewBinding, froxelBinding, visibilityGridBinding,
+                    cloudNoiseBinding);
         }
     }
 
@@ -546,6 +559,11 @@ public final class RtPipeline {
     /** Bind the volumetric visibility grid (M13.2), sampled by the fog on every marched segment. */
     public void setVolumeVisibilityGrid(long imageView, long sampler) {
         writeAtlasBinding(visibilityGridBinding, imageView, sampler);
+    }
+
+    /** Bind the baked cloud noise (M11.1), sampled by the cloud march on sky-escaping segments. */
+    public void setCloudNoise(long imageView, long sampler) {
+        writeAtlasBinding(cloudNoiseBinding, imageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

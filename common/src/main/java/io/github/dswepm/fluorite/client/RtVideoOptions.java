@@ -84,18 +84,40 @@ public final class RtVideoOptions {
         /** Freshly built, in display order. Paired two-per-row by {@code OptionsList.addSmall}. */
         public List<Section> sections() {
             return switch (this) {
-                case TRACING -> List.of(Section.of(spp(), maxBounces(), sunSize(), entities(), particles(),
-                        particleShadows()));
+                // The medium estimators sit here rather than under FOG, and that is a correctness point
+                // about the UI rather than a tidiness one: every one of them acts on the fog AND on the
+                // water, so filing them under "fog" told the player something false. MULTI_SCATTER was
+                // built because deep water went black as well as dense fog; SCATTER_VERTEX's default was
+                // settled by a measurement taken UNDERWATER (D30); emitter NEE lights both. A player who
+                // finds them under Fog and concludes their water is unaffected has been misled by the
+                // menu.
+                case TRACING -> List.of(
+                        Section.of(spp(), maxBounces(), sunSize(), entities(), particles(),
+                                particleShadows()),
+                        Section.titled("fluorite.options.rt.section.media",
+                                volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
                 case EXPOSURE -> List.of(Section.of(exposureMode(), manualEv()));
                 case MATERIAL -> List.of(
                         Section.of(sunMis(), anisotropy()),
                         Section.titled("fluorite.options.rt.section.subsurface",
                                 subsurfaceMode(), subsurfaceThickness(), subsurfaceMaxEvents()));
+                // Clouds are sky, not fog. They share a config namespace with the fog for historical
+                // reasons and nothing else: a cloud deck is a thing you look UP at, authored alongside
+                // the sun and the sky it hangs in, while the fog is the air you stand in.
                 case SKY -> List.of(
                         Section.titled("fluorite.options.rt.section.sunArt",
                                 sunIntensity(), sunTemperature()),
                         Section.titled("fluorite.options.rt.section.skyArt",
-                                skyIntensity(), skyTemperature()));
+                                skyIntensity(), skyTemperature()),
+                        // One group, because this branch has one layer. The cirrus sheet arrives with
+                        // the layers slice and gets a complete parameter set of its own there -- every
+                        // number below has a counterpart, including its own wind, because a high ice
+                        // sheet and a convective deck do not share a size, a height or a speed.
+                        Section.titled("fluorite.options.rt.section.cumulus",
+                                clouds(), cloudWeather(), cloudCoverage(), cloudType(), cloudDensity(),
+                                cloudExtinction(), cloudAltitude(), cloudThickness(),
+                                cloudFieldScale(), cloudBaseScale(), cloudDetailScale(),
+                                cloudWindSpeed(), cloudWindAngle()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
@@ -106,10 +128,11 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
+                // What is left is genuinely the fog and only the fog. fogSunShadowRays stays because the
+                // water has its own sun-shadow switch under WATER and these two do not affect each other.
                 case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                        fogPhaseG(), fogScatterTint(), fogSunShadowRays(), fogMultiScatter(),
-                        fogScatterVertex(), fogVolumeEmitterNee()));
+                        fogPhaseG(), fogScatterTint(), fogSunShadowRays()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
@@ -395,12 +418,15 @@ public final class RtVideoOptions {
     /**
      * Let light reaching a scattering point decay at the diffusion rate instead of the beam's.
      *
+     * <p>Acts on EVERY participating medium — it was built because deep water went black as readily as
+     * dense fog did, and both symptoms are the same bug.
+     *
      * <p>In the UI for the same reason the ray count is: off must reproduce the old behaviour exactly, so
      * this is an A/B rather than a dial, and an A/B is only worth anything flipped at a fixed camera
      * position inside one session.
      */
-    private static OptionInstance<Boolean> fogMultiScatter() {
-        return bool("fluorite.options.rt.fogMultiScatter", FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER);
+    private static OptionInstance<Boolean> volumeMultiScatter() {
+        return bool("fluorite.options.rt.volumeMultiScatter", FluoriteConfig.Rt.Volumetrics.MULTI_SCATTER);
     }
 
     /**
@@ -410,8 +436,90 @@ public final class RtVideoOptions {
      * at a position, and both halves of that trade have to be judged by flipping it at a fixed camera
      * position inside one session.
      */
-    private static OptionInstance<Boolean> fogScatterVertex() {
-        return bool("fluorite.options.rt.fogScatterVertex", FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
+    /**
+     * Volumetric clouds. In the UI because slice one exists to be priced, and a cost is only meaningful
+     * flipped at a fixed camera position inside one session.
+     */
+    private static OptionInstance<Boolean> clouds() {
+        return bool("fluorite.options.rt.clouds", FluoriteConfig.Rt.Volumetrics.CLOUDS);
+    }
+
+    /**
+     * Let vanilla's rain and thunder move the sky.
+     *
+     * <p>In the UI beside the sliders it competes with, because with it on the sliders measure themselves
+     * plus the weather — so authoring a sky means turning this off first, and that has to be one click
+     * away rather than a config file away.
+     */
+    private static OptionInstance<Boolean> cloudWeather() {
+        return bool("fluorite.options.rt.cloudWeather", FluoriteConfig.Rt.Volumetrics.CLOUD_WEATHER);
+    }
+
+    private static OptionInstance<Integer> cloudCoverage() {
+        return biasSlider("fluorite.options.rt.cloudCoverage", FluoriteConfig.Rt.Volumetrics.CLOUD_COVERAGE);
+    }
+
+    private static OptionInstance<Integer> cloudDensity() {
+        return scaleSlider("fluorite.options.rt.cloudDensity", FluoriteConfig.Rt.Volumetrics.CLOUD_DENSITY);
+    }
+
+    /** Stratus at the low end, cumulus in the middle, cumulonimbus at the top. */
+    private static OptionInstance<Integer> cloudType() {
+        return biasSlider("fluorite.options.rt.cloudType", FluoriteConfig.Rt.Volumetrics.CLOUD_TYPE);
+    }
+
+    private static OptionInstance<Integer> cloudExtinction() {
+        return coefficientSlider("fluorite.options.rt.cloudExtinction",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_EXTINCTION, 500);
+    }
+
+    private static OptionInstance<Integer> cloudAltitude() {
+        return blockSlider("fluorite.options.rt.cloudAltitude",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_ALTITUDE, 64, 1024);
+    }
+
+    private static OptionInstance<Integer> cloudThickness() {
+        return blockSlider("fluorite.options.rt.cloudThickness",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_THICKNESS, 32, 1024);
+    }
+
+    private static OptionInstance<Integer> cloudBaseScale() {
+        return blockSlider("fluorite.options.rt.cloudBaseScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_BASE_SCALE, 200, 8000);
+    }
+
+    /** How fast the field drifts. 0 freezes the sky, which is the A/B for whether motion is the fix. */
+    private static OptionInstance<Integer> cloudWindSpeed() {
+        return scaleSlider("fluorite.options.rt.cloudWindSpeed",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED);
+    }
+
+    private static OptionInstance<Integer> cloudWindAngle() {
+        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.cloudWindAngle",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.cloudWindAngle.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(v + "°")),
+            new OptionInstance.IntRange(0, 359),
+            Math.clamp(Math.round(setting.value()), 0, 359),
+            v -> setting.set((float) v));
+    }
+
+    /** The 2D field: how far apart the sky's clumps and clearings are, as opposed to how big one cloud is. */
+    private static OptionInstance<Integer> cloudFieldScale() {
+        return blockSlider("fluorite.options.rt.cloudFieldScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_FIELD_SCALE, 500, 40000);
+    }
+
+    private static OptionInstance<Integer> cloudDetailScale() {
+        return blockSlider("fluorite.options.rt.cloudDetailScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_DETAIL_SCALE, 40, 2000);
+    }
+
+    private static OptionInstance<Boolean> volumeScatterVertex() {
+        return bool("fluorite.options.rt.volumeScatterVertex",
+                FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
     }
 
     /**
@@ -419,8 +527,8 @@ public final class RtVideoOptions {
      *
      * <p>Beside the vertex switch it depends on, so the pair reads as the one feature it is.
      */
-    private static OptionInstance<Boolean> fogVolumeEmitterNee() {
-        return bool("fluorite.options.rt.fogVolumeEmitterNee",
+    private static OptionInstance<Boolean> volumeEmitterNee() {
+        return bool("fluorite.options.rt.volumeEmitterNee",
                 FluoriteConfig.Rt.Volumetrics.VOLUME_EMITTER_NEE);
     }
 
@@ -474,6 +582,24 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             initial,
             v -> setting.set(v / 10.0f));
+    }
+
+    /**
+     * A slider over a SIGNED bias in [-1, 1], shown in hundredths.
+     *
+     * <p>Signed because the settings it drives are added to a field rather than multiplied into one, and
+     * a bias whose neutral value sits at the middle of its travel is the only kind that can be turned
+     * both up and down from what the world authored.
+     */
+    private static OptionInstance<Integer> biasSlider(String key, FloatSetting setting) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%+.2f", v / 100.0))),
+            new OptionInstance.IntRange(-100, 100),
+            Math.clamp(Math.round(setting.value() * 100.0f), -100, 100),
+            v -> setting.set(v / 100.0f));
     }
 
     /** A slider over a distance in blocks. */
@@ -682,9 +808,9 @@ public final class RtVideoOptions {
             // between hits rather than the hits themselves. See world.rgen's volumeDebug. 12 is neither —
             // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
             new OptionInstance.Enum<>(
-                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21),
+                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22),
                     Codec.INT),
-            Math.clamp(setting.value(), 0, 21),
+            Math.clamp(setting.value(), 0, 22),
             setting::set);
     }
 

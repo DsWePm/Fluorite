@@ -103,7 +103,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 |---|---|---|---|
 | `PackedPathSegment` | **48 B** | `RtPathSegmentLayoutTest` | std430 量化到 16B 倍数：**只剩一个空 uint lane**；再加一个字段进位到 64B = 1440p 下 **+118 MB**。`pathFlags` bits 0–13 已用（9/10 water、12/13 ambient），新 flag 永远优先用位不用 lane |
 | `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 `uint64_t` 地址 + 3 uint（M15.0 删 `skyLightAddr`：112→104）；Vulkan 保证 128B，**余量 24B**（下一个地址花 8）。每加一个 uint 由 closest-hit 每次命中付费 |
-| `WorldPushData` | **736 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`，由 reduction 写、froxel/raygen 共读 |
+| `WorldPushData` | **768 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`（reduction 写、froxel/raygen 共读），M11 再加 32B 的 `cloudParams`/`cloudShape`（CPU 每帧写、raygen 只读，逐射线零成本——见 D37） |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移全部钉死 |
 | `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney 十个标量打进三个 float4；测试断言**逐 lane 偏移** |
 | `Light` | 32 B | — | 32 整除 64B cache line（48B 时代一半记录跨行、双倍事务）；面积不存储（`4·|halfU×halfV|` 反推） |
@@ -122,6 +122,61 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | 相机前缀 | Pass B 用真实水 `Medium` 一次返回 in-scatter + Beer transmittance；Pass A 不再预扣 | **froxel**（64×36×64，指数深度轴，含大气项） |
 
 **M16（2026-08-04）已收口的源分叉**：froxel、marched fog 与 water 共读 `mediumSkyRadiance`；旧 `waterAmbient/fogAmbient.xyz` 清零，只保留各自 `.w` 搭载的无关参数。**D20/12A 已收口的方向分叉**：`sampleSquareLight` 是有限面积太阳/月亮的单一随机接口；水、marched fog、froxel、可见性网格和表面 NEE 的大气颜色、相位、阴影与水折射均从同一枚样本导出。**M15.2（2026-08-03）已收口的估计器分叉**：froxel 与 marched 共用 `volume_source.slang`；局部雾太阳自衰减补进 froxel，`fogScatter` 两边统一为 albedo。froxel 独有的行星大气介质积分是有意口径差。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐。
+
+---
+
+## 2.6 统一的边界：统一了什么、刻意没统一什么、代价在哪
+
+> 这一节回答一个被反复问到的问题：「这套统一架构做到什么地步、对优化友好吗」。结论散在 D2/D5/D11/D29/D33 里，这里给全貌。
+
+### 统一在「接口与纪律」，不在「数值方法」
+
+这是 D2 的原始裁决，后续每一个里程碑都在复用同一个形状：**统一接口 + 介质专属估计器**。
+
+| 已统一 | 形态 |
+|---|---|
+| 介质分类与活动状态 | 一个 `uint flags`（WATER/AMBIENT）+ D27 的 `activeMediumFlags` 打包字 |
+| 参数查询 | `mediumSigmaT` / `ScatterAlbedo` / `PhaseG` / `Profile` |
+| 外部接口 | `integrateSegment` 唯一入口 |
+| 光源与源 | `mediumSkyRadiance`（一次 reduction，水/雾/froxel 共读）+ `sampleSquareLight`（一枚有限天体样本驱动颜色/相位/遮挡/折射） |
+| 采样纪律 | τ 分层 + 段内 jitter + 按用途 rehash seed，水雾共用 |
+| 跨 stage 数学 | `volume_source.slang`（**零 binding**），compute 与 RT 共用 |
+| 散射事件权重 | 一个 `f/pdf`，两个 τ→位置 adapter（M17） |
+
+| 刻意**没**统一 | 理由 |
+|---|---|
+| 数值方法 | 均质封闭介质走**精确闭式**，非均质走 march。强行统一会让水从精确解退化成数值步进——**为「统一」二字付出质量与性能，是纯损失** |
+| 多重散射近似 | 雾=大气 MS LUT+扩散、水=g_eff+扩散、云=phi_fwd+双叶 HG（D5）。三者是 RTE 扩散极限在不同光学厚度区间的近似，各自在自己的区间最准 |
+| 云的行进位置 | 独立光线函数而非进 `integrateSegment`（D33） |
+| 雾的两台机器 | froxel（相机前缀）+ marched（所有弹射）**永久并存**——froxel 进不了反射。M15.2 消灭了两者的源分叉，但重复本身是结构性的 |
+
+### 另一条本可以走的路（供对照）
+
+工业界存在**两种都成立、但统一对象不同**的架构：
+
+- **(a) 统一接口 + 介质专属估计器** ← 本项目、实时渲染器常态
+- **(b) 统一估计器 + 介质只提供 majorant** ← PBRT v4 一路：所有介质走同一个 delta/ratio tracking 循环，均质只是「majorant 段只有一段」的退化情形
+
+(b) 更通用（任意非均质、null scattering 天然容纳），代价是**处处付拒绝采样的循环**，包括对均质水——而那里闭式解精确且免费。分野不在「现代不现代」，在**离线 vs 实时**：离线常数因子无所谓、通用性至上；实时的常数因子就是全部。
+
+**云是这条分界线上的第一个测试**：M11 之前，`MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT` 名为非均质，实际是闭式积分的高度雾。云带来了第一个真正的数值 march，未来 3D 噪声雾会共用它——那条分支届时会自然长成通用非均质行进器，也就是在**那一条分支上**向 (b) 靠拢，而闭式的水保持不变。
+
+### 对优化友好吗：有数据的一面与没数据的一面
+
+**友好，且有实测支撑：**
+
+- **单一接口 = 单一测量与隔离点**。`SEGMENT_SOURCE`/`scatter-source`/`visibility-cell-size=0` 这些同会话开关能做到**可证明的 no-op**，M13.2 密闭房间那个 bug 正是靠它测出来的（此前六次推理全错，§9.2）。没有统一接口就没有这些闸门。
+- **均质闭式零 march**，数学上还比 march 准。
+- **`volume_source.slang` 零 binding** 是 froxel 与 marched 能共用一份源数学的结构前提（M15.2 消灭源分叉靠它）。
+- **散射顶点实测 0.930×**——统一 `f/pdf` 之后，水从「每段最多 3 条阴影线」降到 1 条，**接口统一顺带让它更快**。
+
+**代价，同样有实测：**
+
+- **寄存器压力是首要风险**（R6，raygen 明确 register-bound）。M17 把 `SegmentIntegral` 从 6 floats 涨到 12 —— **实测 1.001×，台阶未撞到**。这是目前唯一被证伪的悲观预期。
+- **逐段热路径极贵**：发光体 NEE 一条阴影线 **+20.9 ms**，而 D31 的判据实验证明**贵的不是射线**（删掉反而慢 5.2 ms，F15 观察者效应）——是光源网格的依赖加载链按段执行。**这条直接决定了 D33 把云的 march 放在逃逸段而非 `integrateSegment`。**
+- `integrateSegment` 每个弹射段都调用，塞进去的东西由**每一段**付费。
+
+**尚无数据的：** 水散射成本已测（10.49/7.56 ms），但 `bench-water-top` 未采（结论只覆盖全潜）；粒子阴影两次未能测出（需 `bench-particles`）；云的 march 成本待 M11.1 采集。
 
 ---
 
@@ -511,7 +566,19 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 ## 8. 其余待办域
 
-### 8.1 M11 体积云（前置：M15；方法对比与请示项见 §6.4）
+### 8.1 M11 体积云（前置：M15；方法对比见 §6.4，动工裁决 D33–D35）— **切片① 2026-08-05 落地，待验收**
+
+**已落地（切片①：形状）**：`cloud_noise.comp.slang` 一次性烘 128³ RGBA8（R 云体 billow、G 边缘侵蚀、**B 云型**；按各倍频自己的周期取模哈希以真正可平铺——只靠采样器 REPEAT 会平铺纹理却让格点在接缝处跳变）；`cloud.slang` 纯光线函数挂在**逃逸段、sky break 之前**；**球壳而非平板**（球心在光线起点下方一个行星半径处，远处云随地平线下沉）；自适应步长与空段跳跃；源为 ambient-only（`mediumSkyRadiance`），所以云**有形状但平**。烘焙挂在 `RtSky` 链上（一次性、不依赖太阳或相机，与 transmittance 同类；该类的价值就是 order 只有一个权威）。binding 17，RAYGEN-only。开关 `volumetrics.clouds` 默认关。
+
+**已落地（切片①补：云型 + 参数化 + 天气联动，D36–D38）**：
+
+- **云型维度**。`cloudHeightProfile(altitude, type)` 由一条 [0,1] 轴选形，两段插值（0 层云薄片 → 0.5 晴天积云 → 1 积雨云）。积雨云在 t≈0.6–0.8 处**重新变宽**（砧状顶：上升气流撞上稳定层后向侧面铺开）——没有这一段，风暴云读起来是一根柱子而不是一场风暴。三者共享平底，因为凝结高度在一个区域内是同一个值，云野的下表面本来就是一个平面。云型同时**抬密度**（`1 + type*1.6`）：积雨云不是「高一点的积云」，是「光穿不过去的积云」，而后者才是从底下看它像风暴的原因。云型场自己一片噪声（B 通道，周期 26000 blocks ≫ 云量的 9000），所以「阴天」与「雷暴」是两个独立轴。
+- **云壳加深**：140 → 380 blocks（`CLOUD_ALTITUDE` 180 + `CLOUD_THICKNESS` 380），积雨云要有地方站。层云只占最下面约 18%，加深只在**真的长出高云的地方**才多花行进步数（空段跳跃走完其余部分）。
+- **九个编译期常数提为逐帧参数**：`WorldPush` 新增 `cloudParams`（云量偏置 / 密度缩放 / 云型偏置 / 每方块消光）与 `cloudShape`（底面高度 / 厚度 / 云朵尺度 / 细节尺度），**736 → 768 B**（`RtSkyMediumLayoutTest` 已更新并加钉 `cloudParams`/`cloudShape` 存在）。留在 `cloud.slang` 里的只有两个：`CLOUD_WEATHER_SCALE`、`CLOUD_TYPE_SCALE`——它们不是「观感」，是天空允许与自己不同的尺度。
+- **原版天气联动**（此前**一行都没有**）：`RtComposite.cloudParams` 读 `getRainLevel/getThunderLevel`（按 partial tick 插值，否则慢坡会被量化到 20 Hz，在铺满屏幕的天空上看得见）。**雨驱动云量与密度、雷暴驱动云型**，两条独立轴——单个「风暴度」标量会把它们绑死，就永远做不出真正不同的两种天空（铺满地平线的阴雨 vs 晴空里孤零零一座雷暴云）；vanilla 自己也是分开的（可以下雨不打雷）。两者都是**叠加**而非替换：替换会让天气一变全天空的云变成同一个值，读起来是「拨了个开关」而不是「风暴来了」。开关 `volumetrics.cloud-weather` 默认开；关掉它滑条才是可用的创作工具（开着时滑条量到的是自己 + 天气）。
+- **`cloudDensity` 按成本排序**：所有因子相乘 ⇒ 任一个归零即可返回。先做**免费**的云壳高度剔除（多数射线的多数步在这里就出局），再一次 fetch 云量，最后才 fetch 云型——云型自己**剔除不了任何东西**，所以尽管高度剖面现在拿它当参数，也**故意不上提**；上提等于让天上每一个空步都付一次纹理读。
+
+**待办**：切片②光照（太阳自阴影 + 双叶 HG + phi_fwd）· 切片③双层+相机淡出+反射策略 · **成本采集**（R19 点名的风险，切片①就该测；云壳加深后更要测）· 游戏内验收。
 
 - **唯一硬规则（R18）**：`traceClouds(ro, rd, tMax, seed)` 内**禁止出现相机位置**——密度场、层序全部逐光线判断（层序逐光线比较两层 `meanDistance`）。验收专项：站在水边看天上的云与倒影，高度形状一致。
 - 结构：`cloud.slang` 纯光线函数 + `cloud_noise.comp.slang` 启动烘焙 3D 噪声（构建 glob 已覆盖 `**/*.comp.slang`）；挂統一 Medium ambient 非均质分支（D2）。
@@ -618,6 +685,10 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 | F15 | shader probe 会改变寄存器活跃性与优化结果；带 probe 的连续成功必须在删掉一次性观察点后复验。“进入世界几秒后变化”不能自动归因给 pipeline cache、GC、区块/TLAS 或时域后处理。**它同样适用于性能判据实验**：D31 移除一条阴影线后帧时间**上升** 5.2 ms，负成本只能是活跃范围变化——**但负结果照样有判定力**，它排除了「优化射线」这整条路 |
 | F17 | **同一位姿、同一构建，跨批次仍然不可比；每批的第一次运行必须整个丢弃。** 实测：首次运行的 `froxelBake` 0.582 vs 同批其余 0.253，两批之间 `tracePrimary` 0.61 vs 0.93 且 `traceIndirect` 方向相反（降频解释不了）。比值的分子分母必须同批且均非首次运行——第一次 M17 采集就因此报出两个后来收回的数。详见 §4.4.1 |
 | F16 | **以 float lane 搬运整数位型的 ABI，必须对全取值域做 round-trip 测试。** M19 的 overlay 单 lane 存 `0xAARRGGBB` 时，白色 RGB 把 1 填进 float 指数位，alpha=127 编码成 `0x7FFFFFFF`（NaN，JVM 允许规范化 ⇒ 静默改色），而 alpha=127 是白闪斜坡上的普通取值。**穷举测试抓到，事前推理没有**——同一风险适用于 `materialId` 之外任何新占用的 lane |
+| F18 | **几何求交的分支不要写在「根的符号」上，要写在「起点在哪个壳里」上。** M11 云壳的 `inner.x > 0` 本意是「在云层下方往上看」，但从云底以下出发的射线**起点在内球之内**，近根恒为负——这个判断从来没触发过，几乎所有射线都掉进「已在云层内部」分支，拿到的是相机到云底之间那段空气。行进老实走完、每个采样点都在云层下方、密度恒零 ⇒ **任何设置下天空全空**。改为按 `length(centreRelative)` 与 `rBottom`/`rTop` 比较后，CPU 穷举「云下/云中/云上 × 七个仰角」21 例零错误 |
+| F19 | **空画面的因果链上每一环都长得一模一样，必须做成能自报断点的仪器。** 「没有云」我先后读调用图诊断了两次：第一次对了一半（采样器 CLAMP 是真 bug），第二次直接推错（怪到密度配平上，而 CPU 复算显示 37% 的列有云、天顶 τ=14）。debug view 22 一次进游戏就把断点指到了「进了壳但密度恒零」。**教训还有第二层**：探针第一版对密度失败只返回一个平黄色，而三个因子相乘、光看乘积说不出是哪个零，白跑一趟——诊断视图要返回**分量**而不是结论 |
+| F20 | **「看起来必然坏」的东西要先量再动。** `PLANET_R=6371000` 而云层厚 380，`raySphere` 在 fp32 下算 `dot(o,o)-r*r` 是两个 4e13 相减（ULP 4e6），看上去必炸；实测入口高度与 fp64 只差 0.1–0.3 方块。当时若"顺手换成 fp64 或改写公式"，就会把 F18 那个真 bug 盖在一个看似合理的改动底下 |
+| F21 | **光追渲染器里的"世界坐标"默认不是世界坐标。** 一切都相对 `terrain.blockX/Y/Z` 这个**跟随相机**的重定位原点（超过 `rebase-distance-blocks` 就重设）。云的密度场直接在这套坐标上求值，于是云被锚在了**玩家**身上而不是世界上：写 192 的云层实际待在「你头顶 192」，飞到 y=432 仍在头顶、永远进不去；水平方向则是每次重定位整片云跳一次。**症状不像 bug，像设计**——这是它能活到用户手上的原因。凡是要在世界里有固定位置的场，取样前必须把原点加回去（`worldOf()`），球壳的球心也要按世界 y=0 而不是重定位 y=0 放。同类纪律见 `visibilityGridOrigin`：**先按绝对坐标吸附、再重定位** |
 
 仪器教训：**采集脚本改 TOML 时必须验证改的是真键**——M20.3 的采集脚本按「找不到就插到 `[particles]` 段」的逻辑写入 `particle-shadows`，而该项声明的路径是 `entities.particle-shadows`，于是它插了一个没人读的孤儿键。**若那轮基准没被打断，它会「成功」跑完并报出「粒子阴影零成本」**——两次运行读的都是同一个默认值，开关从未被翻动。判据：采集前后 grep 一次目标键，确认它在预期段内且值确实变了；曝光日志 `now - Long.MIN_VALUE` 溢出为负 ⇒ 永久沉默——「为回答『源是否过亮』而造的仪器整个会话什么都没报，沉默看起来和『没变化』一样」；水系数诊断打印了**被拒模型**的数字（该被对账的那行本身错了）；只记录 post 值会把传输/复制/调用三个边界混在一起；启动早期 probe 可能来自上一代缓存 pipeline；验证层无 messenger 时静默（`vk_layer_settings.txt` 的存在理由）；归档文件名不带配置 ⇒ 拿游走档比 thin 档差点报回归。
 
@@ -716,6 +787,14 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 21A/D27 把 current/outer flags 压入唯一活动字并直接从 queue `pathFlags` 解码。`codex-neoforge-21A-packed-flags-raw-stdout.log` 共 197 条，current code 恒为 1、`firstScatter>0`，terrain resident 由 38 增至 2604；删除 raw 读取并恢复普通 profile 后，`codex-neoforge-21A-final-clean-stdout.log` 共 211 条、0 异常，profile 恒为 1、散射非零，resident 至 2252。它通过了 observer-effect cleanup 闸门。
 - `diagnostics.water-medium-trace` 继续作为通用运行期仪器。每条 `RT water-medium probe` 记录 `prefixLen`、`prefixScatter`、`prefixT`、`leaf`、`composite`、`prefixFraction`、`mediumSkyRadiance`、`skyOpen`、向上 `waterHitT`、fallback depth、surface Y、首叶首段的 `firstSegmentLen/firstScatter/firstT/firstHit/escaped/mediumProfile`，以及 resident/published/desired/inFlight/missing/instances。一次性 `[DEBUG-medium-flags]` 与 raw `firstMediumCode` 已删除。证据日志包括 `codex-neoforge-{19A-prepost,20A-authoritative-stack,20B-scalar-state,20B-scalar-state-rerun,20B-final-clean,20B-clean-rawflag,21A-packed-flags-raw,21A-final-clean}-stdout.log`。
 
+### 2026-08-05 M11 体积云动工前裁决（D33–D35，§6.2 政策要求，用户逐项选定）
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D33 | 云的行进挂载点 | **独立 `cloud.slang` 纯光线函数，只在射线逃逸到天空的那一段调用**（仍在 sky break 之前，所以反射里成立） | **动工前才发现的事实**：`MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT` 名为非均质，但高度雾是**闭式积分**的——云是这套框架第一个真正需要数值 march 的客户，所以「挂进去」并非零成本的复用。而 M17 实测 raygen 逐段热路径极贵（发光体 NEE 一条阴影线 +20.9 ms），把 march 放进 `integrateSegment` 会让**每条弹射段都付寄存器与 ALU**，即使它在地面附近根本碰不到云层，还要把云壳剪裁塞进共享积分器。与 D2 同构：**接口统一、估计器分派**，「统一」只到接口层是有意的 |
+| D34 | 云的光照源档位 | **太阳自阴影短行进 + 双叶 HG + phi_fwd 扩散项 + LUT 环境（`mediumSkyRadiance`）** | phi_fwd 的推导前提就是「扩散衰减＝光学厚度 × 编译期常数」，能**搭在本来就要跑的太阳自阴影行进上**，边际代价约每步 2 exp + 1 rcp。不走 M17 散射顶点：云的 τ≫1，单事件估计器方差极大——**云专用近似存在的理由正是这个区间**（D5）。不走最简档：τ=20 时 Beer 已归零而真实云心仍亮，那正是 phi_fwd 里「只有吸收才真正移除光子」要解决的 |
+| D35 | 交付切分 | **分三片各自验收**：① 噪声烘焙 + 密度场 + 行进（能看见白云）② 光照：太阳自阴影 + 相位 + phi_fwd ③ 双层 + 相机邻近淡出 + 反射策略 | 每片可单独验收与回退；且**第①片就能把成本测出来**，而成本正是 R19 点名的风险（云的开销压垮已经很重的 trace）。一次性交付会让「超支时是哪一部分贵」无从定位——这正是 M17 发光体 NEE 花了一轮判据实验才排除射线的那类问题 |
+
 ### 2026-08-05 M20 粒子发光判定（D32，用户选定 A）
 
 | # | 议题 | 决策 | 物理与性能理由 |
@@ -741,6 +820,31 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 |---|---|---|---|
 | D28 | 附魔 glint 方案（用户选 A，B 留档） | **近似档：`Prim.flags` 一个 bit + shader 紫色 sheen（tint 混合 + 自发光呼吸）**；完整双层滚动 UV 记入 §8.6 可选区，「后面有想法了再说」 | 零新几何、零新贴图采样、不动 ABI（`flags` lane 本就恒 0），且附魔物在反射与 GI 里也发光——vanilla 的屏幕空间 pass 在那里根本不存在。与 vanilla 的差距：没有那层斜向滑动的条纹质感，只是「在发光」。相位用 `pc.frameIndex` 是为守住「rchit 不解引用 WorldPush」的铁律，代价是速率跟随帧率 |
 
+### 2026-08-06 M11 云型 / 参数化 / 天气联动（D36–D38，用户选 A「并入切片①，现在就做」）
+
+起因：用户三问——「当前的云 3D 噪声支持积雨云吗、有留接口控制云的形状密度吗、有与原版天气系统联动吗」。核对结果**三个都是「没有」**：高度剖面是写死的 `smoothstep(0,0.12,t)*(1-smoothstep(0.45,1,t))`（一条积云/层积云曲线），140 blocks 的云壳装不下高塔；九个常数全是编译期的，只有一个开关；`grep getRainLevel|getThunderLevel|isRaining|isThundering` 在 `common/src/main/java` **零命中**。三者是同一条链（天气 → 云型 + 云量 → 高度剖面），所以并作一片做。
+
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D36 | 云型如何进入密度场 | **加一条 [0,1] 云型轴**（噪声 B 通道，自有周期 26000 blocks），`cloudHeightProfile(altitude, type)` 两段插值：层云 → 积云 → 积雨云，积雨云带砧状顶；云型同时抬密度 `1+type*1.6` | §6.4 的方法对比本来就写着「2D 天气图（覆盖度/类型）」，缺的正是类型那一维。**只加高不加密做不出雷暴**：积雨云与积云的差别一大半在光穿不过去，从底下看那才是「风暴」的观感。砧状顶不是装饰——上升气流撞上稳定层向侧面铺开，没有它风暴云读起来是一根柱子。云型与云量分两片噪声：「阴天」与「雷暴」是独立的两件事，共用一片就永远只能同时发生。成本：**每步多一次 3D fetch，且只在云壳内、云量非零之后才付**（见 D38） |
+| D37 | 参数暴露到哪一层 | **`WorldPush` 加 `cloudParams`/`cloudShape` 两个 float4，736 → 768 B**；九个常数全部提为配置项 + UI 滑条 + 11 份 lang | 这个 buffer 光追只读不写，**加 32 B 是每帧一次上传，逐射线零成本**；不占 128 B push-constant 上限（D19 同理由）。备选「保持编译期常数」的代价是天气永远动不了云，而风暴正是这次要的东西。留在 shader 里的两个常数是尺度不是观感，提出来只会变成误配的入口 |
+| D38 | 天气如何驱动 | **雨 → 云量 + 密度，雷暴 → 云型**，两条独立轴，**叠加**而非替换；按 partial tick 插值；`volumetrics.cloud-weather` 默认开 | 单个「风暴度」标量会把两轴绑死，做不出真正不同的两种天空（铺满地平线的阴雨 vs 晴空里一座孤立雷暴云）——**vanilla 自己就是分开的**（可以下雨不打雷，且它的 thunder level 只在下雨时才抬），所以读这一对而不是把它压成一个数。叠加而非替换：替换会让天气一变全天空的云变成同一个值，读起来是「拨了个开关」。partial tick 插值：vanilla 的 rain level 逐 tick 更新，取 tick 边界值会把慢坡量化到 20 Hz，在铺满屏幕的天空上看得见。默认开、但**滑条创作时必须关**——开着时滑条量到的是自己 + 天气，这是把开关放进 UI 而不是配置文件的理由 |
+
 **2026-08-02 确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
+
+### 语言文件政策（2026-08-06，用户指示）
+
+**测试阶段新增选项只写 `en_us` + `zh_cn` + `zh_tw`**，其余八种语言留英文占位。理由是测试期选项名与语义还在动，八份翻译每改一次就要重写一次。
+
+**发布前必须补全**：`de_de` / `es_es` / `fr_fr` / `it_it` / `ja_jp` / `ko_kr` / `pt_br` / `ru_ru`。核查方法——把每份与 `en_us` 逐键比对，逐字相同即未翻译（`HDR`、`DLAA`、`DLSS Ray Reconstruction`、格式串 `%s`，以及德/西/意/葡里拼写恰好相同的 `Albedo`/`Neutral`/`Absorption` 属于正常同形，不算欠账）：
+
+```python
+import json, glob, os
+base = json.load(open('common/src/main/resources/assets/fluorite/lang/en_us.json', encoding='utf-8'))
+for p in sorted(glob.glob('common/src/main/resources/assets/fluorite/lang/*.json')):
+    d = json.load(open(p, encoding='utf-8'))
+    same = [k for k, v in d.items() if base.get(k) == v]
+    print(os.path.basename(p), len(same), same[:5])
+```
 
 **当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。

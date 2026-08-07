@@ -129,6 +129,27 @@ public struct WorldPush {
     // sampleVolumeVisibility then reports everything lit, which is what the renderer did before this
     // existed.
     public float4   visGridOrigin;    // xyz snapped minimum corner (rebased), w cell size in blocks
+    // Volumetric clouds (M11). Authored per frame rather than compiled in, because vanilla's weather has
+    // to be able to move them: rain drives coverage, thunder drives type. See cloud.slang for what each
+    // lane means to the density field, and RtComposite.cloudParams for where the weather enters.
+    //
+    // These are the last two lanes of a buffer that is read but never written by the ray tracer, so
+    // adding them costs 32 B of a per-frame upload and nothing per ray. A cloud that could not respond to
+    // the weather would have been the alternative, and the storm is most of the point.
+    public float4   cloudParams;      // x coverage bias, y density scale, z type bias, w extinction/block
+    public float4   cloudShape;       // x deck bottom (blocks), y deck thickness, z base size, w detail size
+    // The terrain rebase origin, in ABSOLUTE blocks. Everything the ray tracer sees is expressed
+    // relative to this, and it FOLLOWS THE CAMERA -- it is reset whenever the camera drifts more than
+    // terrain.rebase-distance-blocks from it. So a cloud deck placed at a rebased altitude is a cloud
+    // deck that climbs with the player: authored at 192, it sits 192 blocks above wherever they are,
+    // and can never be entered or flown above. Adding this back is what makes the density field
+    // world-anchored in fact rather than only in the comments.
+    // xyz is the terrain rebase origin MINUS the wind's accumulated drift, which is the same operation
+    // -- both say where the density field's origin sits this frame, in absolute blocks. Folding the wind
+    // in here rather than into a lane of its own is not a saving, it is the honest description: a cloud
+    // field that drifts is a cloud field whose origin moves. Only xz drift; y stays the pure rebase
+    // because the shell's altitude is measured from it.
+    public float4   cloudRebase;      // xyz field origin (rebase - wind drift), w wind speed (blocks/s)
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

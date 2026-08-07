@@ -843,6 +843,128 @@ public final class FluoriteConfig {
              * stratified estimator, 7.56 ms under this one. That figure is M9's oldest outstanding debt
              * and had never been measured before this switch gave it a denominator.
              */
+            /**
+             * Volumetric clouds (M11).
+             *
+             * <p>A spherical deck marched on the segment that escapes to sky, so it appears in
+             * reflections as well as overhead. DEFAULT OFF: this is the first slice of three — the shape
+             * is there and the lighting is ambient only, so the clouds are lit but flat until the sun
+             * term, the self-shadow march and phi_fwd land. R19 names this milestone's cost as its main
+             * risk, and slicing it this way is what lets the march be priced before any of that is built.
+             */
+            public static final BooleanSetting CLOUDS =
+                    bool("fluorite.rt.fog.clouds", "volumetrics.clouds", false);
+
+            /**
+             * Let vanilla's rain and thunder drive the sky.
+             *
+             * <p>Rain adds coverage, thunder adds cloud TYPE — see {@code RtComposite.cloudParams}. Both
+             * are added to the fields rather than replacing them, so a storm arrives over a sky that is
+             * still made of individual cells instead of turning the whole dome into one uniform value.
+             *
+             * <p>Off leaves the sky at whatever the sliders below say, which is what makes the sliders
+             * usable as authoring controls: with this on, moving the coverage slider during a storm
+             * measures the slider plus the weather.
+             */
+            public static final BooleanSetting CLOUD_WEATHER =
+                    bool("fluorite.rt.fog.cloudWeather", "volumetrics.cloud-weather", true);
+
+            /**
+             * Added to the coverage field everywhere, in [-1, 1]. 0 is the broken sky the noise bakes.
+             *
+             * <p>A BIAS rather than a multiplier because coverage is already a remapped signed quantity:
+             * scaling it would move the clear sky and the overcast sky by different amounts and could
+             * never reach either limit, while shifting it walks the whole field through both.
+             */
+            public static final FloatSetting CLOUD_COVERAGE =
+                    clampedFloat("fluorite.rt.fog.cloudCoverage", "volumetrics.cloud-coverage", 0f, -1f, 1f);
+
+            /**
+             * Multiplies cloud density, and with it opacity. 1 is the authored sky.
+             *
+             * <p>Clamped to the same 0..10 as the fog's density scale so it can share {@code scaleSlider}
+             * — a slider whose travel reaches further than the clamp behind it silently stops responding
+             * partway along, which reads as a bug in the renderer rather than as a limit.
+             */
+            public static final FloatSetting CLOUD_DENSITY =
+                    clampedFloat("fluorite.rt.fog.cloudDensity", "volumetrics.cloud-density", 1f, 0f, 10f);
+
+            /**
+             * Added to the cloud-type field, in [-1, 1]: negative flattens the sky toward stratus,
+             * positive builds it toward cumulonimbus. See {@code cloudHeightProfile}.
+             */
+            public static final FloatSetting CLOUD_TYPE =
+                    clampedFloat("fluorite.rt.fog.cloudType", "volumetrics.cloud-type", 0f, -1f, 1f);
+
+            /**
+             * Cloud extinction per block at full density.
+             *
+             * <p>The one number here with a physical meaning rather than an artistic one, and it is small
+             * because the deck is hundreds of blocks deep: what matters is the product. At the default a
+             * cumulus of a hundred blocks is most of the way to opaque and a stratus sheet is not.
+             */
+            public static final FloatSetting CLOUD_EXTINCTION =
+                    clampedFloat("fluorite.rt.fog.cloudExtinction", "volumetrics.cloud-extinction",
+                            0.045f, 0f, 0.5f);
+
+            /**
+             * The deck's floor, in blocks. Vanilla's own clouds sit at 192.
+             *
+             * <p>This is where every cloud's flat base lands, whatever its type, because that is what a
+             * condensation altitude is.
+             */
+            public static final FloatSetting CLOUD_ALTITUDE =
+                    clampedFloat("fluorite.rt.fog.cloudAltitude", "volumetrics.cloud-altitude",
+                            180f, 64f, 1024f);
+
+            /**
+             * The deck's depth, in blocks. Deep by default because a cumulonimbus has to have somewhere
+             * to stand — the tall types fill it while a stratus sheet occupies only its lowest tenth.
+             *
+             * <p>It costs march steps only where a tall cloud actually exists: the empty-space skip walks
+             * through the rest of the depth in long strides, and above a sheet almost all of it is empty.
+             */
+            public static final FloatSetting CLOUD_THICKNESS =
+                    clampedFloat("fluorite.rt.fog.cloudThickness", "volumetrics.cloud-thickness",
+                            380f, 32f, 1024f);
+
+            /** How wide one cloud is, in blocks — the period of the baked volume's shape channel. */
+            public static final FloatSetting CLOUD_BASE_SCALE =
+                    clampedFloat("fluorite.rt.fog.cloudBaseScale", "volumetrics.cloud-base-scale",
+                            2400f, 200f, 8000f);
+
+            /**
+             * How fast the cloud field drifts, in blocks per second. 0 freezes it.
+             *
+             * <p>A sky that does not move is the one thing no amount of shape detail can pass for real,
+             * and it costs nothing: the drift is subtracted from the field's origin on the CPU, so the
+             * shader samples a moving field through the same addition that already un-rebases it.
+             */
+            public static final FloatSetting CLOUD_WIND_SPEED =
+                    clampedFloat("fluorite.rt.fog.cloudWindSpeed", "volumetrics.cloud-wind-speed",
+                            2.0f, 0f, 60f);
+
+            /** Which way the wind blows, in degrees clockwise from +X. */
+            public static final FloatSetting CLOUD_WIND_ANGLE =
+                    clampedFloat("fluorite.rt.fog.cloudWindAngle", "volumetrics.cloud-wind-angle",
+                            35f, 0f, 360f);
+
+            /**
+             * How wide the cloud FIELD's cells are, in blocks — the 2D distribution, not the 3D puffs.
+             *
+             * <p>Separate from {@link #CLOUD_BASE_SCALE} because they are different questions and were
+             * previously answerable only as one: this is how far apart the clumps and clearings are
+             * across the sky, while the base scale is how big a single cloud in a clump is.
+             */
+            public static final FloatSetting CLOUD_FIELD_SCALE =
+                    clampedFloat("fluorite.rt.fog.cloudFieldScale", "volumetrics.cloud-field-scale",
+                            9000f, 500f, 40000f);
+
+            /** How big the bites taken out of a cloud's edges are, in blocks. */
+            public static final FloatSetting CLOUD_DETAIL_SCALE =
+                    clampedFloat("fluorite.rt.fog.cloudDetailScale", "volumetrics.cloud-detail-scale",
+                            340f, 40f, 2000f);
+
             public static final BooleanSetting SCATTER_VERTEX =
                     bool("fluorite.rt.fog.scatterVertex", "volumetrics.scatter-vertex", true);
 

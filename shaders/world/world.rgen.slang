@@ -25,6 +25,7 @@ import bsdf;
 import medium;
 import volume;
 import volume_visibility; // debug view 18 reads the grid directly
+import cloud;
 import segment;
 import water;
 import trace;
@@ -206,6 +207,24 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         }
         throughput *= segIntegral.transmittance;
 
+        // Clouds over the segment this ray ACTUALLY TRAVELLED, whether or not it ended on geometry
+        // (M11, D33). This used to sit inside the escape-to-sky branch below, which quietly assumed the
+        // camera is always under the deck: a downward ray then ends on terrain with no cloud in between,
+        // so skipping it cost nothing. Fly up to cloud altitude and the assumption fails -- looking down
+        // at the ground from inside or above the deck, the clouds between eye and ground were simply not
+        // there, while looking up still worked. Integrating over the segment covers both, and it is the
+        // same thing the participating medium above already does.
+        //
+        // Composited HERE rather than in the miss shader because this is the only place that knows the
+        // ray's own origin, which is what the shell intersection and the step schedule are measured from
+        // — and it is what puts clouds in a reflection: a mirror's ray passes through this same line.
+        {
+            float cloudMaxT = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
+            CloudResult clouds = traceClouds(ro, rd, cloudMaxT, seed);
+            L += throughput * clouds.inScatter;
+            throughput *= clouds.transmittance;
+        }
+
         if (payload.hitT < 0.0) {
             // world.rmiss writes sky radiance (gradient + drawn sun/moon sprite + stars) into
             // payload.albedo. The packed show-celestial flag decides whether this path segment may see
@@ -217,6 +236,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             if (misActive && bsdfPdf >= 0.0 && (payload.flags & PAYLOAD_ANALYTIC_LIGHT) != 0u) {
                 sky += float3(payload.f0) * pdfLight * powerHeuristic(bsdfPdf, pdfLight);
             }
+            // The throughput already carries what the clouds let through.
             L += throughput * sky; // escaped to sky
             break;
         }
@@ -855,6 +875,8 @@ static const uint DEBUG_VIEW_CAMERA_PREFIX = 20u;
 // the normal leaf loop but bypasses RR, so it answers whether the prefix survives the actual HDR sum.
 // The lower quarter paints its luminance fraction (R = 8x, G = 2x, B = 1x) instead of scene colour.
 static const uint DEBUG_VIEW_COMPOSITE_PREFIX_AB = 21u;
+// M11: which stage of the cloud chain is empty. See cloud.slang cloudDebugProbe for the colour key.
+static const uint DEBUG_VIEW_CLOUD_PROBE = 22u;
 
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
@@ -1271,6 +1293,12 @@ void main() {
                     ? volumeVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
                     : pc.debugView == DEBUG_VIEW_VIS_PROFILE
                     ? visProfileDebug(dispatchIndex, dimensions, queue)
+                    : pc.debugView == DEBUG_VIEW_CLOUD_PROBE
+                    // The queued record carries the ray pass A stopped on, which for a pixel looking at
+                    // sky is the camera ray itself. Taken from the queue rather than rebuilt here: a
+                    // diagnostic that constructs its own ray is testing its own ray.
+                    ? cloudDebugProbe(unpackPathSegment(queue[pixelIndex]).ro,
+                                      unpackPathSegment(queue[pixelIndex]).rd)
                     : froxelDebug(screenUv);
             outImage[pix] = float4(table, 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_VOLUME_INSCATTER) {
