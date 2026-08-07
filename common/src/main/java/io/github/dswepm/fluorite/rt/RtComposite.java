@@ -345,10 +345,29 @@ public final class RtComposite {
                 double angle = 2.0 * Math.PI * step / WATER_SURFACE_RING_SAMPLES;
                 int px = (int) Math.floor(camX + r * Math.cos(angle));
                 int pz = (int) Math.floor(camZ + r * Math.sin(angle));
+                // THE NEAREST SURFACE, not the first one found scanning down. A column can hold
+                // several -- a lake, and a pool on a ledge above it -- and taking the topmost meant
+                // standing beside the lake while the simulation ran on the ledge, because the scan starts
+                // a full reach ABOVE the camera. What makes a surface the one you are looking at is that
+                // it is closest to you, so that is the test.
+                //
+                // A surface is a water block with something that is not water directly above it, which is
+                // why this tracks the previous cell rather than breaking on the first hit.
+                boolean aboveWasWater = false;
                 for (int y = top; y >= bottom; y--) {
                     probe.set(px, y, pz);
-                    if (level.getFluidState(probe).is(FluidTags.WATER)) {
-                        surface = y + 1.0;
+                    boolean isWater = level.getFluidState(probe).is(FluidTags.WATER);
+                    if (isWater && !aboveWasWater) {
+                        double candidate = y + 1.0;
+                        if (Double.isNaN(surface)
+                                || Math.abs(candidate - camY) < Math.abs(surface - camY)) {
+                            surface = candidate;
+                        }
+                    }
+                    aboveWasWater = isWater;
+                    // Below the camera by more than the best candidate's distance, nothing further down
+                    // can beat it.
+                    if (!Double.isNaN(surface) && camY - y > Math.abs(surface - camY)) {
                         break;
                     }
                 }
