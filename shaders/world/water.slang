@@ -1,110 +1,21 @@
-// Water surface: the wave spectrum (with its analytic time derivative), the normal perturbation it
-// drives, and the caustic term that differentiates the same field. Depends on core.
-
-
-// Animated surface waves — a directional wave spectrum, gradient-only (the surface stays geometrically
-// flat; only the normal tilts). Three things make it read as water rather than animated glass:
-//  * Sharp-crested profile: each component is h = a·exp(S·(sin φ − 1)) — peaked crests, wide flat
-//    troughs (pure sines look like rolling jelly). Still C∞ smooth with an exact analytic gradient.
-//  * Real deep-water dispersion ω = √(g·k): long swell strides past (λ=14 m → ~4.7 m/s) while short
-//    chop flutters nearly in place — wrong relative speeds are the biggest tell of fake water.
-//  * Wind + meander: headings spread around a fixed wind direction (tight for the swell, wide for the
-//    chop), and the largest components' phase is modulated along their crest (chain-ruled into the
-//    gradient) so wavefronts wander instead of ruling straight periodic lines across the sea.
-// The domain is world-anchored (see applyWaterWaves) so the pattern is pinned in world space, and the
-// caustics (waterCaustic) differentiate this same field, so they stay in sync with the visible ripples.
+// Water surface, as the RAY TRACER sees it: the wave field wrapped in the descriptors and push
+// constants of set 0, the normal perturbation it drives, and the caustic term that differentiates the
+// same field. Depends on core.
+//
+// THE FIELD ITSELF LIVES IN water_wave, which has no bindings, so the displacement compute pass can
+// share it (M12.5). What is left here is the wrapping: which texture the simulation is in, which lane of
+// worldPush its domain arrived in. Keep it that way -- anything moved back up here stops being shareable
+// and the geometry starts drifting from its own shading.
 
 import world_common;
 import world_core;
+// Re-exported: the split is an implementation detail of sharing the field with the compute pass, and
+// callers that were reaching for the spectrum before it moved should not have to know it happened.
+__exported import water_wave;
 
 // The simulated height field (M12), in metres of displacement. RAYGEN and closest-hit both reach it
 // through applyWaterWaves.
-public static const int WATER_SIM_DIM = 256;
-[[vk::binding(18, 0)]] Sampler2D<float> waterSimHeight;
-
-public static const float WATER_WAVE_STRENGTH = 0.3;  // slope scale (higher = choppier glints / more broken reflections)
-public static const float WAVE_SPEED = 0.8;           // global time scale; dispersion keeps relative speeds physical
-public static const int   WAVE_COUNT = 10;            // λ = 14 m … 0.38 m (each octave 1.5× shorter)
-public static const float WAVE_G = 9.81;
-public static const float2 WAVE_WIND = normalize(float2(1.0, 0.35)); // dominant travel direction
-public static const float WAVE_MEANDER = 1.1;         // crest phase-wobble amplitude (rad) on the long components
-public float waterWaveLodWeight(float wavelength, float footprint) {
-    float cyclesPerPixel = max(footprint, 0.0) / max(wavelength, 1.0e-4);
-    return 1.0 - smoothstep(0.25, 0.5, cyclesPerPixel);
-}
-
-// One walk of the wave spectrum, shared by every consumer so the spectrum constants exist once. WITH_DT
-// is a generic so the derivative terms are compiled out entirely for callers that only want the
-// gradient — the trigonometry is shared, but the chain-rule work is not free.
-public void waterWaveSpectrum<let WITH_DT : int>(float2 p, float t, float footprint,
-                                          out float2 grad, out float2 gradDt) {
-    // Per-wave steepness a·k: gentle in the long swell, concentrated in the mid/short chop.
-    const float Q[WAVE_COUNT] = { 0.030, 0.035, 0.042, 0.050, 0.060, 0.065, 0.065, 0.058, 0.048, 0.038 };
-    t *= WAVE_SPEED;
-    grad = float2(0.0, 0.0);
-    gradDt = float2(0.0, 0.0);
-    float lambda = 14.0;
-    for (int i = 0; i < WAVE_COUNT; i++) {
-        float lodWeight = waterWaveLodWeight(lambda, footprint);
-        if (lodWeight <= 0.0) break;
-        float k = 2.0 * PI / lambda;
-        float w = sqrt(WAVE_G * k);   // deep-water dispersion: phase speed √(g/k)
-        // Heading: deterministic irregular spread about the wind, widening down the spectrum.
-        float spread = (0.15 + 0.11 * float(i)) * sin(float(i) * 2.4 + 1.3);
-        float cs = cos(spread), sn = sin(spread);
-        float2 d = float2(WAVE_WIND.x * cs - WAVE_WIND.y * sn, WAVE_WIND.x * sn + WAVE_WIND.y * cs);
-        float ph = k * dot(d, p) - w * t + 1.7 * float(i) * float(i);
-        float2 dph = k * d;
-        float phDt = -w;                      // ∂φ/∂t
-        float2 dphDt = float2(0.0, 0.0);      // ∂(∇φ)/∂t
-        if (i < 4) { // meander only the components whose fronts are long enough to read as lines
-            float2 pd = float2(-d.y, d.x);
-            float wph = 0.4 * k * dot(pd, p) + 0.5 * w * t;
-            ph += WAVE_MEANDER * sin(wph);
-            dph += (WAVE_MEANDER * cos(wph) * 0.4 * k) * pd;
-            if (WITH_DT != 0) {
-                float wphDt = 0.5 * w;
-                phDt += WAVE_MEANDER * cos(wph) * wphDt;
-                dphDt = (-WAVE_MEANDER * sin(wph) * wphDt * 0.4 * k) * pd;
-            }
-        }
-        float S = 1.2 + 0.12 * float(i); // crest sharpness: the short chop is choppier
-        float sinPh = sin(ph);
-        float cosPh = cos(ph);
-        float e = exp(S * (sinPh - 1.0));
-        // a = Q/k; ∇h = a·S·cos φ·e^{S(sin φ−1)}·∇φ
-        float amplitude = lodWeight * (Q[i] / k) * S;
-        grad += amplitude * cosPh * e * dph;
-        if (WITH_DT != 0) {
-            // ∂/∂t of the term above, chain-ruled through φ and ∇φ.
-            gradDt += amplitude * e
-                    * (phDt * (-sinPh + S * cosPh * cosPh) * dph + cosPh * dphDt);
-        }
-        lambda /= 1.5;
-    }
-    grad *= WATER_WAVE_STRENGTH;
-    gradDt *= WATER_WAVE_STRENGTH;
-}
-
-public float2 waterWaveGrad(float2 p, float t, float footprint) {
-    float2 grad, gradDt;
-    waterWaveSpectrum<0>(p, t, footprint, grad, gradDt);
-    return grad;
-}
-
-public float2 waterWaveGrad(float2 p, float t) {
-    return waterWaveGrad(p, t, 0.0);
-}
-
-// Evaluate the current gradient and linearly rewind it to the previous phase in one spectrum walk.
-// Frame deltas are bounded on the CPU, so this avoids a second set of trigonometric/exponential work
-// while remaining accurate over the sub-frame interval used by reflection reprojection.
-public void waterWaveGradTemporal(float2 p, float currentT, float previousT, float footprint,
-                           out float2 currentGrad, out float2 previousGrad) {
-    float2 gradDt;
-    waterWaveSpectrum<1>(p, currentT, footprint, currentGrad, gradDt);
-    previousGrad = currentGrad - (currentT - previousT) * WAVE_SPEED * gradDt;
-}
+[[vk::binding(18, 0)]] Sampler2D<float> waterSimHeightTex;
 
 // ---- The interactive simulation's contribution (M12), sampled as a SLOPE and added to the spectrum's.
 //
@@ -117,41 +28,29 @@ public void waterWaveGradTemporal(float2 p, float currentT, float previousT, flo
 // is more self-consistent and looks worse -- the simulation cannot produce a swell out of nothing, so
 // the domain would read as a conspicuously calm rectangle following the player around.
 //
-// ONE ENTRY POINT. This is added inside applyWaterWaves, which every consumer already goes through:
-// primary rays, the RR guide buffers, and the caustics (causticLanding differentiates the same field).
-// So ripples reach reflections and caustics without any of those knowing the simulation exists.
-float2 waterSimGrad(float2 worldXZ) {
-    float cellSize = worldPush.waterSimDomain.z;
-    if (cellSize <= 0.0) {
-        return float2(0.0, 0.0); // simulation off: the spectrum stands alone, bit for bit as before
-    }
-    float2 cell = (worldXZ - worldPush.waterSimDomain.xy) / cellSize;
-    float2 uv = cell / float(WATER_SIM_DIM);
-    if (any(uv < 0.0) || any(uv > 1.0)) {
-        return float2(0.0, 0.0);
-    }
-    // Central differences on the filtered height, one texel apart. The texture is filtered, so this is
-    // the slope of the interpolated surface rather than of the lattice -- which is what the shading
-    // wants, and it is also why the sponge's non-physical edge band never shows: the fade below has
-    // already reached zero before the sampler gets there.
-    float texel = 1.0 / float(WATER_SIM_DIM);
-    float hx0 = waterSimHeight.SampleLevel(uv - float2(texel, 0.0), 0.0);
-    float hx1 = waterSimHeight.SampleLevel(uv + float2(texel, 0.0), 0.0);
-    float hz0 = waterSimHeight.SampleLevel(uv - float2(0.0, texel), 0.0);
-    float hz1 = waterSimHeight.SampleLevel(uv + float2(0.0, texel), 0.0);
-    float2 grad = float2(hx1 - hx0, hz1 - hz0) / (2.0 * cellSize);
-    // Fade over the outer eighth. The domain is a rectangle that follows the player, and a rectangle's
-    // edge is the one thing in this system with no physical meaning at all -- so nothing may be visible
-    // there. Both axes, multiplied, so the corners fade too.
-    float2 edge = min(uv, 1.0 - uv);
-    float fade = smoothstep(0.0, 0.125, edge.x) * smoothstep(0.0, 0.125, edge.y);
-    return grad * fade * worldPush.waterSimDomain.w;
+// TWO ENTRY POINTS, AND IT HAS TO BE BOTH: applyWaterWaves and applyWaterWavesTemporal. Everything that
+// shades water goes through one of them -- primary rays, the RR guide buffers, and the caustics, which
+// differentiate the same field -- so ripples reach reflections and caustics without any of those knowing
+// the simulation exists.
+//
+// This comment used to say ONE entry point, and that was the bug rather than a description of it. The
+// primary pass needs a previous normal as well as a current one for its specular motion vectors, so it
+// built the pair itself from the spectrum walk and never called applyWaterWaves at all. Ripples were
+// therefore absent from exactly the surface anyone would look at, and present in secondary bounces where
+// nobody could see them. A claim of a single funnel, with a second path quietly beside it, hid that for
+// a whole milestone. Adding a third consumer means adding it here, not beside here.
+float2 waterSimGrad(float3 world) {
+    return waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain, worldPush.waterSimPlane, world);
 }
 
-// Perturb a (near-)horizontal water surface normal by the wave field. Flowing side faces (|n.y| small)
-// keep their flat geometric normal. `worldXZ` must be a world-stable coordinate (rebased hit + the pushed
-// anchor) so the ripples stay pinned in the world. `nGeo` is already oriented toward the viewer, so the
-// down-viewed underside (n.y < 0) takes the mirrored slope (-up).
+// The authored scale of the whole wave field (D49). Named here so the lane it rides in is written down
+// once: waterAmbient.xyz were retired in M16 and have been held at zero since only to avoid ABI churn,
+// which is precisely what a dead lane is for -- x now carries this and WorldPush does not grow.
+// 1 is the shipped look exactly.
+public float waterWaveAmplitude() {
+    return worldPush.waterAmbient.x;
+}
+
 /**
  * Debug view 23: the simulated height field, painted across the screen.
  *
@@ -167,23 +66,100 @@ float2 waterSimGrad(float2 worldXZ) {
  *   <li><b>GREEN/BLUE</b> — height, split by sign: green rises, blue falls. Black is a flat field.</li>
  * </ul>
  */
+/**
+ * Debug view 24: the simulated field AS THE SHADING SAMPLES IT, painted on the water in world space.
+ *
+ * <p>The companion to view 23, and the two answer different halves of one question. View 23 paints the
+ * texture across the screen, so it proves only that the field HAS content — it maps screen uv straight to
+ * texels and never touches the world-to-domain mapping the shading depends on. A field that simulates
+ * perfectly and reaches nothing looks identical to a working one there. This view goes the other way: it
+ * takes the water hit's own position, puts it through the same waterSimSample the normal path uses, and
+ * shows what came back.
+ *
+ * <p>{@code ro} is the queued record's origin — where the primary pass stopped, so for a pixel looking at
+ * water it is that surface point. Taken from the queue rather than re-traced, because a diagnostic that
+ * traces its own ray is testing its own ray.
+ *
+ * <ul>
+ *   <li><b>RED</b> — waterSimSample declined: off, or this point is outside the domain. The shading gets
+ *       exactly zero here, whatever view 23 shows.</li>
+ *   <li><b>BLUE</b> — inside the domain, tracking the edge fade. This is the domain's footprint made
+ *       visible: it should be a patch around you, and it should stay put in the world as you move.</li>
+ *   <li><b>GREEN</b> — the slope waterSimGrad actually returns, scaled so the procedural spectrum's own
+ *       median slope would read about a third. Green is the whole point: it means the simulation IS
+ *       reaching the normal, and anything still invisible is a matter of amplitude rather than plumbing.
+ *       </li>
+ * </ul>
+ */
+public float3 waterSimReachDebug(float3 ro) {
+    float3 world = float3(ro.x + worldPush.waterAnchor.x, ro.y, ro.z + worldPush.waterAnchor.y);
+    float2 uv;
+    float weight;
+    if (!waterSimSample(worldPush.waterSimDomain, worldPush.waterSimPlane, world, uv, weight)) {
+        // Red now also covers "this water is not on the simulated plane" -- which is a thing the shading
+        // genuinely refuses, so the view must refuse it too.
+        return float3(1.0, 0.0, 0.0);
+    }
+    float2 g = waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain,
+                              worldPush.waterSimPlane, world);
+    return float3(0.0, saturate(length(g) * 20.0), 0.15 + weight * 0.35);
+}
+
 public float3 waterSimDebug(float2 screenUv) {
     if (worldPush.waterSimDomain.z <= 0.0) {
         return float3(1.0, 0.0, 0.0);
     }
-    float h = waterSimHeight.SampleLevel(screenUv, 0.0);
+    float h = waterSimHeightTex.SampleLevel(screenUv, 0.0);
     // Amplified hard: a ripple is millimetres of displacement against a domain tens of blocks across, so
     // the honest range is invisible and a diagnostic that shows nothing is not a diagnostic.
     float a = saturate(abs(h) * 400.0);
     return h >= 0.0 ? float3(0.0, a, 0.0) : float3(0.0, 0.0, a);
 }
 
-public float3 applyWaterWaves(float3 nGeo, float2 worldXZ, float t, float footprint) {
+// Perturb a (near-)horizontal water surface normal by the wave field. Flowing side faces (|n.y| small)
+// keep their flat geometric normal. `worldXZ` must be a world-stable coordinate (rebased hit + the pushed
+// anchor) so the ripples stay pinned in the world. `nGeo` is already oriented toward the viewer, so the
+// down-viewed underside (n.y < 0) takes the mirrored slope (-up).
+//
+// STILL THE ANALYTIC NORMAL OF THE WHOLE FIELD, even where the geometry has been displaced (M12.5). It
+// replaces the facet normal rather than composing with it, so the mesh carrying part of the shape does
+// not steepen the shading, and near and far water are shaded by the identical expression.
+public float3 applyWaterWaves(float3 nGeo, float3 world, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
-    float2 grad = waterWaveGrad(worldXZ, t, footprint) + waterSimGrad(worldXZ);
+    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveAmplitude()) + waterSimGrad(world);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
 }
+
+/**
+ * The same normal, plus where it was a moment ago, for the primary pass's specular motion vectors.
+ *
+ * <p>THIS EXISTS SO THE SIMULATION CANNOT BE FORGOTTEN AGAIN. The primary pass used to build this pair
+ * itself out of waterWaveGradTemporal, which returns the procedural spectrum and nothing else — so the
+ * one surface a player actually looks at, the flat water in front of them at bounce zero, was the single
+ * consumer that never added the ripples. They existed only in secondary bounces, which is to say
+ * nowhere. The comment above this file claiming applyWaterWaves was the one entry point was not merely
+ * wrong, it is why the gap survived: it asserted exactly the property that did not hold.
+ *
+ * <p>The previous gradient takes the SAME simulated slope as the current one, because only the current
+ * height field is bound. So the reprojection hint understates how fast a ripple's normal is turning,
+ * while the normal itself is right. That is the correct way round: a slightly stale motion vector costs
+ * some reflection sharpness under accumulation, and the alternative on offer was no ripples at all.
+ */
+public void applyWaterWavesTemporal(float3 nGeo, float3 world, float t, float previousT,
+                                    float footprint, out float3 n, out float3 previousN) {
+    float2 currentGrad;
+    float2 previousGrad;
+    waterWaveGradTemporal(world.xz, t, previousT, footprint, waterWaveAmplitude(),
+                          currentGrad, previousGrad);
+    float2 sim = waterSimGrad(world);
+    currentGrad += sim;
+    previousGrad += sim;
+    float orientation = nGeo.y >= 0.0 ? 1.0 : -1.0;
+    n = orientation * normalize(float3(-currentGrad.x, 1.0, -currentGrad.y));
+    previousN = orientation * normalize(float3(-previousGrad.x, 1.0, -previousGrad.y));
+}
+
 
 // ---- Water caustics. Sunlight refracting through the waved surface converges/diverges before it
 // reaches an underwater receiver; the analytic wave field makes the true focusing factor computable
@@ -216,7 +192,7 @@ public static const float CAUSTIC_IOR_SPREAD = 0.0045;
 // field is the only expensive part of a caustic and it does not know about colour: all three
 // wavelengths share these, so dispersion costs three refracts and no extra field evaluations.
 float3 causticNormal(float2 xz, float t) {
-    float2 g = waterWaveGrad(xz, t);
+    float2 g = waterWaveGrad(xz, t, waterWaveAmplitude());
     return normalize(float3(-g.x, 1.0, -g.y));
 }
 

@@ -68,6 +68,18 @@ struct WaterSimPush {
     float spongeWidth;   // cells of absorbing boundary at the domain edge
     uint  impulseCount;
     WaterImpulse impulses[WATER_MAX_IMPULSES];
+    // WHERE THE TWO INPUT IMAGES' CONTENT SITS relative to THIS step's domain, in cells.
+    //
+    // The domain follows the player in whole-cell jumps, and the stored field does not jump with it. Left
+    // alone, every re-anchor slides the entire field sideways in the world: ripples teleport, and a wake
+    // being left behind simply restarts. Rather than copying the images on a re-anchor, each one records
+    // which absolute cell its content was written in, and the CPU hands over the difference -- so a read
+    // is resolved into the current frame no matter how many re-anchors happened, or how far.
+    //
+    // Applied to the HEIGHT reads only. The obstacle mask is rebuilt in the new frame on every re-anchor,
+    // so it is already where this step expects it.
+    int2 curOffset;
+    int2 prevOffset;
 };
 [[vk::push_constant]] WaterSimPush pc;
 
@@ -101,12 +113,22 @@ float spongeRetention(int2 id) {
  * off a shoreline actually does. Reading the block's cell as zero instead would model a hole that
  * swallows waves, and shorelines would absorb rather than reflect.
  */
+/** A height read resolved into this step's domain. Outside the stored field is unknown, so: zero. */
+float heightAt(Sampler2D<float> tex, int2 id, int2 shift) {
+    int2 q = id + shift;
+    if (any(q < int2(0, 0)) || any(q >= int2(WATER_SIM_DIM, WATER_SIM_DIM))) {
+        return 0.0;
+    }
+    return tex.Load(int3(q, 0));
+}
+
 float neighbour(int2 id, int2 offset, float centre) {
     int2 q = id + offset;
     if (any(q < int2(0, 0)) || any(q >= int2(WATER_SIM_DIM, WATER_SIM_DIM))) {
         return centre;
     }
-    return obstacle.Load(int3(q, 0)) < 0.5 ? centre : heightCur.Load(int3(q, 0));
+    // Obstacle at q (this frame's mask), height at q shifted into the image's own frame.
+    return obstacle.Load(int3(q, 0)) < 0.5 ? centre : heightAt(heightCur, q, pc.curOffset);
 }
 
 [shader("compute")]
@@ -124,13 +146,13 @@ void main(uint3 id3: SV_DispatchThreadID) {
         return;
     }
 
-    float centre = heightCur.Load(int3(id, 0));
+    float centre = heightAt(heightCur, id, pc.curOffset);
     float laplacian = neighbour(id, int2(1, 0), centre)
                     + neighbour(id, int2(-1, 0), centre)
                     + neighbour(id, int2(0, 1), centre)
                     + neighbour(id, int2(0, -1), centre)
                     - 4.0 * centre;
-    float next = 2.0 * centre - heightPrev.Load(int3(id, 0)) + pc.courant2 * laplacian;
+    float next = 2.0 * centre - heightAt(heightPrev, id, pc.prevOffset) + pc.courant2 * laplacian;
     next *= pc.damping * spongeRetention(id);
 
     // Impulses land on the NEXT state rather than being integrated as a force, because the state of this

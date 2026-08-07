@@ -132,15 +132,23 @@ public final class RtVideoOptions {
                                 cloudCirrusDetailScale(),
                                 cloudCirrusWindSpeed(), cloudCirrusWindAngle()));
                 case WATER -> List.of(
-                        Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
+                        Section.of(waterWaves(), waveAmplitude(), waterCausticDispersion(),
+                                waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
                                         FluoriteConfig.Rt.Water.SUN_SHADOW),
                                 waterPhaseG()),
                         Section.titled("fluorite.options.rt.section.waterScatter",
                                 waterScatterStrength(), waterScatterR(), waterScatterG(), waterScatterB()),
                         Section.titled("fluorite.options.rt.section.waterSim",
-                                waterSim(), waterSimRange(), waterSimReanchor(), waterSimStrength(),
-                                waterSimSpeed(), waterSimDamping(), waterSimImpulse()),
+                                waterSim(), waterSimRange(), waterSimHeight(), waterSimReanchor(),
+                                waterSimStrength(),
+                                waterSimSpeed(), waterSimDamping(), waterSimImpulse(),
+                                waterSimImpulseDepth()),
+                        // The geometry, separate from the ripples that ride on it: one controls whether
+                        // the surface is a shape at all, the others how much of it is and how finely.
+                        Section.titled("fluorite.options.rt.section.waterDeform",
+                                waterDeform(), waterDeformRange(), waterDeformCell(),
+                                waterDeformReanchor()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
@@ -330,9 +338,47 @@ public final class RtVideoOptions {
         return bool("fluorite.options.rt.waterSim", FluoriteConfig.Rt.Water.WATER_SIM);
     }
 
+    private static OptionInstance<Integer> waveAmplitude() {
+        return scaleSlider("fluorite.options.rt.waveAmplitude",
+                FluoriteConfig.Rt.Water.WAVE_AMPLITUDE);
+    }
+
+    private static OptionInstance<Boolean> waterDeform() {
+        return bool("fluorite.options.rt.waterDeform", FluoriteConfig.Rt.Water.WATER_DEFORM);
+    }
+
+    private static OptionInstance<Integer> waterDeformRange() {
+        return blockSlider("fluorite.options.rt.waterDeformRange",
+                FluoriteConfig.Rt.Water.WATER_DEFORM_RANGE, 8, 128);
+    }
+
+    /** Blocks per mesh cell, in eighths — the whole useful range sits below one block. */
+    private static OptionInstance<Integer> waterDeformCell() {
+        FloatSetting setting = FluoriteConfig.Rt.Water.WATER_DEFORM_CELL;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterDeformCell",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterDeformCell.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f", v / 8.0))),
+            new OptionInstance.IntRange(1, 8),
+            Math.clamp(Math.round(setting.value() * 8f), 1, 8),
+            v -> setting.set(v / 8.0f));
+    }
+
+    private static OptionInstance<Integer> waterDeformReanchor() {
+        return blockSlider("fluorite.options.rt.waterDeformReanchor",
+                FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR, 1, 32);
+    }
+
     private static OptionInstance<Integer> waterSimRange() {
         return blockSlider("fluorite.options.rt.waterSimRange",
                 FluoriteConfig.Rt.Water.WATER_SIM_RANGE, 32, 256);
+    }
+
+    private static OptionInstance<Integer> waterSimHeight() {
+        return blockSlider("fluorite.options.rt.waterSimHeight",
+                FluoriteConfig.Rt.Water.WATER_SIM_HEIGHT, 8, 128);
     }
 
     private static OptionInstance<Integer> waterSimReanchor() {
@@ -361,6 +407,11 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             Math.clamp(Math.round((setting.value() - 0.9f) * 1000f), 0, 100),
             v -> setting.set(0.9f + v / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> waterSimImpulseDepth() {
+        return blockSlider("fluorite.options.rt.waterSimImpulseDepth",
+                FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE_DEPTH, 1, 16);
     }
 
     private static OptionInstance<Integer> waterSimImpulse() {
@@ -1007,9 +1058,10 @@ public final class RtVideoOptions {
             // between hits rather than the hits themselves. See world.rgen's volumeDebug. 12 is neither —
             // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
             new OptionInstance.Enum<>(
-                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23),
+                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                            24),
                     Codec.INT),
-            Math.clamp(setting.value(), 0, 23),
+            Math.clamp(setting.value(), 0, 24),
             setting::set);
     }
 

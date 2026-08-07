@@ -276,7 +276,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // pushed anchor (terrain origin mod 4096) survives the per-move terrain rebase.
             float3 geometricNormal = n; // unrippled; ray origins offset along this
             if (isWater && waterWaves) {
-                float2 waterDomain = hitPos.xz + worldPush.waterAnchor.xy;
+                // The hit's own y rides along: the field is two-dimensional and has to be told which
+                // surface it belongs to, or every water in this column ripples together.
+                float3 waterDomain = float3(hitPos.x + worldPush.waterAnchor.x, hitPos.y,
+                                            hitPos.z + worldPush.waterAnchor.y);
                 float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
                 n = applyWaterWaves(geometricNormal, waterDomain,
                                     worldPush.waterParams.w, waterFootprint);
@@ -882,6 +885,9 @@ static const uint DEBUG_VIEW_COMPOSITE_PREFIX_AB = 21u;
 static const uint DEBUG_VIEW_CLOUD_PROBE = 22u;
 // M12: the water simulation's height field, and whether its domain is live at all.
 static const uint DEBUG_VIEW_WATER_SIM = 23u;
+// 24: the same field, but sampled the way the SHADING samples it. 23 proves the field has content; this
+// proves the content reaches the surface. They fail independently, which is the whole reason for two.
+static const uint DEBUG_VIEW_WATER_SIM_REACH = 24u;
 
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
@@ -1300,6 +1306,8 @@ void main() {
                     ? visProfileDebug(dispatchIndex, dimensions, queue)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM
                     ? waterSimDebug(screenUv)
+                    : pc.debugView == DEBUG_VIEW_WATER_SIM_REACH
+                    ? waterSimReachDebug(unpackPathSegment(queue[pixelIndex]).ro)
                     : pc.debugView == DEBUG_VIEW_CLOUD_PROBE
                     // The queued record carries the ray pass A stopped on, which for a pixel looking at
                     // sky is the camera ray itself. Taken from the queue rather than rebuilt here: a

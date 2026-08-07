@@ -116,8 +116,13 @@ public struct WorldPush {
     public float4   waterScatter;     // xyz scattering coefficient per block, w Henyey-Greenstein g
     public float4   waterAbsorbOverride; // xyz fixed absorption, w != 0 to use it instead of the biome
     // xyz retired in M16: water and fog now read mediumSkyRadiance. w remains the caustic-dispersion
-    // strength; preserving the lane avoids unrelated ABI churn while the two old xyz slots stay zero.
-    public float4   waterAmbient;
+    // strength; the lane was preserved to avoid unrelated ABI churn while the old xyz slots stayed zero.
+    //
+    // x is now the wave field's authored amplitude (M12.5 / D49), spending one of those dead slots rather
+    // than growing the pinned layout for a single float. It scales HEIGHT AND SLOPE TOGETHER, because
+    // they are the same function -- scaling them apart would shade a surface the geometry is not. 1 is
+    // the shipped look exactly. yz remain zero.
+    public float4   waterAmbient;     // x wave amplitude, yz retired, w caustic dispersion
     // The volumetric visibility grid (M13.2), baked on the GPU with two rays per cell: R sun visibility,
     // G sky openness. Read by the BAKE that fills it and by every segment that samples it, which is why
     // the placement lives here rather than in either one's push constants — a grid origin that two shaders
@@ -174,6 +179,19 @@ public struct WorldPush {
     // is the disable path -- the sampler returns no contribution and the procedural spectrum stands
     // alone, which is exactly the shipped behaviour before this existed.
     public float4   waterSimDomain;   // xy origin (rebased), z cell size, w slope strength
+
+    // The PLANE the simulation runs on, and how far off it a surface may be and still count as being on
+    // it. x = rebased world Y of that plane, y = tolerance in blocks (0 disables the test).
+    //
+    // WHY THE HEIGHT FIELD NEEDS A HEIGHT TO LIVE AT. waterSimDomain says where the grid is in xz and
+    // nothing about y, so a sampler that only knows xz hands the same ripples to every water surface in
+    // that column -- the lake you disturbed, and the pool at the bottom of the waterfall thirty blocks
+    // below it, rippling in perfect sympathy with something it has never touched.
+    //
+    // NOT waterAnchor.w, which looks similar and is not the same thing: that is the surface near the
+    // CAMERA, published for the volumetric depth term, and it is a different probe with different rules.
+    // The simulation picks its plane by its own search and has to publish it itself.
+    public float4   waterSimPlane;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

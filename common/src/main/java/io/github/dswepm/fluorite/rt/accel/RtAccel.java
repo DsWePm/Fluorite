@@ -312,12 +312,19 @@ public final class RtAccel {
         /** A terrain section BLAS split into fixed per-bucket geometries in {@link RtAccel#TERRAIN_BUCKETS} order. */
         static PreparedBlas terrain(RtAccel accel, RtBuffer scratch, RtBuffer externalBacking, long vertexAddr, long indexAddr, int maxVertex,
                                     int[] terrainTris, OpacityMicromap opacityMicromap, String label) {
+            return terrain(accel, scratch, externalBacking, vertexAddr, indexAddr, maxVertex, terrainTris,
+                    opacityMicromap, label, false, false);
+        }
+
+        static PreparedBlas terrain(RtAccel accel, RtBuffer scratch, RtBuffer externalBacking, long vertexAddr, long indexAddr, int maxVertex,
+                                    int[] terrainTris, OpacityMicromap opacityMicromap, String label,
+                                    boolean updatable, boolean update) {
             int total = 0;
             for (int t : terrainTris) {
                 total += t;
             }
             return new PreparedBlas(accel, scratch, externalBacking, vertexAddr, indexAddr, maxVertex,
-                    total, false, label, false, false, true, terrainTris, false, null, opacityMicromap);
+                    total, false, label, updatable, update, true, terrainTris, false, null, opacityMicromap);
         }
 
         static PreparedBlas entity(RtAccel accel, RtBuffer scratch, RtBuffer externalBacking, long vertexAddr,
@@ -405,6 +412,32 @@ public final class RtAccel {
     public static PreparedBlas prepareTerrainBlas(RtContext ctx, RtBuffer positions, int vertexCount,
                                                   RtBuffer indices, int[] bucketTris, OpacityMicromapInput opacityMicromapInput,
                                                   boolean compact, String label) {
+        return prepareTerrainBlas(ctx, positions, vertexCount, indices, bucketTris, opacityMicromapInput,
+                compact, false, label).op();
+    }
+
+    /**
+     * Terrain BLAS, optionally built with ALLOW_UPDATE so its vertices can be refit in place later
+     * ({@link #refitTerrainUpdate}). Used by the water deformation (M12.5), which moves the water
+     * bucket's vertices every frame while the topology stands still.
+     *
+     * <p>UPDATABLE AND COMPACTED ARE MUTUALLY EXCLUSIVE, and asking for both is rejected rather than
+     * silently resolved: a compacted copy is a DIFFERENT acceleration structure object, so the handle a
+     * refit holds would be the one that got thrown away. Giving up compaction is a real cost that belongs
+     * in the measurement -- an uncompacted BLAS is roughly twice the size -- which is why only sections
+     * that actually contain water take this path, and only while the setting is on.
+     *
+     * <p>{@code updateScratchSize} is 0 when {@code allowUpdate} is false.
+     */
+    public static UpdatableBuild prepareTerrainBlas(RtContext ctx, RtBuffer positions, int vertexCount,
+                                                    RtBuffer indices, int[] bucketTris,
+                                                    OpacityMicromapInput opacityMicromapInput,
+                                                    boolean compact, boolean allowUpdate, String label) {
+        if (compact && allowUpdate) {
+            throw new IllegalArgumentException(
+                    "terrain BLAS cannot be both compacted and updatable: compaction replaces the "
+                    + "acceleration structure a refit would target");
+        }
         VkDevice vk = ctx.vk();
         String debugLabel = labelOr(label, "terrain BLAS");
         OpacityMicromap opacityMicromap = null;
@@ -414,7 +447,7 @@ public final class RtAccel {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             opacityMicromap = prepareOpacityMicromap(ctx, opacityMicromapInput, debugLabel);
             VkAccelerationStructureBuildSizesInfoKHR sizes = queryTerrainBlasSizes(vk, stack, positions, indices,
-                    vertexCount, bucketTris, opacityMicromap, compact);
+                    vertexCount, bucketTris, opacityMicromap, compact, allowUpdate);
             backing = ctx.createAsyncBuffer(sizes.accelerationStructureSize(), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, false,
                     debugLabel + " backing");
             scratch = createScratchBuffer(ctx, sizes.buildScratchSize(), debugLabel + " build scratch");
@@ -429,8 +462,11 @@ public final class RtAccel {
                 RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_QUERY_POOL, accel.compactionQueryPool,
                         debugLabel + " compacted-size query");
             }
-            return PreparedBlas.terrain(accel, scratch, null, positions.deviceAddress, indices.deviceAddress, vertexCount - 1,
-                    bucketTris, opacityMicromap, debugLabel);
+            PreparedBlas op = PreparedBlas.terrain(accel, scratch, null, positions.deviceAddress,
+                    indices.deviceAddress, vertexCount - 1, bucketTris, opacityMicromap, debugLabel,
+                    allowUpdate, false);
+            return new UpdatableBuild(op, accel, backing, scratch,
+                    allowUpdate ? sizes.updateScratchSize() : 0L);
         } catch (Throwable t) {
             if (accel != null) {
                 accel.destroy();
@@ -676,6 +712,26 @@ public final class RtAccel {
                 bucketTris.clone(), labelOr(label, "entity BLAS refit"), true, true);
     }
 
+    /**
+     * Prepare an in-place refit (UPDATE) of a terrain BLAS whose vertex data changed but whose topology
+     * did not: the water deformation's per-frame step (M12.5).
+     *
+     * <p>NOTE WHAT IS NOT PASSED: an opacity micromap. A refit keeps the one the original build attached,
+     * and re-supplying it would be describing the geometry differently from the build, which an UPDATE
+     * may not do. The cutout bucket's micromap therefore survives untouched, which is what we want --
+     * leaves do not move because the water did.
+     *
+     * <p>{@code scratch} must be at least the {@code updateScratchSize} the build reported, and the
+     * bucket triangle counts must be EXACTLY the build's. A refit cannot change a triangle count, and
+     * passing a different one is undefined behaviour rather than an error anyone will report.
+     */
+    public static PreparedBlas refitTerrainUpdate(RtAccel accel, RtBuffer scratch, long vertexAddr,
+                                                  long indexAddr, int vertexCount, int[] bucketTris,
+                                                  String label) {
+        return PreparedBlas.terrain(accel, scratch, null, vertexAddr, indexAddr, vertexCount - 1,
+                bucketTris.clone(), null, labelOr(label, "terrain BLAS refit"), true, true);
+    }
+
     /** Reclaim a transient entity BLAS: destroy its AS handle, then its backing + scratch buffers. */
     public static void releaseEntityBlas(PreparedBlas blas) {
         blas.accel.destroy(); // ownsBacking == false → destroys only the AS handle, not the backing buffer
@@ -886,12 +942,13 @@ public final class RtAccel {
 
     private static VkAccelerationStructureBuildSizesInfoKHR queryTerrainBlasSizes(VkDevice vk, MemoryStack stack, RtBuffer positions,
                                                                                   RtBuffer indices, int vertexCount, int[] bucketTris,
-                                                                                  OpacityMicromap opacityMicromap, boolean compact) {
+                                                                                  OpacityMicromap opacityMicromap, boolean compact,
+                                                                                  boolean allowUpdate) {
         VkAccelerationStructureGeometryKHR.Buffer geom = terrainGeometries(stack, positions.deviceAddress, indices.deviceAddress,
                 vertexCount, bucketTris, opacityMicromap);
         VkAccelerationStructureBuildGeometryInfoKHR.Buffer build = VkAccelerationStructureBuildGeometryInfoKHR.calloc(1, stack);
         build.sType$Default().type(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR)
-                .flags(buildFlags(false) | (compact ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0))
+                .flags(buildFlags(allowUpdate) | (compact ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0))
                 .mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR).geometryCount(geom.capacity()).pGeometries(geom);
         java.nio.IntBuffer maxPrims = stack.mallocInt(geom.capacity());
         for (int tris : bucketTris) {

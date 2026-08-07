@@ -152,6 +152,11 @@ final class RtTerrainMesher {
         float[] uvs = new float[uvFloats];
         float[] material = new float[primFloats];
         int[] triBase = new int[buckets.length];
+        // Where the water bucket's vertices sit in `positions`. The displacement pass (M12.5) rewrites
+        // exactly this range and nothing else, which is only safe because of two properties of the loop
+        // below: buckets are copied in one contiguous run each, and every quad emits its OWN four
+        // vertices (see the idx.add(base..base+3) emitters), so no water vertex is shared with stone.
+        int waterVertBase = 0, waterVertCount = 0;
         int posOff = 0, idxOff = 0, uvOff = 0, matOff = 0, vertBase = 0, triAcc = 0;
         for (int b = 0; b < buckets.length; b++) {
             Geom geom = buckets[b];
@@ -171,6 +176,10 @@ final class RtTerrainMesher {
             System.arraycopy(geom.cornerUv.elements(), 0, uvs, uvOff, uvSize);
             int matSize = geom.prim.size();
             System.arraycopy(geom.prim.elements(), 0, material, matOff, matSize);
+            if (b == RtAccel.BUCKET_WATER) {
+                waterVertBase = vertBase;
+                waterVertCount = vertSize / 3;
+            }
             posOff += vertSize;
             idxOff += idxSize;
             uvOff += uvSize;
@@ -178,7 +187,8 @@ final class RtTerrainMesher {
             vertBase += vertSize / 3;
             triAcc += bucketTris[b];
         }
-        return new PackedSection(positions, indices, uvs, material, bucketTris, triBase, lights);
+        return new PackedSection(positions, indices, uvs, material, bucketTris, triBase, lights,
+                waterVertBase, waterVertCount);
     }
 
     private static void tessellate(BlockAndTintGetter region, BlockStateModelSet modelSet,
@@ -238,8 +248,13 @@ final class RtTerrainMesher {
 
     /** Worker-packed terrain payload; native preparation allocates buffers and bulk-copies these arrays.
      *  {@code lights} = packed section-local RIS light records (possibly empty), CPU-side only. */
+    /**
+     * @param waterVertBase  first vertex of the water bucket in {@code positions}, in whole vertices
+     * @param waterVertCount how many vertices the water bucket owns (0 = this section has no water)
+     */
     record PackedSection(float[] positions, int[] indices, float[] uvs, float[] material,
-                         int[] bucketTris, int[] triBase, float[] lights) {
+                         int[] bucketTris, int[] triBase, float[] lights,
+                         int waterVertBase, int waterVertCount) {
     }
 
 

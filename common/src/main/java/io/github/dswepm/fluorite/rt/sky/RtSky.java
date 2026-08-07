@@ -115,7 +115,13 @@ public final class RtSky {
     public static final int WATER_SIM_DIM = 256;
     private static final int WATER_SIM_GROUP = 8;
     /** 16-byte header plus six inline 16-byte impulses; inside Vulkan's guaranteed 128. */
-    private static final int WATER_SIM_PUSH_BYTES = 112;
+    private static final int WATER_SIM_PUSH_BYTES = 128;
+    // The absolute cell origin each height image's CONTENT was written in, so a re-anchor can be resolved
+    // by shifting the reads instead of copying the images. Long.MIN_VALUE = never written, treated as the
+    // current origin so the first step reads its (zeroed) self rather than a wild offset.
+    private final long[] waterImageCellX = new long[3];
+    private final long[] waterImageCellZ = new long[3];
+    private boolean waterOriginsSeeded;
     public static final int WATER_MAX_IMPULSES = 6;
     private static final int WATER_OBSTACLE_PUSH_BYTES = 32;
     // One descriptor set per rotation phase, all written once at creation. Phase i reads heights[i] as
@@ -367,6 +373,11 @@ public final class RtSky {
     }
 
     /** The height field the shading samples. Fixed; the rotation happens behind it. */
+    /** Beyond a whole grid there is no overlap left, so saturate rather than wrap. */
+    private static int clampCellShift(long delta) {
+        return (int) Math.max(-WATER_SIM_DIM, Math.min(WATER_SIM_DIM, delta));
+    }
+
     public long waterHeightView() {
         return waterDisplay == null ? 0L : waterDisplay.view;
     }
@@ -530,9 +541,15 @@ public final class RtSky {
     public void recordWaterSim(VkCommandBuffer cmd, long tlas, RtGpuExecutor.GraphicsUse graphicsUse,
                                float originX, float originZ, float cellSize, float surfaceY,
                                float courant2, float damping, float spongeWidth,
-                               float[] impulses, int impulseCount, boolean reanchor) {
+                               float[] impulses, int impulseCount, boolean reanchor,
+                               long domainCellX, long domainCellZ) {
         if (waterSimBakes == null) {
             return;
+        }
+        if (!waterOriginsSeeded) {
+            java.util.Arrays.fill(waterImageCellX, domainCellX);
+            java.util.Arrays.fill(waterImageCellZ, domainCellZ);
+            waterOriginsSeeded = true;
         }
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "water sim")) {
@@ -540,9 +557,20 @@ public final class RtSky {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, step.pipeline());
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
                     step.pipelineLayout(), 0, stack.longs(step.descriptorSet()), null);
+            int prevPhase = (waterPhase + 2) % 3;
+            int nextPhase = (waterPhase + 1) % 3;
+            // How far each input image's content sits from this step's domain. Clamped to the grid:
+            // anything further means nothing of the old field overlaps, and every read returns zero --
+            // which is the correct answer, and keeps the arithmetic away from int overflow after a
+            // teleport across the world.
+            int curDx = clampCellShift(domainCellX - waterImageCellX[waterPhase]);
+            int curDz = clampCellShift(domainCellZ - waterImageCellZ[waterPhase]);
+            int prevDx = clampCellShift(domainCellX - waterImageCellX[prevPhase]);
+            int prevDz = clampCellShift(domainCellZ - waterImageCellZ[prevPhase]);
             ByteBuffer push = stack.malloc(WATER_SIM_PUSH_BYTES);
             push.putFloat(0, courant2).putFloat(4, damping).putFloat(8, spongeWidth)
                     .putInt(12, Math.min(impulseCount, WATER_MAX_IMPULSES));
+            push.putInt(112, curDx).putInt(116, curDz).putInt(120, prevDx).putInt(124, prevDz);
             // cellX, cellZ, radius, amount per record, in the order the shader's struct declares them.
             for (int i = 0; i < WATER_MAX_IMPULSES; i++) {
                 int base = 16 + i * 16;
@@ -555,8 +583,11 @@ public final class RtSky {
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             int groups = (WATER_SIM_DIM + WATER_SIM_GROUP - 1) / WATER_SIM_GROUP;
             VK10.vkCmdDispatch(cmd, groups, groups, 1);
+            // What this step wrote is expressed in THIS step's domain, so that is the origin it carries.
+            waterImageCellX[nextPhase] = domainCellX;
+            waterImageCellZ[nextPhase] = domainCellZ;
             // Advance the rotation: what this step wrote becomes the next step's current.
-            waterPhase = (waterPhase + 1) % 3;
+            waterPhase = nextPhase;
         }
     }
 

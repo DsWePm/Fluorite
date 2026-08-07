@@ -123,17 +123,15 @@ public PathSegment tracePrimary(PathSegment seg,
         float3 geometricNormal = n;
         float3 previousNormal = n;
         if (isWater && waterWaves) {
-            float2 waterDomain = hitPos.xz + worldPush.waterAnchor.xy;
+            float3 waterDomain = float3(hitPos.x + worldPush.waterAnchor.x, hitPos.y,
+                                        hitPos.z + worldPush.waterAnchor.y);
             float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
             if (bounce == 0 && abs(geometricNormal.y) >= 0.5) {
-                float2 currentGrad;
-                float2 previousGrad;
-                waterWaveGradTemporal(waterDomain, worldPush.waterParams.w,
-                                      worldPush.waterAnchor.z, waterFootprint, currentGrad, previousGrad);
-                float orientation = geometricNormal.y >= 0.0 ? 1.0 : -1.0;
-                n = orientation * normalize(float3(-currentGrad.x, 1.0, -currentGrad.y));
-                previousNormal = orientation
-                        * normalize(float3(-previousGrad.x, 1.0, -previousGrad.y));
+                // Through water.slang rather than assembled here. Built inline, this path added the
+                // spectrum and silently omitted the simulation, so the one surface the player looks at
+                // was the only consumer without ripples.
+                applyWaterWavesTemporal(geometricNormal, waterDomain, worldPush.waterParams.w,
+                                        worldPush.waterAnchor.z, waterFootprint, n, previousNormal);
             } else {
                 n = applyWaterWaves(geometricNormal, waterDomain,
                                     worldPush.waterParams.w, waterFootprint);

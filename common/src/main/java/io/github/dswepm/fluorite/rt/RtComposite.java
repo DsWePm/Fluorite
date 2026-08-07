@@ -267,6 +267,28 @@ public final class RtComposite {
     }
 
     /**
+     * The plane the simulation runs on, rebased, and how far off it a surface still counts as being on it.
+     *
+     * <p>The field is two-dimensional: it knows where it is in xz and nothing about y. Without this every
+     * water surface sharing a column with the simulated one receives its ripples — the pool below a
+     * waterfall answering a splash in the lake above it, in perfect time, having never been touched.
+     *
+     * <p>The tolerance is deliberately small and is NOT the probe's vertical reach. That setting says how
+     * far to SEARCH for a plane; this says how close a surface has to be to the plane already chosen, and
+     * a lake is flat — anything a metre off it is a different body of water. Faded rather than clipped so
+     * that a flowing block at a shoreline does not pop.
+     */
+    private Float4 waterSimPlane() {
+        if (waterDomain.z() <= 0f || Double.isNaN(waterSurfaceY)) {
+            return new Float4(0f, 0f, 0f, 0f); // zero tolerance disables the test, as before this existed
+        }
+        return new Float4(waterPlaneRebasedY, WATER_PLANE_TOLERANCE, 0f, 0f);
+    }
+
+    /** A lake is flat; a surface further off the plane than this is a different lake. Blocks. */
+    private static final float WATER_PLANE_TOLERANCE = 1.5f;
+
+    /**
      * Place the simulation domain for this frame, and decide whether it moved far enough to re-anchor.
      *
      * <p>THE DOMAIN IS NOT RE-ANCHORED EVERY FRAME. It follows the player, but only in whole-cell jumps
@@ -291,18 +313,78 @@ public final class RtComposite {
         // matters most is standing on the shore looking at a lake.
         double surface = Double.NaN;
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
-        int top = (int) Math.floor(camY) + 2;
-        for (int y = top; y >= top - WATER_SIM_PROBE_DEPTH; y--) {
-            probe.set((int) Math.floor(camX), y, (int) Math.floor(camZ));
-            if (level.getFluidState(probe).is(FluidTags.WATER)) {
-                surface = y + 1.0;
-                break;
+        int reach = waterProbeReach();
+        // VERTICALLY HYSTERETIC, exactly as the horizontal anchor is, and for the same reason: a plane
+        // that re-picked itself every frame would flip between water levels as you flew over terrain
+        // holding more than one, and each flip discards the field. So the plane already chosen is kept
+        // until the camera has climbed or fallen as far as the authored re-anchor distance, and while
+        // that plane is still within reach at all.
+        //
+        // It also means the probe below does not run on most frames, which is where its cost went.
+        if (!Double.isNaN(waterSurfaceY)
+                && Math.abs(camY - waterAnchorCamY) <= FluoriteConfig.Rt.Water.WATER_SIM_REANCHOR.value()
+                && Math.abs(camY - waterSurfaceY) <= reach) {
+            surface = waterSurfaceY;
+        }
+        int top = (int) Math.floor(camY) + reach;
+        int bottom = (int) Math.floor(camY) - reach;
+        // NOT ONLY THE CAMERA'S OWN COLUMN. It used to be, and the comment above already said the case
+        // that matters most is standing on the shore looking at a lake -- which is precisely the case a
+        // single column cannot see, because on the shore there is no water underneath you. The whole
+        // domain switched off, so the ripples did not fade at the edge of anything, they vanished
+        // outright; and since a shoreline is a line, the camera column crossed it within a very narrow
+        // range of angles, which is exactly how it was reported.
+        //
+        // So: the camera's column first, because standing in or over water is the common case and costs
+        // one scan. Failing that, rings outward until water is found. Bounded and cheap -- a few hundred
+        // lookups into loaded chunks, which are an array index, and only on the frames where the near
+        // column came up dry.
+        for (int ring = 0; ring < WATER_SURFACE_RINGS && Double.isNaN(surface); ring++) {
+            int r = ring * WATER_SURFACE_RING_STEP;
+            for (int step = 0; step < (ring == 0 ? 1 : WATER_SURFACE_RING_SAMPLES); step++) {
+                double angle = 2.0 * Math.PI * step / WATER_SURFACE_RING_SAMPLES;
+                int px = (int) Math.floor(camX + r * Math.cos(angle));
+                int pz = (int) Math.floor(camZ + r * Math.sin(angle));
+                // THE NEAREST SURFACE, not the first one found scanning down. A column can hold
+                // several -- a lake, and a pool on a ledge above it -- and taking the topmost meant
+                // standing beside the lake while the simulation ran on the ledge, because the scan starts
+                // a full reach ABOVE the camera. What makes a surface the one you are looking at is that
+                // it is closest to you, so that is the test.
+                //
+                // A surface is a water block with something that is not water directly above it, which is
+                // why this tracks the previous cell rather than breaking on the first hit.
+                boolean aboveWasWater = false;
+                for (int y = top; y >= bottom; y--) {
+                    probe.set(px, y, pz);
+                    boolean isWater = level.getFluidState(probe).is(FluidTags.WATER);
+                    if (isWater && !aboveWasWater) {
+                        double candidate = y + 1.0;
+                        if (Double.isNaN(surface)
+                                || Math.abs(candidate - camY) < Math.abs(surface - camY)) {
+                            surface = candidate;
+                        }
+                    }
+                    aboveWasWater = isWater;
+                    // Below the camera by more than the best candidate's distance, nothing further down
+                    // can beat it.
+                    if (!Double.isNaN(surface) && camY - y > Math.abs(surface - camY)) {
+                        break;
+                    }
+                }
+                if (!Double.isNaN(surface)) {
+                    break;
+                }
             }
         }
         if (Double.isNaN(surface)) {
             waterDomain = new Float4(0f, 0f, 0f, 0f);
+            waterSurfaceY = Double.NaN; // nothing in reach: do not keep a plane that is no longer there
             return false;
         }
+        waterAnchorCamY = camY;
+        // Rebased here, where the terrain origin is in hand, because the shading compares it against a
+        // rebased hit position and the two must be in one space.
+        waterPlaneRebasedY = (float) (surface - terrain.blockY);
 
         float cell = waterCellSize();
         long centreCellX = (long) Math.floor(camX / cell);
@@ -408,18 +490,56 @@ public final class RtComposite {
         float cell = waterDomain.z();
         float cap = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE.value();
         double half = RtSky.WATER_SIM_DIM * 0.5 * cell;
+        // Per-gate counters for the diagnostic below. EVERY GATE SEPARATELY, not one "nothing came out"
+        // tally: the loop rejects for four different reasons and the whole question is which one, so a
+        // combined count would reproduce exactly the ambiguity the diagnostic exists to remove. Same
+        // lesson as debug view 22, which reported a verdict first and had to be changed to components.
+        int seenEntities = 0;
+        int seenInWater = 0;
+        int seenInRange = 0;
+        int seenNearSurface = 0;
+        double fastest = -1.0;
+        float impulseDepth = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE_DEPTH.value();
+        // The local player, tracked BY IDENTITY rather than inferred from the numbers. The first run of
+        // this diagnostic left exactly one thing ambiguous: a value of 0.10 repeated 726 times is clearly
+        // not a moving player, but "the player is absent" and "the player is standing still" produce the
+        // same reading, and they have completely different fixes.
+        Entity self = Minecraft.getInstance().player;
+        boolean sawSelf = false;
+        double selfSpeed = -1.0;
         for (Entity e : level.entitiesForRendering()) {
+            seenEntities++;
+            if (e == self) {
+                sawSelf = true;
+                selfSpeed = (Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
+                        + e.getDeltaMovement().z * e.getDeltaMovement().z)
+                        + Math.abs(e.getDeltaMovement().y)) * 20.0;
+            }
             if (waterImpulseCount >= RtSky.WATER_MAX_IMPULSES) {
                 break;
             }
             if (!e.isInWater()) {
                 continue;
             }
+            seenInWater++;
             double dx = e.getX() - camX;
             double dz = e.getZ() - camZ;
             if (Math.abs(dx) > half || Math.abs(dz) > half) {
                 continue;
             }
+            seenInRange++;
+            // How far under the surface it is, measured from its HIGHEST point: what matters is whether
+            // any of it is near the water, not where its feet are. A surface wave's motion decays as
+            // e^(-k*d), so something well below the surface is simply not coupled to it -- diving to the
+            // bottom of a lake used to go on stamping ripples into the surface several blocks overhead.
+            double submergence = waterSurfaceY - (e.getY() + e.getBbHeight());
+            float depthFade = submergence <= 0.0
+                    ? 1.0f
+                    : (float) Math.max(0.0, 1.0 - submergence / Math.max(impulseDepth, 1.0e-3));
+            if (depthFade <= 0.0f) {
+                continue;
+            }
+            seenNearSurface++;
             // How hard it is moving through the surface. A still entity leaves the water alone; a
             // swimming one keeps feeding the field, which is what makes a wake rather than one splash.
             // BLOCKS PER SECOND. getDeltaMovement is per TICK, and forgetting that is a factor of twenty
@@ -429,13 +549,14 @@ public final class RtComposite {
             double speed = (Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
                     + e.getDeltaMovement().z * e.getDeltaMovement().z)
                     + Math.abs(e.getDeltaMovement().y)) * 20.0;
+            fastest = Math.max(fastest, speed);
             if (speed < 0.2) {
                 continue;
             }
             // Saturating at a walking pace, so a sprint does not simply scale the splash up without
             // limit -- past a point what changes about a wake is its shape, not its height, and the
             // clamp above this is a stability bound rather than a taste one.
-            float amount = (float) Math.min(speed / 4.0, 1.0) * cap;
+            float amount = (float) Math.min(speed / 4.0, 1.0) * cap * depthFade;
             // Bigger things push more water, but the radius is in CELLS and a bump narrower than a
             // couple of cells is the single-cell delta the shader's smoothing exists to avoid.
             float radius = (float) Math.max(2.0, e.getBbWidth() / cell);
@@ -446,6 +567,52 @@ public final class RtComposite {
             waterImpulses[base + 3] = amount;
             waterImpulseCount++;
         }
+        logImpulseGates(camX, camZ, cell, seenEntities, seenInWater, seenInRange, seenNearSurface,
+                fastest, sawSelf, selfSpeed, self != null && self.isInWater());
+    }
+
+    /**
+     * Why the entity impulse path produced what it produced, about once a second while debug view 23 is
+     * up.
+     *
+     * <p>Reported because reading the code did not settle it. The path has four gates and a coordinate
+     * mapping, every one of them looks correct in isolation, and the observable — no ripples — is the
+     * same whichever one is at fault. So this names the gate instead: each count is the population that
+     * SURVIVED that step, so the first number that collapses to zero is the culprit.
+     *
+     * <ul>
+     *   <li>{@code entities}=0 — the render list is empty here, which would be a wrong level or a wrong
+     *       call site rather than anything about water.</li>
+     *   <li>{@code inWater}=0 — nothing reports {@code isInWater()}. If you are swimming when this
+     *       prints, the local player is not in {@code entitiesForRendering()} at all.</li>
+     *   <li>{@code inRange}=0 — the domain is not where the entities are; compare {@code camCell} against
+     *       the grid's centre (128), since the player should sit almost exactly on it.</li>
+     *   <li>{@code fastest} below 0.2 — the speed gate. The value is blocks per second after the ×20
+     *       tick conversion, so a swim should read about 2.</li>
+     *   <li>{@code emitted}=0 with all of the above healthy — the write itself, which would be the one
+     *       thing left.</li>
+     * </ul>
+     */
+    private void logImpulseGates(double camX, double camZ, float cell, int entities, int inWater,
+                                 int inRange, int nearSurface, double fastest, boolean sawSelf,
+                                 double selfSpeed, boolean selfInWater) {
+        if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() != 23 || (worldFrameCounter() % 60L) != 0L) {
+            return;
+        }
+        FluoriteMod.LOGGER.info(
+                "[water-sim] entities={} inWater={} inRange={} nearSurface={} fastest={} emitted={} "
+                        + "| self: seen={} inWater={} speed={} "
+                        + "| cell={} camCell=({}, {}) domainCell=({}, {}) surfaceY={}",
+                entities, inWater, inRange, nearSurface,
+                fastest < 0.0 ? "n/a" : String.format(java.util.Locale.ROOT, "%.2f", fastest),
+                waterImpulseCount,
+                sawSelf, selfInWater,
+                selfSpeed < 0.0 ? "n/a" : String.format(java.util.Locale.ROOT, "%.2f", selfSpeed),
+                String.format(java.util.Locale.ROOT, "%.3f", cell),
+                String.format(java.util.Locale.ROOT, "%.1f", (camX - waterCellX * (double) cell) / cell),
+                String.format(java.util.Locale.ROOT, "%.1f", (camZ - waterCellZ * (double) cell) / cell),
+                waterCellX, waterCellZ,
+                String.format(java.util.Locale.ROOT, "%.2f", waterSurfaceY));
     }
 
     private static Float4 cloudCirrusShape() {
@@ -647,9 +814,16 @@ public final class RtComposite {
         return new Float4(s[0], s[1], s[2], FluoriteConfig.Rt.Water.PHASE_G.value());
     }
 
-    /** Legacy xyz retired by M16; w still carries caustic dispersion without growing another field. */
+    /**
+     * x is the wave field's amplitude (D49); yz retired by M16; w carries caustic dispersion.
+     *
+     * <p>The amplitude spends one of M16's dead slots rather than growing the pinned layout for a single
+     * float. It scales the field's height and its slope by the same factor, because they are the same
+     * function — the shading normal and the displaced geometry have to describe one surface.
+     */
     private static Float4 waterAux() {
-        return new Float4(0f, 0f, 0f, FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
+        return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(), 0f, 0f,
+                FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
     }
 
     /** Legacy xyz retired by M16; w still carries thin-shell subsurface thickness. */
@@ -699,18 +873,36 @@ public final class RtComposite {
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
     // penumbrae). Radii in degrees; the real sun/moon are ~0.27°, but a touch larger reads pleasantly.
     private static final int WATER_ANCHOR_MASK = 4095;
-    /** The cell size the authored range implies: the grid is a fixed 256 cells wide (D39). */
+    /**
+     * The cell size the authored range implies: the grid is a fixed 256 cells wide (D39).
+     *
+     * <p>Through {@code simRangeBlocks} rather than the raw setting, so that turning the deformation on
+     * pulls the ripple domain in to match it (D45) and the freed resolution goes where the geometry can
+     * actually show it.
+     */
     private static float waterCellSize() {
-        return FluoriteConfig.Rt.Water.WATER_SIM_RANGE.value() / RtSky.WATER_SIM_DIM;
+        return FluoriteConfig.Rt.Water.simRangeBlocks() / RtSky.WATER_SIM_DIM;
     }
-    /** How far below the camera to look for the water surface the domain runs on. */
-    private static final int WATER_SIM_PROBE_DEPTH = 24;
+    /** How far above and below the camera to look for the water surface the domain runs on. */
+    private static int waterProbeReach() {
+        return Math.round(FluoriteConfig.Rt.Water.WATER_SIM_HEIGHT.value());
+    }
+    // Rings of columns searched outward when the camera is not over water, so that standing on a shore
+    // still finds the lake in front of you. Reaches half the smallest domain, which is as far as a
+    // surface can be and still have any of the grid land on it.
+    private static final int WATER_SURFACE_RINGS = 9;
+    private static final int WATER_SURFACE_RING_STEP = 2;
+    private static final int WATER_SURFACE_RING_SAMPLES = 12;
     // Where the water simulation's domain sits, in ABSOLUTE whole cells, and the surface it runs on.
     // Whole cells because a domain that slid continuously with the player would resample the height
     // field at a different phase every frame and smear every ripple into a streak (R22).
     private long waterCellX = Long.MIN_VALUE;
     private long waterCellZ;
     private double waterSurfaceY = Double.NaN;
+    /** Camera height when the surface plane was last chosen — the vertical anchor's hysteresis. */
+    private double waterAnchorCamY;
+    /** The same plane, rebased, which is the space the shading compares its hits in. */
+    private float waterPlaneRebasedY;
     private Float4 waterDomain = new Float4(0f, 0f, 0f, 0f);
     private boolean waterReanchor;
     private final float[] waterImpulses = new float[RtSky.WATER_MAX_IMPULSES * 4];
@@ -1830,7 +2022,8 @@ public final class RtComposite {
                     cloudCirrus(),
                     cloudCirrusShape(),
                     cloudCirrusOrigin(terrain, level),
-                    waterSimDomain()
+                    waterSimDomain(),
+                    waterSimPlane()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1922,7 +2115,10 @@ public final class RtComposite {
                             courant * courant,
                             FluoriteConfig.Rt.Water.WATER_SIM_DAMPING.value(),
                             RtSky.WATER_SIM_DIM * 0.10f,
-                            waterImpulses, waterImpulseCount, waterReanchor);
+                            waterImpulses, waterImpulseCount, waterReanchor,
+                            // The domain's absolute cell origin, so the solver can resolve a
+                            // re-anchor by shifting its reads instead of losing the field.
+                            waterCellX, waterCellZ);
                 }
             }
             if (gpuTimers != null) {

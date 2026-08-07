@@ -1409,6 +1409,25 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simRange", "water.sim-range", 64f, 32f, 256f);
 
             /**
+             * How far above or below you the simulation will look for a water surface, in blocks.
+             *
+             * <p>THE OTHER HALF OF WHICH WATER RIPPLES. The range setting says how wide the domain is;
+             * this says how tall a slice of the world it may sit in. Together they are the answer to
+             * "which surface am I simulating" — a lake thirty blocks below is still your lake, a lake two
+             * hundred below is somewhere else entirely.
+             *
+             * <p>Symmetric about you rather than downward only, so it holds while you are under the
+             * surface looking up as well as above it looking down.
+             *
+             * <p>This used to be a hidden constant of 24, scanning downward. Flying up from water you had
+             * just disturbed took you out of its reach in about twenty-six blocks, at which point the
+             * probe found nothing, the domain switched off, and the ripples did not fade — they went out
+             * at once, along with every other ripple in the world.
+             */
+            public static final FloatSetting WATER_SIM_HEIGHT =
+                    clampedFloat("fluorite.rt.water.simHeight", "water.sim-height", 32f, 8f, 128f);
+
+            /**
              * How far the player may walk before the domain is re-anchored, in blocks.
              *
              * <p>Re-anchoring is the only thing in this system that costs anything beyond one dispatch:
@@ -1447,6 +1466,23 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simStrength", "water.sim-strength", 1.0f, 0f, 4f);
 
             /**
+             * How deep below the surface something can be and still disturb it, in blocks.
+             *
+             * <p>PHYSICAL, not a preference. A surface wave's motion decays as e^(-k·d) with depth, so a
+             * swimmer well under the surface is not coupled to it at all — the water above simply slides
+             * past. Before this, diving to the bottom of a lake went on stamping ripples into a surface
+             * several blocks overhead, which is both wrong and conspicuous.
+             *
+             * <p>Faded across the range rather than switched off at the end of it, because the real
+             * decay is smooth and a hard cut would pop as you swam down. Generous by default: the honest
+             * decay for ripple-scale wavelengths is nearly spent within half a block, and a range that
+             * short would make swimming at the surface feel dead.
+             */
+            public static final FloatSetting WATER_SIM_IMPULSE_DEPTH =
+                    clampedFloat("fluorite.rt.water.simImpulseDepth", "water.sim-impulse-depth",
+                            3f, 0.5f, 16f);
+
+            /**
              * Metres of surface displacement an entity's impulse may inject, before falloff.
              *
              * <p>A STABILITY GUARD, not an art parameter. The solver is explicit, so a displacement large
@@ -1456,6 +1492,105 @@ public final class FluoriteConfig {
              */
             public static final FloatSetting WATER_SIM_IMPULSE =
                     clampedFloat("fluorite.rt.water.simImpulse", "water.sim-impulse", 0.06f, 0f, 0.25f);
+
+            /**
+             * The wave field's overall amplitude. 1 is the shipped look, exactly.
+             *
+             * <p>SCALES HEIGHT AND SLOPE TOGETHER, and must — they are the same function, so scaling them
+             * apart would shade a surface the geometry does not have. Which is also why this exists at
+             * all: the field's base scale was tuned against reflections, when a normal was the only
+             * consumer and absolute height meant nothing. Measured, that leaves the surface ±2.5 cm tall
+             * with a maximum tilt of 3.7°, against 10–15° for real water under a light breeze — calm as
+             * slope, and very nearly invisible as displacement.
+             *
+             * <p>So raising this is how the deformation becomes something you can see, and the honest
+             * cost is that the REFLECTIONS CHANGE WITH IT: choppier glints, more broken mirror. That is a
+             * visible change to shipped behaviour, which is why it is authored rather than simply raised.
+             * Around 3–8 reaches the steepness real water has.
+             */
+            public static final FloatSetting WAVE_AMPLITUDE =
+                    clampedFloat("fluorite.rt.water.waveAmplitude", "water.wave-amplitude", 1f, 0f, 8f);
+
+            /**
+             * Move the water's actual geometry with the waves (M12.5), instead of only tilting its
+             * normal.
+             *
+             * <p>OFF IS THE SHIPPED BEHAVIOUR, bit for bit — the water stays the flat quads the terrain
+             * mesher emits and the whole displacement path is never dispatched. That is iron rule 8, and
+             * here it is also the only way the cost of this is measurable at all.
+             *
+             * <p>What it buys is the three things a normal cannot fake, because a normal describes a
+             * surface the geometry does not have: a wavy silhouette against the sky, shadows the crests
+             * actually cast on the troughs, and a shoreline that the waves ride up and down. What it
+             * costs is a per-frame BLAS refit over the near field, which is the risk this milestone is
+             * really about (see D44).
+             */
+            public static final BooleanSetting WATER_DEFORM =
+                    bool("fluorite.rt.water.deform", "water.deform", false);
+
+            /**
+             * How far from the camera the water is real geometry, in blocks. Beyond it the surface is
+             * flat and the waves live entirely in the normal, as they always have.
+             *
+             * <p>THE COST IS QUADRATIC IN THIS. Triangles = 2·(range/cell)², and every one of them is
+             * refit every frame. 64 blocks at quarter-block cells is about 131k triangles; doubling the
+             * range quadruples that. It is deliberately its own setting rather than being tied to the
+             * ripple range (D45), because the two are paid for in completely different currencies —
+             * ripple range costs a fixed dispatch, this costs triangles.
+             *
+             * <p>Deliberately short by default. The displacement is centimetres, so it reads as shape
+             * only up close; far water gets nothing from the geometry that the normal was not already
+             * giving it.
+             */
+            public static final FloatSetting WATER_DEFORM_RANGE =
+                    clampedFloat("fluorite.rt.water.deformRange", "water.deform-range", 48f, 8f, 128f);
+
+            /**
+             * Blocks per mesh cell in the deformed region — the tessellation, and the other half of the
+             * triangle count.
+             *
+             * <p>It is also the band limit: the mesh cannot carry a wave shorter than about twice a cell,
+             * so this is what the displacement passes to the spectrum as its footprint and everything
+             * finer stays in the normal (D46). Measured, that costs almost nothing in shape — the
+             * components longer than 2.8 m hold 96% of the field's rms height, so even half-block cells
+             * are carrying essentially all of it.
+             */
+            public static final FloatSetting WATER_DEFORM_CELL =
+                    clampedFloat("fluorite.rt.water.deformCell", "water.deform-cell", 0.25f, 0.125f, 1f);
+
+            /**
+             * How far the player may walk before the deformed region is re-anchored, in blocks.
+             *
+             * <p>Its own control rather than the ripple domain's (D47), because the two re-anchor for
+             * different reasons and at different costs: that one recasts an obstacle mask, this one
+             * rebuilds a vertex grid. Snapped to whole cells for the same reason as R22 — a grid that
+             * slid continuously would resample the field at a new phase every frame, and here that would
+             * show as the surface crawling rather than as a smeared ripple.
+             */
+            public static final FloatSetting WATER_DEFORM_REANCHOR =
+                    clampedFloat("fluorite.rt.water.deformReanchor", "water.deform-reanchor", 8f, 1f, 32f);
+
+            /**
+             * The ripple domain's reach once the deformation range has had its say: ripples are not
+             * simulated further out than the geometry can move (D45).
+             *
+             * <p>The grid is a fixed 256 cells, so shortening the reach buys detail (D39) — and it buys
+             * it exactly where the deformation can show it. Only applies while the deformation is on;
+             * with it off the ripple range stands alone, which is what keeps the off state equal to the
+             * shipped behaviour.
+             */
+            public static float simRangeBlocks() {
+                // NOT CLAMPED YET, deliberately. D45 pulls the ripple domain in to match the deformation
+                // range, on the reasoning that a ripple the geometry cannot move is not worth simulating.
+                // That reasoning holds only once the deformation actually runs, and its per-frame path is
+                // not wired (M12.5 slice 3b). Until then the clamp would make WATER_DEFORM a switch whose
+                // entire observable effect is halving the ripple radius -- which is what it did: with the
+                // 32-block domain that produced, the ripples simply ended a few blocks out and looked
+                // like they vanished when the camera lifted.
+                //
+                // Restore the min() in the same commit that makes the deformation dispatch.
+                return WATER_SIM_RANGE.value();
+            }
 
             /**
              * Apply the sun-visibility shadow rays' transmittance to the water's sun term, or take the
