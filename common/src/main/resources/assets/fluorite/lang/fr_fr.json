@@ -127,6 +127,7 @@
   "fluorite.options.rt.debugView.20": "Diffusion entrante du préfixe caméra",
   "fluorite.options.rt.debugView.21": "Préfixe composite A/B",
   "fluorite.options.rt.debugView.22": "Sonde de la chaîne des nuages",
+  "fluorite.options.rt.debugView.23": "Water simulation field",
   "fluorite.options.rt.fog": "Brouillard volumétrique",
   "fluorite.options.rt.fog.tooltip": "Le milieu participant ambiant du monde. Intégré par segment de chemin, il apparaît donc aussi dans les reflets et les réfractions, pas seulement dans la vue directe.",
   "fluorite.options.rt.fogDensity": "Densité du brouillard",

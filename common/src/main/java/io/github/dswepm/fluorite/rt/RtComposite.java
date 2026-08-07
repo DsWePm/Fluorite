@@ -321,11 +321,60 @@ public final class RtComposite {
             waterSurfaceY = surface;
             waterReanchor = true;
         }
-        waterDomain = new Float4((float) (waterCellX * (double) cell - terrain.blockX),
-                (float) (waterCellZ * (double) cell - terrain.blockZ),
-                cell,
+        // Rebuilt on a re-anchor, and retried until it actually reaches the GPU.
+        if (waterReanchor || !waterMaskUploaded) {
+            buildWaterObstacleMask(level, cell);
+        }
+        // IN THE SAME SPACE THE SHADING ASKS IN, which is not the rebased one. applyWaterWaves receives
+        // hitPos.xz PLUS waterAnchor.xy, and that anchor is the rebase origin MASKED to 4096 -- the
+        // procedural spectrum only needs world stability modulo its longest wavelength, so masking keeps
+        // the coordinate small and is right for it. Handing this origin over un-masked put the two a
+        // whole rebase apart, the uv landed outside [0,1], and waterSimGrad returned zero every time:
+        // a field that simulated correctly and reached nothing.
+        double originX = waterCellX * (double) cell - terrain.blockX + (terrain.blockX & WATER_ANCHOR_MASK);
+        double originZ = waterCellZ * (double) cell - terrain.blockZ + (terrain.blockZ & WATER_ANCHOR_MASK);
+        waterDomain = new Float4((float) originX, (float) originZ, cell,
                 FluoriteConfig.Rt.Water.WATER_SIM_STRENGTH.value());
         return true;
+    }
+
+    /**
+     * Ask the level which cells hold water, one byte each.
+     *
+     * <p>The block UNDER the surface, not at it: the surface height is the top face of the water block,
+     * so the block that is or is not water sits one below. A cell is open where that block is water and
+     * an obstacle everywhere else — which includes air, so a shoreline and a pier both reflect, and so
+     * does the edge of the pond.
+     *
+     * <p>65k lookups, and only on a re-anchor: one frame's work every sixteen blocks of travel rather
+     * than anything continuous. Into a loaded chunk a lookup is an array index; an unloaded one reads as
+     * not-water, which makes the unloaded world a wall rather than a hole that swallows ripples.
+     */
+    private void buildWaterObstacleMask(ClientLevel level, float cell) {
+        if (waterObstacleMask == null) {
+            waterObstacleMask = new byte[RtSky.WATER_SIM_DIM * RtSky.WATER_SIM_DIM];
+        }
+        BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+        int below = (int) Math.floor(waterSurfaceY) - 1;
+        for (int z = 0; z < RtSky.WATER_SIM_DIM; z++) {
+            double worldZ = (waterCellZ + z + 0.5) * cell;
+            for (int x = 0; x < RtSky.WATER_SIM_DIM; x++) {
+                double worldX = (waterCellX + x + 0.5) * cell;
+                probe.set((int) Math.floor(worldX), below, (int) Math.floor(worldZ));
+                boolean open = level.getFluidState(probe).is(FluidTags.WATER);
+                waterObstacleMask[z * RtSky.WATER_SIM_DIM + x] = open ? (byte) 255 : 0;
+            }
+        }
+        // skyLuts does not exist on the first frames, and the first re-anchor is on the very first
+        // frame. Without this retry the mask would be built once, dropped, and never rebuilt until the
+        // player walked far enough to re-anchor -- with the image holding whatever it was allocated with
+        // in the meantime.
+        if (skyLuts != null) {
+            skyLuts.uploadWaterObstacles(waterObstacleMask);
+            waterMaskUploaded = true;
+        } else {
+            waterMaskUploaded = false;
+        }
     }
 
     /**
@@ -345,6 +394,17 @@ public final class RtComposite {
         if (level == null || waterDomain.z() <= 0f) {
             return;
         }
+        // Debug view 23 drives a test impulse at the domain centre. It is what makes the view able to
+        // distinguish "nothing disturbs the field" from "the field cannot propagate" -- two states that
+        // look identical on a flat pond and have completely different causes.
+        if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() == 23) {
+            waterImpulses[0] = RtSky.WATER_SIM_DIM * 0.5f;
+            waterImpulses[1] = RtSky.WATER_SIM_DIM * 0.5f;
+            waterImpulses[2] = 3f;
+            waterImpulses[3] = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE.value()
+                    * ((worldFrameCounter() & 31L) == 0L ? 1f : 0f);
+            waterImpulseCount = 1;
+        }
         float cell = waterDomain.z();
         float cap = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE.value();
         double half = RtSky.WATER_SIM_DIM * 0.5 * cell;
@@ -362,13 +422,20 @@ public final class RtComposite {
             }
             // How hard it is moving through the surface. A still entity leaves the water alone; a
             // swimming one keeps feeding the field, which is what makes a wake rather than one splash.
-            double speed = Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
+            // BLOCKS PER SECOND. getDeltaMovement is per TICK, and forgetting that is a factor of twenty
+            // -- a swim is about 0.1 per tick, which read as a speed of 0.1 gave an impulse of three
+            // millimetres, a slope two orders of magnitude under the procedural spectrum's. Invisible,
+            // and invisible in a way that looks exactly like nothing being injected at all.
+            double speed = (Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
                     + e.getDeltaMovement().z * e.getDeltaMovement().z)
-                    + Math.abs(e.getDeltaMovement().y);
-            if (speed < 0.01) {
+                    + Math.abs(e.getDeltaMovement().y)) * 20.0;
+            if (speed < 0.2) {
                 continue;
             }
-            float amount = (float) Math.min(speed * 0.5, 1.0) * cap;
+            // Saturating at a walking pace, so a sprint does not simply scale the splash up without
+            // limit -- past a point what changes about a wake is its shape, not its height, and the
+            // clamp above this is a stability bound rather than a taste one.
+            float amount = (float) Math.min(speed / 4.0, 1.0) * cap;
             // Bigger things push more water, but the radius is in CELLS and a bump narrower than a
             // couple of cells is the single-cell delta the shader's smoothing exists to avoid.
             float radius = (float) Math.max(2.0, e.getBbWidth() / cell);
@@ -648,6 +715,13 @@ public final class RtComposite {
     private boolean waterReanchor;
     private final float[] waterImpulses = new float[RtSky.WATER_MAX_IMPULSES * 4];
     private int waterImpulseCount;
+    private byte[] waterObstacleMask;
+    private boolean waterMaskUploaded;
+
+    /** Frames since start, for the debug view's periodic test impulse. */
+    private long worldFrameCounter() {
+        return frameCounter;
+    }
     private static final Identifier SUN_ID = Identifier.withDefaultNamespace("sun");
     private static final Identifier[] MOON_IDS = createMoonIds();
     // Celestial rotation axis (the pole the sun/moon arc about): perpendicular to the east-west arc,

@@ -4,6 +4,8 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
+import org.lwjgl.vulkan.VkImageMemoryBarrier;
+import org.lwjgl.vulkan.VkBufferImageCopy;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
 import org.lwjgl.vulkan.VkDescriptorImageInfo;
 import org.lwjgl.vulkan.VkDescriptorPoolCreateInfo;
@@ -29,6 +31,7 @@ import io.github.dswepm.fluorite.rt.RtContext;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 import io.github.dswepm.fluorite.rt.RtGpuExecutor;
 import io.github.dswepm.fluorite.rt.overlay.RtOverlayPipelines;
+import io.github.dswepm.fluorite.rt.accel.RtBuffer;
 import io.github.dswepm.fluorite.rt.accel.RtImage;
 
 import static io.github.dswepm.fluorite.rt.RtContext.check;
@@ -533,34 +536,6 @@ public final class RtSky {
         }
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "water sim")) {
-            if (reanchor || !waterObstacleReady) {
-                VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
-                        waterObstacleBake.pipeline());
-                long tlasSet = waterObstacleTlas.bind(ctx, tlas, graphicsUse);
-                VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
-                        waterObstacleBake.pipelineLayout(), 0,
-                        stack.longs(waterObstacleBake.descriptorSet(), tlasSet), null);
-                ByteBuffer push = stack.malloc(WATER_OBSTACLE_PUSH_BYTES);
-                push.putFloat(0, originX).putFloat(4, originZ)
-                        .putFloat(8, cellSize).putFloat(12, surfaceY)
-                        // The whole grid. The dirty-rect narrowing D40 describes is a refinement on top
-                        // of this and needs the mask's history to be trustworthy first.
-                        .putInt(16, 0).putInt(20, 0)
-                        .putInt(24, WATER_SIM_DIM).putInt(28, WATER_SIM_DIM);
-                VK10.vkCmdPushConstants(cmd, waterObstacleBake.pipelineLayout(),
-                        VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
-                int groups = (WATER_SIM_DIM + WATER_SIM_GROUP - 1) / WATER_SIM_GROUP;
-                VK10.vkCmdDispatch(cmd, groups, groups, 1);
-                // The step below reads every texel this just wrote.
-                VkMemoryBarrier.Buffer barrier = VkMemoryBarrier.calloc(1, stack);
-                barrier.get(0).sType$Default()
-                        .srcAccessMask(VK10.VK_ACCESS_SHADER_WRITE_BIT)
-                        .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT);
-                VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier, null, null);
-                waterObstacleReady = true;
-            }
-
             Bake step = waterSimBakes[waterPhase];
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, step.pipeline());
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -582,6 +557,75 @@ public final class RtSky {
             VK10.vkCmdDispatch(cmd, groups, groups, 1);
             // Advance the rotation: what this step wrote becomes the next step's current.
             waterPhase = (waterPhase + 1) % 3;
+        }
+    }
+
+    /**
+     * Replace the obstacle mask with one the CPU worked out, one byte per cell.
+     *
+     * <p>NOT A RAY. The probe this replaces cast one downward ray per cell against the TLAS, and the
+     * water surface is IN that TLAS -- it is rendered geometry -- so every ray hit the water itself and
+     * every cell came back an obstacle. Nothing could propagate. Excluding water by cull mask is not
+     * available either: the mask is per instance, and a terrain section's water shares its instance with
+     * its stone.
+     *
+     * <p>Asking the level directly is the question we actually wanted answered, and it cannot be
+     * confused by anything: a cell is open where the block under the surface is water. The cost is
+     * 65k block lookups on a re-anchor, which is a frame's hitch every sixteen blocks of travel rather
+     * than anything continuous -- and lookups into a loaded chunk are an array index.
+     *
+     * @param mask one byte per cell, row-major, 255 for open water and 0 for an obstacle
+     */
+    public void uploadWaterObstacles(byte[] mask) {
+        if (waterObstacle == null || mask.length != WATER_SIM_DIM * WATER_SIM_DIM) {
+            return;
+        }
+        RtBuffer staging = ctx.createUploadBuffer(mask.length, "water obstacle upload");
+        try {
+            MemoryUtil.memByteBuffer(staging.mapped, mask.length).put(mask);
+            staging.flush();
+            long image = waterObstacle.view == 0L ? 0L : waterObstacle.image;
+            long buffer = staging.handle;
+            ctx.submitSync(cmd -> {
+                try (MemoryStack up = MemoryStack.stackPush()) {
+                    VkImageMemoryBarrier.Buffer toTransfer = VkImageMemoryBarrier.calloc(1, up);
+                    toTransfer.get(0).sType$Default()
+                            .oldLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED)
+                            .newLayout(VK10.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                            .srcAccessMask(0).dstAccessMask(VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                            .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                            .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED).image(image);
+                    toTransfer.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                            .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+                    VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, toTransfer);
+
+                    VkBufferImageCopy.Buffer copy = VkBufferImageCopy.calloc(1, up);
+                    copy.get(0).bufferOffset(0).bufferRowLength(0).bufferImageHeight(0);
+                    copy.get(0).imageSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                            .mipLevel(0).baseArrayLayer(0).layerCount(1);
+                    copy.get(0).imageOffset().set(0, 0, 0);
+                    copy.get(0).imageExtent().set(WATER_SIM_DIM, WATER_SIM_DIM, 1);
+                    VK10.vkCmdCopyBufferToImage(cmd, buffer, image,
+                            VK10.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, copy);
+
+                    VkImageMemoryBarrier.Buffer toGeneral = VkImageMemoryBarrier.calloc(1, up);
+                    toGeneral.get(0).sType$Default()
+                            .oldLayout(VK10.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                            .newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                            .srcAccessMask(VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                            .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT)
+                            .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                            .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED).image(image);
+                    toGeneral.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                            .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+                    VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, null, null, toGeneral);
+                }
+            });
+            waterObstacleReady = true;
+        } finally {
+            staging.destroy();
         }
     }
 

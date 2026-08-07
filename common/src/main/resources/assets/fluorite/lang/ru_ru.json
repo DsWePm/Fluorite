@@ -127,6 +127,7 @@
   "fluorite.options.rt.debugView.20": "Входное рассеяние на отрезке камеры",
   "fluorite.options.rt.debugView.21": "Композит префикса A/B",
   "fluorite.options.rt.debugView.22": "Зонд цепочки облаков",
+  "fluorite.options.rt.debugView.23": "Water simulation field",
   "fluorite.options.rt.fog": "Объёмный туман",
   "fluorite.options.rt.fog.tooltip": "Окружающая участвующая среда мира. Интегрируется на каждом отрезке пути, поэтому виден и в отражениях и преломлениях, а не только в прямом обзоре.",
   "fluorite.options.rt.fogDensity": "Плотность тумана",
