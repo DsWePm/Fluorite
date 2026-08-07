@@ -292,6 +292,18 @@ public final class RtComposite {
         double surface = Double.NaN;
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
         int reach = waterProbeReach();
+        // VERTICALLY HYSTERETIC, exactly as the horizontal anchor is, and for the same reason: a plane
+        // that re-picked itself every frame would flip between water levels as you flew over terrain
+        // holding more than one, and each flip discards the field. So the plane already chosen is kept
+        // until the camera has climbed or fallen as far as the authored re-anchor distance, and while
+        // that plane is still within reach at all.
+        //
+        // It also means the probe below does not run on most frames, which is where its cost went.
+        if (!Double.isNaN(waterSurfaceY)
+                && Math.abs(camY - waterAnchorCamY) <= FluoriteConfig.Rt.Water.WATER_SIM_REANCHOR.value()
+                && Math.abs(camY - waterSurfaceY) <= reach) {
+            surface = waterSurfaceY;
+        }
         int top = (int) Math.floor(camY) + reach;
         int bottom = (int) Math.floor(camY) - reach;
         // NOT ONLY THE CAMERA'S OWN COLUMN. It used to be, and the comment above already said the case
@@ -325,8 +337,10 @@ public final class RtComposite {
         }
         if (Double.isNaN(surface)) {
             waterDomain = new Float4(0f, 0f, 0f, 0f);
+            waterSurfaceY = Double.NaN; // nothing in reach: do not keep a plane that is no longer there
             return false;
         }
+        waterAnchorCamY = camY;
 
         float cell = waterCellSize();
         long centreCellX = (long) Math.floor(camX / cell);
@@ -827,6 +841,8 @@ public final class RtComposite {
     private long waterCellX = Long.MIN_VALUE;
     private long waterCellZ;
     private double waterSurfaceY = Double.NaN;
+    /** Camera height when the surface plane was last chosen — the vertical anchor's hysteresis. */
+    private double waterAnchorCamY;
     private Float4 waterDomain = new Float4(0f, 0f, 0f, 0f);
     private boolean waterReanchor;
     private final float[] waterImpulses = new float[RtSky.WATER_MAX_IMPULSES * 4];
