@@ -144,7 +144,12 @@ public struct WorldPush {
     // deck that climbs with the player: authored at 192, it sits 192 blocks above wherever they are,
     // and can never be entered or flown above. Adding this back is what makes the density field
     // world-anchored in fact rather than only in the comments.
-    public float4   cloudRebase;      // xyz terrain rebase origin (absolute blocks), w reserved
+    // xyz is the terrain rebase origin MINUS the wind's accumulated drift, which is the same operation
+    // -- both say where the density field's origin sits this frame, in absolute blocks. Folding the wind
+    // in here rather than into a lane of its own is not a saving, it is the honest description: a cloud
+    // field that drifts is a cloud field whose origin moves. Only xz drift; y stays the pure rebase
+    // because the shell's altitude is measured from it.
+    public float4   cloudRebase;      // xyz field origin (rebase - wind drift), w wind speed (blocks/s)
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

@@ -832,4 +832,19 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 **2026-08-02 确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
 
+### 语言文件政策（2026-08-06，用户指示）
+
+**测试阶段新增选项只写 `en_us` + `zh_cn` + `zh_tw`**，其余八种语言留英文占位。理由是测试期选项名与语义还在动，八份翻译每改一次就要重写一次。
+
+**发布前必须补全**：`de_de` / `es_es` / `fr_fr` / `it_it` / `ja_jp` / `ko_kr` / `pt_br` / `ru_ru`。核查方法——把每份与 `en_us` 逐键比对，逐字相同即未翻译（`HDR`、`DLAA`、`DLSS Ray Reconstruction`、格式串 `%s`，以及德/西/意/葡里拼写恰好相同的 `Albedo`/`Neutral`/`Absorption` 属于正常同形，不算欠账）：
+
+```python
+import json, glob, os
+base = json.load(open('common/src/main/resources/assets/fluorite/lang/en_us.json', encoding='utf-8'))
+for p in sorted(glob.glob('common/src/main/resources/assets/fluorite/lang/*.json')):
+    d = json.load(open(p, encoding='utf-8'))
+    same = [k for k, v in d.items() if base.get(k) == v]
+    print(os.path.basename(p), len(same), same[:5])
+```
+
 **当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M19 glint 方案 · M20.3 粒子 mask 成本 · M11 §6.4 表中两项「请示」。

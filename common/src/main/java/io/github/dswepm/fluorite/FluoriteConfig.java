@@ -933,6 +933,33 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudBaseScale", "volumetrics.cloud-base-scale",
                             2400f, 200f, 8000f);
 
+            /**
+             * How fast the cloud field drifts, in blocks per second. 0 freezes it.
+             *
+             * <p>A sky that does not move is the one thing no amount of shape detail can pass for real,
+             * and it costs nothing: the drift is subtracted from the field's origin on the CPU, so the
+             * shader samples a moving field through the same addition that already un-rebases it.
+             */
+            public static final FloatSetting CLOUD_WIND_SPEED =
+                    clampedFloat("fluorite.rt.fog.cloudWindSpeed", "volumetrics.cloud-wind-speed",
+                            2.0f, 0f, 60f);
+
+            /** Which way the wind blows, in degrees clockwise from +X. */
+            public static final FloatSetting CLOUD_WIND_ANGLE =
+                    clampedFloat("fluorite.rt.fog.cloudWindAngle", "volumetrics.cloud-wind-angle",
+                            35f, 0f, 360f);
+
+            /**
+             * How wide the cloud FIELD's cells are, in blocks — the 2D distribution, not the 3D puffs.
+             *
+             * <p>Separate from {@link #CLOUD_BASE_SCALE} because they are different questions and were
+             * previously answerable only as one: this is how far apart the clumps and clearings are
+             * across the sky, while the base scale is how big a single cloud in a clump is.
+             */
+            public static final FloatSetting CLOUD_FIELD_SCALE =
+                    clampedFloat("fluorite.rt.fog.cloudFieldScale", "volumetrics.cloud-field-scale",
+                            9000f, 500f, 40000f);
+
             /** How big the bites taken out of a cloud's edges are, in blocks. */
             public static final FloatSetting CLOUD_DETAIL_SCALE =
                     clampedFloat("fluorite.rt.fog.cloudDetailScale", "volumetrics.cloud-detail-scale",

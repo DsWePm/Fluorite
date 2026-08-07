@@ -39,13 +39,13 @@ import world_core;
 // sliver of nearly transparent volume.
 public static const float CLOUD_MAX_DIST = 40000.0;
 
-// The one feature size that stays fixed: the weather map's period, in blocks. It is not authored because
-// it is not a look, it is the scale at which the sky is allowed to be different from itself — roughly a
-// render distance across, so a player sees a few cells and not a texture.
-public static const float CLOUD_WEATHER_SCALE = 9000.0;
+// How far apart the sky's clumps and clearings are, in blocks — the 2D FIELD, distinct from how big a
+// single cloud within a clump is (cloudShape.z). Authored, because those are two different questions and
+// answering them with one number was the reason neither could be adjusted.
+float cloudFieldScale() { return max(worldPush.cloudRebase.w, 1.0); }
 // Cloud TYPE varies far more slowly still. A storm covers a region; it does not alternate with fair
-// weather every kilometre.
-public static const float CLOUD_TYPE_SCALE = 26000.0;
+// weather every kilometre — so it is pinned to a multiple of the field rather than authored separately.
+float cloudTypeScale() { return cloudFieldScale() * 2.9; }
 
 // Everything else is authored per frame, from worldPush:
 //   cloudParams = (coverage bias, density scale, type bias, extinction per block at full density)
@@ -54,6 +54,10 @@ public static const float CLOUD_TYPE_SCALE = 26000.0;
 // RtComposite.cloudParams, where rain drives coverage and thunder drives type.
 /**
  * A rebased position in ABSOLUTE world blocks.
+ *
+ * <p>Carries the wind as well as the rebase: the CPU subtracts the accumulated drift from the origin, so
+ * a field sampled through this one function drifts without anything downstream knowing that it does.
+ * Consistent between a cloud and its reflection for free, since both read the same number.
  *
  * <p>Everything the ray tracer handles is expressed relative to the terrain rebase origin, and that
  * origin FOLLOWS THE CAMERA. Sampling the density field at rebased coordinates therefore anchors the
@@ -186,7 +190,7 @@ float cloudHeightProfile(float altitude, float type) {
  * same ground as the ray that finds it moves — which is the property the whole file exists to protect.
  */
 float cloudCoverage(float3 p) {
-    float2 w = worldOf(p).xz / CLOUD_WEATHER_SCALE;
+    float2 w = worldOf(p).xz / cloudFieldScale();
     float m = cloudNoise.SampleLevel(float3(w.x, 0.37, w.y), 0.0).r;
     // Widened around the middle so the sky is broken rather than either overcast or empty. The authored
     // bias then shifts the whole field, which is how rain overcasts a sky: one number, not a second field.
@@ -205,7 +209,7 @@ float cloudCoverage(float3 p) {
  * switch being thrown rather than as a storm arriving.
  */
 float cloudType(float3 p) {
-    float2 w = worldOf(p).xz / CLOUD_TYPE_SCALE;
+    float2 w = worldOf(p).xz / cloudTypeScale();
     float m = cloudNoise.SampleLevel(float3(w.x, 0.61, w.y), 0.0).b;
     // Scaled below 1 so fair weather stays in the sheet-to-heap half of the range and the tower is
     // something the weather has to ask for.

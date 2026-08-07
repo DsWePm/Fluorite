@@ -231,8 +231,34 @@ public final class RtComposite {
      * sideways at every rebase. Same reason {@code visibilityGridOrigin} snaps in absolute coordinates
      * before rebasing, and the same class of fault R18 exists to prevent.
      */
-    private static Float4 cloudRebase(RtTerrain terrain) {
-        return new Float4(terrain.blockX, terrain.blockY, terrain.blockZ, 0f);
+    private static Float4 cloudRebase(RtTerrain terrain, ClientLevel level) {
+        // The wind's accumulated drift, subtracted from the origin. Sampling a field at p + (origin -
+        // drift) is the same thing as sampling a drifting field at p, and doing it this way means the
+        // shader has no notion of wind at all: one addition it already performs to un-rebase the
+        // coordinates now also advects them, so a cloud and its reflection cannot disagree about where
+        // the field is.
+        //
+        // Only xz. The y lane is the pure rebase because cloudShellSpan measures the deck's altitude
+        // from it, and a deck that drifted vertically would be a deck at the wrong height.
+        float driftX = 0f;
+        float driftZ = 0f;
+        if (level != null) {
+            float speed = FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value();
+            if (speed > 0f) {
+                // Game time rather than wall clock, so the sky stops when the game does and resumes
+                // where it left off. Partial-tick interpolated for the same reason the weather is: at 20
+                // Hz the drift of a field that fills the screen is a visible stutter.
+                double partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+                double seconds = (level.getGameTime() + partial) / 20.0;
+                double angle = Math.toRadians(FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE.value());
+                // Kept in double to here: game time reaches millions of ticks on an old world, and the
+                // product with the speed is what a float would start losing blocks off the end of.
+                driftX = (float) (Math.cos(angle) * speed * seconds);
+                driftZ = (float) (Math.sin(angle) * speed * seconds);
+            }
+        }
+        return new Float4(terrain.blockX - driftX, terrain.blockY, terrain.blockZ - driftZ,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_FIELD_SCALE.value());
     }
 
     private static Float4 cloudShape() {
@@ -1506,7 +1532,7 @@ public final class RtComposite {
                     visibilityGridOrigin(camX, camY, camZ, terrain),
                     cloudParams(level),
                     cloudShape(),
-                    cloudRebase(terrain)
+                    cloudRebase(terrain, level)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

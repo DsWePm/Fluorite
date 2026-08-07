@@ -109,9 +109,15 @@ public final class RtVideoOptions {
                                 sunIntensity(), sunTemperature()),
                         Section.titled("fluorite.options.rt.section.skyArt",
                                 skyIntensity(), skyTemperature()),
-                        Section.titled("fluorite.options.rt.section.clouds",
-                                clouds(), cloudWeather(), cloudCoverage(), cloudDensity(), cloudType(),
-                                cloudExtinction(), cloudAltitude(), cloudThickness(),
+                        // Two groups on purpose: the FIELD is the 2D question (where the clumps and
+                        // clearings are, how they drift), the SHAPE is the 3D one (how big a cloud is,
+                        // how finely its edges break up). They were one set of numbers and neither could
+                        // be adjusted without moving the other.
+                        Section.titled("fluorite.options.rt.section.cloudField",
+                                clouds(), cloudWeather(), cloudCoverage(), cloudType(),
+                                cloudFieldScale(), cloudWindSpeed(), cloudWindAngle()),
+                        Section.titled("fluorite.options.rt.section.cloudShape",
+                                cloudDensity(), cloudExtinction(), cloudAltitude(), cloudThickness(),
                                 cloudBaseScale(), cloudDetailScale()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
@@ -481,6 +487,30 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> cloudBaseScale() {
         return blockSlider("fluorite.options.rt.cloudBaseScale",
                 FluoriteConfig.Rt.Volumetrics.CLOUD_BASE_SCALE, 200, 8000);
+    }
+
+    /** How fast the field drifts. 0 freezes the sky, which is the A/B for whether motion is the fix. */
+    private static OptionInstance<Integer> cloudWindSpeed() {
+        return scaleSlider("fluorite.options.rt.cloudWindSpeed",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED);
+    }
+
+    private static OptionInstance<Integer> cloudWindAngle() {
+        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.cloudWindAngle",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.cloudWindAngle.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(v + "°")),
+            new OptionInstance.IntRange(0, 359),
+            Math.clamp(Math.round(setting.value()), 0, 359),
+            v -> setting.set((float) v));
+    }
+
+    /** The 2D field: how far apart the sky's clumps and clearings are, as opposed to how big one cloud is. */
+    private static OptionInstance<Integer> cloudFieldScale() {
+        return blockSlider("fluorite.options.rt.cloudFieldScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_FIELD_SCALE, 500, 40000);
     }
 
     private static OptionInstance<Integer> cloudDetailScale() {
