@@ -320,12 +320,20 @@ public final class RtComposite {
             waterCellZ = wantZ;
             waterSurfaceY = surface;
             waterReanchor = true;
-            // The mask is rebuilt only here, which is the whole of what a re-anchor costs.
+        }
+        // Rebuilt on a re-anchor, and retried until it actually reaches the GPU.
+        if (waterReanchor || !waterMaskUploaded) {
             buildWaterObstacleMask(level, cell);
         }
-        waterDomain = new Float4((float) (waterCellX * (double) cell - terrain.blockX),
-                (float) (waterCellZ * (double) cell - terrain.blockZ),
-                cell,
+        // IN THE SAME SPACE THE SHADING ASKS IN, which is not the rebased one. applyWaterWaves receives
+        // hitPos.xz PLUS waterAnchor.xy, and that anchor is the rebase origin MASKED to 4096 -- the
+        // procedural spectrum only needs world stability modulo its longest wavelength, so masking keeps
+        // the coordinate small and is right for it. Handing this origin over un-masked put the two a
+        // whole rebase apart, the uv landed outside [0,1], and waterSimGrad returned zero every time:
+        // a field that simulated correctly and reached nothing.
+        double originX = waterCellX * (double) cell - terrain.blockX + (terrain.blockX & WATER_ANCHOR_MASK);
+        double originZ = waterCellZ * (double) cell - terrain.blockZ + (terrain.blockZ & WATER_ANCHOR_MASK);
+        waterDomain = new Float4((float) originX, (float) originZ, cell,
                 FluoriteConfig.Rt.Water.WATER_SIM_STRENGTH.value());
         return true;
     }
@@ -357,8 +365,15 @@ public final class RtComposite {
                 waterObstacleMask[z * RtSky.WATER_SIM_DIM + x] = open ? (byte) 255 : 0;
             }
         }
+        // skyLuts does not exist on the first frames, and the first re-anchor is on the very first
+        // frame. Without this retry the mask would be built once, dropped, and never rebuilt until the
+        // player walked far enough to re-anchor -- with the image holding whatever it was allocated with
+        // in the meantime.
         if (skyLuts != null) {
             skyLuts.uploadWaterObstacles(waterObstacleMask);
+            waterMaskUploaded = true;
+        } else {
+            waterMaskUploaded = false;
         }
     }
 
@@ -694,6 +709,7 @@ public final class RtComposite {
     private final float[] waterImpulses = new float[RtSky.WATER_MAX_IMPULSES * 4];
     private int waterImpulseCount;
     private byte[] waterObstacleMask;
+    private boolean waterMaskUploaded;
 
     /** Frames since start, for the debug view's periodic test impulse. */
     private long worldFrameCounter() {
