@@ -1117,8 +1117,15 @@ public final class RtTerrain {
                     if (packed == null) {
                         completeTask(task, null, null, null);
                     } else {
+                        // Deformable is decided per section and per build (M12.5): a section that holds
+                        // water and sits inside the deformation range keeps its build inputs and gets an
+                        // updatable BLAS. Not wired to a distance yet -- the dispatch that would use it
+                        // does not exist, and asking for it before then would only buy the costs.
+                        boolean deformable = false;
                         PreparedSection prepared = RtSectionBuilder.prepare(dispatch.ctx(), packed,
-                                cpu.opacityMicromap(), FluoriteConfig.Rt.Terrain.BLAS_COMPACTION.value(),
+                                cpu.opacityMicromap(),
+                                FluoriteConfig.Rt.Terrain.BLAS_COMPACTION.value() && !deformable,
+                                deformable,
                                 task.key, task.sox, task.soy, task.soz);
                         if (!isTaskCurrent(task)) {
                             destroyPreparedSection(prepared);
