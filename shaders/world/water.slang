@@ -17,6 +17,11 @@
 import world_common;
 import world_core;
 
+// The simulated height field (M12), in metres of displacement. RAYGEN and closest-hit both reach it
+// through applyWaterWaves.
+public static const int WATER_SIM_DIM = 256;
+[[vk::binding(18, 0)]] Sampler2D<float> waterSimHeight;
+
 public static const float WATER_WAVE_STRENGTH = 0.3;  // slope scale (higher = choppier glints / more broken reflections)
 public static const float WAVE_SPEED = 0.8;           // global time scale; dispersion keeps relative speeds physical
 public static const int   WAVE_COUNT = 10;            // λ = 14 m … 0.38 m (each octave 1.5× shorter)
@@ -101,13 +106,55 @@ public void waterWaveGradTemporal(float2 p, float currentT, float previousT, flo
     previousGrad = currentGrad - (currentT - previousT) * WAVE_SPEED * gradDt;
 }
 
+// ---- The interactive simulation's contribution (M12), sampled as a SLOPE and added to the spectrum's.
+//
+// ADDED RATHER THAN SUBSTITUTED, which is a deliberate choice with a known physical gap. Two independent
+// wave fields do not interact -- a simulated ripple does not refract around a swell crest, and a swell
+// does not carry a ripple along with it -- so this is not one wave field, it is two summed. What it buys
+// is that the ocean inside the domain is still the ocean: the spectrum is the floor everywhere, and the
+// simulation is a disturbance on top of it, so crossing the domain boundary fades one term out rather
+// than swapping the water for a different water. The alternative, replacing the field inside the domain,
+// is more self-consistent and looks worse -- the simulation cannot produce a swell out of nothing, so
+// the domain would read as a conspicuously calm rectangle following the player around.
+//
+// ONE ENTRY POINT. This is added inside applyWaterWaves, which every consumer already goes through:
+// primary rays, the RR guide buffers, and the caustics (causticLanding differentiates the same field).
+// So ripples reach reflections and caustics without any of those knowing the simulation exists.
+float2 waterSimGrad(float2 worldXZ) {
+    float cellSize = worldPush.waterSimDomain.z;
+    if (cellSize <= 0.0) {
+        return float2(0.0, 0.0); // simulation off: the spectrum stands alone, bit for bit as before
+    }
+    float2 cell = (worldXZ - worldPush.waterSimDomain.xy) / cellSize;
+    float2 uv = cell / float(WATER_SIM_DIM);
+    if (any(uv < 0.0) || any(uv > 1.0)) {
+        return float2(0.0, 0.0);
+    }
+    // Central differences on the filtered height, one texel apart. The texture is filtered, so this is
+    // the slope of the interpolated surface rather than of the lattice -- which is what the shading
+    // wants, and it is also why the sponge's non-physical edge band never shows: the fade below has
+    // already reached zero before the sampler gets there.
+    float texel = 1.0 / float(WATER_SIM_DIM);
+    float hx0 = waterSimHeight.SampleLevel(uv - float2(texel, 0.0), 0.0);
+    float hx1 = waterSimHeight.SampleLevel(uv + float2(texel, 0.0), 0.0);
+    float hz0 = waterSimHeight.SampleLevel(uv - float2(0.0, texel), 0.0);
+    float hz1 = waterSimHeight.SampleLevel(uv + float2(0.0, texel), 0.0);
+    float2 grad = float2(hx1 - hx0, hz1 - hz0) / (2.0 * cellSize);
+    // Fade over the outer eighth. The domain is a rectangle that follows the player, and a rectangle's
+    // edge is the one thing in this system with no physical meaning at all -- so nothing may be visible
+    // there. Both axes, multiplied, so the corners fade too.
+    float2 edge = min(uv, 1.0 - uv);
+    float fade = smoothstep(0.0, 0.125, edge.x) * smoothstep(0.0, 0.125, edge.y);
+    return grad * fade * worldPush.waterSimDomain.w;
+}
+
 // Perturb a (near-)horizontal water surface normal by the wave field. Flowing side faces (|n.y| small)
 // keep their flat geometric normal. `worldXZ` must be a world-stable coordinate (rebased hit + the pushed
 // anchor) so the ripples stay pinned in the world. `nGeo` is already oriented toward the viewer, so the
 // down-viewed underside (n.y < 0) takes the mirrored slope (-up).
 public float3 applyWaterWaves(float3 nGeo, float2 worldXZ, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
-    float2 grad = waterWaveGrad(worldXZ, t, footprint);
+    float2 grad = waterWaveGrad(worldXZ, t, footprint) + waterSimGrad(worldXZ);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
 }

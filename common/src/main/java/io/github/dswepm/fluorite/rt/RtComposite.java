@@ -254,6 +254,18 @@ public final class RtComposite {
     }
 
     /** The cirrus layer's own shape: how big a streak is, how fine its texture, how dense the sheet. */
+    /**
+     * Where the water simulation's domain sits, and how much of its slope reaches the shading.
+     *
+     * <p>A cell size of zero is the disable path — waterSimGrad returns before it reads anything, so the
+     * procedural spectrum stands alone exactly as it did before this existed. That is what it returns
+     * for now: the domain is placed and the field is stepped by the passes that follow this commit, and
+     * a domain pointing at an unstepped field would be a flat contribution dressed up as a working one.
+     */
+    private static Float4 waterSimDomain() {
+        return new Float4(0f, 0f, 0f, 0f);
+    }
+
     private static Float4 cloudCirrusShape() {
         return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_BASE_SCALE.value(),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DETAIL_SCALE.value(),
@@ -1128,6 +1140,10 @@ public final class RtComposite {
             // the cloud noise is sampled at WORLD COORDINATES divided by a feature size, which leaves
             // that range immediately and has to wrap. See tilingSampler.
             worldPipeline.setCloudNoise(skyLuts.cloudNoiseView(), tilingSampler(ctx));
+            // Clamped, not repeating: the height field is a finite domain that follows the player, and
+            // wrapping it would put the far shore's ripples on the near one. The sampler's clamp is a
+            // backstop only -- waterSimGrad rejects out-of-domain coordinates before it reads.
+            worldPipeline.setWaterSimHeight(skyLuts.waterHeightView(), lutSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1604,7 +1620,8 @@ public final class RtComposite {
                     cloudLighting(),
                     cloudCirrus(),
                     cloudCirrusShape(),
-                    cloudCirrusOrigin(terrain, level)
+                    cloudCirrusOrigin(terrain, level),
+                    waterSimDomain()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

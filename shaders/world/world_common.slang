@@ -165,6 +165,15 @@ public struct WorldPush {
     // what let one be authored without moving the other.
     public float4   cloudHighShape;   // x base size, y detail size, z density scale, w reserved
     public float4   cloudHighOrigin;  // xyz its own field origin (rebase - its own drift), w field scale
+    // The interactive water simulation's domain (M12). xy is the rebased world position of cell (0,0)'s
+    // centre, z the blocks per cell, w the slope strength the sampled field contributes.
+    //
+    // SNAPPED TO WHOLE CELLS before rebasing, for the same reason visGridOrigin is: a domain that slid
+    // continuously with the player would resample the height field at a different phase every frame and
+    // smear the ripples into streaks (R22, which the reference implementation does not solve). Zero in z
+    // is the disable path -- the sampler returns no contribution and the procedural spectrum stands
+    // alone, which is exactly the shipped behaviour before this existed.
+    public float4   waterSimDomain;   // xy origin (rebased), z cell size, w slope strength
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

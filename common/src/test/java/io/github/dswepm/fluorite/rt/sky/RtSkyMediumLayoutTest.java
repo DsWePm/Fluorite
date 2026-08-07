@@ -16,10 +16,11 @@ final class RtSkyMediumLayoutTest {
         // 736 through M16; 768 when M11's slice one added the two authored cloud vectors, 784 with the
         // rebase origin that anchors them to the world instead of to the player, 800 when slice two added
         // the lighting one, 816 when slice three added the cirrus layer and 848 when that layer stopped
-        // deriving its shape and its wind from the deck below it. This buffer is not the
+        // deriving its shape and its wind from the deck below it, 864 with M12's water-sim domain. This
+        // buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
         // but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(848, WorldPushData.BYTE_SIZE);
+        assertEquals(864, WorldPushData.BYTE_SIZE);
     }
 
     /**

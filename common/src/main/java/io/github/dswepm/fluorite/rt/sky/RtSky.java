@@ -100,6 +100,13 @@ public final class RtSky {
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
     private RtImage cloudNoise;
+    // The interactive water simulation's height field (M12), in metres of displacement. Three buffers
+    // rotate through prev/cur/next: leapfrog needs both previous states, so writing next over prev in
+    // place would corrupt neighbours a later thread still has to read.
+    private RtImage[] waterHeight;
+    private RtImage waterObstacle;
+    /** Must equal WATER_SIM_DIM in water_sim.comp.slang and water.slang. */
+    public static final int WATER_SIM_DIM = 256;
     /** Must equal CLOUD_NOISE_DIM in cloud_noise.comp.slang, and numthreads there. */
     private static final int CLOUD_NOISE_DIM = 128;
     private static final int CLOUD_NOISE_GROUP = 4;
@@ -239,6 +246,17 @@ public final class RtSky {
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "cloud noise volume");
             writeStorageImage(vk, stack, cloudNoiseBake.descriptorSet(), 0, sky.cloudNoise.view);
 
+            // R16F: a displacement in metres, signed, and a ripple's amplitude spans four orders of
+            // magnitude between a raindrop and a boat wake -- which is what a float format buys over the
+            // R8 the masks use. 256^2 x 2 bytes x 3 is 384 KB.
+            sky.waterHeight = new RtImage[3];
+            for (int i = 0; i < 3; i++) {
+                sky.waterHeight[i] = ctx.createStorageImage(WATER_SIM_DIM, WATER_SIM_DIM,
+                        VK10.VK_FORMAT_R16_SFLOAT, "water sim height " + i);
+            }
+            sky.waterObstacle = ctx.createStorageImage(WATER_SIM_DIM, WATER_SIM_DIM,
+                    VK10.VK_FORMAT_R8_UNORM, "water sim obstacle mask");
+
             sky.aerialPerspective = ctx.createStorageImage3D(FROXEL_W, FROXEL_H, FROXEL_D,
                     VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "aerial perspective froxel");
             writeSampledImage(vk, stack, froxelBake.descriptorSet(), 0, sky.transmittance.view, sampler);
@@ -293,6 +311,11 @@ public final class RtSky {
     /** M11.1 cloud noise: R the billow that shapes a cloud, G the detail that erodes its edges. */
     public long cloudNoiseView() {
         return cloudNoise == null ? 0L : cloudNoise.view;
+    }
+
+    /** The height field the shading samples. Index 1 is the current state between steps. */
+    public long waterHeightView() {
+        return waterHeight == null ? 0L : waterHeight[1].view;
     }
 
     /**
@@ -484,6 +507,18 @@ public final class RtSky {
         if (cloudNoise != null) {
             cloudNoise.destroy();
             cloudNoise = null;
+        }
+        if (waterHeight != null) {
+            for (RtImage img : waterHeight) {
+                if (img != null) {
+                    img.destroy();
+                }
+            }
+            waterHeight = null;
+        }
+        if (waterObstacle != null) {
+            waterObstacle.destroy();
+            waterObstacle = null;
         }
         if (lutSampler != 0L) {
             VK10.vkDestroySampler(vk, lutSampler, null);
