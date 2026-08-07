@@ -729,7 +729,13 @@ fault[5]: type=READ_INVALID, address=0x6230c2000, precision=0x1000
 - 区域内**不含水**的 section 现在拿到 `compact = BLAS_COMPACTION && !deformable` = false 但 `deform=false`，于是既不压缩也不可更新——功能无害但白白丢压缩，说明这个布尔该按"这个 section 真的要形变吗"算，而不是按"它在区域里吗"。
 - `prepareTerrainBlas` 可更新分支返回的 `accel` 其 backing 归属（`ownsBacking`）是否与 `SectionGeom.destroy()` 的 `blas.destroy()` 匹配。
 
-**当前状态**：`sectionDeformable` 用一行 `if (true) return false;` 关掉，其余全部保留。修复后连同重测一起打开。
+**已修（同日）**：根因确认为**构建输入被拥有两次**。管线的既有不变量是 **`releaseBuildInputs` 与 `destroy` 互斥**——恰好一个负责释放。可形变 section 单靠自己就破坏了它：`releaseBuildInputs` **不能**释放（refit 还要用），而 `destroy` 对那些从未发布的构建**仍然必须**释放。所以「已移交」必须被**记录**而不是推断：`PreparedSection` 增加 `inputsTransferred`（`AtomicBoolean`，`withBlas` 复制时必须传同一个实例），发布 `SectionGeom` 前置位，`destroy` 见到就跳过。
+
+顺带修掉次要嫌疑之一：`deformable` 现在要求 `packed.waterVertCount() > 0`——按位置单独判断会让区域内每个石头 section 都为一次永远不会发生的位移放弃压缩。
+
+次要嫌疑之二**已核实无问题**：地形可更新分支走 `createBlasOn(..., ownsBacking=true, ...)`，所以 `SectionGeom.destroy()` 的 `blas.destroy()` 会连 backing 一起释放，与非可更新分支一致。
+
+**教训形态**：这是本里程碑第三次「两边单独看都对、错在相遇处」。而它比前两次更难查，因为**症状里没有任何东西指向 Java**——双重释放的表现是 TLAS 读到已消失的 BLAS，即一次没有 Java 栈的 device fault。真正把它钉住的是故障地址表里 `prev=` 那一栏的资源名（`'terrain section -368,0,96 BLAS compacted backing'`），不是任何堆栈。
 
 ### 8.3 M13 残余
 

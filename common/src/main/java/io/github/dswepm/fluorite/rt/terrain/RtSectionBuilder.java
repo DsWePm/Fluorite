@@ -113,11 +113,12 @@ final class RtSectionBuilder {
             return new PreparedSection(key, positions, indices, uvs, material, upload, waterRest, blas,
                     packed.triBase(), sox, soy, soz, packed.lights(),
                     deform ? packed.waterVertBase() : 0, deform ? packed.waterVertCount() : 0,
-                    updateScratch);
+                    updateScratch, new java.util.concurrent.atomic.AtomicBoolean(false));
         } catch (Throwable t) {
             if (blas != null) {
                 destroy(new PreparedSection(key, positions, indices, uvs, material, upload, waterRest,
-                        blas, packed.triBase(), sox, soy, soz, packed.lights(), 0, 0, 0L));
+                        blas, packed.triBase(), sox, soy, soz, packed.lights(), 0, 0, 0L,
+                        new java.util.concurrent.atomic.AtomicBoolean(false)));
             } else {
                 if (waterRest != null) waterRest.destroy();
                 if (upload != null) upload.destroy();
@@ -173,24 +174,45 @@ final class RtSectionBuilder {
         RtAccel.freeBlasScratch(java.util.List.of(prepared.blas));
         prepared.blas.accel.destroy();
         prepared.upload.destroy();
+        prepared.material.destroy();
+        prepared.uvs.destroy();
+        if (prepared.inputsTransferred.get()) {
+            // A published deformable section owns these now and frees them with itself. Freeing them
+            // here as well is a double free, and what it looks like from outside is the TLAS reading a
+            // BLAS that is already gone -- a device fault with no Java stack pointing anywhere near here.
+            return;
+        }
         if (prepared.waterRest != null) {
             prepared.waterRest.destroy();
         }
-        prepared.material.destroy();
-        prepared.uvs.destroy();
         prepared.indices.destroy();
         prepared.positions.destroy();
     }
 
     /** Worker-owned native section state paired with its prepared BLAS. {@code lights} = packed
      *  section-local RIS light records (CPU-side, flattened into the global buffer at publish). */
+    /**
+     * @param inputsTransferred set once a published SectionGeom has taken over positions/indices/rest.
+     *        WITHOUT THIS THEY ARE OWNED TWICE. The pipeline's standing invariant is that
+     *        releaseBuildInputs and destroy are mutually exclusive -- exactly one of them frees the build
+     *        inputs. A deformable section breaks that on its own: releaseBuildInputs must NOT free them
+     *        (the refit still needs them) and destroy still must, for the builds that never publish. So
+     *        the transfer has to be recorded rather than inferred, and it is recorded here rather than by
+     *        nulling fields because a record cannot null them.
+     */
     record PreparedSection(long key, RtBuffer positions, RtBuffer indices, RtBuffer uvs,
                            RtBuffer material, RtBuffer upload, RtBuffer waterRest,
                            RtAccel.PreparedBlas blas, int[] triBase,
                            int sx, int sy, int sz, float[] lights,
-                           int waterVertBase, int waterVertCount, long updateScratchSize) {
+                           int waterVertBase, int waterVertCount, long updateScratchSize,
+                           java.util.concurrent.atomic.AtomicBoolean inputsTransferred) {
         boolean deformable() {
             return waterRest != null;
+        }
+
+        /** The published geometry now owns the build inputs; this section must stop freeing them. */
+        void transferBuildInputs() {
+            inputsTransferred.set(true);
         }
 
         void releaseUpload() {
@@ -214,9 +236,11 @@ final class RtSectionBuilder {
         }
 
         PreparedSection withBlas(RtAccel.PreparedBlas replacement) {
+            // Same AtomicBoolean instance, not a fresh one: a copy that forgot the transfer would free
+            // buffers the published geometry is still using.
             return new PreparedSection(key, positions, indices, uvs, material, upload, waterRest,
                     replacement, triBase, sx, sy, sz, lights,
-                    waterVertBase, waterVertCount, updateScratchSize);
+                    waterVertBase, waterVertCount, updateScratchSize, inputsTransferred);
         }
     }
 }
