@@ -422,13 +422,20 @@ public final class RtComposite {
             }
             // How hard it is moving through the surface. A still entity leaves the water alone; a
             // swimming one keeps feeding the field, which is what makes a wake rather than one splash.
-            double speed = Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
+            // BLOCKS PER SECOND. getDeltaMovement is per TICK, and forgetting that is a factor of twenty
+            // -- a swim is about 0.1 per tick, which read as a speed of 0.1 gave an impulse of three
+            // millimetres, a slope two orders of magnitude under the procedural spectrum's. Invisible,
+            // and invisible in a way that looks exactly like nothing being injected at all.
+            double speed = (Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
                     + e.getDeltaMovement().z * e.getDeltaMovement().z)
-                    + Math.abs(e.getDeltaMovement().y);
-            if (speed < 0.01) {
+                    + Math.abs(e.getDeltaMovement().y)) * 20.0;
+            if (speed < 0.2) {
                 continue;
             }
-            float amount = (float) Math.min(speed * 0.5, 1.0) * cap;
+            // Saturating at a walking pace, so a sprint does not simply scale the splash up without
+            // limit -- past a point what changes about a wake is its shape, not its height, and the
+            // clamp above this is a stability bound rather than a taste one.
+            float amount = (float) Math.min(speed / 4.0, 1.0) * cap;
             // Bigger things push more water, but the radius is in CELLS and a bump narrower than a
             // couple of cells is the single-cell delta the shader's smoothing exists to avoid.
             float radius = (float) Math.max(2.0, e.getBbWidth() / cell);
