@@ -139,6 +139,7 @@
   "fluorite.options.rt.debugView.21": "合成前缀 A/B",
   "fluorite.options.rt.debugView.22": "云链路探针",
   "fluorite.options.rt.debugView.23": "水面仿真高度场",
+  "fluorite.options.rt.debugView.24": "水面仿真触达",
   "fluorite.options.rt.fog": "体积雾",
   "fluorite.options.rt.fog.tooltip": "世界的环境介质。按路径分段积分，因此反射和折射里同样会出现，而不只是直接视野。",
   "fluorite.options.rt.fogDensity": "雾浓度",
