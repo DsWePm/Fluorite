@@ -1544,8 +1544,16 @@ public final class FluoriteConfig {
              * shipped behaviour.
              */
             public static float simRangeBlocks() {
-                float range = WATER_SIM_RANGE.value();
-                return WATER_DEFORM.value() ? Math.min(range, WATER_DEFORM_RANGE.value()) : range;
+                // NOT CLAMPED YET, deliberately. D45 pulls the ripple domain in to match the deformation
+                // range, on the reasoning that a ripple the geometry cannot move is not worth simulating.
+                // That reasoning holds only once the deformation actually runs, and its per-frame path is
+                // not wired (M12.5 slice 3b). Until then the clamp would make WATER_DEFORM a switch whose
+                // entire observable effect is halving the ripple radius -- which is what it did: with the
+                // 32-block domain that produced, the ripples simply ended a few blocks out and looked
+                // like they vanished when the camera lifted.
+                //
+                // Restore the min() in the same commit that makes the deformation dispatch.
+                return WATER_SIM_RANGE.value();
             }
 
             /**

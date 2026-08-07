@@ -2006,7 +2006,10 @@ public final class RtComposite {
                             courant * courant,
                             FluoriteConfig.Rt.Water.WATER_SIM_DAMPING.value(),
                             RtSky.WATER_SIM_DIM * 0.10f,
-                            waterImpulses, waterImpulseCount, waterReanchor);
+                            waterImpulses, waterImpulseCount, waterReanchor,
+                            // The domain's absolute cell origin, so the solver can resolve a
+                            // re-anchor by shifting its reads instead of losing the field.
+                            waterCellX, waterCellZ);
                 }
             }
             if (gpuTimers != null) {
