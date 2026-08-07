@@ -965,6 +965,69 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudDetailScale", "volumetrics.cloud-detail-scale",
                             340f, 40f, 2000f);
 
+            /**
+             * Henyey-Greenstein asymmetry of the cloud's forward lobe.
+             *
+             * <p>0.8 is close to the measured asymmetry parameter of a water cloud — droplets around ten
+             * microns are large against visible wavelengths, so Mie scattering off them is strongly
+             * forward-peaked. That is a property of the droplets rather than a look, which is why the
+             * default sits where the physics does.
+             *
+             * <p>What it changes on screen is how hard the rim of a backlit cloud glows: at high values
+             * almost all the light continues forward, so a cloud between the viewer and the sun is dark
+             * with a fierce edge, and at low values it is uniformly bright and flat.
+             */
+            public static final FloatSetting CLOUD_PHASE_G =
+                    clampedFloat("fluorite.rt.fog.cloudPhaseG", "volumetrics.cloud-phase-g",
+                            0.8f, -0.95f, 0.95f);
+
+            /**
+             * Single-scattering albedo of the cloud: the fraction of an interaction that scatters rather
+             * than absorbs.
+             *
+             * <p><b>The physically load-bearing number here.</b> The multiple-scattering term decays at
+             * {@code sqrt(3*(1-albedo))} times the ordinary optical depth (see cloud.slang
+             * cloudDiffusionRate), so this one value sets how deep light reaches into a cloud. At the
+             * default 0.999 that is 0.055 — light reaches about eighteen times deeper than the direct
+             * beam, which is why a thick cloud's interior is bright rather than black.
+             *
+             * <p>Water droplets barely absorb visible light at all, so the default is near one and moving
+             * it far down is a deliberately unphysical dial: it makes clouds sooty. It is exposed because
+             * it is the honest place to make clouds darker, unlike raising extinction, which makes them
+             * more opaque instead.
+             */
+            public static final FloatSetting CLOUD_ALBEDO =
+                    clampedFloat("fluorite.rt.fog.cloudAlbedo", "volumetrics.cloud-albedo",
+                            0.999f, 0.5f, 0.9999f);
+
+            /**
+             * Steps in the march that asks how much cloud stands between a sample and the light. 0 takes
+             * the light as unoccluded, which flattens every cloud.
+             *
+             * <p><b>The milestone's cost dial.</b> These run per in-cloud step of the primary march, so
+             * they multiply the expensive path rather than adding to it — R19 names cloud cost as this
+             * milestone's principal risk and this is the lever it is measured with. The steps double in
+             * length, so the reach stays one deck thickness whatever this is set to and only the
+             * resolution of the near field moves.
+             */
+            public static final IntSetting CLOUD_SUN_STEPS =
+                    clampedInt("fluorite.rt.fog.cloudSunSteps", "volumetrics.cloud-sun-steps", 5, 0, 8);
+
+            /**
+             * The diffusion term that keeps the inside of a thick cloud bright.
+             *
+             * <p>Same physics as {@link #MULTI_SCATTER} does for fog and water, and derived rather than
+             * fitted — but a separate switch, because a cloud's optical depth is an order of magnitude
+             * past anything the fog reaches and this is the regime the approximation exists for (D5).
+             *
+             * <p>Off is single scattering exactly: the diffuse lobe is removed and the sky's occlusion
+             * goes back on the beam's own extinction. That makes it an A/B rather than a tuning dial —
+             * and the A/B is stark, because at an optical depth of 20 the direct beam is zero and this is
+             * a third.
+             */
+            public static final BooleanSetting CLOUD_MULTI_SCATTER =
+                    bool("fluorite.rt.fog.cloudMultiScatter", "volumetrics.cloud-multi-scatter", true);
+
             public static final BooleanSetting SCATTER_VERTEX =
                     bool("fluorite.rt.fog.scatterVertex", "volumetrics.scatter-vertex", true);
 

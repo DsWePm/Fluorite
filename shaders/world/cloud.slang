@@ -48,8 +48,9 @@ float cloudFieldScale() { return max(worldPush.cloudRebase.w, 1.0); }
 float cloudTypeScale() { return cloudFieldScale() * 2.9; }
 
 // Everything else is authored per frame, from worldPush:
-//   cloudParams = (coverage bias, density scale, type bias, extinction per block at full density)
-//   cloudShape  = (deck bottom altitude, deck thickness, base feature size, detail feature size)
+//   cloudParams   = (coverage bias, density scale, type bias, extinction per block at full density)
+//   cloudShape    = (deck bottom altitude, deck thickness, base feature size, detail feature size)
+//   cloudLighting = (phase g, single-scattering albedo, sun-march steps, reserved)
 // Authored rather than constant because the vanilla weather system has to be able to move them — see
 // RtComposite.cloudParams, where rain drives coverage and thunder drives type.
 /**
@@ -71,6 +72,68 @@ float3 worldOf(float3 p) { return p + worldPush.cloudRebase.xyz; }
 float cloudBottom() { return worldPush.cloudShape.x; }
 float cloudThickness() { return max(worldPush.cloudShape.y, 1.0); }
 float cloudTop() { return cloudBottom() + cloudThickness(); }
+
+// ---- Phase function. Cloud droplets are ~10 um across, which is large against visible wavelengths, so
+// Mie scattering off them is very strongly forward-peaked -- the measured asymmetry parameter of a water
+// cloud is about 0.85, and that is a physical property of the droplet size distribution rather than a
+// number chosen to make a picture look right. It is authored anyway (cloudLighting.x) because the
+// distribution differs between cloud types and because it is the knob that decides how hard the rim of a
+// backlit cloud glows.
+//
+// The BACK lobe is ours and is a fit, so it is named as one: real Mie has a secondary backscatter peak
+// (the same optics as a glory) that a single Henyey-Greenstein lobe cannot represent at all, and without
+// it a cloud with the sun behind the viewer reads as flat grey paper. Its width is tied to the forward
+// lobe rather than authored separately -- one dial for "how directional is this cloud", not two.
+static const float CLOUD_BACK_LOBE_RATIO = 0.6;  // back lobe g = -0.6 * forward g
+static const float CLOUD_FORWARD_WEIGHT = 0.8;   // how much of the energy stays in the forward lobe
+
+/**
+ * Two Henyey-Greenstein lobes, forward and backward.
+ *
+ * <p>ENERGY CONSERVING BY CONSTRUCTION, which is the whole reason it is a lerp rather than a sum: each
+ * hg() already integrates to 1 over the sphere, so any convex combination of two of them does too. The
+ * reference implementation this structure comes from adds its lobes and drops the 1/(4*pi) besides, which
+ * is where its ~4*pi energy error and every constant tuned around that error come from (R20).
+ */
+float cloudPhase(float cosT, float g) {
+    return lerp(hg(cosT, -g * CLOUD_BACK_LOBE_RATIO), hg(cosT, g), CLOUD_FORWARD_WEIGHT);
+}
+
+float cloudPhaseG() { return clamp(worldPush.cloudLighting.x, -0.95, 0.95); }
+float cloudAlbedo() { return clamp(worldPush.cloudLighting.y, 0.0, 0.9999); }
+
+/** Bit 29: the multiple-scattering diffusion term. Off leaves single scattering exactly as it was. */
+bool cloudMultiScatterOn() {
+    return (worldPush.flags & (1u << 29u)) != 0u;
+}
+
+/**
+ * The rate the DIFFUSE light dims at, as a multiple of ordinary optical depth.
+ *
+ * <p>Re-derived here rather than transcribed (§6.4). Where a medium is optically thick and almost purely
+ * scattering, the radiance field goes nearly isotropic and the transport equation degenerates into the
+ * diffusion equation, whose Green's function for a point source falls off as exp(-K*r)/(4*pi*D*r) with
+ *
+ *   K = sqrt(3 * sigma_a * sigma_tr),  sigma_a = (1 - w) * sigma_t,  sigma_tr -> sigma_t as g -> 0
+ *
+ * so K = sigma_t * sqrt(3 * (1 - w)) and therefore the integral of K along ANY path is that path's
+ * ordinary optical depth times a single scalar. This function is that scalar. It is the reason the
+ * multiple-scattering term is nearly free: the sun march already computes the optical depth, and the
+ * diffuse term is one more exp() of the same number.
+ *
+ * <p>Cloud droplets scatter almost without absorbing, so w is a hair under 1 and the scalar is small: at
+ * the default 0.999 it is 0.055. At an optical depth of 20 the direct beam is exp(-20), which is zero,
+ * while this is exp(-1.1), which is a third -- and that difference IS the appearance of a cloud. A photon
+ * that scatters has not been removed from the cloud, only from the beam; only absorption removes it.
+ *
+ * <p>The same identity, applied to a medium that absorbs, is what volume_source.slang's
+ * volumeDiffuseAttenuation computes per channel for the fog and the water. It is spelled out separately
+ * here because the cloud's version collapses to a scalar (grey droplets, one shared sigma_t) and rides on
+ * a march that already exists, where the fog's has to survive per-channel absorption and a clamp.
+ */
+float cloudDiffusionRate() {
+    return sqrt(3.0 * (1.0 - cloudAlbedo()));
+}
 
 public struct CloudResult {
     public float3 inScatter;
@@ -184,6 +247,23 @@ float cloudHeightProfile(float altitude, float type) {
 }
 
 /**
+ * Where this type's profile runs out, as a fraction of the deck — the top of THIS cloud rather than of
+ * the deck it stands in.
+ *
+ * <p>MUST TRACK cloudHeightProfile, and the two are adjacent so a change to one is visibly a change to
+ * both. It is the upper support of each shape above: the stratus sheet ends at 0.18, the cumulus at 0.62,
+ * the cumulonimbus's anvil at 1. Blended in the same two halves for the same reason.
+ *
+ * <p>Exists so the ambient term can ask how much cloud stands above a point without marching for the
+ * answer. Using the deck's own top instead would bury a stratus sheet under three hundred blocks of
+ * nothing and turn it black.
+ */
+float cloudProfileTop(float type) {
+    return type < 0.5 ? lerp(0.18, 0.62, saturate(type * 2.0))
+                      : lerp(0.62, 1.0, saturate(type * 2.0 - 1.0));
+}
+
+/**
  * Coverage, from a world-anchored slice of the same volume.
  *
  * <p>Anchored to world coordinates rather than to anything view-dependent, so a cloud stays over the
@@ -267,14 +347,73 @@ float cloudDensity(float3 p, bool cheap) {
 }
 
 /**
+ * Optical depth from a point toward the light, which is how a cloud shadows itself.
+ *
+ * <p>GEOMETRICALLY GROWING STEPS. The first is short because the shading a viewer reads — the boundary
+ * between the lit face and the shaded one — is decided within a few tens of blocks of the sample, and the
+ * last is long because past that only the bulk matters. Doubling reaches about one deck thickness in five
+ * steps; a linear schedule with the same reach would need thirty-one, and one with the same step count
+ * would sample the near field four times too coarsely.
+ *
+ * <p>The reach is one deck thickness on purpose rather than "until the ray leaves the shell": for a low
+ * sun the path through the shell is kilometres long, almost all of it outside any cloud, and marching it
+ * would spend the whole budget proving that.
+ *
+ * <p>CHEAP density (no erosion). Erosion is a high-frequency detail on a cloud's edge, and this integral
+ * is a low-frequency quantity — it decides how dark the inside of a cloud is, not where its edge falls.
+ * Halving the fetches on the one path that runs several times per march step is worth more than the
+ * detail is.
+ */
+float sunOpticalDepth(float3 p, float3 lightDir, int steps, inout uint seed) {
+    // reach = s0 * (2^steps - 1) with doubling steps, so s0 is chosen to keep the reach fixed as the
+    // step count moves. Quality then costs steps without also changing what is being integrated.
+    float reach = cloudThickness();
+    float s0 = reach / max(exp2(float(steps)) - 1.0, 1.0);
+    // Jittered start for the same reason the primary march jitters: an unjittered shadow lattice draws
+    // itself as bands across a cloud's shaded face.
+    float jitter = rndf(seed);
+    float tau = 0.0;
+    float t = 0.0;
+    float step = s0;
+    for (int i = 0; i < steps; ++i) {
+        // Sample at the step's midpoint, offset by the jitter — midpoint because a one-sample estimate of
+        // an interval's average is least wrong there.
+        float3 q = p + lightDir * (t + step * (0.35 + 0.3 * jitter));
+        tau += cloudDensity(q, true) * step;
+        t += step;
+        step *= 2.0;
+    }
+    return tau * worldPush.cloudParams.w;
+}
+
+/**
  * March the shell and return what the clouds added and what of the sky survives them.
  *
- * <p>SLICE ONE OF THREE (D35). The source here is ambient only — the shared medium sky radiance, the
- * same field the fog and the water read since M16 — so the clouds are lit but flat. The sun's own term,
- * its self-shadowing march and the phi_fwd multiple-scattering that makes a thick cloud's interior stay
- * bright are the second slice; the two layers, the camera-proximity fade and the reflection strategy are
- * the third. Being able to price the march before any of that is the reason it is split this way: R19
- * names the cost of this milestone as its principal risk.
+ * <p>SLICE TWO OF THREE (D34/D35). The source is now the three terms a cloud actually has, and the
+ * remaining slice is the two layers, the camera-proximity fade and the reflection strategy.
+ *
+ * <ol>
+ *   <li><b>Direct sun</b>, through the self-shadow march and a two-lobe phase function. This is what
+ *       gives a cloud a lit side and a shaded side, and the back lobe is what lights the rim of one
+ *       standing in front of the sun.</li>
+ *   <li><b>Multiple scattering</b>, the diffusion term — the same sun, attenuated at cloudDiffusionRate()
+ *       times the optical depth instead of at the optical depth, and isotropic because by the time light
+ *       has scattered enough times to be described by diffusion it has forgotten where it came from. This
+ *       is what keeps the inside of a thick cloud bright; without it a cumulonimbus is a black silhouette
+ *       with a lit edge.</li>
+ *   <li><b>Sky</b>, the shared mediumSkyRadiance the fog and the water have read since M16, occluded by
+ *       however much cloud stands above the sample.</li>
+ * </ol>
+ *
+ * <p>Every term is expressed as a GAIN OVER ISOTROPIC, matching evaluateAmbientRadianceSource: the phase
+ * function is multiplied by 4*pi and the sky source is used bare, because mediumSkyRadiance is already
+ * the 1/(4*pi) sphere integral. Getting that convention wrong in one term and not the other is a 12x
+ * error that looks like an art choice, which is exactly how the reference implementation's constants came
+ * to be what they are.
+ *
+ * <p>The single-scattering albedo does not appear as a multiplier on the in-scatter. It is a hair under
+ * one for water droplets, and where it genuinely matters — how fast light dies inside the cloud — it
+ * already enters through the diffusion rate.
  *
  * <p>Step length grows with distance FROM THE RAY'S ORIGIN, so a cloud a long way off is integrated
  * coarsely and one overhead finely. Measured from the origin rather than the camera for the usual
@@ -294,6 +433,22 @@ public CloudResult traceClouds(float3 ro, float3 rd, float tMax, uint seed) {
     }
 
     float3 ambient = worldPush.mediumSkyRadiance.xyz;
+    float3 lightDir = worldPush.lightDir.xyz;
+    float3 lightRadiance = worldPush.lightRadiance.xyz;
+    float g = cloudPhaseG();
+    // The phase evaluated once for the whole march: it depends on the angle between the ray and the
+    // light, and neither moves along a straight ray. 4*pi converts the phase from a density over
+    // directions into a gain over isotropic, which is the convention every source term here shares.
+    float phase = 4.0 * PI * cloudPhase(dot(rd, lightDir), g);
+    // Off must reproduce single scattering exactly rather than approximately (§3, rule 8), so it does two
+    // things: it removes the diffuse lobe entirely, and it puts the sky's occlusion back on the beam's
+    // own extinction. Leaving the diffuse lobe in at rate 1 would not disable multiple scattering — it
+    // would add a second, isotropic copy of the direct term.
+    bool multiScatter = cloudMultiScatterOn();
+    float diffusionRate = multiScatter ? cloudDiffusionRate() : 1.0;
+    int sunSteps = clamp(int(worldPush.cloudLighting.z + 0.5), 0, 8);
+    float extinction = worldPush.cloudParams.w;
+
     // Jittered entry, for the same reason every other estimator here jitters: a fixed start puts the
     // step lattice at the same depth on neighbouring pixels and draws it as banding, and this renderer
     // would rather have noise a denoiser can integrate than structure it cannot.
@@ -340,12 +495,29 @@ public CloudResult traceClouds(float3 ro, float3 rd, float tMax, uint seed) {
         lastSkip = 0.0;
         density = cloudDensity(p, false);
         if (density > 0.0) {
-            float sigmaT = density * worldPush.cloudParams.w;
+            float sigmaT = density * extinction;
             float stepT = exp(-sigmaT * step);
+
+            // How buried this sample is, from the light's side and from the sky's.
+            float tauSun = sunSteps > 0 ? sunOpticalDepth(p, lightDir, sunSteps, marchSeed) : 0.0;
+            // The sky's occlusion, without a second march: how much of THIS cloud stands above the
+            // sample, taking the local density as representative of the column. Bounded by the type's own
+            // profile rather than by the deck, so a stratus sheet is not buried under the empty three
+            // hundred blocks a cumulonimbus would have filled.
+            float ownTop = cloudBottom() + cloudProfileTop(cloudType(p)) * cloudThickness();
+            float tauUp = sigmaT * max(ownTop - p.y, 0.0);
+
+            // Isotropic, so no phase factor: light that has scattered often enough for diffusion to
+            // describe it has forgotten which way it came in. That is also why this term is the same for
+            // every ray through a given point, and therefore consistent between a cloud and its
+            // reflection without anything having to enforce it.
+            float diffuse = multiScatter ? exp(-diffusionRate * tauSun) : 0.0;
+            float3 source = ambient * exp(-diffusionRate * tauUp)
+                    + lightRadiance * (exp(-tauSun) * phase + diffuse);
             // The same closed form the fog's sub-steps use: for a source taken as constant over the step,
             // the in-scatter integrates exactly to source * (1 - T), and doing it this way keeps a long
             // step from overshooting the way a midpoint sample would.
-            gathered += transmittance * ambient * (1.0 - stepT);
+            gathered += transmittance * source * (1.0 - stepT);
             transmittance *= stepT;
             if (transmittance < 0.01) {
                 transmittance = 0.0;

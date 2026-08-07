@@ -149,7 +149,11 @@ public struct WorldPush {
     // in here rather than into a lane of its own is not a saving, it is the honest description: a cloud
     // field that drifts is a cloud field whose origin moves. Only xz drift; y stays the pure rebase
     // because the shell's altitude is measured from it.
-    public float4   cloudRebase;      // xyz field origin (rebase - wind drift), w wind speed (blocks/s)
+    public float4   cloudRebase;      // xyz field origin (rebase - wind drift), w field scale (blocks)
+    // Cloud LIGHTING (M11 slice two). y is the physically load-bearing one: the diffusion attenuation the
+    // multiple-scattering term decays at is sqrt(3*(1-albedo)) times the ordinary optical depth, so this
+    // single number is the difference between a cloud whose interior stays bright and one that goes black.
+    public float4   cloudLighting;    // x phase g, y single-scattering albedo, z sun-march steps, w reserved
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
