@@ -320,12 +320,46 @@ public final class RtComposite {
             waterCellZ = wantZ;
             waterSurfaceY = surface;
             waterReanchor = true;
+            // The mask is rebuilt only here, which is the whole of what a re-anchor costs.
+            buildWaterObstacleMask(level, cell);
         }
         waterDomain = new Float4((float) (waterCellX * (double) cell - terrain.blockX),
                 (float) (waterCellZ * (double) cell - terrain.blockZ),
                 cell,
                 FluoriteConfig.Rt.Water.WATER_SIM_STRENGTH.value());
         return true;
+    }
+
+    /**
+     * Ask the level which cells hold water, one byte each.
+     *
+     * <p>The block UNDER the surface, not at it: the surface height is the top face of the water block,
+     * so the block that is or is not water sits one below. A cell is open where that block is water and
+     * an obstacle everywhere else — which includes air, so a shoreline and a pier both reflect, and so
+     * does the edge of the pond.
+     *
+     * <p>65k lookups, and only on a re-anchor: one frame's work every sixteen blocks of travel rather
+     * than anything continuous. Into a loaded chunk a lookup is an array index; an unloaded one reads as
+     * not-water, which makes the unloaded world a wall rather than a hole that swallows ripples.
+     */
+    private void buildWaterObstacleMask(ClientLevel level, float cell) {
+        if (waterObstacleMask == null) {
+            waterObstacleMask = new byte[RtSky.WATER_SIM_DIM * RtSky.WATER_SIM_DIM];
+        }
+        BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+        int below = (int) Math.floor(waterSurfaceY) - 1;
+        for (int z = 0; z < RtSky.WATER_SIM_DIM; z++) {
+            double worldZ = (waterCellZ + z + 0.5) * cell;
+            for (int x = 0; x < RtSky.WATER_SIM_DIM; x++) {
+                double worldX = (waterCellX + x + 0.5) * cell;
+                probe.set((int) Math.floor(worldX), below, (int) Math.floor(worldZ));
+                boolean open = level.getFluidState(probe).is(FluidTags.WATER);
+                waterObstacleMask[z * RtSky.WATER_SIM_DIM + x] = open ? (byte) 255 : 0;
+            }
+        }
+        if (skyLuts != null) {
+            skyLuts.uploadWaterObstacles(waterObstacleMask);
+        }
     }
 
     /**
@@ -648,6 +682,7 @@ public final class RtComposite {
     private boolean waterReanchor;
     private final float[] waterImpulses = new float[RtSky.WATER_MAX_IMPULSES * 4];
     private int waterImpulseCount;
+    private byte[] waterObstacleMask;
     private static final Identifier SUN_ID = Identifier.withDefaultNamespace("sun");
     private static final Identifier[] MOON_IDS = createMoonIds();
     // Celestial rotation axis (the pole the sun/moon arc about): perpendicular to the east-west arc,
