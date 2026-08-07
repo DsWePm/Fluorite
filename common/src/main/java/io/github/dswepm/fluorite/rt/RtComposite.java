@@ -408,18 +408,29 @@ public final class RtComposite {
         float cell = waterDomain.z();
         float cap = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE.value();
         double half = RtSky.WATER_SIM_DIM * 0.5 * cell;
+        // Per-gate counters for the diagnostic below. EVERY GATE SEPARATELY, not one "nothing came out"
+        // tally: the loop rejects for four different reasons and the whole question is which one, so a
+        // combined count would reproduce exactly the ambiguity the diagnostic exists to remove. Same
+        // lesson as debug view 22, which reported a verdict first and had to be changed to components.
+        int seenEntities = 0;
+        int seenInWater = 0;
+        int seenInRange = 0;
+        double fastest = -1.0;
         for (Entity e : level.entitiesForRendering()) {
+            seenEntities++;
             if (waterImpulseCount >= RtSky.WATER_MAX_IMPULSES) {
                 break;
             }
             if (!e.isInWater()) {
                 continue;
             }
+            seenInWater++;
             double dx = e.getX() - camX;
             double dz = e.getZ() - camZ;
             if (Math.abs(dx) > half || Math.abs(dz) > half) {
                 continue;
             }
+            seenInRange++;
             // How hard it is moving through the surface. A still entity leaves the water alone; a
             // swimming one keeps feeding the field, which is what makes a wake rather than one splash.
             // BLOCKS PER SECOND. getDeltaMovement is per TICK, and forgetting that is a factor of twenty
@@ -429,6 +440,7 @@ public final class RtComposite {
             double speed = (Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
                     + e.getDeltaMovement().z * e.getDeltaMovement().z)
                     + Math.abs(e.getDeltaMovement().y)) * 20.0;
+            fastest = Math.max(fastest, speed);
             if (speed < 0.2) {
                 continue;
             }
@@ -446,6 +458,46 @@ public final class RtComposite {
             waterImpulses[base + 3] = amount;
             waterImpulseCount++;
         }
+        logImpulseGates(camX, camZ, cell, seenEntities, seenInWater, seenInRange, fastest);
+    }
+
+    /**
+     * Why the entity impulse path produced what it produced, about once a second while debug view 23 is
+     * up.
+     *
+     * <p>Reported because reading the code did not settle it. The path has four gates and a coordinate
+     * mapping, every one of them looks correct in isolation, and the observable — no ripples — is the
+     * same whichever one is at fault. So this names the gate instead: each count is the population that
+     * SURVIVED that step, so the first number that collapses to zero is the culprit.
+     *
+     * <ul>
+     *   <li>{@code entities}=0 — the render list is empty here, which would be a wrong level or a wrong
+     *       call site rather than anything about water.</li>
+     *   <li>{@code inWater}=0 — nothing reports {@code isInWater()}. If you are swimming when this
+     *       prints, the local player is not in {@code entitiesForRendering()} at all.</li>
+     *   <li>{@code inRange}=0 — the domain is not where the entities are; compare {@code camCell} against
+     *       the grid's centre (128), since the player should sit almost exactly on it.</li>
+     *   <li>{@code fastest} below 0.2 — the speed gate. The value is blocks per second after the ×20
+     *       tick conversion, so a swim should read about 2.</li>
+     *   <li>{@code emitted}=0 with all of the above healthy — the write itself, which would be the one
+     *       thing left.</li>
+     * </ul>
+     */
+    private void logImpulseGates(double camX, double camZ, float cell, int entities, int inWater,
+                                 int inRange, double fastest) {
+        if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() != 23 || (worldFrameCounter() % 60L) != 0L) {
+            return;
+        }
+        FluoriteMod.LOGGER.info(
+                "[water-sim] entities={} inWater={} inRange={} fastest={} emitted={} "
+                        + "| cell={} camCell=({}, {}) domainCell=({}, {}) surfaceY={}",
+                entities, inWater, inRange,
+                fastest < 0.0 ? "n/a" : String.format(java.util.Locale.ROOT, "%.2f", fastest),
+                waterImpulseCount, String.format(java.util.Locale.ROOT, "%.3f", cell),
+                String.format(java.util.Locale.ROOT, "%.1f", (camX - waterCellX * (double) cell) / cell),
+                String.format(java.util.Locale.ROOT, "%.1f", (camZ - waterCellZ * (double) cell) / cell),
+                waterCellX, waterCellZ,
+                String.format(java.util.Locale.ROOT, "%.2f", waterSurfaceY));
     }
 
     private static Float4 cloudCirrusShape() {
