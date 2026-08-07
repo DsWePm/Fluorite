@@ -38,6 +38,14 @@ public static const int WATER_SIM_DIM = 256;
 [[vk::binding(2, 0)]] RWTexture2D<float> heightNext;
 // 0 where a block occupies the cell, 1 where there is open water. Baked by water_obstacle.comp.
 [[vk::binding(3, 0)]] Texture2D<float> obstacle;
+// The same value as heightNext, in a FIXED image the shading always samples.
+//
+// Written twice rather than rotating what binding 18 points at, and that is a deliberate trade of one
+// store per cell against a class of bug. Rotating the shading's view would mean rewriting a descriptor
+// in the world pipeline's ring every frame, on sets that an in-flight frame may still be reading -- the
+// kind of hazard that shows as an occasional wrong-frame ripple and is nearly impossible to attribute.
+// 65k extra stores is nothing; the descriptor churn is not worth it.
+[[vk::binding(4, 0)]] RWTexture2D<float> heightDisplay;
 
 struct WaterSimPush {
     float courant2;      // (c*dt/dx)^2, already clamped to the CFL limit on the CPU
@@ -105,6 +113,7 @@ void main(uint3 id3: SV_DispatchThreadID) {
     // condition above reflects off, and letting it carry a value would make the wall a source.
     if (obstacle[id] < 0.5) {
         heightNext[id] = 0.0;
+        heightDisplay[id] = 0.0;
         return;
     }
 
@@ -139,4 +148,5 @@ void main(uint3 id3: SV_DispatchThreadID) {
     }
 
     heightNext[id] = next;
+    heightDisplay[id] = next;
 }
