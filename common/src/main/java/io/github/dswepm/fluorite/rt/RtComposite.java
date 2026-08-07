@@ -292,11 +292,33 @@ public final class RtComposite {
         double surface = Double.NaN;
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
         int top = (int) Math.floor(camY) + 2;
-        for (int y = top; y >= top - WATER_SIM_PROBE_DEPTH; y--) {
-            probe.set((int) Math.floor(camX), y, (int) Math.floor(camZ));
-            if (level.getFluidState(probe).is(FluidTags.WATER)) {
-                surface = y + 1.0;
-                break;
+        // NOT ONLY THE CAMERA'S OWN COLUMN. It used to be, and the comment above already said the case
+        // that matters most is standing on the shore looking at a lake -- which is precisely the case a
+        // single column cannot see, because on the shore there is no water underneath you. The whole
+        // domain switched off, so the ripples did not fade at the edge of anything, they vanished
+        // outright; and since a shoreline is a line, the camera column crossed it within a very narrow
+        // range of angles, which is exactly how it was reported.
+        //
+        // So: the camera's column first, because standing in or over water is the common case and costs
+        // one scan. Failing that, rings outward until water is found. Bounded and cheap -- a few hundred
+        // lookups into loaded chunks, which are an array index, and only on the frames where the near
+        // column came up dry.
+        for (int ring = 0; ring < WATER_SURFACE_RINGS && Double.isNaN(surface); ring++) {
+            int r = ring * WATER_SURFACE_RING_STEP;
+            for (int step = 0; step < (ring == 0 ? 1 : WATER_SURFACE_RING_SAMPLES); step++) {
+                double angle = 2.0 * Math.PI * step / WATER_SURFACE_RING_SAMPLES;
+                int px = (int) Math.floor(camX + r * Math.cos(angle));
+                int pz = (int) Math.floor(camZ + r * Math.sin(angle));
+                for (int y = top; y >= top - WATER_SIM_PROBE_DEPTH; y--) {
+                    probe.set(px, y, pz);
+                    if (level.getFluidState(probe).is(FluidTags.WATER)) {
+                        surface = y + 1.0;
+                        break;
+                    }
+                }
+                if (!Double.isNaN(surface)) {
+                    break;
+                }
             }
         }
         if (Double.isNaN(surface)) {
@@ -789,6 +811,12 @@ public final class RtComposite {
     }
     /** How far below the camera to look for the water surface the domain runs on. */
     private static final int WATER_SIM_PROBE_DEPTH = 24;
+    // Rings of columns searched outward when the camera is not over water, so that standing on a shore
+    // still finds the lake in front of you. Reaches half the smallest domain, which is as far as a
+    // surface can be and still have any of the grid land on it.
+    private static final int WATER_SURFACE_RINGS = 9;
+    private static final int WATER_SURFACE_RING_STEP = 2;
+    private static final int WATER_SURFACE_RING_SAMPLES = 12;
     // Where the water simulation's domain sits, in ABSOLUTE whole cells, and the surface it runs on.
     // Whole cells because a domain that slid continuously with the player would resample the height
     // field at a different phase every frame and smear every ripple into a streak (R22).
