@@ -47,15 +47,6 @@ public static const int WATER_SIM_DIM = 256;
 // 65k extra stores is nothing; the descriptor churn is not worth it.
 [[vk::binding(4, 0)]] RWTexture2D<float> heightDisplay;
 
-struct WaterSimPush {
-    float courant2;      // (c*dt/dx)^2, already clamped to the CFL limit on the CPU
-    float damping;       // per-step energy retention, 1 = lossless
-    float spongeWidth;   // cells of absorbing boundary at the domain edge
-    uint  impulseCount;
-    uint64_t impulseAddr; // packed WaterImpulse records
-};
-[[vk::push_constant]] WaterSimPush pc;
-
 // An impulse is a displacement dropped into the field, not a force: the wave equation's state IS the
 // surface, so the way to make a splash is to move the surface.
 public struct WaterImpulse {
@@ -63,6 +54,22 @@ public struct WaterImpulse {
     public float  radius;  // cells
     public float  amount;  // metres of displacement at the centre, already clamped by the CPU
 };
+
+// Six, inline. They ride in the push constants rather than a device buffer because six 16-byte records
+// fit inside the 128 bytes Vulkan guarantees, and a buffer would mean an allocation, a ring to keep it
+// from being overwritten while in flight, and a barrier -- all to carry under a hundred bytes. The CPU
+// picks the six nearest sources when more are in the water, which is also the right answer visually: a
+// crowd of entities produces one disturbed patch, not sixty distinguishable ripples.
+public static const uint WATER_MAX_IMPULSES = 6;
+
+struct WaterSimPush {
+    float courant2;      // (c*dt/dx)^2, already clamped to the CFL limit on the CPU
+    float damping;       // per-step energy retention, 1 = lossless
+    float spongeWidth;   // cells of absorbing boundary at the domain edge
+    uint  impulseCount;
+    WaterImpulse impulses[WATER_MAX_IMPULSES];
+};
+[[vk::push_constant]] WaterSimPush pc;
 
 /**
  * How much of the wave survives this cell, for the absorbing boundary.
@@ -130,10 +137,9 @@ void main(uint3 id3: SV_DispatchThreadID) {
     // equation is the surface itself: displacing it is what a splash is. Added after the step so an
     // impulse is a fresh displacement rather than something the previous frame's velocity has already
     // half-cancelled.
-    if (pc.impulseCount > 0u) {
-        ConstPtr<WaterImpulse> impulses = ConstPtr<WaterImpulse>(pc.impulseAddr);
-        for (uint i = 0u; i < pc.impulseCount; ++i) {
-            WaterImpulse imp = impulses[i];
+    for (uint i = 0u; i < min(pc.impulseCount, WATER_MAX_IMPULSES); ++i) {
+        {
+            WaterImpulse imp = pc.impulses[i];
             float2 d = float2(id) + 0.5 - imp.cell;
             float r2 = dot(d, d);
             float rr = max(imp.radius, 0.5);

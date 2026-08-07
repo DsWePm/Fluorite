@@ -111,7 +111,9 @@ public final class RtSky {
     /** Must equal WATER_SIM_DIM in water_sim.comp.slang and water.slang. */
     public static final int WATER_SIM_DIM = 256;
     private static final int WATER_SIM_GROUP = 8;
-    private static final int WATER_SIM_PUSH_BYTES = 32;
+    /** 16-byte header plus six inline 16-byte impulses; inside Vulkan's guaranteed 128. */
+    private static final int WATER_SIM_PUSH_BYTES = 112;
+    public static final int WATER_MAX_IMPULSES = 6;
     private static final int WATER_OBSTACLE_PUSH_BYTES = 32;
     // One descriptor set per rotation phase, all written once at creation. Phase i reads heights[i] as
     // current and heights[(i+2)%3] as previous, and writes heights[(i+1)%3]. Three fixed sets rather
@@ -521,7 +523,7 @@ public final class RtSky {
     public void recordWaterSim(VkCommandBuffer cmd, long tlas, RtGpuExecutor.GraphicsUse graphicsUse,
                                float originX, float originZ, float cellSize, float surfaceY,
                                float courant2, float damping, float spongeWidth,
-                               long impulseAddr, int impulseCount, boolean reanchor) {
+                               float[] impulses, int impulseCount, boolean reanchor) {
         if (waterSimBakes == null) {
             return;
         }
@@ -561,7 +563,15 @@ public final class RtSky {
                     step.pipelineLayout(), 0, stack.longs(step.descriptorSet()), null);
             ByteBuffer push = stack.malloc(WATER_SIM_PUSH_BYTES);
             push.putFloat(0, courant2).putFloat(4, damping).putFloat(8, spongeWidth)
-                    .putInt(12, impulseCount).putLong(16, impulseAddr);
+                    .putInt(12, Math.min(impulseCount, WATER_MAX_IMPULSES));
+            // cellX, cellZ, radius, amount per record, in the order the shader's struct declares them.
+            for (int i = 0; i < WATER_MAX_IMPULSES; i++) {
+                int base = 16 + i * 16;
+                for (int c = 0; c < 4; c++) {
+                    int src = i * 4 + c;
+                    push.putFloat(base + c * 4, src < impulses.length ? impulses[src] : 0f);
+                }
+            }
             VK10.vkCmdPushConstants(cmd, step.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             int groups = (WATER_SIM_DIM + WATER_SIM_GROUP - 1) / WATER_SIM_GROUP;
