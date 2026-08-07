@@ -187,9 +187,10 @@ public void waterWaveGradTemporal(float2 p, float currentT, float previousT, flo
 // is more self-consistent and looks worse -- the simulation cannot produce a swell out of nothing, so
 // the domain would read as a conspicuously calm rectangle following the player around.
 //
-// ONE ENTRY POINT. This is added inside applyWaterWaves, which every consumer already goes through:
-// primary rays, the RR guide buffers, and the caustics (causticLanding differentiates the same field).
-// So ripples reach reflections and caustics without any of those knowing the simulation exists.
+// WHERE IT GETS ADDED lives in water.slang, at applyWaterWaves and applyWaterWavesTemporal. Both, not
+// one: the primary pass needs a previous normal too, and for a whole milestone it built that pair itself
+// and omitted the simulation, so ripples were missing from precisely the surface anyone looks at. The
+// comment that used to sit here claimed a single entry point, which is what stopped anyone checking.
 
 // ---- The simulation domain's mapping, shared by every consumer so they cannot disagree about it.
 //

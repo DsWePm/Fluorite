@@ -28,9 +28,17 @@ __exported import water_wave;
 // is more self-consistent and looks worse -- the simulation cannot produce a swell out of nothing, so
 // the domain would read as a conspicuously calm rectangle following the player around.
 //
-// ONE ENTRY POINT. This is added inside applyWaterWaves, which every consumer already goes through:
-// primary rays, the RR guide buffers, and the caustics (causticLanding differentiates the same field).
-// So ripples reach reflections and caustics without any of those knowing the simulation exists.
+// TWO ENTRY POINTS, AND IT HAS TO BE BOTH: applyWaterWaves and applyWaterWavesTemporal. Everything that
+// shades water goes through one of them -- primary rays, the RR guide buffers, and the caustics, which
+// differentiate the same field -- so ripples reach reflections and caustics without any of those knowing
+// the simulation exists.
+//
+// This comment used to say ONE entry point, and that was the bug rather than a description of it. The
+// primary pass needs a previous normal as well as a current one for its specular motion vectors, so it
+// built the pair itself from the spectrum walk and never called applyWaterWaves at all. Ripples were
+// therefore absent from exactly the surface anyone would look at, and present in secondary bounces where
+// nobody could see them. A claim of a single funnel, with a second path quietly beside it, hid that for
+// a whole milestone. Adding a third consumer means adding it here, not beside here.
 float2 waterSimGrad(float2 worldXZ) {
     return waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain, worldXZ);
 }
@@ -118,6 +126,35 @@ public float3 applyWaterWaves(float3 nGeo, float2 worldXZ, float t, float footpr
     float2 grad = waterWaveGrad(worldXZ, t, footprint, waterWaveAmplitude()) + waterSimGrad(worldXZ);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
+}
+
+/**
+ * The same normal, plus where it was a moment ago, for the primary pass's specular motion vectors.
+ *
+ * <p>THIS EXISTS SO THE SIMULATION CANNOT BE FORGOTTEN AGAIN. The primary pass used to build this pair
+ * itself out of waterWaveGradTemporal, which returns the procedural spectrum and nothing else — so the
+ * one surface a player actually looks at, the flat water in front of them at bounce zero, was the single
+ * consumer that never added the ripples. They existed only in secondary bounces, which is to say
+ * nowhere. The comment above this file claiming applyWaterWaves was the one entry point was not merely
+ * wrong, it is why the gap survived: it asserted exactly the property that did not hold.
+ *
+ * <p>The previous gradient takes the SAME simulated slope as the current one, because only the current
+ * height field is bound. So the reprojection hint understates how fast a ripple's normal is turning,
+ * while the normal itself is right. That is the correct way round: a slightly stale motion vector costs
+ * some reflection sharpness under accumulation, and the alternative on offer was no ripples at all.
+ */
+public void applyWaterWavesTemporal(float3 nGeo, float2 worldXZ, float t, float previousT,
+                                    float footprint, out float3 n, out float3 previousN) {
+    float2 currentGrad;
+    float2 previousGrad;
+    waterWaveGradTemporal(worldXZ, t, previousT, footprint, waterWaveAmplitude(),
+                          currentGrad, previousGrad);
+    float2 sim = waterSimGrad(worldXZ);
+    currentGrad += sim;
+    previousGrad += sim;
+    float orientation = nGeo.y >= 0.0 ? 1.0 : -1.0;
+    n = orientation * normalize(float3(-currentGrad.x, 1.0, -currentGrad.y));
+    previousN = orientation * normalize(float3(-previousGrad.x, 1.0, -previousGrad.y));
 }
 
 
