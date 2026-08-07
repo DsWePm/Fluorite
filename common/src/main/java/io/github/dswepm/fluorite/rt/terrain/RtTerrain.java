@@ -1525,8 +1525,13 @@ public final class RtTerrain {
         }
 
         for (PreparedSection ps : prepared) {
-            SectionGeom g = new SectionGeom(ps.key(), ps.uvs(), ps.material(),
-                    ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights());
+            SectionGeom g = ps.deformable()
+                    ? new SectionGeom(ps.key(), ps.uvs(), ps.material(),
+                            ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights(),
+                            ps.positions(), ps.indices(), ps.waterRest(),
+                            ps.waterVertBase(), ps.waterVertCount(), ps.updateScratchSize())
+                    : new SectionGeom(ps.key(), ps.uvs(), ps.material(),
+                            ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights());
             if (!desired.contains(ps.key())) {
                 // Left the window while its batched BLAS build was in flight (window sync keeps running
                 // during builds). Never published — retire the fresh, unreferenced geometry.
