@@ -416,8 +416,21 @@ public final class RtComposite {
         int seenInWater = 0;
         int seenInRange = 0;
         double fastest = -1.0;
+        // The local player, tracked BY IDENTITY rather than inferred from the numbers. The first run of
+        // this diagnostic left exactly one thing ambiguous: a value of 0.10 repeated 726 times is clearly
+        // not a moving player, but "the player is absent" and "the player is standing still" produce the
+        // same reading, and they have completely different fixes.
+        Entity self = Minecraft.getInstance().player;
+        boolean sawSelf = false;
+        double selfSpeed = -1.0;
         for (Entity e : level.entitiesForRendering()) {
             seenEntities++;
+            if (e == self) {
+                sawSelf = true;
+                selfSpeed = (Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
+                        + e.getDeltaMovement().z * e.getDeltaMovement().z)
+                        + Math.abs(e.getDeltaMovement().y)) * 20.0;
+            }
             if (waterImpulseCount >= RtSky.WATER_MAX_IMPULSES) {
                 break;
             }
@@ -458,7 +471,8 @@ public final class RtComposite {
             waterImpulses[base + 3] = amount;
             waterImpulseCount++;
         }
-        logImpulseGates(camX, camZ, cell, seenEntities, seenInWater, seenInRange, fastest);
+        logImpulseGates(camX, camZ, cell, seenEntities, seenInWater, seenInRange, fastest,
+                sawSelf, selfSpeed, self != null && self.isInWater());
     }
 
     /**
@@ -484,16 +498,21 @@ public final class RtComposite {
      * </ul>
      */
     private void logImpulseGates(double camX, double camZ, float cell, int entities, int inWater,
-                                 int inRange, double fastest) {
+                                 int inRange, double fastest, boolean sawSelf, double selfSpeed,
+                                 boolean selfInWater) {
         if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() != 23 || (worldFrameCounter() % 60L) != 0L) {
             return;
         }
         FluoriteMod.LOGGER.info(
                 "[water-sim] entities={} inWater={} inRange={} fastest={} emitted={} "
+                        + "| self: seen={} inWater={} speed={} "
                         + "| cell={} camCell=({}, {}) domainCell=({}, {}) surfaceY={}",
                 entities, inWater, inRange,
                 fastest < 0.0 ? "n/a" : String.format(java.util.Locale.ROOT, "%.2f", fastest),
-                waterImpulseCount, String.format(java.util.Locale.ROOT, "%.3f", cell),
+                waterImpulseCount,
+                sawSelf, selfInWater,
+                selfSpeed < 0.0 ? "n/a" : String.format(java.util.Locale.ROOT, "%.2f", selfSpeed),
+                String.format(java.util.Locale.ROOT, "%.3f", cell),
                 String.format(java.util.Locale.ROOT, "%.1f", (camX - waterCellX * (double) cell) / cell),
                 String.format(java.util.Locale.ROOT, "%.1f", (camZ - waterCellZ * (double) cell) / cell),
                 waterCellX, waterCellZ,

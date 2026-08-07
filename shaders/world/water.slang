@@ -58,6 +58,42 @@ public float waterWaveAmplitude() {
  *   <li><b>GREEN/BLUE</b> — height, split by sign: green rises, blue falls. Black is a flat field.</li>
  * </ul>
  */
+/**
+ * Debug view 24: the simulated field AS THE SHADING SAMPLES IT, painted on the water in world space.
+ *
+ * <p>The companion to view 23, and the two answer different halves of one question. View 23 paints the
+ * texture across the screen, so it proves only that the field HAS content — it maps screen uv straight to
+ * texels and never touches the world-to-domain mapping the shading depends on. A field that simulates
+ * perfectly and reaches nothing looks identical to a working one there. This view goes the other way: it
+ * takes the water hit's own position, puts it through the same waterSimSample the normal path uses, and
+ * shows what came back.
+ *
+ * <p>{@code ro} is the queued record's origin — where the primary pass stopped, so for a pixel looking at
+ * water it is that surface point. Taken from the queue rather than re-traced, because a diagnostic that
+ * traces its own ray is testing its own ray.
+ *
+ * <ul>
+ *   <li><b>RED</b> — waterSimSample declined: off, or this point is outside the domain. The shading gets
+ *       exactly zero here, whatever view 23 shows.</li>
+ *   <li><b>BLUE</b> — inside the domain, tracking the edge fade. This is the domain's footprint made
+ *       visible: it should be a patch around you, and it should stay put in the world as you move.</li>
+ *   <li><b>GREEN</b> — the slope waterSimGrad actually returns, scaled so the procedural spectrum's own
+ *       median slope would read about a third. Green is the whole point: it means the simulation IS
+ *       reaching the normal, and anything still invisible is a matter of amplitude rather than plumbing.
+ *       </li>
+ * </ul>
+ */
+public float3 waterSimReachDebug(float3 ro) {
+    float2 worldXZ = ro.xz + worldPush.waterAnchor.xy;
+    float2 uv;
+    float weight;
+    if (!waterSimSample(worldPush.waterSimDomain, worldXZ, uv, weight)) {
+        return float3(1.0, 0.0, 0.0);
+    }
+    float2 g = waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain, worldXZ);
+    return float3(0.0, saturate(length(g) * 20.0), 0.15 + weight * 0.35);
+}
+
 public float3 waterSimDebug(float2 screenUv) {
     if (worldPush.waterSimDomain.z <= 0.0) {
         return float3(1.0, 0.0, 0.0);
