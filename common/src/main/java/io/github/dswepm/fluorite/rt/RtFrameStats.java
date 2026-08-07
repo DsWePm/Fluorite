@@ -68,6 +68,10 @@ public final class RtFrameStats {
                     "entity.blockEntities",
                     "entity.particles",
                     "entity.blasRecord",
+                    // Displacing the water and refitting its sections, recorded just before the
+                    // TLAS build. Its own stage so the deformation's cost is separable from the
+                    // terrain's -- the whole reason for taking path 1 was to get this number.
+                    "water.deform",
                     "frame.prepareTlas",
                     "frame.recordTlas",
                     "frame.tracePrimary",
