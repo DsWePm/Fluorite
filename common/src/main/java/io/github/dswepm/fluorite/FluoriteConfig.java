@@ -1391,6 +1391,73 @@ public final class FluoriteConfig {
             }
 
             /**
+             * The interactive water simulation (M12). Off leaves the procedural wave spectrum alone,
+             * bit for bit — the sampler returns before it reads anything.
+             */
+            public static final BooleanSetting WATER_SIM =
+                    bool("fluorite.rt.water.sim", "water.sim", true);
+
+            /**
+             * How far across the simulated domain reaches, in blocks.
+             *
+             * <p>The grid is a fixed 256 cells, so this IS the cell size in disguise: 64 blocks gives
+             * quarter-block cells and ripples down to about half a block, 128 blocks gives half-block
+             * cells and twice the reach for half the detail. Reach and detail are the two ends of one
+             * stick and this is where you hold it (D39).
+             */
+            public static final FloatSetting WATER_SIM_RANGE =
+                    clampedFloat("fluorite.rt.water.simRange", "water.sim-range", 64f, 32f, 256f);
+
+            /**
+             * How far the player may walk before the domain is re-anchored, in blocks.
+             *
+             * <p>Re-anchoring is the only thing in this system that costs anything beyond one dispatch:
+             * it recasts the obstacle mask. Between re-anchors the domain is completely still. So this is
+             * a straight trade of how often that cost is paid against how close to the domain's edge the
+             * player may get -- and the edge is well inside the fade, because ripples are damped hard
+             * enough that they do not reach it anyway.
+             */
+            public static final FloatSetting WATER_SIM_REANCHOR =
+                    clampedFloat("fluorite.rt.water.simReanchor", "water.sim-reanchor", 16f, 4f, 64f);
+
+            /**
+             * How fast a ripple travels, in blocks per second.
+             *
+             * <p>CLAMPED AGAINST THE CFL LIMIT, not against taste. Explicit leapfrog is stable only
+             * while {@code c*dt/dx <= 1/sqrt(2)}; past it the scheme amplifies every step and the field
+             * explodes within a second. The clamp lives in RtWaterSim.courant where the timestep and the
+             * cell size are both known, so this can be authored freely and is bounded there.
+             */
+            public static final FloatSetting WATER_SIM_SPEED =
+                    clampedFloat("fluorite.rt.water.simSpeed", "water.sim-speed", 3.5f, 0.1f, 20f);
+
+            /**
+             * Per-step energy retention. 1 is lossless; below it ripples fade.
+             *
+             * <p>An approximation and named as one. Real water loses ripple energy to viscosity and
+             * surface tension, fastest at the shortest wavelengths; a uniform multiply is not that. It
+             * also keeps the scheme from ringing forever on the grid's own Nyquist frequency, which is
+             * the less honourable half of why it is here.
+             */
+            public static final FloatSetting WATER_SIM_DAMPING =
+                    clampedFloat("fluorite.rt.water.simDamping", "water.sim-damping", 0.996f, 0.9f, 1f);
+
+            /** How much of the simulated slope reaches the shading, against the procedural spectrum's. */
+            public static final FloatSetting WATER_SIM_STRENGTH =
+                    clampedFloat("fluorite.rt.water.simStrength", "water.sim-strength", 1.0f, 0f, 4f);
+
+            /**
+             * Metres of surface displacement an entity's impulse may inject, before falloff.
+             *
+             * <p>A STABILITY GUARD, not an art parameter. The solver is explicit, so a displacement large
+             * enough relative to the cell size makes the local slope steep enough that the next step
+             * overshoots, and the overshoot compounds. The reference implementation clamps for the same
+             * reason and its value is its own; this one is scaled to this world's cell size.
+             */
+            public static final FloatSetting WATER_SIM_IMPULSE =
+                    clampedFloat("fluorite.rt.water.simImpulse", "water.sim-impulse", 0.06f, 0f, 0.25f);
+
+            /**
              * Apply the sun-visibility shadow rays' transmittance to the water's sun term, or take the
              * sun as unoccluded.
              *

@@ -100,6 +100,29 @@ public final class RtSky {
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
     private RtImage cloudNoise;
+    // The interactive water simulation's height field (M12), in metres of displacement. Three buffers
+    // rotate through prev/cur/next: leapfrog needs both previous states, so writing next over prev in
+    // place would corrupt neighbours a later thread still has to read.
+    private RtImage[] waterHeight;
+    private RtImage waterObstacle;
+    // What the shading samples. Fixed, so binding 18 is written once ever: see water_sim.comp for why
+    // rotating it instead would be a descriptor hazard rather than a saving.
+    private RtImage waterDisplay;
+    /** Must equal WATER_SIM_DIM in water_sim.comp.slang and water.slang. */
+    public static final int WATER_SIM_DIM = 256;
+    private static final int WATER_SIM_GROUP = 8;
+    /** 16-byte header plus six inline 16-byte impulses; inside Vulkan's guaranteed 128. */
+    private static final int WATER_SIM_PUSH_BYTES = 112;
+    public static final int WATER_MAX_IMPULSES = 6;
+    private static final int WATER_OBSTACLE_PUSH_BYTES = 32;
+    // One descriptor set per rotation phase, all written once at creation. Phase i reads heights[i] as
+    // current and heights[(i+2)%3] as previous, and writes heights[(i+1)%3]. Three fixed sets rather
+    // than one set rewritten per frame, for the same reason the display image exists.
+    private Bake[] waterSimBakes;
+    private Bake waterObstacleBake;
+    private RtOverlayPipelines.AccelStructureSet waterObstacleTlas;
+    private int waterPhase;
+    private boolean waterObstacleReady;
     /** Must equal CLOUD_NOISE_DIM in cloud_noise.comp.slang, and numthreads there. */
     private static final int CLOUD_NOISE_DIM = 128;
     private static final int CLOUD_NOISE_GROUP = 4;
@@ -190,6 +213,26 @@ public final class RtSky {
             Bake cloudNoiseBake = createBake(ctx, stack, "cloud_noise.comp.spv", "cloud noise",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
 
+            Bake[] waterSimBakes = new Bake[3];
+            for (int phase = 0; phase < 3; phase++) {
+                waterSimBakes[phase] = createBake(ctx, stack, "water_sim.comp.spv", "water sim " + phase,
+                        // COMBINED_IMAGE_SAMPLER, matching Sampler2D on the shader side and
+                        // writeSampledImage on this one. Declaring SAMPLED_IMAGE here while writing a
+                        // combined descriptor into it is a type mismatch the validation layers do not
+                        // always catch and the GPU answers with a device fault.
+                        new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                  VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+                        WATER_SIM_PUSH_BYTES);
+            }
+            RtOverlayPipelines.AccelStructureSet waterObstacleTlas = RtOverlayPipelines.accelStructureSet(
+                    ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "water obstacle TLAS");
+            Bake waterObstacleBake = createBake(ctx, stack, "water_obstacle.comp.spv", "water obstacle",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, WATER_OBSTACLE_PUSH_BYTES,
+                    waterObstacleTlas.layout);
+
             RtOverlayPipelines.AccelStructureSet visibilityTlas = RtOverlayPipelines.accelStructureSet(
                     ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "volume visibility TLAS");
             Bake visibilityBake = createBake(ctx, stack, "volume_visibility.comp.spv", "volume visibility",
@@ -199,6 +242,9 @@ public final class RtSky {
             RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
                     mediumSkyReduceBake, froxelBake, froxelTlas,
                     visibilityBake, visibilityTlas, cloudNoiseBake, sampler);
+            sky.waterSimBakes = waterSimBakes;
+            sky.waterObstacleBake = waterObstacleBake;
+            sky.waterObstacleTlas = waterObstacleTlas;
             // The images are allocated HERE rather than lazily inside the bake, so the views exist from
             // the moment this object does. Creating them in the bake made a view's availability depend on
             // whether the bake had run, which in turn made the ray-tracing pipeline's binding depend on
@@ -238,6 +284,28 @@ public final class RtSky {
             sky.cloudNoise = ctx.createStorageImage3D(CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_DIM,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "cloud noise volume");
             writeStorageImage(vk, stack, cloudNoiseBake.descriptorSet(), 0, sky.cloudNoise.view);
+
+            // R16F: a displacement in metres, signed, and a ripple's amplitude spans four orders of
+            // magnitude between a raindrop and a boat wake -- which is what a float format buys over the
+            // R8 the masks use. 256^2 x 2 bytes x 3 is 384 KB.
+            sky.waterHeight = new RtImage[3];
+            for (int i = 0; i < 3; i++) {
+                sky.waterHeight[i] = ctx.createStorageImage(WATER_SIM_DIM, WATER_SIM_DIM,
+                        VK10.VK_FORMAT_R16_SFLOAT, "water sim height " + i);
+            }
+            sky.waterObstacle = ctx.createStorageImage(WATER_SIM_DIM, WATER_SIM_DIM,
+                    VK10.VK_FORMAT_R8_UNORM, "water sim obstacle mask");
+            sky.waterDisplay = ctx.createStorageImage(WATER_SIM_DIM, WATER_SIM_DIM,
+                    VK10.VK_FORMAT_R16_SFLOAT, "water sim height (display)");
+            for (int phase = 0; phase < 3; phase++) {
+                long set = sky.waterSimBakes[phase].descriptorSet();
+                writeSampledImage(vk, stack, set, 0, sky.waterHeight[phase].view, sampler);
+                writeSampledImage(vk, stack, set, 1, sky.waterHeight[(phase + 2) % 3].view, sampler);
+                writeStorageImage(vk, stack, set, 2, sky.waterHeight[(phase + 1) % 3].view);
+                writeSampledImage(vk, stack, set, 3, sky.waterObstacle.view, sampler);
+                writeStorageImage(vk, stack, set, 4, sky.waterDisplay.view);
+            }
+            writeStorageImage(vk, stack, sky.waterObstacleBake.descriptorSet(), 0, sky.waterObstacle.view);
 
             sky.aerialPerspective = ctx.createStorageImage3D(FROXEL_W, FROXEL_H, FROXEL_D,
                     VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "aerial perspective froxel");
@@ -293,6 +361,11 @@ public final class RtSky {
     /** M11.1 cloud noise: R the billow that shapes a cloud, G the detail that erodes its edges. */
     public long cloudNoiseView() {
         return cloudNoise == null ? 0L : cloudNoise.view;
+    }
+
+    /** The height field the shading samples. Fixed; the rotation happens behind it. */
+    public long waterHeightView() {
+        return waterDisplay == null ? 0L : waterDisplay.view;
     }
 
     /**
@@ -443,6 +516,81 @@ public final class RtSky {
     }
 
     /**
+     * One simulation step, plus the obstacle refresh when the domain has moved or the terrain changed.
+     *
+     * <p>The obstacle mask is PERSISTENT and refreshed only on those two events (D40), so standing still
+     * costs nothing at all and walking costs one full refresh per re-anchor rather than one per frame.
+     *
+     * @param originX  rebased world X of cell (0,0)'s centre, already snapped to whole cells
+     * @param reanchor true when the domain moved this frame, or the terrain changed under it
+     */
+    public void recordWaterSim(VkCommandBuffer cmd, long tlas, RtGpuExecutor.GraphicsUse graphicsUse,
+                               float originX, float originZ, float cellSize, float surfaceY,
+                               float courant2, float damping, float spongeWidth,
+                               float[] impulses, int impulseCount, boolean reanchor) {
+        if (waterSimBakes == null) {
+            return;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "water sim")) {
+            if (reanchor || !waterObstacleReady) {
+                VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                        waterObstacleBake.pipeline());
+                long tlasSet = waterObstacleTlas.bind(ctx, tlas, graphicsUse);
+                VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                        waterObstacleBake.pipelineLayout(), 0,
+                        stack.longs(waterObstacleBake.descriptorSet(), tlasSet), null);
+                ByteBuffer push = stack.malloc(WATER_OBSTACLE_PUSH_BYTES);
+                push.putFloat(0, originX).putFloat(4, originZ)
+                        .putFloat(8, cellSize).putFloat(12, surfaceY)
+                        // The whole grid. The dirty-rect narrowing D40 describes is a refinement on top
+                        // of this and needs the mask's history to be trustworthy first.
+                        .putInt(16, 0).putInt(20, 0)
+                        .putInt(24, WATER_SIM_DIM).putInt(28, WATER_SIM_DIM);
+                VK10.vkCmdPushConstants(cmd, waterObstacleBake.pipelineLayout(),
+                        VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+                int groups = (WATER_SIM_DIM + WATER_SIM_GROUP - 1) / WATER_SIM_GROUP;
+                VK10.vkCmdDispatch(cmd, groups, groups, 1);
+                // The step below reads every texel this just wrote.
+                VkMemoryBarrier.Buffer barrier = VkMemoryBarrier.calloc(1, stack);
+                barrier.get(0).sType$Default()
+                        .srcAccessMask(VK10.VK_ACCESS_SHADER_WRITE_BIT)
+                        .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT);
+                VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier, null, null);
+                waterObstacleReady = true;
+            }
+
+            Bake step = waterSimBakes[waterPhase];
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, step.pipeline());
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    step.pipelineLayout(), 0, stack.longs(step.descriptorSet()), null);
+            ByteBuffer push = stack.malloc(WATER_SIM_PUSH_BYTES);
+            push.putFloat(0, courant2).putFloat(4, damping).putFloat(8, spongeWidth)
+                    .putInt(12, Math.min(impulseCount, WATER_MAX_IMPULSES));
+            // cellX, cellZ, radius, amount per record, in the order the shader's struct declares them.
+            for (int i = 0; i < WATER_MAX_IMPULSES; i++) {
+                int base = 16 + i * 16;
+                for (int c = 0; c < 4; c++) {
+                    int src = i * 4 + c;
+                    push.putFloat(base + c * 4, src < impulses.length ? impulses[src] : 0f);
+                }
+            }
+            VK10.vkCmdPushConstants(cmd, step.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+            int groups = (WATER_SIM_DIM + WATER_SIM_GROUP - 1) / WATER_SIM_GROUP;
+            VK10.vkCmdDispatch(cmd, groups, groups, 1);
+            // Advance the rotation: what this step wrote becomes the next step's current.
+            waterPhase = (waterPhase + 1) % 3;
+        }
+    }
+
+    /** The domain moved or the terrain under it changed; the obstacle mask is no longer trustworthy. */
+    public void invalidateWaterObstacles() {
+        waterObstacleReady = false;
+    }
+
+    /**
      * Drop the baked tables so the next frame rebakes them. For whatever ends up changing the
      * atmosphere's parameters — a dimension preset, a reload — rather than for resizes: nothing here is
      * sized to the window.
@@ -485,10 +633,39 @@ public final class RtSky {
             cloudNoise.destroy();
             cloudNoise = null;
         }
+        if (waterHeight != null) {
+            for (RtImage img : waterHeight) {
+                if (img != null) {
+                    img.destroy();
+                }
+            }
+            waterHeight = null;
+        }
+        if (waterObstacle != null) {
+            waterObstacle.destroy();
+            waterObstacle = null;
+        }
+        if (waterDisplay != null) {
+            waterDisplay.destroy();
+            waterDisplay = null;
+        }
         if (lutSampler != 0L) {
             VK10.vkDestroySampler(vk, lutSampler, null);
         }
         visibilityTlas.destroy(vk);
+        if (waterObstacleTlas != null) {
+            waterObstacleTlas.destroy(vk);
+        }
+        if (waterSimBakes != null) {
+            for (Bake b : waterSimBakes) {
+                if (b != null) {
+                    b.destroy(vk);
+                }
+            }
+        }
+        if (waterObstacleBake != null) {
+            waterObstacleBake.destroy(vk);
+        }
         visibilityBake.destroy(vk);
         cloudNoiseBake.destroy(vk);
         froxelTlas.destroy(vk);

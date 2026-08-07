@@ -254,6 +254,133 @@ public final class RtComposite {
     }
 
     /** The cirrus layer's own shape: how big a streak is, how fine its texture, how dense the sheet. */
+    /**
+     * Where the water simulation's domain sits, and how much of its slope reaches the shading.
+     *
+     * <p>A cell size of zero is the disable path — waterSimGrad returns before it reads anything, so the
+     * procedural spectrum stands alone exactly as it did before this existed. That is what it returns
+     * for now: the domain is placed and the field is stepped by the passes that follow this commit, and
+     * a domain pointing at an unstepped field would be a flat contribution dressed up as a working one.
+     */
+    private Float4 waterSimDomain() {
+        return waterDomain;
+    }
+
+    /**
+     * Place the simulation domain for this frame, and decide whether it moved far enough to re-anchor.
+     *
+     * <p>THE DOMAIN IS NOT RE-ANCHORED EVERY FRAME. It follows the player, but only in whole-cell jumps
+     * and only once they have left a dead zone at its centre. Both halves earn their place: whole cells
+     * are what keep the stored field aligned with the world, so a ripple stays where it was rather than
+     * being resampled at a new phase and smeared into a streak (R22); the dead zone is what keeps the
+     * obstacle rays from being recast every frame while someone walks, which is the whole of D40's
+     * saving. Between re-anchors the domain is completely still and the simulation costs one dispatch.
+     *
+     * <p>Returns false when there is no water surface near the player, which disables the whole thing —
+     * cell size zero, and the sampler returns before it reads.
+     */
+    private boolean placeWaterDomain(double camX, double camY, double camZ, ClientLevel level,
+                                     RtTerrain terrain) {
+        waterReanchor = false;
+        if (level == null || !FluoriteConfig.Rt.Water.WATER_SIM.value()) {
+            waterDomain = new Float4(0f, 0f, 0f, 0f);
+            return false;
+        }
+        // The plane the simulation runs on. Scanned downward from the camera rather than taken from
+        // waterAnchor.w, which only holds a surface when the camera is IN the water -- and the case that
+        // matters most is standing on the shore looking at a lake.
+        double surface = Double.NaN;
+        BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+        int top = (int) Math.floor(camY) + 2;
+        for (int y = top; y >= top - WATER_SIM_PROBE_DEPTH; y--) {
+            probe.set((int) Math.floor(camX), y, (int) Math.floor(camZ));
+            if (level.getFluidState(probe).is(FluidTags.WATER)) {
+                surface = y + 1.0;
+                break;
+            }
+        }
+        if (Double.isNaN(surface)) {
+            waterDomain = new Float4(0f, 0f, 0f, 0f);
+            return false;
+        }
+
+        float cell = waterCellSize();
+        long centreCellX = (long) Math.floor(camX / cell);
+        long centreCellZ = (long) Math.floor(camZ / cell);
+        long wantX = centreCellX - RtSky.WATER_SIM_DIM / 2;
+        long wantZ = centreCellZ - RtSky.WATER_SIM_DIM / 2;
+        // In CELLS, from an authored distance in blocks. Generous by default: the obstacle mask is the
+        // only thing a re-anchor costs, and a ripple is damped long before it reaches the domain edge,
+        // so there is nothing to be gained by keeping the player pinned to the centre.
+        long dead = (long) Math.max(1.0, FluoriteConfig.Rt.Water.WATER_SIM_REANCHOR.value() / cell);
+        if (waterCellX == Long.MIN_VALUE
+                || Math.abs(wantX - waterCellX) > dead || Math.abs(wantZ - waterCellZ) > dead
+                || Math.abs(surface - waterSurfaceY) > 0.5) {
+            waterCellX = wantX;
+            waterCellZ = wantZ;
+            waterSurfaceY = surface;
+            waterReanchor = true;
+        }
+        waterDomain = new Float4((float) (waterCellX * (double) cell - terrain.blockX),
+                (float) (waterCellZ * (double) cell - terrain.blockZ),
+                cell,
+                FluoriteConfig.Rt.Water.WATER_SIM_STRENGTH.value());
+        return true;
+    }
+
+    /**
+     * The impulses this frame, from entities standing in or moving through the water.
+     *
+     * <p>CLAMPED, and that clamp is a stability guard rather than an art parameter: the solver is
+     * explicit, so a displacement large enough against the cell size steepens the local slope until the
+     * next step overshoots, and the overshoot compounds until the field explodes.
+     *
+     * <p>Only the nearest few, because only six fit in the push constants — and because that is also the
+     * right answer visually. A crowd in the water makes one disturbed patch, not sixty ripples anyone
+     * could tell apart.
+     */
+    private void collectWaterImpulses(double camX, double camZ, ClientLevel level) {
+        waterImpulseCount = 0;
+        java.util.Arrays.fill(waterImpulses, 0f);
+        if (level == null || waterDomain.z() <= 0f) {
+            return;
+        }
+        float cell = waterDomain.z();
+        float cap = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE.value();
+        double half = RtSky.WATER_SIM_DIM * 0.5 * cell;
+        for (Entity e : level.entitiesForRendering()) {
+            if (waterImpulseCount >= RtSky.WATER_MAX_IMPULSES) {
+                break;
+            }
+            if (!e.isInWater()) {
+                continue;
+            }
+            double dx = e.getX() - camX;
+            double dz = e.getZ() - camZ;
+            if (Math.abs(dx) > half || Math.abs(dz) > half) {
+                continue;
+            }
+            // How hard it is moving through the surface. A still entity leaves the water alone; a
+            // swimming one keeps feeding the field, which is what makes a wake rather than one splash.
+            double speed = Math.sqrt(e.getDeltaMovement().x * e.getDeltaMovement().x
+                    + e.getDeltaMovement().z * e.getDeltaMovement().z)
+                    + Math.abs(e.getDeltaMovement().y);
+            if (speed < 0.01) {
+                continue;
+            }
+            float amount = (float) Math.min(speed * 0.5, 1.0) * cap;
+            // Bigger things push more water, but the radius is in CELLS and a bump narrower than a
+            // couple of cells is the single-cell delta the shader's smoothing exists to avoid.
+            float radius = (float) Math.max(2.0, e.getBbWidth() / cell);
+            int base = waterImpulseCount * 4;
+            waterImpulses[base] = (float) ((e.getX() - waterCellX * (double) cell) / cell);
+            waterImpulses[base + 1] = (float) ((e.getZ() - waterCellZ * (double) cell) / cell);
+            waterImpulses[base + 2] = radius;
+            waterImpulses[base + 3] = amount;
+            waterImpulseCount++;
+        }
+    }
+
     private static Float4 cloudCirrusShape() {
         return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_BASE_SCALE.value(),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DETAIL_SCALE.value(),
@@ -505,6 +632,22 @@ public final class RtComposite {
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
     // penumbrae). Radii in degrees; the real sun/moon are ~0.27°, but a touch larger reads pleasantly.
     private static final int WATER_ANCHOR_MASK = 4095;
+    /** The cell size the authored range implies: the grid is a fixed 256 cells wide (D39). */
+    private static float waterCellSize() {
+        return FluoriteConfig.Rt.Water.WATER_SIM_RANGE.value() / RtSky.WATER_SIM_DIM;
+    }
+    /** How far below the camera to look for the water surface the domain runs on. */
+    private static final int WATER_SIM_PROBE_DEPTH = 24;
+    // Where the water simulation's domain sits, in ABSOLUTE whole cells, and the surface it runs on.
+    // Whole cells because a domain that slid continuously with the player would resample the height
+    // field at a different phase every frame and smear every ripple into a streak (R22).
+    private long waterCellX = Long.MIN_VALUE;
+    private long waterCellZ;
+    private double waterSurfaceY = Double.NaN;
+    private Float4 waterDomain = new Float4(0f, 0f, 0f, 0f);
+    private boolean waterReanchor;
+    private final float[] waterImpulses = new float[RtSky.WATER_MAX_IMPULSES * 4];
+    private int waterImpulseCount;
     private static final Identifier SUN_ID = Identifier.withDefaultNamespace("sun");
     private static final Identifier[] MOON_IDS = createMoonIds();
     // Celestial rotation axis (the pole the sun/moon arc about): perpendicular to the east-west arc,
@@ -1128,6 +1271,10 @@ public final class RtComposite {
             // the cloud noise is sampled at WORLD COORDINATES divided by a feature size, which leaves
             // that range immediately and has to wrap. See tilingSampler.
             worldPipeline.setCloudNoise(skyLuts.cloudNoiseView(), tilingSampler(ctx));
+            // Clamped, not repeating: the height field is a finite domain that follows the player, and
+            // wrapping it would put the far shore's ripples on the near one. The sampler's clamp is a
+            // backstop only -- waterSimGrad rejects out-of-domain coordinates before it reads.
+            worldPipeline.setWaterSimHeight(skyLuts.waterHeightView(), lutSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1519,6 +1666,10 @@ public final class RtComposite {
             // W1 wave-domain anchor: the terrain rebase origin reduced mod 4096 (kept small for shader
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
+            boolean waterSimLive = placeWaterDomain(camX, camY, camZ, level, terrain);
+            if (waterSimLive) {
+                collectWaterImpulses(camX, camZ, level);
+            }
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
                     terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, waterSurfaceY);
 
@@ -1604,7 +1755,8 @@ public final class RtComposite {
                     cloudLighting(),
                     cloudCirrus(),
                     cloudCirrusShape(),
-                    cloudCirrusOrigin(terrain, level)
+                    cloudCirrusOrigin(terrain, level),
+                    waterSimDomain()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -1681,6 +1833,23 @@ public final class RtComposite {
             if (FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
                     && FluoriteConfig.Rt.Volumetrics.ENABLED.value()) {
                 skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
+                if (waterSimLive) {
+                    // (c*dt/dx)^2, clamped to the CFL limit HERE, where the timestep and the cell size
+                    // are both known. Past c*dt/dx = 1/sqrt(2) explicit leapfrog does not lose accuracy,
+                    // it amplifies every step and the field explodes inside a second -- so this is a
+                    // hard bound on an authored value, not a taste adjustment.
+                    float dt = 1f / 60f;
+                    float courant = FluoriteConfig.Rt.Water.WATER_SIM_SPEED.value() * dt
+                            / waterCellSize();
+                    courant = Math.min(courant, 0.70f);
+                    skyLuts.recordWaterSim(cmd, frameTlas.accel.handle, graphicsUse,
+                            waterDomain.x(), waterDomain.y(), waterCellSize(),
+                            (float) (waterSurfaceY - terrain.blockY),
+                            courant * courant,
+                            FluoriteConfig.Rt.Water.WATER_SIM_DAMPING.value(),
+                            RtSky.WATER_SIM_DIM * 0.10f,
+                            waterImpulses, waterImpulseCount, waterReanchor);
+                }
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);

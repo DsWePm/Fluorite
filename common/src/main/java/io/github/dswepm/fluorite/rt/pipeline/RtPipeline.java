@@ -101,12 +101,14 @@ public final class RtPipeline {
     private final int froxelBinding;
     private final int visibilityGridBinding;
     private final int cloudNoiseBinding;
+    private final int waterHeightBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
                        long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
                        int transmittanceBinding, int multiScatterBinding, int skyViewBinding,
-                       int froxelBinding, int visibilityGridBinding, int cloudNoiseBinding) {
+                       int froxelBinding, int visibilityGridBinding, int cloudNoiseBinding,
+                       int waterHeightBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -136,6 +138,7 @@ public final class RtPipeline {
         this.froxelBinding = froxelBinding;
         this.visibilityGridBinding = visibilityGridBinding;
         this.cloudNoiseBinding = cloudNoiseBinding;
+        this.waterHeightBinding = waterHeightBinding;
     }
 
     /**
@@ -207,9 +210,14 @@ public final class RtPipeline {
             // cosmetic — a nearest fetch would put the 128-texel lattice into every cloud edge as steps.
             int cloudNoiseBinding = skyAtlas ? visibilityGridBinding + visibilityGridSamplers : -1;
             int cloudNoiseSamplers = skyAtlas ? 1 : 0;
+            // The water simulation's height field (M12), binding 18. RAYGEN and CLOSEST-HIT both reach
+            // it: water.slang's applyWaterWaves is the single entry point every consumer goes through,
+            // and that includes the hit shader's interface normal.
+            int waterHeightBinding = skyAtlas ? cloudNoiseBinding + cloudNoiseSamplers : -1;
+            int waterHeightSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers
-                    + cloudNoiseSamplers;
+                    + cloudNoiseSamplers + waterHeightSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -247,6 +255,9 @@ public final class RtPipeline {
                 binds.get(cloudNoiseBinding).binding(cloudNoiseBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(waterHeightBinding).binding(waterHeightBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -442,7 +453,7 @@ public final class RtPipeline {
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
                     bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
                     multiScatterBinding, skyViewBinding, froxelBinding, visibilityGridBinding,
-                    cloudNoiseBinding);
+                    cloudNoiseBinding, waterHeightBinding);
         }
     }
 
@@ -562,6 +573,10 @@ public final class RtPipeline {
     }
 
     /** Bind the baked cloud noise (M11.1), sampled by the cloud march on sky-escaping segments. */
+    public void setWaterSimHeight(long imageView, long sampler) {
+        writeAtlasBinding(waterHeightBinding, imageView, sampler);
+    }
+
     public void setCloudNoise(long imageView, long sampler) {
         writeAtlasBinding(cloudNoiseBinding, imageView, sampler);
     }
