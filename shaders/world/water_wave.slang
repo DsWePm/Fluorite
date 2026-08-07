@@ -27,7 +27,14 @@ static const float PI = 3.14159265359;
 
 public static const int WATER_SIM_DIM = 256;
 
-public static const float WATER_WAVE_STRENGTH = 0.3;  // slope scale (higher = choppier glints / more broken reflections)
+// The base scale of the whole field, height and slope together.
+//
+// TUNED AGAINST REFLECTIONS, which is worth knowing now that geometry consumes the same number. It makes
+// the per-component steepness a*k about 0.01-0.02; real water under a light breeze runs 0.05-0.15, so as
+// SLOPE this is calm water and as HEIGHT it is +/-2.5 cm with a maximum surface tilt of 3.7 degrees --
+// nearly invisible as displacement. Callers scale it by an authored factor (1 = exactly this, which is
+// the shipped look); see FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.
+public static const float WATER_WAVE_STRENGTH = 0.3;
 public static const float WAVE_SPEED = 0.8;           // global time scale; dispersion keeps relative speeds physical
 public static const int   WAVE_COUNT = 10;            // λ = 14 m … 0.38 m (each octave 1.5× shorter)
 public static const float WAVE_G = 9.81;
@@ -68,6 +75,7 @@ public float waterWaveLodWeight(float wavelength, float footprint) {
 // describe the same surface. Two separate evaluations would drift apart as soon as anyone touched a
 // constant, and the drift would be slow enough to look like something else.
 public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p, float t, float footprint,
+                                          float strength,
                                           out float height, out float2 grad, out float2 gradDt) {
     // Per-wave steepness a·k: gentle in the long swell, concentrated in the mid/short chop.
     const float Q[WAVE_COUNT] = { 0.030, 0.035, 0.042, 0.050, 0.060, 0.065, 0.065, 0.058, 0.048, 0.038 };
@@ -121,15 +129,18 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
     }
     // ONE SCALE FOR BOTH. Height and gradient are the same function, so they take the same factor —
     // scaling them apart would mean shading a surface the geometry is not.
-    height *= WATER_WAVE_STRENGTH;
-    grad *= WATER_WAVE_STRENGTH;
-    gradDt *= WATER_WAVE_STRENGTH;
+    // ONE SCALE FOR BOTH. Height and gradient are the same function, so they take the same factor --
+    // scaling them apart would mean shading a surface the geometry is not.
+    float scale = WATER_WAVE_STRENGTH * strength;
+    height *= scale;
+    grad *= scale;
+    gradDt *= scale;
 }
 
-public float2 waterWaveGrad(float2 p, float t, float footprint) {
+public float2 waterWaveGrad(float2 p, float t, float footprint, float strength) {
     float height;
     float2 grad, gradDt;
-    waterWaveSpectrum<0, 0>(p, t, footprint, height, grad, gradDt);
+    waterWaveSpectrum<0, 0>(p, t, footprint, strength, height, grad, gradDt);
     return grad;
 }
 
@@ -143,25 +154,25 @@ public float2 waterWaveGrad(float2 p, float t, float footprint) {
  * components hold 96% of the rms height (λ ≥ 2.77 m of a 14 m … 0.38 m spectrum), so the chop the mesh
  * drops was never shape. It was always slope, and slope is the normal's job.
  */
-public float waterWaveHeight(float2 p, float t, float footprint) {
+public float waterWaveHeight(float2 p, float t, float footprint, float strength) {
     float height;
     float2 grad, gradDt;
-    waterWaveSpectrum<0, 1>(p, t, footprint, height, grad, gradDt);
+    waterWaveSpectrum<0, 1>(p, t, footprint, strength, height, grad, gradDt);
     return height;
 }
 
-public float2 waterWaveGrad(float2 p, float t) {
-    return waterWaveGrad(p, t, 0.0);
+public float2 waterWaveGrad(float2 p, float t, float strength) {
+    return waterWaveGrad(p, t, 0.0, strength);
 }
 
 // Evaluate the current gradient and linearly rewind it to the previous phase in one spectrum walk.
 // Frame deltas are bounded on the CPU, so this avoids a second set of trigonometric/exponential work
 // while remaining accurate over the sub-frame interval used by reflection reprojection.
 public void waterWaveGradTemporal(float2 p, float currentT, float previousT, float footprint,
-                           out float2 currentGrad, out float2 previousGrad) {
+                           float strength, out float2 currentGrad, out float2 previousGrad) {
     float height;
     float2 gradDt;
-    waterWaveSpectrum<1, 0>(p, currentT, footprint, height, currentGrad, gradDt);
+    waterWaveSpectrum<1, 0>(p, currentT, footprint, strength, height, currentGrad, gradDt);
     previousGrad = currentGrad - (currentT - previousT) * WAVE_SPEED * gradDt;
 }
 
@@ -254,6 +265,6 @@ public float2 waterSimGradOf(Sampler2D<float> tex, float4 domain, float2 worldXZ
  * the deformation boundary changes whether the shape is in the geometry, never which shape it is.
  */
 public float waterSurfaceHeight(Sampler2D<float> simTex, float4 simDomain, float2 worldXZ,
-                                float t, float cellSize) {
-    return waterWaveHeight(worldXZ, t, cellSize) + waterSimHeightOf(simTex, simDomain, worldXZ);
+                                float t, float cellSize, float strength) {
+    return waterWaveHeight(worldXZ, t, cellSize, strength) + waterSimHeightOf(simTex, simDomain, worldXZ);
 }

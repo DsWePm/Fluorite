@@ -35,6 +35,14 @@ float2 waterSimGrad(float2 worldXZ) {
     return waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain, worldXZ);
 }
 
+// The authored scale of the whole wave field (D49). Named here so the lane it rides in is written down
+// once: waterAmbient.xyz were retired in M16 and have been held at zero since only to avoid ABI churn,
+// which is precisely what a dead lane is for -- x now carries this and WorldPush does not grow.
+// 1 is the shipped look exactly.
+public float waterWaveAmplitude() {
+    return worldPush.waterAmbient.x;
+}
+
 /**
  * Debug view 23: the simulated height field, painted across the screen.
  *
@@ -71,7 +79,7 @@ public float3 waterSimDebug(float2 screenUv) {
 // not steepen the shading, and near and far water are shaded by the identical expression.
 public float3 applyWaterWaves(float3 nGeo, float2 worldXZ, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
-    float2 grad = waterWaveGrad(worldXZ, t, footprint) + waterSimGrad(worldXZ);
+    float2 grad = waterWaveGrad(worldXZ, t, footprint, waterWaveAmplitude()) + waterSimGrad(worldXZ);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
 }
@@ -108,7 +116,7 @@ public static const float CAUSTIC_IOR_SPREAD = 0.0045;
 // field is the only expensive part of a caustic and it does not know about colour: all three
 // wavelengths share these, so dispersion costs three refracts and no extra field evaluations.
 float3 causticNormal(float2 xz, float t) {
-    float2 g = waterWaveGrad(xz, t);
+    float2 g = waterWaveGrad(xz, t, waterWaveAmplitude());
     return normalize(float3(-g.x, 1.0, -g.y));
 }
 

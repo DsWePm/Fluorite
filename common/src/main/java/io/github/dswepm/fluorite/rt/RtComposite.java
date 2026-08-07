@@ -647,9 +647,16 @@ public final class RtComposite {
         return new Float4(s[0], s[1], s[2], FluoriteConfig.Rt.Water.PHASE_G.value());
     }
 
-    /** Legacy xyz retired by M16; w still carries caustic dispersion without growing another field. */
+    /**
+     * x is the wave field's amplitude (D49); yz retired by M16; w carries caustic dispersion.
+     *
+     * <p>The amplitude spends one of M16's dead slots rather than growing the pinned layout for a single
+     * float. It scales the field's height and its slope by the same factor, because they are the same
+     * function — the shading normal and the displaced geometry have to describe one surface.
+     */
     private static Float4 waterAux() {
-        return new Float4(0f, 0f, 0f, FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
+        return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(), 0f, 0f,
+                FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
     }
 
     /** Legacy xyz retired by M16; w still carries thin-shell subsurface thickness. */

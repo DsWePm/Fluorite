@@ -116,8 +116,13 @@ public struct WorldPush {
     public float4   waterScatter;     // xyz scattering coefficient per block, w Henyey-Greenstein g
     public float4   waterAbsorbOverride; // xyz fixed absorption, w != 0 to use it instead of the biome
     // xyz retired in M16: water and fog now read mediumSkyRadiance. w remains the caustic-dispersion
-    // strength; preserving the lane avoids unrelated ABI churn while the two old xyz slots stay zero.
-    public float4   waterAmbient;
+    // strength; the lane was preserved to avoid unrelated ABI churn while the old xyz slots stayed zero.
+    //
+    // x is now the wave field's authored amplitude (M12.5 / D49), spending one of those dead slots rather
+    // than growing the pinned layout for a single float. It scales HEIGHT AND SLOPE TOGETHER, because
+    // they are the same function -- scaling them apart would shade a surface the geometry is not. 1 is
+    // the shipped look exactly. yz remain zero.
+    public float4   waterAmbient;     // x wave amplitude, yz retired, w caustic dispersion
     // The volumetric visibility grid (M13.2), baked on the GPU with two rays per cell: R sun visibility,
     // G sky openness. Read by the BAKE that fills it and by every segment that samples it, which is why
     // the placement lives here rather than in either one's push constants — a grid origin that two shaders

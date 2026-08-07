@@ -1458,6 +1458,24 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simImpulse", "water.sim-impulse", 0.06f, 0f, 0.25f);
 
             /**
+             * The wave field's overall amplitude. 1 is the shipped look, exactly.
+             *
+             * <p>SCALES HEIGHT AND SLOPE TOGETHER, and must — they are the same function, so scaling them
+             * apart would shade a surface the geometry does not have. Which is also why this exists at
+             * all: the field's base scale was tuned against reflections, when a normal was the only
+             * consumer and absolute height meant nothing. Measured, that leaves the surface ±2.5 cm tall
+             * with a maximum tilt of 3.7°, against 10–15° for real water under a light breeze — calm as
+             * slope, and very nearly invisible as displacement.
+             *
+             * <p>So raising this is how the deformation becomes something you can see, and the honest
+             * cost is that the REFLECTIONS CHANGE WITH IT: choppier glints, more broken mirror. That is a
+             * visible change to shipped behaviour, which is why it is authored rather than simply raised.
+             * Around 3–8 reaches the steepness real water has.
+             */
+            public static final FloatSetting WAVE_AMPLITUDE =
+                    clampedFloat("fluorite.rt.water.waveAmplitude", "water.wave-amplitude", 1f, 0f, 8f);
+
+            /**
              * Move the water's actual geometry with the waves (M12.5), instead of only tilting its
              * normal.
              *

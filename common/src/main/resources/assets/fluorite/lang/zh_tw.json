@@ -68,6 +68,8 @@
   "fluorite.options.rt.waterSimDamping.tooltip": "每一步之后涟漪还剩多少。调低水面更快平静。这是个近似：真实水体在最短波长上损失最快，而这里是均匀损失。",
   "fluorite.options.rt.waterSimImpulse": "水花强度",
   "fluorite.options.rt.waterSimImpulse.tooltip": "穿过水面的实体最多能推动多少水面。**既是观感也是稳定性护栏**：位移相对格距过大时局部斜率会陡到让下一步过冲，而过冲会累积。",
+  "fluorite.options.rt.waveAmplitude": "波浪振幅",
+  "fluorite.options.rt.waveAmplitude.tooltip": "波浪有多高。1 即原本的外觀，逐位一致。它同時縮放形狀與傾斜——因為二者是同一個面，所以調高不只是讓水形變更明顯，反射也會隨之更碎、更破。原值是在只有法線使用它的時候定的，水面高度只有約 2.5 公分；真實微風下的水面要陡好幾倍，大約相當於這裡的 3 到 8。",
   "fluorite.options.rt.section.waterDeform": "水面形變",
   "fluorite.options.rt.waterDeform": "水面真形變",
   "fluorite.options.rt.waterDeform.tooltip": "讓波浪真正移動水的幾何，而不只是擾動法線。這是法線做不到的三件事：天空背景下起伏的輪廓、波峰投向波谷的真實陰影、以及潮水沿岸線的漲落。關閉即原本的平面水體，逐位一致，且完全不產生開銷。",

@@ -132,7 +132,8 @@ public final class RtVideoOptions {
                                 cloudCirrusDetailScale(),
                                 cloudCirrusWindSpeed(), cloudCirrusWindAngle()));
                 case WATER -> List.of(
-                        Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
+                        Section.of(waterWaves(), waveAmplitude(), waterCausticDispersion(),
+                                waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
                                         FluoriteConfig.Rt.Water.SUN_SHADOW),
                                 waterPhaseG()),
@@ -333,6 +334,11 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterSim() {
         return bool("fluorite.options.rt.waterSim", FluoriteConfig.Rt.Water.WATER_SIM);
+    }
+
+    private static OptionInstance<Integer> waveAmplitude() {
+        return scaleSlider("fluorite.options.rt.waveAmplitude",
+                FluoriteConfig.Rt.Water.WAVE_AMPLITUDE);
     }
 
     private static OptionInstance<Boolean> waterDeform() {

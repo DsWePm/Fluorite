@@ -129,7 +129,8 @@ public PathSegment tracePrimary(PathSegment seg,
                 float2 currentGrad;
                 float2 previousGrad;
                 waterWaveGradTemporal(waterDomain, worldPush.waterParams.w,
-                                      worldPush.waterAnchor.z, waterFootprint, currentGrad, previousGrad);
+                                      worldPush.waterAnchor.z, waterFootprint, waterWaveAmplitude(),
+                                      currentGrad, previousGrad);
                 float orientation = geometricNormal.y >= 0.0 ? 1.0 : -1.0;
                 n = orientation * normalize(float3(-currentGrad.x, 1.0, -currentGrad.y));
                 previousNormal = orientation
