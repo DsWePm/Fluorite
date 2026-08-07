@@ -179,6 +179,19 @@ public struct WorldPush {
     // is the disable path -- the sampler returns no contribution and the procedural spectrum stands
     // alone, which is exactly the shipped behaviour before this existed.
     public float4   waterSimDomain;   // xy origin (rebased), z cell size, w slope strength
+
+    // The PLANE the simulation runs on, and how far off it a surface may be and still count as being on
+    // it. x = rebased world Y of that plane, y = tolerance in blocks (0 disables the test).
+    //
+    // WHY THE HEIGHT FIELD NEEDS A HEIGHT TO LIVE AT. waterSimDomain says where the grid is in xz and
+    // nothing about y, so a sampler that only knows xz hands the same ripples to every water surface in
+    // that column -- the lake you disturbed, and the pool at the bottom of the waterfall thirty blocks
+    // below it, rippling in perfect sympathy with something it has never touched.
+    //
+    // NOT waterAnchor.w, which looks similar and is not the same thing: that is the surface near the
+    // CAMERA, published for the volumetric depth term, and it is a different probe with different rules.
+    // The simulation picks its plane by its own search and has to publish it itself.
+    public float4   waterSimPlane;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

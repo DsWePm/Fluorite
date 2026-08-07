@@ -39,8 +39,8 @@ __exported import water_wave;
 // therefore absent from exactly the surface anyone would look at, and present in secondary bounces where
 // nobody could see them. A claim of a single funnel, with a second path quietly beside it, hid that for
 // a whole milestone. Adding a third consumer means adding it here, not beside here.
-float2 waterSimGrad(float2 worldXZ) {
-    return waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain, worldXZ);
+float2 waterSimGrad(float3 world) {
+    return waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain, worldPush.waterSimPlane, world);
 }
 
 // The authored scale of the whole wave field (D49). Named here so the lane it rides in is written down
@@ -92,13 +92,16 @@ public float waterWaveAmplitude() {
  * </ul>
  */
 public float3 waterSimReachDebug(float3 ro) {
-    float2 worldXZ = ro.xz + worldPush.waterAnchor.xy;
+    float3 world = float3(ro.x + worldPush.waterAnchor.x, ro.y, ro.z + worldPush.waterAnchor.y);
     float2 uv;
     float weight;
-    if (!waterSimSample(worldPush.waterSimDomain, worldXZ, uv, weight)) {
+    if (!waterSimSample(worldPush.waterSimDomain, worldPush.waterSimPlane, world, uv, weight)) {
+        // Red now also covers "this water is not on the simulated plane" -- which is a thing the shading
+        // genuinely refuses, so the view must refuse it too.
         return float3(1.0, 0.0, 0.0);
     }
-    float2 g = waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain, worldXZ);
+    float2 g = waterSimGradOf(waterSimHeightTex, worldPush.waterSimDomain,
+                              worldPush.waterSimPlane, world);
     return float3(0.0, saturate(length(g) * 20.0), 0.15 + weight * 0.35);
 }
 
@@ -121,9 +124,9 @@ public float3 waterSimDebug(float2 screenUv) {
 // STILL THE ANALYTIC NORMAL OF THE WHOLE FIELD, even where the geometry has been displaced (M12.5). It
 // replaces the facet normal rather than composing with it, so the mesh carrying part of the shape does
 // not steepen the shading, and near and far water are shaded by the identical expression.
-public float3 applyWaterWaves(float3 nGeo, float2 worldXZ, float t, float footprint) {
+public float3 applyWaterWaves(float3 nGeo, float3 world, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
-    float2 grad = waterWaveGrad(worldXZ, t, footprint, waterWaveAmplitude()) + waterSimGrad(worldXZ);
+    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveAmplitude()) + waterSimGrad(world);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
 }
@@ -143,13 +146,13 @@ public float3 applyWaterWaves(float3 nGeo, float2 worldXZ, float t, float footpr
  * while the normal itself is right. That is the correct way round: a slightly stale motion vector costs
  * some reflection sharpness under accumulation, and the alternative on offer was no ripples at all.
  */
-public void applyWaterWavesTemporal(float3 nGeo, float2 worldXZ, float t, float previousT,
+public void applyWaterWavesTemporal(float3 nGeo, float3 world, float t, float previousT,
                                     float footprint, out float3 n, out float3 previousN) {
     float2 currentGrad;
     float2 previousGrad;
-    waterWaveGradTemporal(worldXZ, t, previousT, footprint, waterWaveAmplitude(),
+    waterWaveGradTemporal(world.xz, t, previousT, footprint, waterWaveAmplitude(),
                           currentGrad, previousGrad);
-    float2 sim = waterSimGrad(worldXZ);
+    float2 sim = waterSimGrad(world);
     currentGrad += sim;
     previousGrad += sim;
     float orientation = nGeo.y >= 0.0 ? 1.0 : -1.0;

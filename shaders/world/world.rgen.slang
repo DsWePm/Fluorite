@@ -276,7 +276,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // pushed anchor (terrain origin mod 4096) survives the per-move terrain rebase.
             float3 geometricNormal = n; // unrippled; ray origins offset along this
             if (isWater && waterWaves) {
-                float2 waterDomain = hitPos.xz + worldPush.waterAnchor.xy;
+                // The hit's own y rides along: the field is two-dimensional and has to be told which
+                // surface it belongs to, or every water in this column ripples together.
+                float3 waterDomain = float3(hitPos.x + worldPush.waterAnchor.x, hitPos.y,
+                                            hitPos.z + worldPush.waterAnchor.y);
                 float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
                 n = applyWaterWaves(geometricNormal, waterDomain,
                                     worldPush.waterParams.w, waterFootprint);

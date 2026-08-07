@@ -201,13 +201,28 @@ public void waterWaveGradTemporal(float2 p, float currentT, float previousT, flo
 //
 // `domain` is xy origin (in the caller's space), z blocks per cell, w strength. Returns false when the
 // simulation contributes nothing here: switched off (z <= 0), or outside the grid.
-public bool waterSimSample(float4 domain, float2 worldXZ, out float2 uv, out float weight) {
+public bool waterSimSample(float4 domain, float4 plane, float3 world, out float2 uv, out float weight) {
+    float2 worldXZ = world.xz;
     uv = float2(0.0, 0.0);
     weight = 0.0;
     float cellSize = domain.z;
     if (cellSize <= 0.0) {
         return false; // simulation off: the spectrum stands alone, bit for bit as before
     }
+    // ON THIS PLANE, or not at all. The field is two-dimensional, so without this every water surface
+    // sharing a column with the simulated one gets its ripples -- a pool under a waterfall answering a
+    // splash in the lake above it. Faded rather than clipped so a surface that is merely near the plane
+    // (a flowing block, a lily-covered edge) does not pop.
+    if (plane.y > 0.0) {
+        float offPlane = abs(world.y - plane.x);
+        weight = 1.0 - smoothstep(plane.y * 0.5, plane.y, offPlane);
+        if (weight <= 0.0) {
+            return false;
+        }
+    } else {
+        weight = 1.0;
+    }
+    float planeWeight = weight;
     float2 cell = (worldXZ - domain.xy) / cellSize;
     uv = cell / float(WATER_SIM_DIM);
     if (any(uv < 0.0) || any(uv > 1.0)) {
@@ -217,25 +232,25 @@ public bool waterSimSample(float4 domain, float2 worldXZ, out float2 uv, out flo
     // edge is the one thing in this system with no physical meaning at all -- so nothing may be visible
     // there. Both axes, multiplied, so the corners fade too.
     float2 edge = min(uv, 1.0 - uv);
-    weight = smoothstep(0.0, 0.125, edge.x) * smoothstep(0.0, 0.125, edge.y) * domain.w;
+    weight = planeWeight * smoothstep(0.0, 0.125, edge.x) * smoothstep(0.0, 0.125, edge.y) * domain.w;
     return true;
 }
 
 /** The simulated displacement at a world position, in metres. Zero outside the domain. */
-public float waterSimHeightOf(Sampler2D<float> tex, float4 domain, float2 worldXZ) {
+public float waterSimHeightOf(Sampler2D<float> tex, float4 domain, float4 plane, float3 world) {
     float2 uv;
     float weight;
-    if (!waterSimSample(domain, worldXZ, uv, weight)) {
+    if (!waterSimSample(domain, plane, world, uv, weight)) {
         return 0.0;
     }
     return tex.SampleLevel(uv, 0.0) * weight;
 }
 
 /** The simulated slope at a world position. Central differences on the FILTERED height. */
-public float2 waterSimGradOf(Sampler2D<float> tex, float4 domain, float2 worldXZ) {
+public float2 waterSimGradOf(Sampler2D<float> tex, float4 domain, float4 plane, float3 world) {
     float2 uv;
     float weight;
-    if (!waterSimSample(domain, worldXZ, uv, weight)) {
+    if (!waterSimSample(domain, plane, world, uv, weight)) {
         return float2(0.0, 0.0);
     }
     // The texture is filtered, so this is the slope of the interpolated surface rather than of the
@@ -265,7 +280,8 @@ public float2 waterSimGradOf(Sampler2D<float> tex, float4 domain, float2 worldXZ
  * means near and far water are shaded by the identical expression, which was the requirement: crossing
  * the deformation boundary changes whether the shape is in the geometry, never which shape it is.
  */
-public float waterSurfaceHeight(Sampler2D<float> simTex, float4 simDomain, float2 worldXZ,
-                                float t, float cellSize, float strength) {
-    return waterWaveHeight(worldXZ, t, cellSize, strength) + waterSimHeightOf(simTex, simDomain, worldXZ);
+public float waterSurfaceHeight(Sampler2D<float> simTex, float4 simDomain, float4 simPlane,
+                                float3 world, float t, float cellSize, float strength) {
+    return waterWaveHeight(world.xz, t, cellSize, strength)
+            + waterSimHeightOf(simTex, simDomain, simPlane, world);
 }

@@ -194,7 +194,8 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
             float waterFootprint = rayConeWidth
                     / max(abs(dot(-direction, geometricNormal)), 0.2);
             interfaceNormal = applyWaterWaves(geometricNormal,
-                    interfacePos.xz + worldPush.waterAnchor.xy,
+                    float3(interfacePos.x + worldPush.waterAnchor.x, interfacePos.y,
+                           interfacePos.z + worldPush.waterAnchor.y),
                     worldPush.waterParams.w, waterFootprint);
         }
 

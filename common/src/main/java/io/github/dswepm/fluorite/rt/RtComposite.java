@@ -267,6 +267,28 @@ public final class RtComposite {
     }
 
     /**
+     * The plane the simulation runs on, rebased, and how far off it a surface still counts as being on it.
+     *
+     * <p>The field is two-dimensional: it knows where it is in xz and nothing about y. Without this every
+     * water surface sharing a column with the simulated one receives its ripples — the pool below a
+     * waterfall answering a splash in the lake above it, in perfect time, having never been touched.
+     *
+     * <p>The tolerance is deliberately small and is NOT the probe's vertical reach. That setting says how
+     * far to SEARCH for a plane; this says how close a surface has to be to the plane already chosen, and
+     * a lake is flat — anything a metre off it is a different body of water. Faded rather than clipped so
+     * that a flowing block at a shoreline does not pop.
+     */
+    private Float4 waterSimPlane() {
+        if (waterDomain.z() <= 0f || Double.isNaN(waterSurfaceY)) {
+            return new Float4(0f, 0f, 0f, 0f); // zero tolerance disables the test, as before this existed
+        }
+        return new Float4(waterPlaneRebasedY, WATER_PLANE_TOLERANCE, 0f, 0f);
+    }
+
+    /** A lake is flat; a surface further off the plane than this is a different lake. Blocks. */
+    private static final float WATER_PLANE_TOLERANCE = 1.5f;
+
+    /**
      * Place the simulation domain for this frame, and decide whether it moved far enough to re-anchor.
      *
      * <p>THE DOMAIN IS NOT RE-ANCHORED EVERY FRAME. It follows the player, but only in whole-cell jumps
@@ -341,6 +363,9 @@ public final class RtComposite {
             return false;
         }
         waterAnchorCamY = camY;
+        // Rebased here, where the terrain origin is in hand, because the shading compares it against a
+        // rebased hit position and the two must be in one space.
+        waterPlaneRebasedY = (float) (surface - terrain.blockY);
 
         float cell = waterCellSize();
         long centreCellX = (long) Math.floor(camX / cell);
@@ -843,6 +868,8 @@ public final class RtComposite {
     private double waterSurfaceY = Double.NaN;
     /** Camera height when the surface plane was last chosen — the vertical anchor's hysteresis. */
     private double waterAnchorCamY;
+    /** The same plane, rebased, which is the space the shading compares its hits in. */
+    private float waterPlaneRebasedY;
     private Float4 waterDomain = new Float4(0f, 0f, 0f, 0f);
     private boolean waterReanchor;
     private final float[] waterImpulses = new float[RtSky.WATER_MAX_IMPULSES * 4];
@@ -1962,7 +1989,8 @@ public final class RtComposite {
                     cloudCirrus(),
                     cloudCirrusShape(),
                     cloudCirrusOrigin(terrain, level),
-                    waterSimDomain()
+                    waterSimDomain(),
+                    waterSimPlane()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

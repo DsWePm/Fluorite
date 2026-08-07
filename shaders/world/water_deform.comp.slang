@@ -29,6 +29,9 @@ public struct WaterDeformPush {
     // xy origin (rebased), z blocks per cell, w strength -- the same lane the shading reads, so the
     // geometry and the normal cannot disagree about where the ripples are.
     public float4 simDomain;
+    // The plane the simulation runs on; see WorldPush.waterSimPlane. Passed through so the displacement
+    // reads the field under exactly the test the shading applies to it.
+    public float4 simPlane;
     // Added to a vertex's section-local xz to reach the world-stable wave coordinate: the section origin
     // relative to the terrain rebase, plus the wave anchor. Assembled on the CPU because that is where
     // both halves are known, and because a vertex position plus a rebase origin plus an anchor is three
@@ -74,8 +77,9 @@ void main(uint3 tid: SV_DispatchThreadID) {
     // since, and a vertex left holding a stale displacement is a permanent lump in the water.
     float h = fade <= 0.0
             ? 0.0
-            : fade * waterSurfaceHeight(waterSimHeightTex, pc.simDomain, worldXZ, pc.time,
-                                        pc.cellSize, pc.amplitude);
+            : fade * waterSurfaceHeight(waterSimHeightTex, pc.simDomain, pc.simPlane,
+                                        float3(worldXZ.x, pc.simPlane.x, worldXZ.y),
+                                        pc.time, pc.cellSize, pc.amplitude);
 
     // Y only. Real deep-water particles move in circles, so a physical surface also shifts horizontally
     // (that is what sharpens the crests), but moving xz here would shear the quads away from the block

@@ -123,7 +123,8 @@ public PathSegment tracePrimary(PathSegment seg,
         float3 geometricNormal = n;
         float3 previousNormal = n;
         if (isWater && waterWaves) {
-            float2 waterDomain = hitPos.xz + worldPush.waterAnchor.xy;
+            float3 waterDomain = float3(hitPos.x + worldPush.waterAnchor.x, hitPos.y,
+                                        hitPos.z + worldPush.waterAnchor.y);
             float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
             if (bounce == 0 && abs(geometricNormal.y) >= 0.5) {
                 // Through water.slang rather than assembled here. Built inline, this path added the
