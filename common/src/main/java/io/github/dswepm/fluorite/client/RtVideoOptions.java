@@ -141,6 +141,11 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.waterSim",
                                 waterSim(), waterSimRange(), waterSimReanchor(), waterSimStrength(),
                                 waterSimSpeed(), waterSimDamping(), waterSimImpulse()),
+                        // The geometry, separate from the ripples that ride on it: one controls whether
+                        // the surface is a shape at all, the others how much of it is and how finely.
+                        Section.titled("fluorite.options.rt.section.waterDeform",
+                                waterDeform(), waterDeformRange(), waterDeformCell(),
+                                waterDeformReanchor()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
@@ -328,6 +333,34 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterSim() {
         return bool("fluorite.options.rt.waterSim", FluoriteConfig.Rt.Water.WATER_SIM);
+    }
+
+    private static OptionInstance<Boolean> waterDeform() {
+        return bool("fluorite.options.rt.waterDeform", FluoriteConfig.Rt.Water.WATER_DEFORM);
+    }
+
+    private static OptionInstance<Integer> waterDeformRange() {
+        return blockSlider("fluorite.options.rt.waterDeformRange",
+                FluoriteConfig.Rt.Water.WATER_DEFORM_RANGE, 8, 128);
+    }
+
+    /** Blocks per mesh cell, in eighths — the whole useful range sits below one block. */
+    private static OptionInstance<Integer> waterDeformCell() {
+        FloatSetting setting = FluoriteConfig.Rt.Water.WATER_DEFORM_CELL;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterDeformCell",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterDeformCell.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f", v / 8.0))),
+            new OptionInstance.IntRange(1, 8),
+            Math.clamp(Math.round(setting.value() * 8f), 1, 8),
+            v -> setting.set(v / 8.0f));
+    }
+
+    private static OptionInstance<Integer> waterDeformReanchor() {
+        return blockSlider("fluorite.options.rt.waterDeformReanchor",
+                FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR, 1, 32);
     }
 
     private static OptionInstance<Integer> waterSimRange() {

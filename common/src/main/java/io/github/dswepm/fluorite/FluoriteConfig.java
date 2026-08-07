@@ -1458,6 +1458,79 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simImpulse", "water.sim-impulse", 0.06f, 0f, 0.25f);
 
             /**
+             * Move the water's actual geometry with the waves (M12.5), instead of only tilting its
+             * normal.
+             *
+             * <p>OFF IS THE SHIPPED BEHAVIOUR, bit for bit — the water stays the flat quads the terrain
+             * mesher emits and the whole displacement path is never dispatched. That is iron rule 8, and
+             * here it is also the only way the cost of this is measurable at all.
+             *
+             * <p>What it buys is the three things a normal cannot fake, because a normal describes a
+             * surface the geometry does not have: a wavy silhouette against the sky, shadows the crests
+             * actually cast on the troughs, and a shoreline that the waves ride up and down. What it
+             * costs is a per-frame BLAS refit over the near field, which is the risk this milestone is
+             * really about (see D44).
+             */
+            public static final BooleanSetting WATER_DEFORM =
+                    bool("fluorite.rt.water.deform", "water.deform", false);
+
+            /**
+             * How far from the camera the water is real geometry, in blocks. Beyond it the surface is
+             * flat and the waves live entirely in the normal, as they always have.
+             *
+             * <p>THE COST IS QUADRATIC IN THIS. Triangles = 2·(range/cell)², and every one of them is
+             * refit every frame. 64 blocks at quarter-block cells is about 131k triangles; doubling the
+             * range quadruples that. It is deliberately its own setting rather than being tied to the
+             * ripple range (D45), because the two are paid for in completely different currencies —
+             * ripple range costs a fixed dispatch, this costs triangles.
+             *
+             * <p>Deliberately short by default. The displacement is centimetres, so it reads as shape
+             * only up close; far water gets nothing from the geometry that the normal was not already
+             * giving it.
+             */
+            public static final FloatSetting WATER_DEFORM_RANGE =
+                    clampedFloat("fluorite.rt.water.deformRange", "water.deform-range", 48f, 8f, 128f);
+
+            /**
+             * Blocks per mesh cell in the deformed region — the tessellation, and the other half of the
+             * triangle count.
+             *
+             * <p>It is also the band limit: the mesh cannot carry a wave shorter than about twice a cell,
+             * so this is what the displacement passes to the spectrum as its footprint and everything
+             * finer stays in the normal (D46). Measured, that costs almost nothing in shape — the
+             * components longer than 2.8 m hold 96% of the field's rms height, so even half-block cells
+             * are carrying essentially all of it.
+             */
+            public static final FloatSetting WATER_DEFORM_CELL =
+                    clampedFloat("fluorite.rt.water.deformCell", "water.deform-cell", 0.25f, 0.125f, 1f);
+
+            /**
+             * How far the player may walk before the deformed region is re-anchored, in blocks.
+             *
+             * <p>Its own control rather than the ripple domain's (D47), because the two re-anchor for
+             * different reasons and at different costs: that one recasts an obstacle mask, this one
+             * rebuilds a vertex grid. Snapped to whole cells for the same reason as R22 — a grid that
+             * slid continuously would resample the field at a new phase every frame, and here that would
+             * show as the surface crawling rather than as a smeared ripple.
+             */
+            public static final FloatSetting WATER_DEFORM_REANCHOR =
+                    clampedFloat("fluorite.rt.water.deformReanchor", "water.deform-reanchor", 8f, 1f, 32f);
+
+            /**
+             * The ripple domain's reach once the deformation range has had its say: ripples are not
+             * simulated further out than the geometry can move (D45).
+             *
+             * <p>The grid is a fixed 256 cells, so shortening the reach buys detail (D39) — and it buys
+             * it exactly where the deformation can show it. Only applies while the deformation is on;
+             * with it off the ripple range stands alone, which is what keeps the off state equal to the
+             * shipped behaviour.
+             */
+            public static float simRangeBlocks() {
+                float range = WATER_SIM_RANGE.value();
+                return WATER_DEFORM.value() ? Math.min(range, WATER_DEFORM_RANGE.value()) : range;
+            }
+
+            /**
              * Apply the sun-visibility shadow rays' transmittance to the water's sun term, or take the
              * sun as unoccluded.
              *

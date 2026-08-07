@@ -699,9 +699,15 @@ public final class RtComposite {
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
     // penumbrae). Radii in degrees; the real sun/moon are ~0.27°, but a touch larger reads pleasantly.
     private static final int WATER_ANCHOR_MASK = 4095;
-    /** The cell size the authored range implies: the grid is a fixed 256 cells wide (D39). */
+    /**
+     * The cell size the authored range implies: the grid is a fixed 256 cells wide (D39).
+     *
+     * <p>Through {@code simRangeBlocks} rather than the raw setting, so that turning the deformation on
+     * pulls the ripple domain in to match it (D45) and the freed resolution goes where the geometry can
+     * actually show it.
+     */
     private static float waterCellSize() {
-        return FluoriteConfig.Rt.Water.WATER_SIM_RANGE.value() / RtSky.WATER_SIM_DIM;
+        return FluoriteConfig.Rt.Water.simRangeBlocks() / RtSky.WATER_SIM_DIM;
     }
     /** How far below the camera to look for the water surface the domain runs on. */
     private static final int WATER_SIM_PROBE_DEPTH = 24;
