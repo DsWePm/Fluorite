@@ -481,10 +481,10 @@ public final class RtTerrain {
                 if (g.refitScratch != null) {
                     g.refitScratch.destroy();
                 }
-                g.refitScratch = ctx.createBuffer(required,
-                        org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-                                | org.lwjgl.vulkan.VK12.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                        false, "terrain water refit scratch");
+                // Through RtAccel's own allocator, not a hand-rolled createBuffer. The requirement is
+                // on the scratch's DEVICE ADDRESS, not on the allocation, and it is a device property --
+                // a plain buffer happens to satisfy it often enough to look right until it does not.
+                g.refitScratch = RtAccel.createScratchBuffer(ctx, required, "terrain water refit scratch");
             }
             if (refits == null) {
                 refits = new ArrayList<>();

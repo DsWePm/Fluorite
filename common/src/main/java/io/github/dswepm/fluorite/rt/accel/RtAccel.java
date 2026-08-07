@@ -84,7 +84,14 @@ public final class RtAccel {
     // multiples of 256 (VUID-vkCmdBuildMicromapsEXT-pInfos-07515).
     private static final long MICROMAP_INPUT_ADDRESS_ALIGNMENT = 256L;
 
-    private static RtBuffer createScratchBuffer(RtContext ctx, long requiredSize, String label) {
+    /**
+     * Scratch for an acceleration-structure build or refit, aligned as the device demands.
+     *
+     * <p>Public because every caller that allocates its own instead gets it wrong: the alignment is a
+     * device property, the requirement is on the DEVICE ADDRESS rather than the allocation, and a plain
+     * createBuffer satisfies it often enough to look correct until it does not.
+     */
+    public static RtBuffer createScratchBuffer(RtContext ctx, long requiredSize, String label) {
         long alignment = ctx.accelerationStructureScratchAlignment();
         return ctx.createAlignedBuffer(Math.max(requiredSize, alignment), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                 false, label, alignment);
