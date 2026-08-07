@@ -121,9 +121,16 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.cloudLighting",
                                 cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo(),
                                 cloudSecondary()),
+                        // The cirrus sheet's own complete set, parallel to the deck's above. Nothing
+                        // here derives from the cumulus group any more: two layers of different weather
+                        // at different altitudes in different wind, and every number they used to share
+                        // meant one of them could not be adjusted without moving the other.
                         Section.titled("fluorite.options.rt.section.cloudCirrus",
-                                cloudCirrus(), cloudCirrusCoverage(), cloudCirrusExtinction(),
-                                cloudCirrusAltitude(), cloudCirrusThickness()));
+                                cloudCirrus(), cloudCirrusCoverage(), cloudCirrusDensity(),
+                                cloudCirrusExtinction(), cloudCirrusAltitude(), cloudCirrusThickness(),
+                                cloudCirrusFieldScale(), cloudCirrusBaseScale(),
+                                cloudCirrusDetailScale(),
+                                cloudCirrusWindSpeed(), cloudCirrusWindAngle()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
@@ -603,6 +610,43 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> cloudCirrusCoverage() {
         return biasSlider("fluorite.options.rt.cloudCirrusCoverage",
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_COVERAGE);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusBaseScale() {
+        return blockSlider("fluorite.options.rt.cloudCirrusBaseScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_BASE_SCALE, 500, 40000);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusDetailScale() {
+        return blockSlider("fluorite.options.rt.cloudCirrusDetailScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DETAIL_SCALE, 40, 8000);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusFieldScale() {
+        return blockSlider("fluorite.options.rt.cloudCirrusFieldScale",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_FIELD_SCALE, 500, 80000);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusDensity() {
+        return scaleSlider("fluorite.options.rt.cloudCirrusDensity",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DENSITY);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusWindSpeed() {
+        return scaleSlider("fluorite.options.rt.cloudCirrusWindSpeed",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusWindAngle() {
+        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_ANGLE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.cloudCirrusWindAngle",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.cloudCirrusWindAngle.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(v + "°")),
+            new OptionInstance.IntRange(0, 359),
+            Math.clamp(Math.round(setting.value()), 0, 359),
+            v -> setting.set((float) v));
     }
 
     private static OptionInstance<Integer> cloudCirrusExtinction() {

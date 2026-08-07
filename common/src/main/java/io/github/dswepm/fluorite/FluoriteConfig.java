@@ -1069,6 +1069,42 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudCirrusExtinction",
                             "volumetrics.cloud-cirrus-extinction", 0.004f, 0f, 0.1f);
 
+            /** How wide one cirrus streak is, in blocks. */
+            public static final FloatSetting CLOUD_CIRRUS_BASE_SCALE =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusBaseScale",
+                            "volumetrics.cloud-cirrus-base-scale", 9600f, 500f, 40000f);
+
+            /** How fine the texture within a cirrus streak is, in blocks. */
+            public static final FloatSetting CLOUD_CIRRUS_DETAIL_SCALE =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusDetailScale",
+                            "volumetrics.cloud-cirrus-detail-scale", 1020f, 40f, 8000f);
+
+            /** How far apart the cirrus layer's own clumps and clearings are, in blocks. */
+            public static final FloatSetting CLOUD_CIRRUS_FIELD_SCALE =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusFieldScale",
+                            "volumetrics.cloud-cirrus-field-scale", 22500f, 500f, 80000f);
+
+            /** Multiplies the cirrus layer's density, independently of the deck below it. */
+            public static final FloatSetting CLOUD_CIRRUS_DENSITY =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusDensity",
+                            "volumetrics.cloud-cirrus-density", 1f, 0f, 10f);
+
+            /**
+             * How fast the cirrus layer drifts, in blocks per second.
+             *
+             * <p>Its own, not the deck's. Cirrus sits kilometres higher, where the wind is faster and
+             * frequently from a different quarter — and two layers sliding past each other at different
+             * speeds is most of what makes a sky read as deep rather than as one painted dome.
+             */
+            public static final FloatSetting CLOUD_CIRRUS_WIND_SPEED =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusWindSpeed",
+                            "volumetrics.cloud-cirrus-wind-speed", 6f, 0f, 120f);
+
+            /** Which way the cirrus layer's own wind blows, in degrees clockwise from +X. */
+            public static final FloatSetting CLOUD_CIRRUS_WIND_ANGLE =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusWindAngle",
+                            "volumetrics.cloud-cirrus-wind-angle", 65f, 0f, 360f);
+
             /**
              * What clouds a ray that is not the first of its path gets: {@code off}, {@code reduced} or
              * {@code full}.

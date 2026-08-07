@@ -127,7 +127,8 @@ float cloudDiffusionRate() {
  * pattern jumps sideways every time the origin is reset. This one addition is what the file's
  * world-anchored claim actually rests on.
  */
-float3 worldOf(float3 p) { return p + worldPush.cloudRebase.xyz; }
+float3 worldOf(float3 p) { return p + worldPush.cloudRebase.xyz; } // low deck; see worldIn
+
 
 public struct CloudResult {
     public float3 inScatter;
@@ -174,9 +175,17 @@ struct CloudLayer {
     float extinction;
     float baseScale;
     float detailScale;
+    float fieldScale;
+    float densityScale;
+    // Where this layer's field sits, in absolute blocks: the terrain rebase minus THIS layer's own wind
+    // drift. Per layer rather than shared because the two layers are in different wind -- cirrus sits
+    // kilometres higher, where it moves faster and often from a different quarter.
+    float3 origin;
     int   sunSteps;
     bool  cirrus;
 };
+
+float3 worldIn(CloudLayer layer, float3 p) { return p + layer.origin; }
 
 CloudLayer lowLayer() {
     CloudLayer l;
@@ -186,6 +195,9 @@ CloudLayer lowLayer() {
     l.extinction = worldPush.cloudParams.w;
     l.baseScale = max(worldPush.cloudShape.z, 1.0);
     l.detailScale = max(worldPush.cloudShape.w, 1.0);
+    l.fieldScale = max(worldPush.cloudRebase.w, 1.0);
+    l.densityScale = worldPush.cloudParams.y;
+    l.origin = worldPush.cloudRebase.xyz;
     l.sunSteps = clamp(int(worldPush.cloudLighting.z + 0.5), 0, 8);
     l.cirrus = false;
     return l;
@@ -207,10 +219,13 @@ CloudLayer highLayer() {
     l.bottom = max(worldPush.cloudHigh.x, low.bottom + low.thickness + 16.0);
     l.coverageBias = worldPush.cloudHigh.z;
     l.extinction = worldPush.cloudHigh.w;
-    // An order of magnitude coarser than the deck's: cirrus is drawn out into sheets tens of kilometres
-    // across, and giving it the cumulus feature size makes it read as a second deck of small clouds.
-    l.baseScale = low.baseScale * 4.0;
-    l.detailScale = low.detailScale * 3.0;
+    // Authored, not derived. These used to be multiples of the deck's, which meant making the cumulus
+    // smaller also made the cirrus smaller -- two layers of different weather moving as one control.
+    l.baseScale = max(worldPush.cloudHighShape.x, 1.0);
+    l.detailScale = max(worldPush.cloudHighShape.y, 1.0);
+    l.fieldScale = max(worldPush.cloudHighOrigin.w, 1.0);
+    l.densityScale = worldPush.cloudHighShape.z;
+    l.origin = worldPush.cloudHighOrigin.xyz;
     // No self-shadow march. Its optical depth barely leaves zero, so exp(-tau) is within a hair of one
     // everywhere in it, and marching to establish that would be the most expensive nothing in the frame.
     l.sunSteps = 0;
@@ -354,8 +369,8 @@ float cloudCoverage(CloudLayer layer, float3 p) {
     // The high layer reads the same weather map from a different slice: same map because a cirrus sheet
     // and the cumulus under it belong to the same weather system, different slice because they are not
     // the same clouds and reading it identically would paste a cirrus shadow over every cumulus. The
-    // PERIOD is the layer's own now rather than a multiple of the deck's.
-    float2 w = worldOf(p).xz / cloudFieldScale();
+    // period and the origin are the LAYER'S OWN -- it has its own field scale and drifts in its own wind.
+    float2 w = worldIn(layer, p).xz / layer.fieldScale;
     float m = cloudNoise.SampleLevel(float3(w.x, layer.cirrus ? 0.81 : 0.37, w.y), 0.0).r;
     // Re-centred for the Perlin-Worley body. The old (m - 0.42) * 2.6 was fitted to pure Worley, whose
     // mean sits at 0.486; the normalised Perlin-Worley field is wider and centred differently, and
@@ -380,7 +395,7 @@ float cloudCoverage(CloudLayer layer, float3 p) {
  * switch being thrown rather than as a storm arriving.
  */
 float cloudType(float3 p) {
-    float2 w = worldOf(p).xz / cloudTypeScale();
+    float2 w = worldIn(lowLayer(), p).xz / cloudTypeScale();
     float m = cloudNoise.SampleLevel(float3(w.x, 0.61, w.y), 0.0).b;
     // Scaled below 1 so fair weather stays in the sheet-to-heap half of the range and the tower is
     // something the weather has to ask for.
@@ -400,7 +415,7 @@ float cloudType(float3 p) {
  * step in the sky for a texture read that only matters inside a cloud.
  */
 float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
-    float3 pw = worldOf(p);
+    float3 pw = worldIn(layer, p);
     if (pw.y < layer.bottom || pw.y > layer.bottom + layer.thickness) {
         return 0.0; // outside the deck: no type can put cloud here
     }
@@ -429,7 +444,7 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
     // cumulus that light struggles to get through, and that opacity is most of what makes a storm read as
     // one from underneath. Applied AFTER the erosion below rather than here: the erosion term is written
     // against a density normalised to [0,1] and would invert if a gain pushed its argument past one.
-    float gain = worldPush.cloudParams.y * (1.0 + type * 1.6);
+    float gain = layer.densityScale * (1.0 + type * 1.6);
     if (density <= 0.0 || cheap) {
         return density * gain;
     }
@@ -659,7 +674,7 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
             float ownTop = layer.cirrus
                     ? layer.bottom + layer.thickness
                     : layer.bottom + cloudProfileTop(cloudType(p)) * layer.thickness;
-            float tauUp = sigmaT * max(ownTop - worldOf(p).y, 0.0);
+            float tauUp = sigmaT * max(ownTop - worldIn(layer, p).y, 0.0);
 
             // Isotropic, so no phase factor: light that has scattered often enough for diffusion to
             // describe it has forgotten which way it came in. That is also why this term is the same for
@@ -776,7 +791,7 @@ public float3 cloudDebugProbe(float3 ro, float3 rd) {
     float step = (span.y - span.x) / 64.0;
     for (int i = 0; i < 64; ++i) {
         float3 p = ro + rd * (span.x + step * (float(i) + 0.5));
-        float3 pw = worldOf(p);
+        float3 pw = worldIn(low, p);
         if (pw.y >= low.bottom && pw.y <= low.bottom + low.thickness) {
             inDeck += 1.0;
             float type = cloudType(p);

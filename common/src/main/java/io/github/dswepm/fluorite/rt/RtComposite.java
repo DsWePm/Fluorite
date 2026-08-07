@@ -231,6 +231,45 @@ public final class RtComposite {
      * sideways at every rebase. Same reason {@code visibilityGridOrigin} snaps in absolute coordinates
      * before rebasing, and the same class of fault R18 exists to prevent.
      */
+    /**
+     * The wind's accumulated drift for one layer, in blocks.
+     *
+     * <p>Shared by both layers and parameterised by their own speed and angle, because they are in
+     * different wind: cirrus sits kilometres higher, where it moves faster and often from another
+     * quarter, and two layers sliding past each other at different speeds is most of what makes a sky
+     * read as deep rather than as one painted dome.
+     *
+     * <p>Game time rather than wall clock, so the sky stops when the game does. Kept in double to the
+     * last moment: game time reaches millions of ticks on an old world, and the product with the speed
+     * is what a float would start losing blocks off the end of.
+     */
+    private static double[] windDrift(ClientLevel level, float speed, float angleDegrees) {
+        if (level == null || speed <= 0f) {
+            return new double[] {0.0, 0.0};
+        }
+        double partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+        double seconds = (level.getGameTime() + partial) / 20.0;
+        double angle = Math.toRadians(angleDegrees);
+        return new double[] {Math.cos(angle) * speed * seconds, Math.sin(angle) * speed * seconds};
+    }
+
+    /** The cirrus layer's own shape: how big a streak is, how fine its texture, how dense the sheet. */
+    private static Float4 cloudCirrusShape() {
+        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_BASE_SCALE.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DETAIL_SCALE.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DENSITY.value(),
+                0f);
+    }
+
+    /** The cirrus layer's own field origin — its own drift — and its own field scale. */
+    private static Float4 cloudCirrusOrigin(RtTerrain terrain, ClientLevel level) {
+        double[] drift = windDrift(level, FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_ANGLE.value());
+        return new Float4((float) (terrain.blockX - drift[0]), terrain.blockY,
+                (float) (terrain.blockZ - drift[1]),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_FIELD_SCALE.value());
+    }
+
     private static Float4 cloudRebase(RtTerrain terrain, ClientLevel level) {
         // The wind's accumulated drift, subtracted from the origin. Sampling a field at p + (origin -
         // drift) is the same thing as sampling a drifting field at p, and doing it this way means the
@@ -240,23 +279,10 @@ public final class RtComposite {
         //
         // Only xz. The y lane is the pure rebase because cloudShellSpan measures the deck's altitude
         // from it, and a deck that drifted vertically would be a deck at the wrong height.
-        float driftX = 0f;
-        float driftZ = 0f;
-        if (level != null) {
-            float speed = FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value();
-            if (speed > 0f) {
-                // Game time rather than wall clock, so the sky stops when the game does and resumes
-                // where it left off. Partial-tick interpolated for the same reason the weather is: at 20
-                // Hz the drift of a field that fills the screen is a visible stutter.
-                double partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
-                double seconds = (level.getGameTime() + partial) / 20.0;
-                double angle = Math.toRadians(FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE.value());
-                // Kept in double to here: game time reaches millions of ticks on an old world, and the
-                // product with the speed is what a float would start losing blocks off the end of.
-                driftX = (float) (Math.cos(angle) * speed * seconds);
-                driftZ = (float) (Math.sin(angle) * speed * seconds);
-            }
-        }
+        double[] drift = windDrift(level, FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE.value());
+        float driftX = (float) drift[0];
+        float driftZ = (float) drift[1];
         return new Float4(terrain.blockX - driftX, terrain.blockY, terrain.blockZ - driftZ,
                 FluoriteConfig.Rt.Volumetrics.CLOUD_FIELD_SCALE.value());
     }
@@ -1576,7 +1602,9 @@ public final class RtComposite {
                     cloudShape(),
                     cloudRebase(terrain, level),
                     cloudLighting(),
-                    cloudCirrus()
+                    cloudCirrus(),
+                    cloudCirrusShape(),
+                    cloudCirrusOrigin(terrain, level)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
