@@ -138,6 +138,9 @@ public final class RtVideoOptions {
                                 waterPhaseG()),
                         Section.titled("fluorite.options.rt.section.waterScatter",
                                 waterScatterStrength(), waterScatterR(), waterScatterG(), waterScatterB()),
+                        Section.titled("fluorite.options.rt.section.waterSim",
+                                waterSim(), waterSimStrength(), waterSimSpeed(),
+                                waterSimDamping(), waterSimImpulse()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
@@ -321,6 +324,38 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 1000),
             Math.clamp(Math.round(setting.value() * 10f), 0, 1000),
             v -> setting.set(v / 10.0f));
+    }
+
+    private static OptionInstance<Boolean> waterSim() {
+        return bool("fluorite.options.rt.waterSim", FluoriteConfig.Rt.Water.WATER_SIM);
+    }
+
+    private static OptionInstance<Integer> waterSimStrength() {
+        return scaleSlider("fluorite.options.rt.waterSimStrength",
+                FluoriteConfig.Rt.Water.WATER_SIM_STRENGTH);
+    }
+
+    private static OptionInstance<Integer> waterSimSpeed() {
+        return scaleSlider("fluorite.options.rt.waterSimSpeed", FluoriteConfig.Rt.Water.WATER_SIM_SPEED);
+    }
+
+    /** Per-step energy retention, in thousandths — the interesting range is all above 0.99. */
+    private static OptionInstance<Integer> waterSimDamping() {
+        FloatSetting setting = FluoriteConfig.Rt.Water.WATER_SIM_DAMPING;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterSimDamping",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterSimDamping.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.3f", 0.9 + v / 1000.0))),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round((setting.value() - 0.9f) * 1000f), 0, 100),
+            v -> setting.set(0.9f + v / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> waterSimImpulse() {
+        return coefficientSlider("fluorite.options.rt.waterSimImpulse",
+                FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE, 250);
     }
 
     private static OptionInstance<Integer> waterPhaseG() {
