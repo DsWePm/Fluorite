@@ -280,8 +280,50 @@ public float2 waterSimGradOf(Sampler2D<float> tex, float4 domain, float4 plane, 
  * means near and far water are shaded by the identical expression, which was the requirement: crossing
  * the deformation boundary changes whether the shape is in the geometry, never which shape it is.
  */
+/**
+ * The simulated height, LOW-PASSED to what a mesh of the given spacing can actually hold.
+ *
+ * <p>WITHOUT THIS A RIPPLE BECOMES A SPIKE. The simulation resolves features down to a couple of its own
+ * cells -- tens of centimetres -- while the water mesh has a vertex per block. Sampling that field at
+ * those vertices is straightforward aliasing: whichever vertex happens to land near the peak takes the
+ * whole of it and its neighbours take nothing, so a smooth bump arrives as one sharp triangle. It is the
+ * same failure the spectrum avoids by weighting components against the footprint; the simulation reaches
+ * the mesh through a texture instead of through a sum, so it needs a filter rather than a weight.
+ *
+ * <p>A box over the mesh cell, using the sampler's own bilinear filtering between taps, so what survives
+ * is the part of the disturbance whose wavelength the mesh can represent. A broad swell from a big splash
+ * still moves the geometry; the fine ripples do not, and stay in the normal where they always were.
+ * Subdividing the mesh (D48) shrinks the box on its own and lets them through with no change here.
+ */
+float waterSimHeightBandLimited(Sampler2D<float> tex, float4 domain, float4 plane, float3 world,
+                                float cellSize) {
+    float2 uv;
+    float weight;
+    if (!waterSimSample(domain, plane, world, uv, weight)) {
+        return 0.0;
+    }
+    // Taps spread over the cell, in uv. Below about two simulation cells there is nothing to filter and
+    // the centre tap is the honest answer.
+    float span = 0.5 * max(cellSize, 0.0) / (domain.z * float(WATER_SIM_DIM));
+    if (span <= 0.5 / float(WATER_SIM_DIM)) {
+        return tex.SampleLevel(uv, 0.0) * weight;
+    }
+    float sum = 0.0;
+    [unroll]
+    for (int j = 0; j < 4; ++j) {
+        [unroll]
+        for (int i = 0; i < 4; ++i) {
+            // Tap centres at -3/4, -1/4, +1/4, +3/4 of the span: a 4x4 box whose samples each stand for
+            // an equal quarter of the cell.
+            float2 o = float2(float(i) * 0.5 - 0.75, float(j) * 0.5 - 0.75) * span;
+            sum += tex.SampleLevel(uv + o, 0.0);
+        }
+    }
+    return sum * (1.0 / 16.0) * weight;
+}
+
 public float waterSurfaceHeight(Sampler2D<float> simTex, float4 simDomain, float4 simPlane,
                                 float3 world, float t, float cellSize, float strength) {
     return waterWaveHeight(world.xz, t, cellSize, strength)
-            + waterSimHeightOf(simTex, simDomain, simPlane, world);
+            + waterSimHeightBandLimited(simTex, simDomain, simPlane, world, cellSize);
 }
