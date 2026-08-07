@@ -294,6 +294,10 @@ public CloudResult traceClouds(float3 ro, float3 rd, float tMax, uint seed) {
     float transmittance = 1.0;
     float3 gathered = float3(0.0, 0.0, 0.0);
     int emptySteps = 0;
+    // The length of the last long stride taken through empty space. Kept because a stride that lands
+    // inside a cloud has crossed everything between where it started and where it ended WITHOUT
+    // INTEGRATING ANY OF IT, and that has to be undone rather than accepted.
+    float lastSkip = 0.0;
     for (int i = 0; i < 96 && t < tExit; ++i) {
         float step = max(24.0, t * 0.125);
         float3 p = ro + rd * t;
@@ -301,10 +305,29 @@ public CloudResult traceClouds(float3 ro, float3 rd, float tMax, uint seed) {
         if (density <= 0.0) {
             // Nothing here. Step long, and keep stepping long while the emptiness holds.
             emptySteps++;
-            t += step * (emptySteps > 2 ? 3.0 : 1.5);
+            lastSkip = step * (emptySteps > 2 ? 3.0 : 1.5);
+            t += lastSkip;
+            continue;
+        }
+        // BACK UP ON RE-ENTRY. Without this the skip is not an optimisation, it is a hole: the stride
+        // that discovers a cloud has already jumped past most of it, and the optical depth of everything
+        // it flew over is silently lost. It shows up as clouds that do not occlude -- and asymmetrically,
+        // which is what makes it hard to attribute. Looking UP from below, a ray enters at the flat cloud
+        // base where density is immediately non-zero, so no skip is ever armed and the march is fine.
+        // Looking DOWN from above, it first crosses the empty upper deck -- a hundred and fifty blocks of
+        // it for a cumulus, which only fills the lower half -- so the stride has already tripled by the
+        // time it reaches cloud, and one step swallows most of the crossing.
+        //
+        // Once per entry: lastSkip is cleared here, so this cannot cycle, and the step it resumes at is
+        // shorter than the stride it undoes, so the march still makes progress.
+        if (lastSkip > step) {
+            t = max(tEnter, t - lastSkip + step);
+            lastSkip = 0.0;
+            emptySteps = 0;
             continue;
         }
         emptySteps = 0;
+        lastSkip = 0.0;
         density = cloudDensity(p, false);
         if (density > 0.0) {
             float sigmaT = density * worldPush.cloudParams.w;
