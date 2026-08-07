@@ -737,6 +737,16 @@ fault[5]: type=READ_INVALID, address=0x6230c2000, precision=0x1000
 
 **教训形态**：这是本里程碑第三次「两边单独看都对、错在相遇处」。而它比前两次更难查，因为**症状里没有任何东西指向 Java**——双重释放的表现是 TLAS 读到已消失的 BLAS，即一次没有 Java 栈的 device fault。真正把它钉住的是故障地址表里 `prev=` 那一栏的资源名（`'terrain section -368,0,96 BLAS compacted backing'`），不是任何堆栈。
 
+#### 8.2c-2 第二次故障：尺寸查询与构建的 flags 不一致（2026-08-08，已修）
+
+修完双重释放后再开，换了个地方死：**GPU executor 线程、section 构建提交**，`RT terrain section build failed for section -28,2,7` / `vkQueueSubmit2KHR failed: -4`，七条 `IP_UNKNOWN`——指令指针落在未映射内存。和上一次的 `READ_INVALID`（读已消失的 BLAS）是完全不同的形态，说明不是同一个 bug 的残留。
+
+**根因**：`recordBlasBuilds` 的地形分支写死 `buildFlags(false)`，而 `queryTerrainBlasSizes` 收到的是 `buildFlags(allowUpdate)`。M12.5 slice 3a 给**查询**和**创建**加了 `allowUpdate`，唯独漏了**录制**。于是 scratch 按「可更新」尺寸分配、构建却按「不可更新」录制——**两者必须逐位一致**，否则驱动可以合法地跑出 scratch 之外。它不会报错，它让 GPU 崩。
+
+顺带：这个 BLAS 其实**从来没有真的可更新过**（录制时没设 ALLOW_UPDATE），所以后面的 refit 一定会踩 `VUID-...-03667`——而按 F24，那一条**验证层查不出来**。等于两个静默错误叠在一起。
+
+**教训（记入 F 系列的候选）**：加速结构的 flags 有**三个**必须一致的出现点——尺寸查询、结构创建、构建录制。加一个新 flag 时，`grep` 那个 flag 名只会找到你刚写的地方；要 `grep` 的是**构造 flags 的那个函数**（这里是 `buildFlags`），因为漏掉的那一处长得和其他处一模一样，只是参数被写死了。
+
 ### 8.3 M13 残余
 
 - **3D 噪声雾**：128³ Worley/Perlin FBM 基础 + 32³ 细节，启动一次性烘进 3D 纹理（**不要逐行进步过程噪声**——2080 上 1ms 与 6ms 的差别）。挂 M15 后的非均质 ambient march。
