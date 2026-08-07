@@ -350,6 +350,94 @@ public final class RtTerrain {
      * it the neighbour keeps stale geometry — opaque holes and a disconnected water surface at the seam.
      * Interior edits stay within one section (±1 doesn't cross a 16-block boundary).
      */
+    // Where the water deformation region sits, in blocks, and how far it reaches. Volatile because the
+    // render thread moves it and the section workers read it. Long.MIN_VALUE = the deformation is off, in
+    // which case every section builds exactly as it always did.
+    private static volatile int deformAnchorX = Integer.MIN_VALUE;
+    private static volatile int deformAnchorY;
+    private static volatile int deformAnchorZ;
+    private static volatile int deformReach;
+
+    /**
+     * Is this section inside the deformation region, and therefore to be built with its water ready to
+     * move (see RtSectionBuilder.prepare)?
+     *
+     * <p>ASKED AT BUILD TIME, on a worker, which is why this is a pure function of the published anchor
+     * rather than of the camera: the camera has moved on by the time a build lands, and two sections
+     * built a frame apart must not disagree about where the boundary was.
+     */
+    static boolean sectionDeformable(int sox, int soy, int soz) {
+        int ax = deformAnchorX;
+        if (ax == Integer.MIN_VALUE) {
+            return false;
+        }
+        int reach = deformReach;
+        return Math.abs(sox + 8 - ax) <= reach
+                && Math.abs(soz + 8 - deformAnchorZ) <= reach
+                && Math.abs(soy + 8 - deformAnchorY) <= reach;
+    }
+
+    /**
+     * Move the deformation region, re-extracting the sections whose build mode that changes.
+     *
+     * <p>HYSTERETIC, and the dead zone is the whole cost control. Crossing the boundary changes how a
+     * section is BUILT -- updatable and uncompacted instead of compacted, build inputs retained -- and
+     * the only way to change that is to build it again. So every move re-extracts a ring of sections, and
+     * at a 48-block reach that ring is tens of them. A block change is sparse and event-driven; this
+     * would fire continuously while walking. Unmeasured, R19-class, and the reason the re-anchor distance
+     * is authored (see docs 8.2c: this is path 1, chosen to get the number that decides whether the
+     * cheaper rebuild-only path is worth building).
+     *
+     * <p>Marks the union of the old and new regions in one call. The two overlap almost entirely at any
+     * sane re-anchor distance, so the union costs barely more than either and avoids emitting the
+     * intersection as dirty twice.
+     */
+    public static void updateDeformAnchor(double camX, double camY, double camZ,
+                                          boolean enabled, int reach) {
+        RtTerrain terrain = INSTANCE;
+        if (terrain == null) {
+            return;
+        }
+        int wantX = (int) Math.floor(camX);
+        int wantY = (int) Math.floor(camY);
+        int wantZ = (int) Math.floor(camZ);
+        int oldX = deformAnchorX;
+        boolean wasOn = oldX != Integer.MIN_VALUE;
+        if (!enabled) {
+            if (wasOn) {
+                // Turning it off is a build-mode change too, so the region has to be re-extracted back to
+                // ordinary compacted sections rather than left updatable forever.
+                int r = deformReach;
+                deformAnchorX = Integer.MIN_VALUE;
+                markBlocksDirty(oldX - r - 16, deformAnchorY - r - 16, deformAnchorZ - r - 16,
+                        oldX + r + 16, deformAnchorY + r + 16, deformAnchorZ + r + 16);
+            }
+            return;
+        }
+        int dead = Math.max(1, Math.round(FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR.value()));
+        if (wasOn && reach == deformReach
+                && Math.abs(wantX - oldX) <= dead
+                && Math.abs(wantY - deformAnchorY) <= dead
+                && Math.abs(wantZ - deformAnchorZ) <= dead) {
+            return;
+        }
+        int minX = wasOn ? Math.min(oldX, wantX) : wantX;
+        int minY = wasOn ? Math.min(deformAnchorY, wantY) : wantY;
+        int minZ = wasOn ? Math.min(deformAnchorZ, wantZ) : wantZ;
+        int maxX = wasOn ? Math.max(oldX, wantX) : wantX;
+        int maxY = wasOn ? Math.max(deformAnchorY, wantY) : wantY;
+        int maxZ = wasOn ? Math.max(deformAnchorZ, wantZ) : wantZ;
+        int r = Math.max(reach, deformReach) + 16;
+        deformAnchorX = wantX;
+        deformAnchorY = wantY;
+        deformAnchorZ = wantZ;
+        deformReach = reach;
+        markBlocksDirty(minX - r, minY - r, minZ - r, maxX + r, maxY + r, maxZ + r);
+        FluoriteMod.LOGGER.info(
+                "[water-deform] re-anchored to ({}, {}, {}) reach={} -- re-extracting the region",
+                wantX, wantY, wantZ, reach);
+    }
+
     public static void markBlocksDirty(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
         RtTerrain terrain = INSTANCE;
         synchronized (terrain.dirtyLock) {
@@ -1121,7 +1209,7 @@ public final class RtTerrain {
                         // water and sits inside the deformation range keeps its build inputs and gets an
                         // updatable BLAS. Not wired to a distance yet -- the dispatch that would use it
                         // does not exist, and asking for it before then would only buy the costs.
-                        boolean deformable = false;
+                        boolean deformable = sectionDeformable(task.sox, task.soy, task.soz);
                         PreparedSection prepared = RtSectionBuilder.prepare(dispatch.ctx(), packed,
                                 cpu.opacityMicromap(),
                                 FluoriteConfig.Rt.Terrain.BLAS_COMPACTION.value() && !deformable,

@@ -1932,6 +1932,12 @@ public final class RtComposite {
             // W1 wave-domain anchor: the terrain rebase origin reduced mod 4096 (kept small for shader
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
+            // Move the deformation region before the domain, so a section that crosses the boundary is
+            // marked for re-extraction this frame rather than one behind.
+            RtTerrain.updateDeformAnchor(camX, camY, camZ,
+                    FluoriteConfig.Rt.Water.WATER_SIM.value()
+                            && FluoriteConfig.Rt.Water.WATER_DEFORM.value(),
+                    Math.round(FluoriteConfig.Rt.Water.WATER_DEFORM_RANGE.value()));
             boolean waterSimLive = placeWaterDomain(camX, camY, camZ, level, terrain);
             if (waterSimLive) {
                 collectWaterImpulses(camX, camZ, level);
