@@ -1398,6 +1398,29 @@ public final class FluoriteConfig {
                     bool("fluorite.rt.water.sim", "water.sim", true);
 
             /**
+             * How far across the simulated domain reaches, in blocks.
+             *
+             * <p>The grid is a fixed 256 cells, so this IS the cell size in disguise: 64 blocks gives
+             * quarter-block cells and ripples down to about half a block, 128 blocks gives half-block
+             * cells and twice the reach for half the detail. Reach and detail are the two ends of one
+             * stick and this is where you hold it (D39).
+             */
+            public static final FloatSetting WATER_SIM_RANGE =
+                    clampedFloat("fluorite.rt.water.simRange", "water.sim-range", 64f, 32f, 256f);
+
+            /**
+             * How far the player may walk before the domain is re-anchored, in blocks.
+             *
+             * <p>Re-anchoring is the only thing in this system that costs anything beyond one dispatch:
+             * it recasts the obstacle mask. Between re-anchors the domain is completely still. So this is
+             * a straight trade of how often that cost is paid against how close to the domain's edge the
+             * player may get -- and the edge is well inside the fade, because ripples are damped hard
+             * enough that they do not reach it anyway.
+             */
+            public static final FloatSetting WATER_SIM_REANCHOR =
+                    clampedFloat("fluorite.rt.water.simReanchor", "water.sim-reanchor", 16f, 4f, 64f);
+
+            /**
              * How fast a ripple travels, in blocks per second.
              *
              * <p>CLAMPED AGAINST THE CFL LIMIT, not against taste. Explicit leapfrog is stable only

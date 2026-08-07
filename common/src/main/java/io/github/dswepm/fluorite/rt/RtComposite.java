@@ -304,12 +304,15 @@ public final class RtComposite {
             return false;
         }
 
-        float cell = WATER_SIM_CELL_SIZE;
+        float cell = waterCellSize();
         long centreCellX = (long) Math.floor(camX / cell);
         long centreCellZ = (long) Math.floor(camZ / cell);
         long wantX = centreCellX - RtSky.WATER_SIM_DIM / 2;
         long wantZ = centreCellZ - RtSky.WATER_SIM_DIM / 2;
-        int dead = RtSky.WATER_SIM_DIM / 8;
+        // In CELLS, from an authored distance in blocks. Generous by default: the obstacle mask is the
+        // only thing a re-anchor costs, and a ripple is damped long before it reaches the domain edge,
+        // so there is nothing to be gained by keeping the player pinned to the centre.
+        long dead = (long) Math.max(1.0, FluoriteConfig.Rt.Water.WATER_SIM_REANCHOR.value() / cell);
         if (waterCellX == Long.MIN_VALUE
                 || Math.abs(wantX - waterCellX) > dead || Math.abs(wantZ - waterCellZ) > dead
                 || Math.abs(surface - waterSurfaceY) > 0.5) {
@@ -629,8 +632,10 @@ public final class RtComposite {
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
     // penumbrae). Radii in degrees; the real sun/moon are ~0.27°, but a touch larger reads pleasantly.
     private static final int WATER_ANCHOR_MASK = 4095;
-    /** Blocks per simulation cell (D39): 256 cells of this is a 64 m domain, shortest wave about 0.5 m. */
-    private static final float WATER_SIM_CELL_SIZE = 0.25f;
+    /** The cell size the authored range implies: the grid is a fixed 256 cells wide (D39). */
+    private static float waterCellSize() {
+        return FluoriteConfig.Rt.Water.WATER_SIM_RANGE.value() / RtSky.WATER_SIM_DIM;
+    }
     /** How far below the camera to look for the water surface the domain runs on. */
     private static final int WATER_SIM_PROBE_DEPTH = 24;
     // Where the water simulation's domain sits, in ABSOLUTE whole cells, and the surface it runs on.
@@ -1835,10 +1840,10 @@ public final class RtComposite {
                     // hard bound on an authored value, not a taste adjustment.
                     float dt = 1f / 60f;
                     float courant = FluoriteConfig.Rt.Water.WATER_SIM_SPEED.value() * dt
-                            / WATER_SIM_CELL_SIZE;
+                            / waterCellSize();
                     courant = Math.min(courant, 0.70f);
                     skyLuts.recordWaterSim(cmd, frameTlas.accel.handle, graphicsUse,
-                            waterDomain.x(), waterDomain.y(), WATER_SIM_CELL_SIZE,
+                            waterDomain.x(), waterDomain.y(), waterCellSize(),
                             (float) (waterSurfaceY - terrain.blockY),
                             courant * courant,
                             FluoriteConfig.Rt.Water.WATER_SIM_DAMPING.value(),

@@ -139,8 +139,8 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.waterScatter",
                                 waterScatterStrength(), waterScatterR(), waterScatterG(), waterScatterB()),
                         Section.titled("fluorite.options.rt.section.waterSim",
-                                waterSim(), waterSimStrength(), waterSimSpeed(),
-                                waterSimDamping(), waterSimImpulse()),
+                                waterSim(), waterSimRange(), waterSimReanchor(), waterSimStrength(),
+                                waterSimSpeed(), waterSimDamping(), waterSimImpulse()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
@@ -328,6 +328,16 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterSim() {
         return bool("fluorite.options.rt.waterSim", FluoriteConfig.Rt.Water.WATER_SIM);
+    }
+
+    private static OptionInstance<Integer> waterSimRange() {
+        return blockSlider("fluorite.options.rt.waterSimRange",
+                FluoriteConfig.Rt.Water.WATER_SIM_RANGE, 32, 256);
+    }
+
+    private static OptionInstance<Integer> waterSimReanchor() {
+        return blockSlider("fluorite.options.rt.waterSimReanchor",
+                FluoriteConfig.Rt.Water.WATER_SIM_REANCHOR, 4, 64);
     }
 
     private static OptionInstance<Integer> waterSimStrength() {
