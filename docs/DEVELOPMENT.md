@@ -712,6 +712,25 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 
 先量再选：路 1 能最快拿到「重取一圈 section 要多少毫秒」这个数字，而这个数字决定 2 值不值得做。
 
+#### 8.2c-1 路 1 首次开启即设备故障（2026-08-08，待修）
+
+开 `water.deform` 立刻 device fault。故障地址表最后一条是关键：
+
+```
+fault[5]: type=READ_INVALID, address=0x6230c2000, precision=0x1000
+          resource=unresolved (prev='terrain section -368,0,96 BLAS compacted backing')
+```
+
+**TLAS 读到了一个已经不存在的 BLAS**（地址落在某个已压缩 BLAS backing 之后的未映射区）。前四条 IP_FAULT 落在 TLAS instance buffer 与 path queue 之间，同样指向"实例指着死地址"。
+
+**首要嫌疑：可形变 section 构建输入的双重所有权。** `SectionGeom` 现在接管 `positions`/`indices`/`waterRest` 且 `releaseBuildInputs()` 对可形变 section 提前返回；但 `PreparedSection.destroy()` 仍**无条件**释放 `positions`/`indices`。任何同时走到这两条路的路径（在途构建被作废、离开窗口、脏组成员完成）都会双重释放。一次性标记 ~512 个 section 重建正是把这个竞争放大到必现。
+
+**次要嫌疑（也要一并核）**：
+- 区域内**不含水**的 section 现在拿到 `compact = BLAS_COMPACTION && !deformable` = false 但 `deform=false`，于是既不压缩也不可更新——功能无害但白白丢压缩，说明这个布尔该按"这个 section 真的要形变吗"算，而不是按"它在区域里吗"。
+- `prepareTerrainBlas` 可更新分支返回的 `accel` 其 backing 归属（`ownsBacking`）是否与 `SectionGeom.destroy()` 的 `blas.destroy()` 匹配。
+
+**当前状态**：`sectionDeformable` 用一行 `if (true) return false;` 关掉，其余全部保留。修复后连同重测一起打开。
+
 ### 8.3 M13 残余
 
 - **3D 噪声雾**：128³ Worley/Perlin FBM 基础 + 32³ 细节，启动一次性烘进 3D 纹理（**不要逐行进步过程噪声**——2080 上 1ms 与 6ms 的差别）。挂 M15 后的非均质 ambient march。

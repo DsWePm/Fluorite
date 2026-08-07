@@ -367,6 +367,18 @@ public final class RtTerrain {
      * built a frame apart must not disagree about where the boundary was.
      */
     static boolean sectionDeformable(int sox, int soy, int soz) {
+        // DISABLED PENDING A LIFETIME BUG. Turning the setting on produced a Vulkan device fault whose
+        // last address is READ_INVALID immediately after a section's compacted BLAS backing -- the TLAS
+        // reading a BLAS that is already gone. Prime suspect is double ownership of a deformable
+        // section's build inputs: SectionGeom now takes positions/indices and releaseBuildInputs() skips
+        // them, but PreparedSection.destroy() still frees them unconditionally, so any path that runs
+        // both frees them twice. Marking ~512 sections dirty at once is what made it reproducible.
+        //
+        // Left as one line rather than reverted, because everything below it is still what we want; see
+        // docs 8.2c. Re-enable together with the fix and re-measure.
+        if (true) {
+            return false;
+        }
         int ax = deformAnchorX;
         if (ax == Integer.MIN_VALUE) {
             return false;
