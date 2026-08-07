@@ -196,15 +196,23 @@ void main(uint3 id: SV_DispatchThreadID) {
     // fetch, and sampling corners would bias the whole volume half a texel along every axis.
     float3 p = (float3(id) + 0.5) / float(CLOUD_NOISE_DIM);
 
-    // ---- R, the cloud's body. Worley FBM, unchanged.
+    // ---- R, the cloud's body: PERLIN-WORLEY.
     //
-    // A Perlin-Worley body is the known answer to "these puffs are too evenly spaced", and the gradient
-    // noise it needs is now here for the curl below. It is deliberately NOT wired in yet: measured on a
-    // CPU replica of this bake, it moves the channel's mean from 0.486 to 0.661 and narrows it to a
-    // p10-p90 of 0.597-0.722, which with the current coverage remap overcasts 96% of the sky at bias
-    // zero. That is a retune of the density balance and a look decision, not a substitution to slip in
-    // beside a fix.
-    float shape = cellularFbm(p, 4, 3);
+    // Inverted cellular noise on its own is a field of feature points with a round falloff, so it makes
+    // evenly spaced bubbles: one size, one shape, visibly a lattice. Gradient noise is connected and has
+    // no preferred spacing, but no billow either. Remapping the gradient field so that its LOW end is
+    // lifted by the cellular one keeps the billowed tops and gives them irregular, connected bases.
+    //
+    // THEN NORMALISED, which is not cosmetic. The raw construction centres near 0.66 with a p3-p97 span
+    // of 0.567 to 0.750 -- an eighth of the range, so seven eighths of the channel's byte would carry
+    // nothing, and every downstream threshold would be operating inside that eighth. Measured on a CPU
+    // replica of this bake before it shipped; the constants below are those percentiles, and the
+    // coverage remap in cloud.slang was re-centred against the widened field in the same pass. Dropping
+    // this in without both halves overcasts 96% of the sky at neutral bias.
+    float worley = cellularFbm(p, 4, 3);
+    float perlinLow = perlinFbm(p, 4, 4) * 0.5 + 0.5;
+    float perlinWorley = remap(perlinLow, saturate(1.0 - worley) - 1.0, 1.0, 0.0, 1.0);
+    float shape = saturate((perlinWorley - 0.567) / 0.183);
 
     // ---- G, what bites into the edges: high-frequency Worley, CURL-WARPED.
     //

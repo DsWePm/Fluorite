@@ -192,9 +192,15 @@ float cloudHeightProfile(float altitude, float type) {
 float cloudCoverage(float3 p) {
     float2 w = worldOf(p).xz / cloudFieldScale();
     float m = cloudNoise.SampleLevel(float3(w.x, 0.37, w.y), 0.0).r;
-    // Widened around the middle so the sky is broken rather than either overcast or empty. The authored
-    // bias then shifts the whole field, which is how rain overcasts a sky: one number, not a second field.
-    return saturate((m - 0.42) * 2.6 + worldPush.cloudParams.x);
+    // Re-centred for the Perlin-Worley body. The old (m - 0.42) * 2.6 was fitted to pure Worley, whose
+    // mean sits at 0.486; the normalised Perlin-Worley field is wider and centred differently, and
+    // keeping the old numbers against it overcasts 96% of the sky at neutral bias. Both halves were
+    // fitted together on a CPU replica of the bake: at bias zero this leaves 38% of columns carrying
+    // cloud against the old body's 20%, with density inside a cloud reaching 0.69 at p90 against 0.44.
+    //
+    // The authored bias then shifts the whole field, which is how rain overcasts a sky: one number
+    // rather than a second field.
+    return saturate((m - 0.30) * 1.6 + worldPush.cloudParams.x);
 }
 
 /**
