@@ -379,6 +379,17 @@ public final class RtComposite {
         if (level == null || waterDomain.z() <= 0f) {
             return;
         }
+        // Debug view 23 drives a test impulse at the domain centre. It is what makes the view able to
+        // distinguish "nothing disturbs the field" from "the field cannot propagate" -- two states that
+        // look identical on a flat pond and have completely different causes.
+        if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() == 23) {
+            waterImpulses[0] = RtSky.WATER_SIM_DIM * 0.5f;
+            waterImpulses[1] = RtSky.WATER_SIM_DIM * 0.5f;
+            waterImpulses[2] = 3f;
+            waterImpulses[3] = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE.value()
+                    * ((worldFrameCounter() & 31L) == 0L ? 1f : 0f);
+            waterImpulseCount = 1;
+        }
         float cell = waterDomain.z();
         float cap = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE.value();
         double half = RtSky.WATER_SIM_DIM * 0.5 * cell;
@@ -683,6 +694,11 @@ public final class RtComposite {
     private final float[] waterImpulses = new float[RtSky.WATER_MAX_IMPULSES * 4];
     private int waterImpulseCount;
     private byte[] waterObstacleMask;
+
+    /** Frames since start, for the debug view's periodic test impulse. */
+    private long worldFrameCounter() {
+        return frameCounter;
+    }
     private static final Identifier SUN_ID = Identifier.withDefaultNamespace("sun");
     private static final Identifier[] MOON_IDS = createMoonIds();
     // Celestial rotation axis (the pole the sun/moon arc about): perpendicular to the east-west arc,

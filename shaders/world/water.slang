@@ -152,6 +152,32 @@ float2 waterSimGrad(float2 worldXZ) {
 // keep their flat geometric normal. `worldXZ` must be a world-stable coordinate (rebased hit + the pushed
 // anchor) so the ripples stay pinned in the world. `nGeo` is already oriented toward the viewer, so the
 // down-viewed underside (n.y < 0) takes the mirrored slope (-up).
+/**
+ * Debug view 23: the simulated height field, painted across the screen.
+ *
+ * <p>Answers the two questions that look identical on a flat pond — is there anything in the field, and
+ * if not, is that because nothing disturbs it or because it cannot propagate. The view drives a test
+ * impulse at the domain centre from the CPU while it is active, so a field that stays black under it has
+ * a broken solver or an obstacle mask that says everything is a wall; a field that ripples under it but
+ * not in normal play has a broken impulse path instead.
+ *
+ * <ul>
+ *   <li><b>RED</b> — the domain is not live at all. No water found near the camera, or the setting is
+ *       off, or the push lane never got written.</li>
+ *   <li><b>GREEN/BLUE</b> — height, split by sign: green rises, blue falls. Black is a flat field.</li>
+ * </ul>
+ */
+public float3 waterSimDebug(float2 screenUv) {
+    if (worldPush.waterSimDomain.z <= 0.0) {
+        return float3(1.0, 0.0, 0.0);
+    }
+    float h = waterSimHeight.SampleLevel(screenUv, 0.0);
+    // Amplified hard: a ripple is millimetres of displacement against a domain tens of blocks across, so
+    // the honest range is invisible and a diagnostic that shows nothing is not a diagnostic.
+    float a = saturate(abs(h) * 400.0);
+    return h >= 0.0 ? float3(0.0, a, 0.0) : float3(0.0, 0.0, a);
+}
+
 public float3 applyWaterWaves(float3 nGeo, float2 worldXZ, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
     float2 grad = waterWaveGrad(worldXZ, t, footprint) + waterSimGrad(worldXZ);

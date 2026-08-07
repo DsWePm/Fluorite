@@ -127,6 +127,7 @@
   "fluorite.options.rt.debugView.20": "Dispersão de entrada do prefixo da câmera",
   "fluorite.options.rt.debugView.21": "Prefixo composto A/B",
   "fluorite.options.rt.debugView.22": "Sonda da cadeia de nuvens",
+  "fluorite.options.rt.debugView.23": "Water simulation field",
   "fluorite.options.rt.fog": "Névoa volumétrica",
   "fluorite.options.rt.fog.tooltip": "O meio participante ambiente do mundo. Integrado por segmento de caminho, então aparece também em reflexos e refrações, não apenas na visão direta.",
   "fluorite.options.rt.fogDensity": "Densidade da névoa",

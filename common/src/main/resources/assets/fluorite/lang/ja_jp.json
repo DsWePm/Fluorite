@@ -127,6 +127,7 @@
   "fluorite.options.rt.debugView.20": "カメラ前区間のインスキャッタ",
   "fluorite.options.rt.debugView.21": "合成プレフィックス A/B",
   "fluorite.options.rt.debugView.22": "雲チェーンのプローブ",
+  "fluorite.options.rt.debugView.23": "Water simulation field",
   "fluorite.options.rt.fog": "ボリュメトリックフォグ",
   "fluorite.options.rt.fog.tooltip": "世界の環境参加媒質です。パスのセグメントごとに積分するため、直接の視界だけでなく反射や屈折の中にも現れます。",
   "fluorite.options.rt.fogDensity": "フォグの濃度",

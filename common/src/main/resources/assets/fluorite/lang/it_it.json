@@ -127,6 +127,7 @@
   "fluorite.options.rt.debugView.20": "In-scattering del prefisso camera",
   "fluorite.options.rt.debugView.21": "Prefisso composito A/B",
   "fluorite.options.rt.debugView.22": "Sonda della catena delle nuvole",
+  "fluorite.options.rt.debugView.23": "Water simulation field",
   "fluorite.options.rt.fog": "Nebbia volumetrica",
   "fluorite.options.rt.fog.tooltip": "Il mezzo partecipante ambientale del mondo. Integrato per segmento di percorso, quindi compare anche in riflessi e rifrazioni, non solo nella vista diretta.",
   "fluorite.options.rt.fogDensity": "Densità della nebbia",
