@@ -103,7 +103,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 |---|---|---|---|
 | `PackedPathSegment` | **48 B** | `RtPathSegmentLayoutTest` | std430 量化到 16B 倍数：**只剩一个空 uint lane**；再加一个字段进位到 64B = 1440p 下 **+118 MB**。`pathFlags` bits 0–13 已用（9/10 water、12/13 ambient），新 flag 永远优先用位不用 lane |
 | `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 `uint64_t` 地址 + 3 uint（M15.0 删 `skyLightAddr`：112→104）；Vulkan 保证 128B，**余量 24B**（下一个地址花 8）。每加一个 uint 由 closest-hit 每次命中付费 |
-| `WorldPushData` | **784 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`（reduction 写、froxel/raygen 共读），M11 再加 48B 的 `cloudParams`/`cloudShape`/`cloudLighting`（CPU 每帧写、raygen 只读，逐射线零成本——见 D37） |
+| `WorldPushData` | **800 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`（reduction 写、froxel/raygen 共读），M11 再加 64B 的 `cloudParams`/`cloudShape`/`cloudLighting`/`cloudHigh`（CPU 每帧写、raygen 只读，逐射线零成本——见 D37） |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移全部钉死 |
 | `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney 十个标量打进三个 float4；测试断言**逐 lane 偏移** |
 | `Light` | 32 B | — | 32 整除 64B cache line（48B 时代一半记录跨行、双倍事务）；面积不存储（`4·|halfU×halfV|` 反推） |
@@ -437,10 +437,10 @@ MC 相机是**点**，不存在「半潜」机位。两机位分开采，已建�
 | 多重散射 | phi_fwd 扩散项（推导文档正确、实现两处偏离）+ Hillaire 三倍频 | 采纳思路**重推导**：边界可信度 `C_top·C_bottom` 逐源点求值（参考实现提到接收点省 5 倍是错的）、`C_iso` 从**受光边界**量光学厚度（参考参数化反了）、`1/(4πr)` 的 4π 补回、Intensity 量纲重标定 | 已定（D5：云专用近似，不外推到水雾） |
 | 步进 | 自适应步长 | 步长上限 `(rangeStart+dist)/8` **从光线起点量**（对二次光线优雅退化）+ 廉价探针跳过空段 | 已定 |
 | 降噪 | 时域重投影 | DLSS-RR + 逐帧去相关（蓝噪/抖动） | 已定 |
-| 云的挂载点 | 独立 pass | 统一 Medium 的 ambient 非均质分支（D2 框架的第一个非均质客户），在天空逃逸 break 之前 | **落地时请示细节** |
-| 云的光照源 | 常数 ambient + 太阳 | LUT 辐射（D1-A 档）或散射顶点 NEE（D1-C 档）；`upwardAO = exp(−sunPathOD·sinθ·k)` 免费环境遮蔽可保留 | **落地时按质量/成本请示档位** |
+| 云的挂载点 | 独立 pass | 独立 `cloud.slang` 纯光线函数，在天空逃逸 break 之前 | **已定（D33）**：动工时发现 ambient 分支是闭式积分，云是第一个真需要数值 march 的客户 |
+| 云的光照源 | 常数 ambient + 太阳 | 太阳自阴影行进 + 双叶 HG + phi_fwd 扩散项 + `mediumSkyRadiance` 环境 | **已定（D34），切片②已落地**；环境遮蔽改用「局部密度 × 到本云型剖面顶」的解析估计，不再需要额外行进 |
 | 密度模型 | 2D 天气图（覆盖度/类型）× 3D 噪声（基础+侵蚀）× 高度剖面 LUT | 采纳结构、常数自定；双层共用球壳；3D 噪声启动烘焙（`cloud_noise.comp.slang`），不逐步过程噪声 | 已定 |
-| 二次光线 | n/a（屏幕空间进不了） | 默认烘进 sky-view LUT；`VOLUMETRIC_IN_REFLECTIONS` 走削减档真行进 | 已定，两路都要 A/B |
+| 二次光线 | n/a（屏幕空间进不了） | **切片③落地为「削减档真行进」**（`cloud-secondary` = off/reduced/full）；LUT 烘焙路线暂缓 | **待裁决**：LUT 更便宜但相机锚定，且与 `mediumSkyRadiance`（雾/水共读）双计耦合——见 §8.1 |
 
 phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 时 RTE 退化为扩散方程，格林函数 `e^{−κr}/(4πr)`；`κ = √(3σaσtr)`，g→0 时 σtr=σt、σa=(1−ω₀)σt ⇒ `∫κds = OD·√(3(1−ω₀))`（ω₀=0.999 时常数 ≈0.055——**扩散衰减就是光学厚度乘编译期常数**，搭在本来要跑的太阳自阴影行进上）；源项衰减用 `T_abs = exp(−(1−ω₀)τ)` 而非 `exp(−τ)`（离开直射束的光子只是开始游走，只有吸收真正移除它——τ=20 云心仍亮的机制）。phi_fwd 各向同性 ⇒ 对给定世界位置视角无关，主光线/反射/折射可复用同值。云是解析行进不产生散射顶点，phi_fwd 就是多重散射模型本身**不存在双计**；若 M8 游走将来进云体，按路径深度门控。
 
@@ -598,7 +598,18 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 2. `CLOUD_ALBEDO` 默认 0.999，UI 滑条走 `1−albedo` 的对数刻度（每 250 格一个数量级）——线性刻度会把几乎全部行程花在「云像煤灰」的区间。
 3. **成本仍未测**。自阴影步数是乘在云内采样点上的，是 R19 风险的具体形态；`cloud-sun-steps` 就是为此留的 A/B 旋钮（0 = 关掉整个自阴影）。
 
-**待办**：切片③双层+相机淡出+反射策略 · **成本采集**（R19 点名的风险；云壳加深 + 自阴影行进后更要测）· 游戏内验收（切片①②一起看）。
+**已落地（切片③：双层 + 邻近淡出 + 反射策略）**：
+
+- **`CloudLayer` 结构收口**：低层（对流云，有云型/深度/自阴影）与高层（卷云）走**同一套** march、相位、扩散项与合成，差别只在填进结构的数值。`cloudDensity`/`cloudHeightProfile`/`cloudCoverage`/`cloudShellSpan` 全部改为按层取参。
+- **卷云**：对称薄片剖面（不是从底面往上长的对流云——它是在本来就够冷的地方结的冰）；**各向异性采样**把体积沿一个水平轴拉伸 3.5×、垂直压到 0.35×，做出被风切变梳出的条缕（固定世界轴代替未建模的风向，世界锚定才是这里要的性质，逐帧方向会让天空爬行）；自有云量场（同一张天气图、周期 ×2.5、不同切片，否则卷云影会正好盖在每朵积云上）；**自阴影步数 = 0**（τ 几乎不离开 0，跑一趟证明 exp(−τ)≈1 是全帧最贵的「什么都没有」）。
+- **两层排序按「本射线先遇到谁」**：`highLayer()` 把高层底面钳到低层顶面之上 16 blocks，**两壳不相交** ⇒ 任意起点方向下射线必然完整穿过其一再进另一个，比较 `tEnter` 即为正确顺序。参考实现按**相机高度**排序：相机在两层之间、而湖面反射射线从两层之下往上看时，二者会对「谁在前面」给出相反答案（R18）。
+- **邻近淡出两项相乘、且都量自射线自己的起点**：高度邻近（`|ro.y − 层心|`）+ 射线邻近（`tEnter` 很小＝沿层掠射，穿越极长且逐像素剧变）。**只有卷云吃这个淡出**——对流云层有真实厚度，本来就该能飞进去。
+- **反射策略 = 预算而非第二套天空**（`volumetrics.cloud-secondary`，默认 `reduced`）：非路径首条射线把步数上限 96→40、去掉侵蚀取样、自阴影步数减半、透射率放弃阈值 0.01→0.05。`off`/`full` 两端保留做 A/B。**关键性质**：每条射线仍在同一个世界锚定的场里从自己的起点求交，所以这个开关**不可能**让湖里的云与天上的云错位，只能改变积分精度——这正是 R18 把「云在哪」与「云画得多细」分开之后换来的自由度。
+- 新增 `cloudHigh` float4（高度 / 厚度 / 云量偏置 / 消光），**784 → 800 B**；flags bits 2–3 = 反射预算档。
+
+**§6.4「二次光线默认烘进 sky-view LUT」暂缓，需用户裁决**：动工时发现该路线有当时未分析到的耦合——`mediumSkyRadiance` 是 sky-view LUT 的 reduction，**雾与水的环境源都读它**，把云烘进 LUT 会同时改变水下与雾的观感；且云自己的 ambient 项也读同一个量，会与烘进去的云**重复计数**。因此本片实现的是「削减档真行进」，把 LUT 烘焙留作待裁决项：它更便宜但相机锚定（远场近似，云在数千方块外时视差小），且需要解决上述两个耦合。
+
+**待办**：**成本采集**（R19 点名的风险，三片全落地后必须测：云壳加深、自阴影行进、第二层 march 三项叠加）· 游戏内验收（三片一起看）· §6.4 LUT 烘焙路线裁决。
 
 - **唯一硬规则（R18）**：`traceClouds(ro, rd, tMax, seed)` 内**禁止出现相机位置**——密度场、层序全部逐光线判断（层序逐光线比较两层 `meanDistance`）。验收专项：站在水边看天上的云与倒影，高度形状一致。
 - 结构：`cloud.slang` 纯光线函数 + `cloud_noise.comp.slang` 启动烘焙 3D 噪声（构建 glob 已覆盖 `**/*.comp.slang`）；挂統一 Medium ambient 非均质分支（D2）。

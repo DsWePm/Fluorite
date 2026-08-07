@@ -154,6 +154,17 @@ public struct WorldPush {
     // multiple-scattering term decays at is sqrt(3*(1-albedo)) times the ordinary optical depth, so this
     // single number is the difference between a cloud whose interior stays bright and one that goes black.
     public float4   cloudLighting;    // x phase g, y single-scattering albedo, z sun-march steps, w reserved
+    // The HIGH layer (M11 slice three): cirrus, a thin ice sheet far above the convective deck. Its own
+    // lane rather than a second copy of cloudShape because almost nothing it needs is the same — it has
+    // no cloud-type dimension, no self-shadowing worth marching, and a feature size an order of magnitude
+    // larger. w <= 0 turns it off, which is the same disable-by-zero pattern the fog's density uses.
+    public float4   cloudHigh;        // x altitude, y thickness, z coverage bias, w extinction/block
+    // The cirrus layer's OWN shape and OWN origin. It derived both from the deck below until it became
+    // clear that sharing them is the same mistake as sharing a height would be: a high ice sheet and a
+    // convective deck are different weather at different altitudes in different wind. Separate lanes are
+    // what let one be authored without moving the other.
+    public float4   cloudHighShape;   // x base size, y detail size, z density scale, w reserved
+    public float4   cloudHighOrigin;  // xyz its own field origin (rebase - its own drift), w field scale
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
