@@ -142,7 +142,8 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.waterSim",
                                 waterSim(), waterSimRange(), waterSimHeight(), waterSimReanchor(),
                                 waterSimStrength(),
-                                waterSimSpeed(), waterSimDamping(), waterSimImpulse()),
+                                waterSimSpeed(), waterSimDamping(), waterSimImpulse(),
+                                waterSimImpulseDepth()),
                         // The geometry, separate from the ripples that ride on it: one controls whether
                         // the surface is a shape at all, the others how much of it is and how finely.
                         Section.titled("fluorite.options.rt.section.waterDeform",
@@ -406,6 +407,11 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             Math.clamp(Math.round((setting.value() - 0.9f) * 1000f), 0, 100),
             v -> setting.set(0.9f + v / 1000.0f));
+    }
+
+    private static OptionInstance<Integer> waterSimImpulseDepth() {
+        return blockSlider("fluorite.options.rt.waterSimImpulseDepth",
+                FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE_DEPTH, 1, 16);
     }
 
     private static OptionInstance<Integer> waterSimImpulse() {

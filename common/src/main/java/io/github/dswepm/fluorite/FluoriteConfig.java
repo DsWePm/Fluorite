@@ -1466,6 +1466,23 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simStrength", "water.sim-strength", 1.0f, 0f, 4f);
 
             /**
+             * How deep below the surface something can be and still disturb it, in blocks.
+             *
+             * <p>PHYSICAL, not a preference. A surface wave's motion decays as e^(-k·d) with depth, so a
+             * swimmer well under the surface is not coupled to it at all — the water above simply slides
+             * past. Before this, diving to the bottom of a lake went on stamping ripples into a surface
+             * several blocks overhead, which is both wrong and conspicuous.
+             *
+             * <p>Faded across the range rather than switched off at the end of it, because the real
+             * decay is smooth and a hard cut would pop as you swam down. Generous by default: the honest
+             * decay for ripple-scale wavelengths is nearly spent within half a block, and a range that
+             * short would make swimming at the surface feel dead.
+             */
+            public static final FloatSetting WATER_SIM_IMPULSE_DEPTH =
+                    clampedFloat("fluorite.rt.water.simImpulseDepth", "water.sim-impulse-depth",
+                            3f, 0.5f, 16f);
+
+            /**
              * Metres of surface displacement an entity's impulse may inject, before falloff.
              *
              * <p>A STABILITY GUARD, not an art parameter. The solver is explicit, so a displacement large

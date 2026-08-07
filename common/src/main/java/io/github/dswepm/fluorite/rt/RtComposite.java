@@ -478,7 +478,9 @@ public final class RtComposite {
         int seenEntities = 0;
         int seenInWater = 0;
         int seenInRange = 0;
+        int seenNearSurface = 0;
         double fastest = -1.0;
+        float impulseDepth = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE_DEPTH.value();
         // The local player, tracked BY IDENTITY rather than inferred from the numbers. The first run of
         // this diagnostic left exactly one thing ambiguous: a value of 0.10 repeated 726 times is clearly
         // not a moving player, but "the player is absent" and "the player is standing still" produce the
@@ -507,6 +509,18 @@ public final class RtComposite {
                 continue;
             }
             seenInRange++;
+            // How far under the surface it is, measured from its HIGHEST point: what matters is whether
+            // any of it is near the water, not where its feet are. A surface wave's motion decays as
+            // e^(-k*d), so something well below the surface is simply not coupled to it -- diving to the
+            // bottom of a lake used to go on stamping ripples into the surface several blocks overhead.
+            double submergence = waterSurfaceY - (e.getY() + e.getBbHeight());
+            float depthFade = submergence <= 0.0
+                    ? 1.0f
+                    : (float) Math.max(0.0, 1.0 - submergence / Math.max(impulseDepth, 1.0e-3));
+            if (depthFade <= 0.0f) {
+                continue;
+            }
+            seenNearSurface++;
             // How hard it is moving through the surface. A still entity leaves the water alone; a
             // swimming one keeps feeding the field, which is what makes a wake rather than one splash.
             // BLOCKS PER SECOND. getDeltaMovement is per TICK, and forgetting that is a factor of twenty
@@ -523,7 +537,7 @@ public final class RtComposite {
             // Saturating at a walking pace, so a sprint does not simply scale the splash up without
             // limit -- past a point what changes about a wake is its shape, not its height, and the
             // clamp above this is a stability bound rather than a taste one.
-            float amount = (float) Math.min(speed / 4.0, 1.0) * cap;
+            float amount = (float) Math.min(speed / 4.0, 1.0) * cap * depthFade;
             // Bigger things push more water, but the radius is in CELLS and a bump narrower than a
             // couple of cells is the single-cell delta the shader's smoothing exists to avoid.
             float radius = (float) Math.max(2.0, e.getBbWidth() / cell);
@@ -534,8 +548,8 @@ public final class RtComposite {
             waterImpulses[base + 3] = amount;
             waterImpulseCount++;
         }
-        logImpulseGates(camX, camZ, cell, seenEntities, seenInWater, seenInRange, fastest,
-                sawSelf, selfSpeed, self != null && self.isInWater());
+        logImpulseGates(camX, camZ, cell, seenEntities, seenInWater, seenInRange, seenNearSurface,
+                fastest, sawSelf, selfSpeed, self != null && self.isInWater());
     }
 
     /**
@@ -561,16 +575,16 @@ public final class RtComposite {
      * </ul>
      */
     private void logImpulseGates(double camX, double camZ, float cell, int entities, int inWater,
-                                 int inRange, double fastest, boolean sawSelf, double selfSpeed,
-                                 boolean selfInWater) {
+                                 int inRange, int nearSurface, double fastest, boolean sawSelf,
+                                 double selfSpeed, boolean selfInWater) {
         if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() != 23 || (worldFrameCounter() % 60L) != 0L) {
             return;
         }
         FluoriteMod.LOGGER.info(
-                "[water-sim] entities={} inWater={} inRange={} fastest={} emitted={} "
+                "[water-sim] entities={} inWater={} inRange={} nearSurface={} fastest={} emitted={} "
                         + "| self: seen={} inWater={} speed={} "
                         + "| cell={} camCell=({}, {}) domainCell=({}, {}) surfaceY={}",
-                entities, inWater, inRange,
+                entities, inWater, inRange, nearSurface,
                 fastest < 0.0 ? "n/a" : String.format(java.util.Locale.ROOT, "%.2f", fastest),
                 waterImpulseCount,
                 sawSelf, selfInWater,

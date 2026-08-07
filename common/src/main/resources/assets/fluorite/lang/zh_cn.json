@@ -72,6 +72,8 @@
   "fluorite.options.rt.waterSimImpulse.tooltip": "穿过水面的实体最多能推动多少水面。**既是观感也是稳定性护栏**：位移相对格距过大时局部斜率会陡到让下一步过冲，而过冲会累积。",
   "fluorite.options.rt.waveAmplitude": "波浪振幅",
   "fluorite.options.rt.waveAmplitude.tooltip": "波浪有多高。1 即原本的外观，逐位一致。它同时缩放形状与倾斜——因为二者是同一个面，所以调高不只是让水形变更明显，反射也会随之更碎、更破。原值是在只有法线使用它的时候定的，水面高度只有约 2.5 厘米；真实微风下的水面要陡好几倍，大约相当于这里的 3 到 8。",
+  "fluorite.options.rt.waterSimImpulseDepth": "溅起深度",
+  "fluorite.options.rt.waterSimImpulseDepth.tooltip": "物体潜到多深还能扰动水面，从它的最高点算起。表面波的运动随深度指数衰减，所以潜得足够深的游泳者与水面根本不耦合。在整个范围内淡出而不是到头一刀切，所以往下游不会突然断掉。",
   "fluorite.options.rt.section.waterDeform": "水面形变",
   "fluorite.options.rt.waterDeform": "水面真形变",
   "fluorite.options.rt.waterDeform.tooltip": "让波浪真正移动水的几何，而不只是扰动法线。这是法线做不到的三件事：天空背景下起伏的轮廓、波峰投向波谷的真实阴影、以及潮水沿岸线的涨落。关闭即原本的平面水体，逐位一致，且完全不产生开销。",

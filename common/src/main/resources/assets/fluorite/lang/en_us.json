@@ -72,6 +72,8 @@
   "fluorite.options.rt.waterSimImpulse.tooltip": "How much surface an entity moving through the water may displace. A stability guard as much as a look: a displacement large enough against the cell size steepens the slope until the next step overshoots, and the overshoot compounds.",
   "fluorite.options.rt.waveAmplitude": "Wave Amplitude",
   "fluorite.options.rt.waveAmplitude.tooltip": "How tall the waves are. 1 is the original look, exactly. It scales the shape and the tilt together, because they are the same surface -- so raising it does not only make the water deform more, it also makes the reflections choppier and more broken. The original value was chosen when only the normal used it, and leaves the surface about 2.5 cm tall; real water under a light breeze is several times steeper, around 3 to 8 here.",
+  "fluorite.options.rt.waterSimImpulseDepth": "Splash Depth",
+  "fluorite.options.rt.waterSimImpulseDepth.tooltip": "How deep something can be and still disturb the surface, measured from its highest point. A surface wave's motion decays exponentially with depth, so a swimmer well under it is not coupled to the surface at all. Faded across the range rather than cut off at the end of it, so swimming down does not pop.",
   "fluorite.options.rt.section.waterDeform": "Surface Deformation",
   "fluorite.options.rt.waterDeform": "Deform Water Surface",
   "fluorite.options.rt.waterDeform.tooltip": "Move the water's actual geometry with the waves, instead of only tilting its normal. This is what a normal cannot fake: a wavy silhouette against the sky, crests casting shadows into the troughs, and a shoreline the waves ride up and down. Off is the original flat surface, exactly as it was, and costs nothing.",
