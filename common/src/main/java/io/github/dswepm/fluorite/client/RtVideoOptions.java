@@ -109,16 +109,15 @@ public final class RtVideoOptions {
                                 sunIntensity(), sunTemperature()),
                         Section.titled("fluorite.options.rt.section.skyArt",
                                 skyIntensity(), skyTemperature()),
-                        // Two groups on purpose: the FIELD is the 2D question (where the clumps and
-                        // clearings are, how they drift), the SHAPE is the 3D one (how big a cloud is,
-                        // how finely its edges break up). They were one set of numbers and neither could
-                        // be adjusted without moving the other.
-                        Section.titled("fluorite.options.rt.section.cloudField",
-                                clouds(), cloudWeather(), cloudCoverage(), cloudType(),
-                                cloudFieldScale(), cloudWindSpeed(), cloudWindAngle()),
-                        Section.titled("fluorite.options.rt.section.cloudShape",
-                                cloudDensity(), cloudExtinction(), cloudAltitude(), cloudThickness(),
-                                cloudBaseScale(), cloudDetailScale()));
+                        // One group, because this branch has one layer. The cirrus sheet arrives with
+                        // the layers slice and gets a complete parameter set of its own there -- every
+                        // number below has a counterpart, including its own wind, because a high ice
+                        // sheet and a convective deck do not share a size, a height or a speed.
+                        Section.titled("fluorite.options.rt.section.cumulus",
+                                clouds(), cloudWeather(), cloudCoverage(), cloudType(), cloudDensity(),
+                                cloudExtinction(), cloudAltitude(), cloudThickness(),
+                                cloudFieldScale(), cloudBaseScale(), cloudDetailScale(),
+                                cloudWindSpeed(), cloudWindAngle()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
