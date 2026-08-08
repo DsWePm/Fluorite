@@ -578,6 +578,23 @@ public final class FluoriteConfig {
         }
 
         public static final class Composite {
+            /**
+             * ONE wind for the whole world, in degrees clockwise from +X — the direction weather travels.
+             *
+             * <p>Everything that is blown by wind takes its heading from here plus its own offset: the
+             * cumulus deck, the cirrus sheet, and the sea. They genuinely do differ in reality — a high
+             * ice sheet runs tens of degrees off the surface wind — so the offsets stay, but they are
+             * offsets now rather than three unrelated numbers that happened to need hand-matching.
+             *
+             * <p>ONLY THE HEADING IS SHARED, AND ONLY THE HEADING CAN BE. The clouds' speed is authored in
+             * blocks per second; the waves' is not authored at all — it falls out of deep-water dispersion
+             * w = sqrt(g*k), one speed per wavelength. Forcing a blocks-per-second onto the waves would
+             * destroy the relationship that makes long swell stride past while short chop flutters in
+             * place, which water_wave.slang calls the biggest tell of fake water.
+             */
+            public static final FloatSetting WIND_ANGLE =
+                    clampedFloat("fluorite.rt.windAngle", "composite.wind-angle", 35f, 0f, 360f);
+
             public static final IntSetting DEBUG_VIEW = intValue("fluorite.rt.debugView", "composite.debug-view", 0);
             public static final IntSetting SPP = intAtLeast("fluorite.rt.spp", "composite.spp", 1, 1);
             public static final IntSetting MAX_BOUNCES =
@@ -945,9 +962,15 @@ public final class FluoriteConfig {
                             2.0f, 0f, 60f);
 
             /** Which way the wind blows, in degrees clockwise from +X. */
-            public static final FloatSetting CLOUD_WIND_ANGLE =
-                    clampedFloat("fluorite.rt.fog.cloudWindAngle", "volumetrics.cloud-wind-angle",
-                            35f, 0f, 360f);
+            /** Degrees off the global wind (Composite.WIND_ANGLE). 0 = the deck runs with the wind. */
+            public static final FloatSetting CLOUD_WIND_OFFSET =
+                    clampedFloat("fluorite.rt.fog.cloudWindOffset", "volumetrics.cloud-wind-offset",
+                            0f, -180f, 180f);
+
+            /** Absolute heading of the deck, in degrees clockwise from +X. */
+            public static float cloudWindAngle() {
+                return Rt.Composite.WIND_ANGLE.value() + CLOUD_WIND_OFFSET.value();
+            }
 
             /**
              * How wide the cloud FIELD's cells are, in blocks — the 2D distribution, not the 3D puffs.
@@ -1101,9 +1124,19 @@ public final class FluoriteConfig {
                             "volumetrics.cloud-cirrus-wind-speed", 6f, 0f, 120f);
 
             /** Which way the cirrus layer's own wind blows, in degrees clockwise from +X. */
-            public static final FloatSetting CLOUD_CIRRUS_WIND_ANGLE =
-                    clampedFloat("fluorite.rt.fog.cloudCirrusWindAngle",
-                            "volumetrics.cloud-cirrus-wind-angle", 65f, 0f, 360f);
+            /**
+             * Degrees off the global wind. Defaults to +30, which reproduces the shipped 65 against a
+             * global 35 — and is physically the right shape: high cirrus really does run at an angle to
+             * the surface wind, which is why the offset is kept rather than collapsed.
+             */
+            public static final FloatSetting CLOUD_CIRRUS_WIND_OFFSET =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusWindOffset",
+                            "volumetrics.cloud-cirrus-wind-offset", 30f, -180f, 180f);
+
+            /** Absolute heading of the cirrus sheet, in degrees clockwise from +X. */
+            public static float cloudCirrusWindAngle() {
+                return Rt.Composite.WIND_ANGLE.value() + CLOUD_CIRRUS_WIND_OFFSET.value();
+            }
 
             /**
              * What clouds a ray that is not the first of its path gets: {@code off}, {@code reduced} or
@@ -1464,6 +1497,23 @@ public final class FluoriteConfig {
             /** How much of the simulated slope reaches the shading, against the procedural spectrum's. */
             public static final FloatSetting WATER_SIM_STRENGTH =
                     clampedFloat("fluorite.rt.water.simStrength", "water.sim-strength", 1.0f, 0f, 4f);
+
+            /**
+             * Degrees the swell runs off the global wind (Composite.WIND_ANGLE).
+             *
+             * <p>The default is -15.71 rather than 0, and that is not a taste choice: the wave direction
+             * used to be a compile-time constant normalize(1.0, 0.35), which is 19.29 degrees, and
+             * 35 - 15.71 reproduces it exactly. Iron rule 8 is about switches, but the principle is the
+             * same -- adding a control must not silently move what the control now controls.
+             */
+            public static final FloatSetting WAVE_WIND_OFFSET =
+                    clampedFloat("fluorite.rt.water.waveWindOffset", "water.wave-wind-offset",
+                            -15.71f, -180f, 180f);
+
+            /** Absolute heading of the swell, in degrees clockwise from +X. */
+            public static float waveWindAngle() {
+                return Rt.Composite.WIND_ANGLE.value() + WAVE_WIND_OFFSET.value();
+            }
 
             /**
              * How big a patch an entity disturbs, as a multiple of its own width.

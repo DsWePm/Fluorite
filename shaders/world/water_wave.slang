@@ -38,7 +38,14 @@ public static const float WATER_WAVE_STRENGTH = 0.3;
 public static const float WAVE_SPEED = 0.8;           // global time scale; dispersion keeps relative speeds physical
 public static const int   WAVE_COUNT = 10;            // λ = 14 m … 0.38 m (each octave 1.5× shorter)
 public static const float WAVE_G = 9.81;
-public static const float2 WAVE_WIND = normalize(float2(1.0, 0.35)); // dominant travel direction
+// The wind is an ARGUMENT now, not a constant (D51): one global heading drives the sea and both cloud
+// layers, each with its own offset. It arrives as a unit vector rather than an angle so the caller
+// computes the sincos once instead of once per spectrum walk.
+//
+// Only the HEADING is shared with the clouds and only the heading can be. Their speed is authored in
+// blocks per second; this spectrum's is not authored at all -- it falls out of w = sqrt(g*k) below, one
+// speed per wavelength. That relationship is what makes long swell stride past while short chop flutters
+// nearly in place, and a shared speed would destroy it.
 public static const float WAVE_MEANDER = 1.1;         // crest phase-wobble amplitude (rad) on the long components
 
 // Per-component mean of the crest profile, ⟨e^{S(sin φ − 1)}⟩ = e^{−S}·I₀(S) for S = 1.2 + 0.12·i.
@@ -75,7 +82,7 @@ public float waterWaveLodWeight(float wavelength, float footprint) {
 // describe the same surface. Two separate evaluations would drift apart as soon as anyone touched a
 // constant, and the drift would be slow enough to look like something else.
 public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p, float t, float footprint,
-                                          float strength, float baseLength,
+                                          float strength, float baseLength, float2 wind,
                                           out float height, out float2 grad, out float2 gradDt) {
     // Per-wave steepness a·k: gentle in the long swell, concentrated in the mid/short chop.
     const float Q[WAVE_COUNT] = { 0.030, 0.035, 0.042, 0.050, 0.060, 0.065, 0.065, 0.058, 0.048, 0.038 };
@@ -94,7 +101,7 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
         // Heading: deterministic irregular spread about the wind, widening down the spectrum.
         float spread = (0.15 + 0.11 * float(i)) * sin(float(i) * 2.4 + 1.3);
         float cs = cos(spread), sn = sin(spread);
-        float2 d = float2(WAVE_WIND.x * cs - WAVE_WIND.y * sn, WAVE_WIND.x * sn + WAVE_WIND.y * cs);
+        float2 d = float2(wind.x * cs - wind.y * sn, wind.x * sn + wind.y * cs);
         float ph = k * dot(d, p) - w * t + 1.7 * float(i) * float(i);
         float2 dph = k * d;
         float phDt = -w;                      // ∂φ/∂t
@@ -139,10 +146,11 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
     gradDt *= scale;
 }
 
-public float2 waterWaveGrad(float2 p, float t, float footprint, float strength, float baseLength) {
+public float2 waterWaveGrad(float2 p, float t, float footprint, float strength, float baseLength,
+                            float2 wind) {
     float height;
     float2 grad, gradDt;
-    waterWaveSpectrum<0, 0>(p, t, footprint, strength, baseLength, height, grad, gradDt);
+    waterWaveSpectrum<0, 0>(p, t, footprint, strength, baseLength, wind, height, grad, gradDt);
     return grad;
 }
 
@@ -156,26 +164,28 @@ public float2 waterWaveGrad(float2 p, float t, float footprint, float strength, 
  * components hold 96% of the rms height (λ ≥ 2.77 m of a 14 m … 0.38 m spectrum), so the chop the mesh
  * drops was never shape. It was always slope, and slope is the normal's job.
  */
-public float waterWaveHeight(float2 p, float t, float footprint, float strength, float baseLength) {
+public float waterWaveHeight(float2 p, float t, float footprint, float strength, float baseLength,
+                             float2 wind) {
     float height;
     float2 grad, gradDt;
-    waterWaveSpectrum<0, 1>(p, t, footprint, strength, baseLength, height, grad, gradDt);
+    waterWaveSpectrum<0, 1>(p, t, footprint, strength, baseLength, wind, height, grad, gradDt);
     return height;
 }
 
-public float2 waterWaveGrad(float2 p, float t, float strength, float baseLength) {
-    return waterWaveGrad(p, t, 0.0, strength, baseLength);
+public float2 waterWaveGrad(float2 p, float t, float strength, float baseLength, float2 wind) {
+    return waterWaveGrad(p, t, 0.0, strength, baseLength, wind);
 }
 
 // Evaluate the current gradient and linearly rewind it to the previous phase in one spectrum walk.
 // Frame deltas are bounded on the CPU, so this avoids a second set of trigonometric/exponential work
 // while remaining accurate over the sub-frame interval used by reflection reprojection.
 public void waterWaveGradTemporal(float2 p, float currentT, float previousT, float footprint,
-                           float strength, float baseLength,
+                           float strength, float baseLength, float2 wind,
                            out float2 currentGrad, out float2 previousGrad) {
     float height;
     float2 gradDt;
-    waterWaveSpectrum<1, 0>(p, currentT, footprint, strength, baseLength, height, currentGrad, gradDt);
+    waterWaveSpectrum<1, 0>(p, currentT, footprint, strength, baseLength, wind,
+                            height, currentGrad, gradDt);
     previousGrad = currentGrad - (currentT - previousT) * WAVE_SPEED * gradDt;
 }
 
@@ -326,7 +336,8 @@ float waterSimHeightBandLimited(Sampler2D<float> tex, float4 domain, float4 plan
 }
 
 public float waterSurfaceHeight(Sampler2D<float> simTex, float4 simDomain, float4 simPlane,
-                                float3 world, float t, float cellSize, float strength, float baseLength) {
-    return waterWaveHeight(world.xz, t, cellSize, strength, baseLength)
+                                float3 world, float t, float cellSize, float strength, float baseLength,
+                                float2 wind) {
+    return waterWaveHeight(world.xz, t, cellSize, strength, baseLength, wind)
             + waterSimHeightBandLimited(simTex, simDomain, simPlane, world, cellSize);
 }

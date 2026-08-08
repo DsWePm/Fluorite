@@ -466,7 +466,8 @@ public final class RtTerrain {
                                   float[] simDomain, float[] simPlane,
                                   double waveOffsetX, double waveOffsetZ,
                                   float fadeCentreX, float fadeCentreZ, float fadeStart, float fadeEnd,
-                                  float time, float cellSize, float amplitude, float baseLength) {
+                                  float time, float cellSize, float amplitude, float baseLength,
+                                  float windAngle) {
         if (table.slots.isEmpty()) {
             return;
         }
@@ -479,7 +480,8 @@ public final class RtTerrain {
             sky.recordWaterDeform(cmd, g.positions.deviceAddress, g.waterRest.deviceAddress,
                     g.waterVertBase, g.waterVertCount, simDomain, simPlane,
                     (float) (g.sx + waveOffsetX), (float) (g.sz + waveOffsetZ),
-                    fadeCentreX, fadeCentreZ, fadeStart, fadeEnd, time, cellSize, amplitude, baseLength);
+                    fadeCentreX, fadeCentreZ, fadeStart, fadeEnd, time, cellSize, amplitude, baseLength,
+                    windAngle);
             long required = Math.max(g.updateScratchSize, 1L);
             if (g.refitScratch == null || g.refitScratch.size < required) {
                 if (g.refitScratch != null) {

@@ -185,8 +185,6 @@
   "fluorite.options.rt.section.cumulus": "Volumetric Clouds (Cumulus)",
   "fluorite.options.rt.cloudWindSpeed": "Cloud Wind Speed",
   "fluorite.options.rt.cloudWindSpeed.tooltip": "How fast the whole cloud field drifts, in blocks per second. 0 freezes the sky. Costs nothing: the drift is subtracted from the field's origin before the shader ever samples it, so a cloud and its reflection cannot disagree about where it has drifted to.",
-  "fluorite.options.rt.cloudWindAngle": "Cloud Wind Direction",
-  "fluorite.options.rt.cloudWindAngle.tooltip": "Which way the wind carries the clouds.",
   "fluorite.options.rt.cloudFieldScale": "Cloud Field Size",
   "fluorite.options.rt.cloudFieldScale.tooltip": "How far apart the sky's clumps and clearings are — the 2D distribution, not the size of one cloud. Large values give a few broad banks with wide gaps; small values give a busy, evenly speckled sky. Cloud Size under Shape is the separate question of how big a single cloud within a clump is.",
   "fluorite.options.rt.cloudWeather": "Follow Vanilla Weather",
@@ -227,8 +225,6 @@
   "fluorite.options.rt.cloudCirrusDensity.tooltip": "Multiplies the cirrus layer's density, independently of the deck below it.",
   "fluorite.options.rt.cloudCirrusWindSpeed": "Cirrus Wind Speed",
   "fluorite.options.rt.cloudCirrusWindSpeed.tooltip": "How fast the cirrus layer drifts, in blocks per second. Its own, not the deck's: cirrus sits kilometres higher where the wind is faster, and two layers sliding past each other at different speeds is most of what makes a sky read as deep rather than as one painted dome.",
-  "fluorite.options.rt.cloudCirrusWindAngle": "Cirrus Wind Direction",
-  "fluorite.options.rt.cloudCirrusWindAngle.tooltip": "Which way the cirrus layer's own wind blows. Setting it away from the deck's is what makes the two layers visibly separate.",
   "fluorite.options.rt.cloudCirrus": "Cirrus Layer",
   "fluorite.options.rt.cloudCirrus.tooltip": "A thin sheet of ice cloud far above the main deck, combed into streaks by the wind it falls through. Cheap: it is thin enough that light passes almost straight through, so it gets no self-shadow march at all and a ray crosses it once.",
   "fluorite.options.rt.cloudCirrusCoverage": "Cirrus Coverage",
@@ -283,5 +279,13 @@
   "fluorite.options.rt.skyTemperature.tooltip": "Colour temperature of the sky. Physical leaves the atmosphere's own colour alone.",
   "fluorite.options.rt.temperature.physical": "Physical",
   "fluorite.options.rt.resetDefaults": "Reset to Defaults",
-  "fluorite.options.rt.resetDefaults.tooltip": "Puts every Fluorite setting back to its shipped value."
+  "fluorite.options.rt.resetDefaults.tooltip": "Puts every Fluorite setting back to its shipped value.",
+  "fluorite.options.rt.windAngle": "Wind Direction",
+  "fluorite.options.rt.windAngle.tooltip": "The direction weather travels, for the whole world: both cloud layers and the sea take their heading from here plus their own offset. Only the DIRECTION is shared, and only it can be -- the clouds' speed is authored in blocks per second while the waves' is not authored at all, it follows from deep-water physics with one speed per wavelength, which is what makes long swell stride past while short chop flutters in place. This control also appears on the water screen; it is the same setting.",
+  "fluorite.options.rt.cloudWindOffset": "Cloud Wind Offset",
+  "fluorite.options.rt.cloudWindOffset.tooltip": "How far the cumulus deck runs off the global wind direction. Zero means it travels straight downwind.",
+  "fluorite.options.rt.cloudCirrusWindOffset": "Cirrus Wind Offset",
+  "fluorite.options.rt.cloudCirrusWindOffset.tooltip": "How far the cirrus sheet runs off the global wind direction. High ice really does travel at an angle to the surface wind, which is why this is an offset rather than something to zero out.",
+  "fluorite.options.rt.waveWindOffset": "Swell Direction Offset",
+  "fluorite.options.rt.waveWindOffset.tooltip": "How far the swell runs off the global wind direction. The individual wave trains still fan out around it -- tightly for the long swell, widely for the short chop."
 }

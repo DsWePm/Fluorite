@@ -185,8 +185,6 @@
   "fluorite.options.rt.section.cumulus": "體積雲（積雲層）",
   "fluorite.options.rt.cloudWindSpeed": "雲的風速",
   "fluorite.options.rt.cloudWindSpeed.tooltip": "整片雲場漂移的速度，單位方塊/秒。0 會讓天空靜止。**開銷為零**：漂移是在著色器取樣之前就從雲場原點裡減掉的，所以雲和它的倒影不可能對「飄到哪了」產生分歧。",
-  "fluorite.options.rt.cloudWindAngle": "雲的風向",
-  "fluorite.options.rt.cloudWindAngle.tooltip": "風把雲往哪個方向吹。",
   "fluorite.options.rt.cloudFieldScale": "雲場尺度",
   "fluorite.options.rt.cloudFieldScale.tooltip": "天空中成團與放晴的區域相隔多遠 —— 這是 **2D 分佈**，不是單朵雲的大小。數值大則少數幾片寬闊的雲帶配大片空隙；數值小則天空細碎均勻。「雲形」裡的「雲朵尺度」問的是另一個問題：一團裡單朵雲有多大。",
   "fluorite.options.rt.cloudWeather": "联动原版天气",
@@ -227,8 +225,6 @@
   "fluorite.options.rt.cloudCirrusDensity.tooltip": "縮放卷雲層的密度，與下面的積雲層互不影響。",
   "fluorite.options.rt.cloudCirrusWindSpeed": "卷雲風速",
   "fluorite.options.rt.cloudCirrusWindSpeed.tooltip": "卷雲層漂移的速度，单位方塊/秒。**是它自己的，不是積雲層的**：卷雲高出好幾公里，那里風更快 —— 兩層以不同速度相互滑过，正是天空顯得有縱深而不像一个畫好的穹頂的主要原因。",
-  "fluorite.options.rt.cloudCirrusWindAngle": "卷雲風向",
-  "fluorite.options.rt.cloudCirrusWindAngle.tooltip": "卷雲層自己的風往哪吹。把它與積雲層的風向調開，兩層才会明顯分離。",
   "fluorite.options.rt.cloudCirrus": "卷云层",
   "fluorite.options.rt.cloudCirrus.tooltip": "主云层之上很高处的一层薄冰云，被下落途中的风切变梳成条缕。开销很小：它薄到光几乎直穿而过，因此完全不跑自阴影行进，射线也只穿过它一次。",
   "fluorite.options.rt.cloudCirrusCoverage": "卷云量",
@@ -283,5 +279,13 @@
   "fluorite.options.rt.skyTemperature.tooltip": "天空的色溫。「物理」保持大氣自身的顏色不變。",
   "fluorite.options.rt.temperature.physical": "物理",
   "fluorite.options.rt.resetDefaults": "恢復預設值",
-  "fluorite.options.rt.resetDefaults.tooltip": "將 Fluorite 所有設定恢復為出廠值。"
+  "fluorite.options.rt.resetDefaults.tooltip": "將 Fluorite 所有設定恢復為出廠值。",
+  "fluorite.options.rt.windAngle": "風向",
+  "fluorite.options.rt.windAngle.tooltip": "整個世界的天氣行進方向：兩層雲和海面都以它為基準，各自再加自己的偏移。只有方向是共享的，也只能是方向——雲的速度按格/秒設定，而波浪的速度根本不是設定的，它來自深水物理、每個波長一個速度，這正是長湧浪大步走過而短碎波幾乎原地抖的原因。這個選項在水面頁也有，是同一個設定。",
+  "fluorite.options.rt.cloudWindOffset": "積雲風向偏移",
+  "fluorite.options.rt.cloudWindOffset.tooltip": "積雲層相對全域風向偏多少度。為零表示正好順風移動。",
+  "fluorite.options.rt.cloudCirrusWindOffset": "卷雲風向偏移",
+  "fluorite.options.rt.cloudCirrusWindOffset.tooltip": "卷雲層相對全域風向偏多少度。高空冰晶層確實會與地面風向成一個夾角，所以這裡是偏移量而不是應該歸零的東西。",
+  "fluorite.options.rt.waveWindOffset": "湧浪方向偏移",
+  "fluorite.options.rt.waveWindOffset.tooltip": "湧浪相對全域風向偏多少度。各道波列仍會圍繞它扇形散開——長湧浪聚攏、短碎波發散。"
 }

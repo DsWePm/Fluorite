@@ -48,6 +48,10 @@ public struct WaterDeformPush {
     public uint vertBase;
     public uint vertCount;
     public float baseLength;   // D50; the pad lane this replaces was never read
+    // D51. Resolved on the CPU from the SAME global wind + offset the shading reads out of
+    // waterAmbient.z, because a swell that travels one way in the geometry and another in the normal
+    // is the exact failure water_wave.slang's header warns about.
+    public float windAngle;
 };
 
 [[vk::push_constant]] WaterDeformPush pc;
@@ -79,7 +83,8 @@ void main(uint3 tid: SV_DispatchThreadID) {
             ? 0.0
             : fade * waterSurfaceHeight(waterSimHeightTex, pc.simDomain, pc.simPlane,
                                         float3(worldXZ.x, pc.simPlane.x, worldXZ.y),
-                                        pc.time, pc.cellSize, pc.amplitude, pc.baseLength);
+                                        pc.time, pc.cellSize, pc.amplitude, pc.baseLength,
+                                        float2(cos(pc.windAngle), sin(pc.windAngle)));
 
     // Y only. Real deep-water particles move in circles, so a physical surface also shifts horizontally
     // (that is what sharpens the crests), but moving xz here would shear the quads away from the block

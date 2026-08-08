@@ -105,6 +105,9 @@ public final class RtVideoOptions {
                 // reasons and nothing else: a cloud deck is a thing you look UP at, authored alongside
                 // the sun and the sky it hangs in, while the fog is the air you stand in.
                 case SKY -> List.of(
+                        // The one wind at the top of the sky screen, where what it drives -- both
+                        // cloud layers -- is exactly what you are looking at.
+                        Section.of(windAngle()),
                         Section.titled("fluorite.options.rt.section.sunArt",
                                 sunIntensity(), sunTemperature()),
                         Section.titled("fluorite.options.rt.section.skyArt",
@@ -117,7 +120,7 @@ public final class RtVideoOptions {
                                 clouds(), cloudWeather(), cloudCoverage(), cloudType(), cloudDensity(),
                                 cloudExtinction(), cloudAltitude(), cloudThickness(),
                                 cloudFieldScale(), cloudBaseScale(), cloudDetailScale(),
-                                cloudWindSpeed(), cloudWindAngle()),
+                                cloudWindSpeed(), cloudWindOffset()),
                         Section.titled("fluorite.options.rt.section.cloudLighting",
                                 cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo(),
                                 cloudSecondary()),
@@ -130,7 +133,7 @@ public final class RtVideoOptions {
                                 cloudCirrusExtinction(), cloudCirrusAltitude(), cloudCirrusThickness(),
                                 cloudCirrusFieldScale(), cloudCirrusBaseScale(),
                                 cloudCirrusDetailScale(),
-                                cloudCirrusWindSpeed(), cloudCirrusWindAngle()));
+                                cloudCirrusWindSpeed(), cloudCirrusWindOffset()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(),
                                 waterScatterSource(),
@@ -153,7 +156,8 @@ public final class RtVideoOptions {
                         // than a couple of blocks, so shortening the swell flattens the geometry while
                         // leaving the normal alone).
                         Section.titled("fluorite.options.rt.section.waterDeform",
-                                waterDeform(), waveLength(), waveAmplitude(),
+                                waterDeform(), windAngle(), waveWindOffset(),
+                                waveLength(), waveAmplitude(),
                                 waterDeformRange(), waterDeformCell(), waterDeformReanchor()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
@@ -641,16 +645,45 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED);
     }
 
-    private static OptionInstance<Integer> cloudWindAngle() {
-        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE;
+    /**
+     * The one wind, shown on both the sky and the water screens.
+     *
+     * <p>Deliberately the SAME setting surfaced twice rather than duplicated: whichever screen you are on
+     * while judging how the weather moves, the control is there. Each screen builds its widget from the
+     * current value when it opens, so the two cannot drift apart.
+     */
+    private static OptionInstance<Integer> windAngle() {
+        FloatSetting setting = FluoriteConfig.Rt.Composite.WIND_ANGLE;
         return new OptionInstance<>(
-            "fluorite.options.rt.cloudWindAngle",
+            "fluorite.options.rt.windAngle",
             OptionInstance.cachedConstantTooltip(
-                    Component.translatable("fluorite.options.rt.cloudWindAngle.tooltip")),
+                    Component.translatable("fluorite.options.rt.windAngle.tooltip")),
             (caption, v) -> Options.genericValueLabel(caption, Component.literal(v + "°")),
             new OptionInstance.IntRange(0, 359),
             Math.clamp(Math.round(setting.value()), 0, 359),
             v -> setting.set((float) v));
+    }
+
+    /** Degrees off the global wind, signed. */
+    private static OptionInstance<Integer> windOffset(String key, FloatSetting setting) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal((v > 0 ? "+" : "") + v + "°")),
+            new OptionInstance.IntRange(-180, 180),
+            Math.clamp(Math.round(setting.value()), -180, 180),
+            v -> setting.set((float) v));
+    }
+
+    private static OptionInstance<Integer> cloudWindOffset() {
+        return windOffset("fluorite.options.rt.cloudWindOffset",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_OFFSET);
+    }
+
+    private static OptionInstance<Integer> waveWindOffset() {
+        return windOffset("fluorite.options.rt.waveWindOffset",
+                FluoriteConfig.Rt.Water.WAVE_WIND_OFFSET);
     }
 
     /** The 2D field: how far apart the sky's clumps and clearings are, as opposed to how big one cloud is. */
@@ -760,16 +793,9 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED);
     }
 
-    private static OptionInstance<Integer> cloudCirrusWindAngle() {
-        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_ANGLE;
-        return new OptionInstance<>(
-            "fluorite.options.rt.cloudCirrusWindAngle",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("fluorite.options.rt.cloudCirrusWindAngle.tooltip")),
-            (caption, v) -> Options.genericValueLabel(caption, Component.literal(v + "°")),
-            new OptionInstance.IntRange(0, 359),
-            Math.clamp(Math.round(setting.value()), 0, 359),
-            v -> setting.set((float) v));
+    private static OptionInstance<Integer> cloudCirrusWindOffset() {
+        return windOffset("fluorite.options.rt.cloudCirrusWindOffset",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_OFFSET);
     }
 
     private static OptionInstance<Integer> cloudCirrusExtinction() {

@@ -57,6 +57,20 @@ public float waterWaveBaseLength() {
 }
 
 /**
+ * The direction the swell travels, as a unit vector (D51). Rides waterAmbient.z, the last of M16's
+ * retired slots, so WorldPush still does not grow.
+ *
+ * <p>The angle is the ONE global wind plus this layer's own offset, resolved on the CPU -- the same
+ * number the cloud layers resolve from. The displacement pass gets it through its own push constant and
+ * must resolve to the identical vector, or the geometry and the shading describe surfaces travelling in
+ * different directions.
+ */
+public float2 waterWaveWind() {
+    float a = worldPush.waterAmbient.z;
+    return float2(cos(a), sin(a));
+}
+
+/**
  * Debug view 23: the simulated height field, painted across the screen.
  *
  * <p>Answers the two questions that look identical on a flat pond — is there anything in the field, and
@@ -131,7 +145,8 @@ public float3 waterSimDebug(float2 screenUv) {
 // not steepen the shading, and near and far water are shaded by the identical expression.
 public float3 applyWaterWaves(float3 nGeo, float3 world, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
-    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveAmplitude(), waterWaveBaseLength()) + waterSimGrad(world);
+    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveAmplitude(), waterWaveBaseLength(),
+                                 waterWaveWind()) + waterSimGrad(world);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
 }
@@ -156,7 +171,7 @@ public void applyWaterWavesTemporal(float3 nGeo, float3 world, float t, float pr
     float2 currentGrad;
     float2 previousGrad;
     waterWaveGradTemporal(world.xz, t, previousT, footprint, waterWaveAmplitude(),
-                          waterWaveBaseLength(), currentGrad, previousGrad);
+                          waterWaveBaseLength(), waterWaveWind(), currentGrad, previousGrad);
     float2 sim = waterSimGrad(world);
     currentGrad += sim;
     previousGrad += sim;
@@ -197,7 +212,8 @@ public static const float CAUSTIC_IOR_SPREAD = 0.0045;
 // field is the only expensive part of a caustic and it does not know about colour: all three
 // wavelengths share these, so dispersion costs three refracts and no extra field evaluations.
 float3 causticNormal(float2 xz, float t) {
-    float2 g = waterWaveGrad(xz, t, 0.0, waterWaveAmplitude(), waterWaveBaseLength());
+    float2 g = waterWaveGrad(xz, t, 0.0, waterWaveAmplitude(), waterWaveBaseLength(),
+                             waterWaveWind());
     return normalize(float3(-g.x, 1.0, -g.y));
 }
 

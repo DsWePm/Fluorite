@@ -644,7 +644,7 @@ public final class RtComposite {
     /** The cirrus layer's own field origin — its own drift — and its own field scale. */
     private static Float4 cloudCirrusOrigin(RtTerrain terrain, ClientLevel level) {
         double[] drift = windDrift(level, FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED.value(),
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_ANGLE.value());
+                FluoriteConfig.Rt.Volumetrics.cloudCirrusWindAngle());
         return new Float4((float) (terrain.blockX - drift[0]), terrain.blockY,
                 (float) (terrain.blockZ - drift[1]),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_FIELD_SCALE.value());
@@ -660,7 +660,7 @@ public final class RtComposite {
         // Only xz. The y lane is the pure rebase because cloudShellSpan measures the deck's altitude
         // from it, and a deck that drifted vertically would be a deck at the wrong height.
         double[] drift = windDrift(level, FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value(),
-                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE.value());
+                FluoriteConfig.Rt.Volumetrics.cloudWindAngle());
         float driftX = (float) drift[0];
         float driftZ = (float) drift[1];
         return new Float4(terrain.blockX - driftX, terrain.blockY, terrain.blockZ - driftZ,
@@ -842,7 +842,8 @@ public final class RtComposite {
      */
     private static Float4 waterAux() {
         return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(),
-                FluoriteConfig.Rt.Water.WAVE_LENGTH.value(), 0f,
+                FluoriteConfig.Rt.Water.WAVE_LENGTH.value(),
+                (float) Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle()),
                 FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
     }
 
@@ -2078,7 +2079,8 @@ public final class RtComposite {
                             range * 0.75f, range,
                             waterWaveTime, 1.0f,
                             FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(),
-                            FluoriteConfig.Rt.Water.WAVE_LENGTH.value());
+                            FluoriteConfig.Rt.Water.WAVE_LENGTH.value(),
+                            (float) Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle()));
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
             }

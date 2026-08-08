@@ -117,7 +117,7 @@ public final class RtSky {
     /** 16-byte header plus six inline 16-byte impulses; inside Vulkan's guaranteed 128. */
     private static final int WATER_SIM_PUSH_BYTES = 128;
     /** Matches WaterDeformPush in water_deform.comp.slang; see that struct for the field order. */
-    private static final int WATER_DEFORM_PUSH_BYTES = 96;
+    private static final int WATER_DEFORM_PUSH_BYTES = 112;
     private static final int WATER_DEFORM_GROUP = 64;
     private Bake waterDeformBake;
     // The absolute cell origin each height image's CONTENT was written in, so a re-anchor can be resolved
@@ -412,7 +412,8 @@ public final class RtSky {
                                   float worldOffsetX, float worldOffsetZ,
                                   float fadeCentreX, float fadeCentreZ,
                                   float fadeStart, float fadeEnd,
-                                  float time, float cellSize, float amplitude, float baseLength) {
+                                  float time, float cellSize, float amplitude, float baseLength,
+                                  float windAngle) {
         if (waterDeformBake == null || vertCount <= 0) {
             return;
         }
@@ -432,7 +433,8 @@ public final class RtSky {
             push.putFloat(56, fadeCentreX).putFloat(60, fadeCentreZ);
             push.putFloat(64, fadeStart).putFloat(68, fadeEnd)
                     .putFloat(72, time).putFloat(76, cellSize).putFloat(80, amplitude);
-            push.putInt(84, vertBase).putInt(88, vertCount).putFloat(92, baseLength);
+            push.putInt(84, vertBase).putInt(88, vertCount).putFloat(92, baseLength)
+                    .putFloat(96, windAngle);
             VK10.vkCmdPushConstants(cmd, waterDeformBake.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (vertCount + WATER_DEFORM_GROUP - 1) / WATER_DEFORM_GROUP, 1, 1);
