@@ -70,6 +70,8 @@
   "fluorite.options.rt.waterSimDamping.tooltip": "每一步之后涟漪还剩多少。调低水面更快平静。这是个近似：真实水体在最短波长上损失最快，而这里是均匀损失。",
   "fluorite.options.rt.waterSimImpulse": "水花强度",
   "fluorite.options.rt.waterSimImpulse.tooltip": "穿过水面的实体最多能推动多少水面。**既是观感也是稳定性护栏**：位移相对格距过大时局部斜率会陡到让下一步过冲，而过冲会累积。",
+  "fluorite.options.rt.waveLength": "波长",
+  "fluorite.options.rt.waveLength.tooltip": "海面上最长的那道波；其余九道由它推出，每道约短三分之一。刻意没有「速度」选项：深水物理把速度和波长绑死，所以缩短涌浪它自己就会变慢，整个波谱之间的相对速度始终是真实的。振幅也跟着走，因为真正被设定的是陡度——所以这个选项决定的是「碎浪小池塘」还是「远洋涌浪」，不只是大小。",
   "fluorite.options.rt.waveAmplitude": "波浪振幅",
   "fluorite.options.rt.waveAmplitude.tooltip": "波浪有多高。1 即原本的外观，逐位一致。它同时缩放形状与倾斜——因为二者是同一个面，所以调高不只是让水形变更明显，反射也会随之更碎、更破。原值是在只有法线使用它的时候定的，水面高度只有约 2.5 厘米；真实微风下的水面要陡好几倍，大约相当于这里的 3 到 8。",
   "fluorite.options.rt.waterSimImpulseDepth": "溅起深度",

@@ -412,7 +412,7 @@ public final class RtSky {
                                   float worldOffsetX, float worldOffsetZ,
                                   float fadeCentreX, float fadeCentreZ,
                                   float fadeStart, float fadeEnd,
-                                  float time, float cellSize, float amplitude) {
+                                  float time, float cellSize, float amplitude, float baseLength) {
         if (waterDeformBake == null || vertCount <= 0) {
             return;
         }
@@ -432,7 +432,7 @@ public final class RtSky {
             push.putFloat(56, fadeCentreX).putFloat(60, fadeCentreZ);
             push.putFloat(64, fadeStart).putFloat(68, fadeEnd)
                     .putFloat(72, time).putFloat(76, cellSize).putFloat(80, amplitude);
-            push.putInt(84, vertBase).putInt(88, vertCount).putInt(92, 0);
+            push.putInt(84, vertBase).putInt(88, vertCount).putFloat(92, baseLength);
             VK10.vkCmdPushConstants(cmd, waterDeformBake.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (vertCount + WATER_DEFORM_GROUP - 1) / WATER_DEFORM_GROUP, 1, 1);

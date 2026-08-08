@@ -1508,6 +1508,23 @@ public final class FluoriteConfig {
              * visible change to shipped behaviour, which is why it is authored rather than simply raised.
              * Around 3–8 reaches the steepness real water has.
              */
+            /**
+             * The longest wave in the spectrum, in blocks. Every component follows from it: ten of them,
+             * each 1.5x shorter, so 14 reaches down to about 0.36.
+             *
+             * <p>SPEED IS NOT A SEPARATE SETTING AND MUST NOT BECOME ONE. Deep-water dispersion ties it
+             * to wavelength as w = sqrt(g*k), so shortening the swell makes it travel slower on its own,
+             * and the relative speeds across the spectrum stay physical. That relationship — long swell
+             * striding past while short chop flutters nearly in place — is the single biggest reason the
+             * water reads as water, and a speed knob would be a knob for destroying it.
+             *
+             * <p>Amplitude follows too, because the per-component steepness a*k is what is authored: a
+             * longer wave of the same steepness is a taller wave. So this changes the sea's character —
+             * a pond of short choppy waves against an ocean swell — rather than merely its scale.
+             */
+            public static final FloatSetting WAVE_LENGTH =
+                    clampedFloat("fluorite.rt.water.waveLength", "water.wave-length", 14f, 2f, 40f);
+
             public static final FloatSetting WAVE_AMPLITUDE =
                     clampedFloat("fluorite.rt.water.waveAmplitude", "water.wave-amplitude", 1f, 0f, 8f);
 

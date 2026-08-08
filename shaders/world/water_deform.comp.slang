@@ -47,7 +47,7 @@ public struct WaterDeformPush {
     public float amplitude;     // D49; 1 is the shipped field exactly
     public uint vertBase;
     public uint vertCount;
-    public uint pad;
+    public float baseLength;   // D50; the pad lane this replaces was never read
 };
 
 [[vk::push_constant]] WaterDeformPush pc;
@@ -79,7 +79,7 @@ void main(uint3 tid: SV_DispatchThreadID) {
             ? 0.0
             : fade * waterSurfaceHeight(waterSimHeightTex, pc.simDomain, pc.simPlane,
                                         float3(worldXZ.x, pc.simPlane.x, worldXZ.y),
-                                        pc.time, pc.cellSize, pc.amplitude);
+                                        pc.time, pc.cellSize, pc.amplitude, pc.baseLength);
 
     // Y only. Real deep-water particles move in circles, so a physical surface also shifts horizontally
     // (that is what sharpens the crests), but moving xz here would shear the quads away from the block

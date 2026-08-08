@@ -70,6 +70,8 @@
   "fluorite.options.rt.waterSimDamping.tooltip": "How much of a ripple survives each step. Lower makes water settle sooner. An approximation: real water loses energy fastest at the shortest wavelengths and this is a uniform loss.",
   "fluorite.options.rt.waterSimImpulse": "Splash Strength",
   "fluorite.options.rt.waterSimImpulse.tooltip": "How much surface an entity moving through the water may displace. A stability guard as much as a look: a displacement large enough against the cell size steepens the slope until the next step overshoots, and the overshoot compounds.",
+  "fluorite.options.rt.waveLength": "Wave Length",
+  "fluorite.options.rt.waveLength.tooltip": "The longest wave in the sea; nine shorter ones follow from it, each about a third shorter than the last. There is deliberately no speed setting: deep-water physics ties speed to wavelength, so shortening the swell slows it down on its own and the relative speeds across the spectrum stay real. Amplitude follows too, because what is authored is steepness -- so this is the difference between a choppy pond and an ocean swell, not just a scale.",
   "fluorite.options.rt.waveAmplitude": "Wave Amplitude",
   "fluorite.options.rt.waveAmplitude.tooltip": "How tall the waves are. 1 is the original look, exactly. It scales the shape and the tilt together, because they are the same surface -- so raising it does not only make the water deform more, it also makes the reflections choppier and more broken. The original value was chosen when only the normal used it, and leaves the surface about 2.5 cm tall; real water under a light breeze is several times steeper, around 3 to 8 here.",
   "fluorite.options.rt.waterSimImpulseDepth": "Splash Depth",

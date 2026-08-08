@@ -51,6 +51,11 @@ public float waterWaveAmplitude() {
     return worldPush.waterAmbient.x;
 }
 
+/** The longest wave in the spectrum, in blocks (D50). Rides waterAmbient.y, retired since M16. */
+public float waterWaveBaseLength() {
+    return worldPush.waterAmbient.y;
+}
+
 /**
  * Debug view 23: the simulated height field, painted across the screen.
  *
@@ -126,7 +131,7 @@ public float3 waterSimDebug(float2 screenUv) {
 // not steepen the shading, and near and far water are shaded by the identical expression.
 public float3 applyWaterWaves(float3 nGeo, float3 world, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
-    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveAmplitude()) + waterSimGrad(world);
+    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveAmplitude(), waterWaveBaseLength()) + waterSimGrad(world);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
 }
@@ -151,7 +156,7 @@ public void applyWaterWavesTemporal(float3 nGeo, float3 world, float t, float pr
     float2 currentGrad;
     float2 previousGrad;
     waterWaveGradTemporal(world.xz, t, previousT, footprint, waterWaveAmplitude(),
-                          currentGrad, previousGrad);
+                          waterWaveBaseLength(), currentGrad, previousGrad);
     float2 sim = waterSimGrad(world);
     currentGrad += sim;
     previousGrad += sim;
@@ -192,7 +197,7 @@ public static const float CAUSTIC_IOR_SPREAD = 0.0045;
 // field is the only expensive part of a caustic and it does not know about colour: all three
 // wavelengths share these, so dispersion costs three refracts and no extra field evaluations.
 float3 causticNormal(float2 xz, float t) {
-    float2 g = waterWaveGrad(xz, t, waterWaveAmplitude());
+    float2 g = waterWaveGrad(xz, t, 0.0, waterWaveAmplitude(), waterWaveBaseLength());
     return normalize(float3(-g.x, 1.0, -g.y));
 }
 

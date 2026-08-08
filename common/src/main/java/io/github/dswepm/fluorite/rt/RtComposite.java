@@ -554,13 +554,30 @@ public final class RtComposite {
             if (speed < 0.2) {
                 continue;
             }
+            // How wide a patch of water this thing disturbs, IN BLOCKS: its own width, floored so a
+            // very thin entity still makes a dent you can see.
+            double wantMetres = Math.max(e.getBbWidth(), WATER_IMPULSE_MIN_RADIUS);
+            double wantCells = wantMetres / cell;
+            // The grid cannot represent a bump narrower than a couple of cells -- a single-cell delta is
+            // the grid's own Nyquist, which leapfrog carries forever as a checkerboard that never
+            // propagates. So the radius is floored.
+            //
+            // BUT THE FLOOR IS PAID FOR IN AMPLITUDE, NOT IN WIDTH, and that is the fix. The floor used
+            // to be the whole story, and because it is expressed in CELLS its size in the world moved
+            // with the domain: at a 256-block range the cells are a metre across and a player's splash
+            // grew from 0.6 m to 2 m wide. Widening the ripple range silently made every splash three
+            // times bigger, which is not what that setting is for.
+            //
+            // Now a bump too fine for the grid is spread to the smallest width the grid can hold and its
+            // height is scaled by the area ratio, so the volume of water moved is the same. Coarse grids
+            // give a broader, shallower disturbance -- which is exactly what band-limiting a splash
+            // should look like -- instead of a bigger one.
+            float radius = (float) Math.max(2.0, wantCells);
+            double volumeKeep = wantCells >= 2.0 ? 1.0 : (wantCells * wantCells) / 4.0;
             // Saturating at a walking pace, so a sprint does not simply scale the splash up without
             // limit -- past a point what changes about a wake is its shape, not its height, and the
             // clamp above this is a stability bound rather than a taste one.
-            float amount = (float) Math.min(speed / 4.0, 1.0) * cap * depthFade;
-            // Bigger things push more water, but the radius is in CELLS and a bump narrower than a
-            // couple of cells is the single-cell delta the shader's smoothing exists to avoid.
-            float radius = (float) Math.max(2.0, e.getBbWidth() / cell);
+            float amount = (float) (Math.min(speed / 4.0, 1.0) * volumeKeep) * cap * depthFade;
             int base = waterImpulseCount * 4;
             waterImpulses[base] = (float) ((e.getX() - waterCellX * (double) cell) / cell);
             waterImpulses[base + 1] = (float) ((e.getZ() - waterCellZ * (double) cell) / cell);
@@ -823,7 +840,8 @@ public final class RtComposite {
      * function — the shading normal and the displaced geometry have to describe one surface.
      */
     private static Float4 waterAux() {
-        return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(), 0f, 0f,
+        return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(),
+                FluoriteConfig.Rt.Water.WAVE_LENGTH.value(), 0f,
                 FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
     }
 
@@ -888,6 +906,8 @@ public final class RtComposite {
     private static int waterProbeReach() {
         return Math.round(FluoriteConfig.Rt.Water.WATER_SIM_HEIGHT.value());
     }
+    /** Smallest patch an entity disturbs, in BLOCKS — so the size of a splash does not follow the grid. */
+    private static final double WATER_IMPULSE_MIN_RADIUS = 0.5;
     /** How far from the feet still counts as touching water, in blocks. Contact is by definition close. */
     private static final int WATER_CONTACT_REACH = 2;
     /** How far up a water column the surface may be from the cell touched. Bounds a deep-ocean walk. */
@@ -2056,7 +2076,8 @@ public final class RtComposite {
                             (float) (camX + waveOffsetX), (float) (camZ + waveOffsetZ),
                             range * 0.75f, range,
                             waterWaveTime, 1.0f,
-                            FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value());
+                            FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(),
+                            FluoriteConfig.Rt.Water.WAVE_LENGTH.value());
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
             }
