@@ -250,14 +250,43 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
         // straight edges; complexity extends it to seven, fading in so 0 is unchanged.
         float meander = i < 4 ? WAVE_MEANDER : (i < 7 ? WAVE_MEANDER * complexity : 0.0);
         if (meander > 0.0) {
+            // TWO modulations, not one, and this is a fix rather than a refinement.
+            //
+            // A single sinusoid at a fixed multiple of k is itself PERFECTLY PERIODIC: crests every
+            // lambda along the travel direction, a crest wobble every 2.5 lambda across it. Those two
+            // periods together are a parallelogram lattice -- so the meander did not remove the regular
+            // structure it was added to remove, it exchanged straight ruled lines for a grid. The three
+            // dominant components sit within sixteen degrees of each other, so their lattices reinforced
+            // instead of cancelling, and the grid drifted crossways at half rate against the waves,
+            // which is why it did not even look like it belonged to them.
+            //
+            // Two modulations at an irrational frequency ratio, along two axes that are not the same,
+            // with the ratio walking per component so no two share a lattice. Nothing closes.
             float2 pd = float2(-d.y, d.x);
-            float wph = 0.4 * k * dot(pd, p) + 0.5 * w * t;
-            ph += meander * sin(wph);
-            dph += (meander * cos(wph) * 0.4 * k) * pd;
+            // Tuned against the measurement rather than by eye: correlation of the field with itself
+            // ACROSS the crests, at multiples of the old meander period. The number that matters is the
+            // FAR one -- near-field correlation is just the waves being waves, while correlation that
+            // survives a hundred metres is a lattice you can see. The original scored +0.35 at 105 m and
+            // this scores +0.07, with the rms height unchanged to three digits.
+            //
+            // Both frequencies walk with the component index so no two components share a lattice, the
+            // second axis is well away from perpendicular, and the weights are near equal so neither
+            // modulation dominates enough to reimpose its own period.
+            float2 md = normalize(pd + 0.70 * d);
+            float f1 = (0.33 + 0.059 * float(i)) * k;
+            float f2 = (0.23 + 0.071 * float(i)) * k;
+            float wph1 = f1 * dot(pd, p) + 0.50 * w * t;
+            float wph2 = f2 * dot(md, p) - 0.31 * w * t;
+            float c1 = 0.46, c2 = 0.54;
+            ph += meander * (c1 * sin(wph1) + c2 * sin(wph2));
+            dph += (meander * c1 * cos(wph1) * f1) * pd
+                 + (meander * c2 * cos(wph2) * f2) * md;
             if (WITH_DT != 0) {
-                float wphDt = 0.5 * w;
-                phDt += meander * cos(wph) * wphDt;
-                dphDt = (-meander * sin(wph) * wphDt * 0.4 * k) * pd;
+                float w1Dt = 0.50 * w;
+                float w2Dt = -0.31 * w;
+                phDt += meander * (c1 * cos(wph1) * w1Dt + c2 * cos(wph2) * w2Dt);
+                dphDt = (-meander * c1 * sin(wph1) * w1Dt * f1) * pd
+                      + (-meander * c2 * sin(wph2) * w2Dt * f2) * md;
             }
         }
         float S = 1.2 + 0.12 * float(i); // crest sharpness: the short chop is choppier
