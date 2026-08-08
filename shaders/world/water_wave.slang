@@ -156,12 +156,30 @@ public static const float GUST_RANGE = 1.20;      // so the field averages 1 and
 //
 // The octaves are also ROTATED against each other by an angle with no rational relationship to the
 // axes, so whatever residual alignment each one has cannot stack with the next.
+// INTEGER hashing, not sin/frac, and the reason is measured. The old hash produced only about 660
+// distinct values across a 40x40 patch of 1600 cells -- roughly two in five cells sharing a neighbour's
+// gradient direction. Cells that hash alike are cells whose noise agrees, and agreement laid out on a
+// lattice is visible structure: creases and seams sitting at fixed places in the world.
+//
+// It also degrades with coordinate magnitude, which sin/frac hashing always does: the wave domain runs
+// out to 4096 blocks (the anchor mask), and sin of a five-digit argument has very little fraction left
+// in fp32. An integer hash has no such range at all -- every bit is as good at 4096 as at zero.
+uint waterHashU(int2 c, uint seed) {
+    uint2 v = uint2(c) + seed * 0x9E3779B9u;
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v = v ^ (v >> 16u);
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    return v.x ^ v.y;
+}
+
 float2 waterHashDir(float2 i, float seed) {
-    // Two decorrelated hashes into an angle. sin/frac hashing is weak in the low bits, which is exactly
-    // where a lattice artefact would come from, so the angle is taken from the whole range.
-    float a = frac(sin(dot(i, float2(127.1, 311.7)) + seed) * 43758.5453);
-    float b = frac(sin(dot(i, float2(269.5, 183.3)) + seed * 1.7) * 24634.6345);
-    float ang = (a + b) * PI;
+    // Top 24 bits into a full turn: the low bits of any multiplicative hash are the weakest, and a
+    // direction wants the whole circle rather than a well-behaved corner of it.
+    uint h = waterHashU(int2(floor(i)), uint(seed));
+    float ang = float(h >> 8u) * (6.28318530718 / 16777216.0);
     return float2(cos(ang), sin(ang));
 }
 
@@ -341,7 +359,16 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
         // swell outlives the wind that made it and arrives from wherever that was.
         //
         // At complexity 0 crossWind equals wind, so this costs a select and changes nothing.
-        float2 base = ((i % 3) == 1) ? params.crossWind : params.wind;
+        // Which of the two wave systems this component belongs to, by HASH rather than by i % 3.
+        //
+        // The modulo put components 2, 5 and 8 on the second system and left every other one on the
+        // first, so the short end -- 9 and 10 -- could never respond to the crossing angle at all. Their
+        // headings sit at +58.8 and -51.5 degrees off the wind, which meant a fixed 110 degrees between
+        // them no matter what the crossing angle was set to.
+        //
+        // At complexity 0 the two systems are the same vector, so this still costs a select and changes
+        // nothing.
+        float2 base = (waterWaveJitter(i, 2.0) > 0.0) ? params.crossWind : params.wind;
         // Heading: deterministic irregular spread about the wind, widening down the spectrum. The jitter
         // is what stops the ten angles reading as a comb; it is off at complexity 0.
         float spread = (0.15 + 0.11 * float(i)) * sin(float(i) * 2.4 + 1.3)
