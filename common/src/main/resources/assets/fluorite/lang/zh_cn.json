@@ -74,6 +74,8 @@
   "fluorite.options.rt.waveLength.tooltip": "海面上最长的那道波；其余九道由它推出，每道约短三分之一。刻意没有「速度」选项：深水物理把速度和波长绑死，所以缩短涌浪它自己就会变慢，整个波谱之间的相对速度始终是真实的。振幅也跟着走，因为真正被设定的是陡度——所以这个选项决定的是「碎浪小池塘」还是「远洋涌浪」，不只是大小。",
   "fluorite.options.rt.waveAmplitude": "波浪振幅",
   "fluorite.options.rt.waveAmplitude.tooltip": "波浪有多高。1 即原本的外观，逐位一致。它同时缩放形状与倾斜——因为二者是同一个面，所以调高不只是让水形变更明显，反射也会随之更碎、更破。原值是在只有法线使用它的时候定的，水面高度只有约 2.5 厘米；真实微风下的水面要陡好几倍，大约相当于这里的 3 到 8。",
+  "fluorite.options.rt.waterSimImpulseSize": "涟漪尺寸",
+  "fluorite.options.rt.waterSimImpulseSize.tooltip": "物体扰动的水面范围，按它自身宽度的倍数。这就是涟漪的**波长**：求解器让所有波长同速传播，所以涟漪的大小根本不是水的属性——它完全由扰动源决定。调到两三格以上时，涟漪会长到足以真正推动水的几何，而不只是改变倒影。",
   "fluorite.options.rt.waterSimImpulseDepth": "溅起深度",
   "fluorite.options.rt.waterSimImpulseDepth.tooltip": "物体潜到多深还能扰动水面，从它的最高点算起。表面波的运动随深度指数衰减，所以潜得足够深的游泳者与水面根本不耦合。在整个范围内淡出而不是到头一刀切，所以往下游不会突然断掉。",
   "fluorite.options.rt.section.waterDeform": "水面形变",

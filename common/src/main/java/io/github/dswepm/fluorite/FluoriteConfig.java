@@ -1466,6 +1466,24 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simStrength", "water.sim-strength", 1.0f, 0f, 4f);
 
             /**
+             * How big a patch an entity disturbs, as a multiple of its own width.
+             *
+             * <p>THIS IS THE RIPPLE'S WAVELENGTH, which is not obvious and is worth writing down. The
+             * solver is the linear wave equation, which is NON-DISPERSIVE: every wavelength travels at
+             * the same c (that one is water.sim-speed). So a ripple's wavelength is not a property of the
+             * water at all -- it is set entirely by the size of whatever disturbed it. A bump of radius R
+             * radiates waves of about 2R. Scaling the source is the only honest way to author it.
+             *
+             * <p>Turning it up has a second effect worth knowing: past a radius of two or three blocks
+             * the ripples are long enough to survive the water mesh's band limit, so they stop being a
+             * normal-map effect and start actually moving the geometry -- without waiting for the
+             * subdivided mesh (D48).
+             */
+            public static final FloatSetting WATER_SIM_IMPULSE_SIZE =
+                    clampedFloat("fluorite.rt.water.simImpulseSize", "water.sim-impulse-size",
+                            1f, 0.25f, 6f);
+
+            /**
              * How deep below the surface something can be and still disturb it, in blocks.
              *
              * <p>PHYSICAL, not a preference. A surface wave's motion decays as e^(-k·d) with depth, so a

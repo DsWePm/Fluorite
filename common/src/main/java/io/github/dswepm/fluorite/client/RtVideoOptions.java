@@ -143,7 +143,7 @@ public final class RtVideoOptions {
                                 waterSim(), waterSimRange(), waterSimHeight(), waterSimReanchor(),
                                 waterSimStrength(),
                                 waterSimSpeed(), waterSimDamping(), waterSimImpulse(),
-                                waterSimImpulseDepth()),
+                                waterSimImpulseSize(), waterSimImpulseDepth()),
                         // The geometry, separate from the ripples that ride on it: one controls whether
                         // the surface is a shape at all, the others how much of it is and how finely.
                         // The wave field's shape lives with the deformation rather than with the
@@ -420,6 +420,20 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             Math.clamp(Math.round((setting.value() - 0.9f) * 1000f), 0, 100),
             v -> setting.set(0.9f + v / 1000.0f));
+    }
+
+    /** As a multiple of the entity's width, in quarters — this is the ripple's wavelength. */
+    private static OptionInstance<Integer> waterSimImpulseSize() {
+        FloatSetting setting = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE_SIZE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterSimImpulseSize",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterSimImpulseSize.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2fx", v / 4.0))),
+            new OptionInstance.IntRange(1, 24),
+            Math.clamp(Math.round(setting.value() * 4f), 1, 24),
+            v -> setting.set(v / 4.0f));
     }
 
     private static OptionInstance<Integer> waterSimImpulseDepth() {

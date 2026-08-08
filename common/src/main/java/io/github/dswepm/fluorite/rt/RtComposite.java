@@ -556,7 +556,8 @@ public final class RtComposite {
             }
             // How wide a patch of water this thing disturbs, IN BLOCKS: its own width, floored so a
             // very thin entity still makes a dent you can see.
-            double wantMetres = Math.max(e.getBbWidth(), WATER_IMPULSE_MIN_RADIUS);
+            double wantMetres = Math.max(e.getBbWidth(), WATER_IMPULSE_MIN_RADIUS)
+                    * FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE_SIZE.value();
             double wantCells = wantMetres / cell;
             // The grid cannot represent a bump narrower than a couple of cells -- a single-cell delta is
             // the grid's own Nyquist, which leapfrog carries forever as a checkerboard that never
