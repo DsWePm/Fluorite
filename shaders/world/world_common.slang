@@ -191,6 +191,16 @@ public struct WorldPush {
     // NOT waterAnchor.w, which looks similar and is not the same thing: that is the surface near the
     // CAMERA, published for the volumetric depth term, and it is a different probe with different rules.
     // The simulation picks its plane by its own search and has to publish it itself.
+    // The wave field's shape beyond amplitude and length (D52). xy is the SECOND wave system's heading
+    // as a unit vector -- crossing seas are what make real water read as complex, and a swell outlives
+    // the wind that made it, so it arrives from somewhere else. z is the complexity ramp: 0 is the
+    // shipped field exactly, which is what makes the knob measurable. w scales the authored steepness,
+    // because a storm sea is steeper and not merely taller.
+    public float4   waterWaveShape;
+    // Gusts (D52): x patch size in blocks (<= 0 off), y depth of the modulation, z how fast patches
+    // drift. Weighted toward the SHORT components inside the walk -- a gust ruffles the surface, it does
+    // not raise the swell.
+    public float4   waterWaveGust;
     public float4   waterSimPlane;
 };
 

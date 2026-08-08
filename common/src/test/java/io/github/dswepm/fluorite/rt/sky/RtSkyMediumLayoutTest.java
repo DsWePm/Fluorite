@@ -19,10 +19,11 @@ final class RtSkyMediumLayoutTest {
         // deriving its shape and its wind from the deck below it, 864 with M12's water-sim domain, and 880
         // when that domain gained the PLANE it runs on -- the field is two-dimensional, so without a y to
         // belong to it handed the same ripples to every water surface in its column. This
+        // belong to, and 912 with the wave field's shape and gust lanes (D52). This
         // buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
         // but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(880, WorldPushData.BYTE_SIZE);
+        assertEquals(912, WorldPushData.BYTE_SIZE);
     }
 
     /**

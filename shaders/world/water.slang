@@ -71,6 +71,28 @@ public float2 waterWaveWind() {
 }
 
 /**
+ * The wave field's parameters, assembled from worldPush in ONE place.
+ *
+ * <p>One builder rather than each consumer picking lanes for itself: the primary pass, the path pass,
+ * the guide pass, the caustics and the displacement must all describe the same sea, and the way that
+ * stops being true is somebody adding a lane to four call sites and missing the fifth. Adding a
+ * parameter means editing this function.
+ */
+public WaterWaveParams waterWaveParams() {
+    WaterWaveParams p;
+    p.wind = waterWaveWind();
+    p.crossWind = float2(worldPush.waterWaveShape.x, worldPush.waterWaveShape.y);
+    p.strength = worldPush.waterAmbient.x;
+    p.baseLength = worldPush.waterAmbient.y;
+    p.complexity = worldPush.waterWaveShape.z;
+    p.steepness = worldPush.waterWaveShape.w;
+    p.gustScale = worldPush.waterWaveGust.x;
+    p.gustStrength = worldPush.waterWaveGust.y;
+    p.gustSpeed = worldPush.waterWaveGust.z;
+    return p;
+}
+
+/**
  * Debug view 23: the simulated height field, painted across the screen.
  *
  * <p>Answers the two questions that look identical on a flat pond — is there anything in the field, and
@@ -145,8 +167,7 @@ public float3 waterSimDebug(float2 screenUv) {
 // not steepen the shading, and near and far water are shaded by the identical expression.
 public float3 applyWaterWaves(float3 nGeo, float3 world, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
-    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveAmplitude(), waterWaveBaseLength(),
-                                 waterWaveWind()) + waterSimGrad(world);
+    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveParams()) + waterSimGrad(world);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
 }
@@ -170,8 +191,8 @@ public void applyWaterWavesTemporal(float3 nGeo, float3 world, float t, float pr
                                     float footprint, out float3 n, out float3 previousN) {
     float2 currentGrad;
     float2 previousGrad;
-    waterWaveGradTemporal(world.xz, t, previousT, footprint, waterWaveAmplitude(),
-                          waterWaveBaseLength(), waterWaveWind(), currentGrad, previousGrad);
+    waterWaveGradTemporal(world.xz, t, previousT, footprint, waterWaveParams(),
+                          currentGrad, previousGrad);
     float2 sim = waterSimGrad(world);
     currentGrad += sim;
     previousGrad += sim;
@@ -212,8 +233,7 @@ public static const float CAUSTIC_IOR_SPREAD = 0.0045;
 // field is the only expensive part of a caustic and it does not know about colour: all three
 // wavelengths share these, so dispersion costs three refracts and no extra field evaluations.
 float3 causticNormal(float2 xz, float t) {
-    float2 g = waterWaveGrad(xz, t, 0.0, waterWaveAmplitude(), waterWaveBaseLength(),
-                             waterWaveWind());
+    float2 g = waterWaveGrad(xz, t, 0.0, waterWaveParams());
     return normalize(float3(-g.x, 1.0, -g.y));
 }
 

@@ -61,6 +61,23 @@ public struct WaterDeformPush {
 // world_core's whole descriptor set into a compute pass that needs one texture.
 [[vk::binding(0, 0)]] Sampler2D<float> waterSimHeightTex;
 
+// Assembled from the SAME lanes water.slang's waterWaveParams() reads. It cannot call that function --
+// it lives behind world_core's descriptor set -- so this is the one place in the project where the two
+// have to be kept in step by hand, and it is worth knowing that.
+WaterWaveParams deformWaveParams(WorldPush wp) {
+    WaterWaveParams p;
+    p.wind = float2(cos(wp.waterAmbient.z), sin(wp.waterAmbient.z));
+    p.crossWind = float2(wp.waterWaveShape.x, wp.waterWaveShape.y);
+    p.strength = wp.waterAmbient.x;
+    p.baseLength = wp.waterAmbient.y;
+    p.complexity = wp.waterWaveShape.z;
+    p.steepness = wp.waterWaveShape.w;
+    p.gustScale = wp.waterWaveGust.x;
+    p.gustStrength = wp.waterWaveGust.y;
+    p.gustSpeed = wp.waterWaveGust.z;
+    return p;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main(uint3 tid: SV_DispatchThreadID) {
@@ -86,9 +103,7 @@ void main(uint3 tid: SV_DispatchThreadID) {
             ? 0.0
             : fade * waterSurfaceHeight(waterSimHeightTex, wp.waterSimDomain, wp.waterSimPlane,
                                         float3(worldXZ.x, wp.waterSimPlane.x, worldXZ.y),
-                                        wp.waterParams.w, pc.cellSize,
-                                        wp.waterAmbient.x, wp.waterAmbient.y,
-                                        float2(cos(wp.waterAmbient.z), sin(wp.waterAmbient.z)));
+                                        wp.waterParams.w, pc.cellSize, deformWaveParams(wp));
 
     // Y only. Real deep-water particles move in circles, so a physical surface also shifts horizontally
     // (that is what sharpens the crests), but moving xz here would shear the quads away from the block

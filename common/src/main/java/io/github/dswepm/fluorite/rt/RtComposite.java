@@ -840,6 +840,26 @@ public final class RtComposite {
      * float. It scales the field's height and its slope by the same factor, because they are the same
      * function — the shading normal and the displaced geometry have to describe one surface.
      */
+    /**
+     * The wave field's shape: the second system's heading, the complexity ramp, the steepness scale.
+     *
+     * <p>The cross heading is resolved HERE, folded with the complexity, so that at complexity 0 it comes
+     * out exactly equal to the primary wind and the shader's select changes nothing. That is what makes
+     * the off state bit-identical rather than merely similar.
+     */
+    private static Float4 waterWaveShape() {
+        float complexity = FluoriteConfig.Rt.Water.WAVE_COMPLEXITY.value();
+        double primary = Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle());
+        double cross = primary
+                + Math.toRadians(FluoriteConfig.Rt.Water.WAVE_CROSS_ANGLE.value()) * complexity;
+        return new Float4((float) Math.cos(cross), (float) Math.sin(cross), complexity, 1f);
+    }
+
+    /** Gust patches; zero scale disables them entirely. Filled in by the gust slice. */
+    private static Float4 waterWaveGust() {
+        return new Float4(0f, 0f, 0f, 0f);
+    }
+
     private static Float4 waterAux() {
         return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(),
                 FluoriteConfig.Rt.Water.WAVE_LENGTH.value(),
@@ -2076,6 +2096,8 @@ public final class RtComposite {
                     cloudCirrus(),
                     cloudCirrusShape(),
                     cloudCirrusOrigin(terrain, level),
+                    waterWaveShape(),
+                    waterWaveGust(),
                     waterSimDomain(),
                     waterSimPlane()
             ).write(push);

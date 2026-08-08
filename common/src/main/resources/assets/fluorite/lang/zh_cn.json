@@ -287,5 +287,9 @@
   "fluorite.options.rt.cloudCirrusWindOffset": "卷云风向偏移",
   "fluorite.options.rt.cloudCirrusWindOffset.tooltip": "卷云层相对全局风向偏多少度。高空冰晶层确实会与地面风向成一个夹角，所以这里是偏移量而不是应该归零的东西。",
   "fluorite.options.rt.waveWindOffset": "涌浪方向偏移",
-  "fluorite.options.rt.waveWindOffset.tooltip": "涌浪相对全局风向偏多少度。各道波列仍会围绕它扇形散开——长涌浪聚拢、短碎波发散。"
+  "fluorite.options.rt.waveWindOffset.tooltip": "涌浪相对全局风向偏多少度。各道波列仍会围绕它扇形散开——长涌浪聚拢、短碎波发散。",
+  "fluorite.options.rt.waveComplexity": "波形复杂度",
+  "fluorite.options.rt.waveComplexity.tooltip": "海面有多不规则。它会渐入一组与主波系交叉的第二波系、加宽波向的扇形散布、并让更多波前蜿蜒而不是笔直成线。交叉波系是其中最关键的一项——两组波列干涉出不断变化的菱形格纹，读起来远比单一扇形复杂，而真实海面几乎总有一组，因为涌浪比造出它的那阵风活得更久。它不会增加波的数量：仍然是十道。零等于原本的外观。",
+  "fluorite.options.rt.waveCrossAngle": "交叉涌浪角度",
+  "fluorite.options.rt.waveCrossAngle.tooltip": "第二组波系相对第一组偏多少度。只在「波形复杂度」大于零时起作用。"
 }

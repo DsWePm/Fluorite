@@ -81,9 +81,40 @@ public float waterWaveLodWeight(float wavelength, float footprint) {
 // returned here is its exact analytic ∇h, so geometry built from one and shading built from the other
 // describe the same surface. Two separate evaluations would drift apart as soon as anyone touched a
 // constant, and the drift would be slow enough to look like something else.
+/**
+ * Everything that shapes the sea, in one place.
+ *
+ * <p>A struct rather than a parameter list because this is the third time the spectrum has gained an
+ * argument and every one of them had to be threaded through six signatures and two consumers. The
+ * consumers build it; the walk below only reads it.
+ *
+ * <p>{@code complexity} at 0 is the shipped field EXACTLY -- crossWind equals wind, the fan keeps its
+ * original angles, and the extra meander bands are silent. That is iron rule 8, and here it is also the
+ * only way to tell what the knob actually bought.
+ */
+public struct WaterWaveParams {
+    public float2 wind;        // primary heading, unit
+    public float2 crossWind;   // the second wave system's heading; equals wind at complexity 0
+    public float  strength;    // D49 amplitude, with the weather folded in
+    public float  baseLength;  // D50
+    public float  steepness;   // multiplies the authored a*k; storms are steeper, not just taller
+    public float  complexity;  // 0 = shipped look, 1 = crossing swell + wider fan + more meander
+    public float  gustScale;   // patch size in blocks; <= 0 disables the gusts entirely
+    public float  gustStrength;
+    public float  gustSpeed;
+};
+
+/** Deterministic per-component jitter in [-1, 1]. Cheap, and stable across frames and machines. */
+float waterWaveJitter(int i, float salt) {
+    float x = sin(float(i) * 12.9898 + salt * 78.233) * 43758.5453;
+    return frac(x) * 2.0 - 1.0;
+}
+
 public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p, float t, float footprint,
-                                          float strength, float baseLength, float2 wind,
+                                          WaterWaveParams params,
                                           out float height, out float2 grad, out float2 gradDt) {
+    float strength = params.strength;
+    float baseLength = params.baseLength;
     // Per-wave steepness a·k: gentle in the long swell, concentrated in the mid/short chop.
     const float Q[WAVE_COUNT] = { 0.030, 0.035, 0.042, 0.050, 0.060, 0.065, 0.065, 0.058, 0.048, 0.038 };
     t *= WAVE_SPEED;
@@ -93,28 +124,43 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
     // The whole spectrum hangs off this. Guarded because a zero would divide by zero in k and take the
     // surface with it, and the setting is reachable from a config file as well as from the menu.
     float lambda = max(baseLength, 0.5);
+    float complexity = saturate(params.complexity);
     for (int i = 0; i < WAVE_COUNT; i++) {
         float lodWeight = waterWaveLodWeight(lambda, footprint);
         if (lodWeight <= 0.0) break;
         float k = 2.0 * PI / lambda;
         float w = sqrt(WAVE_G * k);   // deep-water dispersion: phase speed √(g/k)
-        // Heading: deterministic irregular spread about the wind, widening down the spectrum.
-        float spread = (0.15 + 0.11 * float(i)) * sin(float(i) * 2.4 + 1.3);
+        // TWO WAVE SYSTEMS, not one fan. Every third component travels on the second heading, so the
+        // two interleave across the whole spectrum rather than splitting it into a long half and a short
+        // half. What that buys is INTERFERENCE -- crossing seas make a shifting diamond lattice that
+        // reads as far more complex than any single fan, and real water almost always has one, because a
+        // swell outlives the wind that made it and arrives from wherever that was.
+        //
+        // At complexity 0 crossWind equals wind, so this costs a select and changes nothing.
+        float2 base = ((i % 3) == 1) ? params.crossWind : params.wind;
+        // Heading: deterministic irregular spread about the wind, widening down the spectrum. The jitter
+        // is what stops the ten angles reading as a comb; it is off at complexity 0.
+        float spread = (0.15 + 0.11 * float(i)) * sin(float(i) * 2.4 + 1.3)
+                     + complexity * 0.30 * waterWaveJitter(i, 1.0);
         float cs = cos(spread), sn = sin(spread);
-        float2 d = float2(wind.x * cs - wind.y * sn, wind.x * sn + wind.y * cs);
+        float2 d = float2(base.x * cs - base.y * sn, base.x * sn + base.y * cs);
         float ph = k * dot(d, p) - w * t + 1.7 * float(i) * float(i);
         float2 dph = k * d;
         float phDt = -w;                      // ∂φ/∂t
         float2 dphDt = float2(0.0, 0.0);      // ∂(∇φ)/∂t
-        if (i < 4) { // meander only the components whose fronts are long enough to read as lines
+        // Meander: the phase wobbles along the crest, so wavefronts wander instead of ruling straight
+        // lines. It used to stop at the four longest components, which left the mid band as visible
+        // straight edges; complexity extends it to seven, fading in so 0 is unchanged.
+        float meander = i < 4 ? WAVE_MEANDER : (i < 7 ? WAVE_MEANDER * complexity : 0.0);
+        if (meander > 0.0) {
             float2 pd = float2(-d.y, d.x);
             float wph = 0.4 * k * dot(pd, p) + 0.5 * w * t;
-            ph += WAVE_MEANDER * sin(wph);
-            dph += (WAVE_MEANDER * cos(wph) * 0.4 * k) * pd;
+            ph += meander * sin(wph);
+            dph += (meander * cos(wph) * 0.4 * k) * pd;
             if (WITH_DT != 0) {
                 float wphDt = 0.5 * w;
-                phDt += WAVE_MEANDER * cos(wph) * wphDt;
-                dphDt = (-WAVE_MEANDER * sin(wph) * wphDt * 0.4 * k) * pd;
+                phDt += meander * cos(wph) * wphDt;
+                dphDt = (-meander * sin(wph) * wphDt * 0.4 * k) * pd;
             }
         }
         float S = 1.2 + 0.12 * float(i); // crest sharpness: the short chop is choppier
@@ -122,12 +168,12 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
         float cosPh = cos(ph);
         float e = exp(S * (sinPh - 1.0));
         // a = Q/k; h = a·e^{S(sin φ−1)}; ∇h = a·S·cos φ·e^{S(sin φ−1)}·∇φ
-        float amplitude = lodWeight * (Q[i] / k) * S;
+        float amplitude = lodWeight * (Q[i] * params.steepness / k) * S;
         grad += amplitude * cosPh * e * dph;
         if (WITH_HEIGHT != 0) {
             // The mean comes off weighted by lodWeight too — otherwise a component fading out of band
             // would leave its offset behind and the surface would drift as the band limit moved.
-            height += lodWeight * (Q[i] / k) * (e - WAVE_PROFILE_MEAN[i]);
+            height += lodWeight * (Q[i] * params.steepness / k) * (e - WAVE_PROFILE_MEAN[i]);
         }
         if (WITH_DT != 0) {
             // ∂/∂t of the term above, chain-ruled through φ and ∇φ.
@@ -146,11 +192,10 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
     gradDt *= scale;
 }
 
-public float2 waterWaveGrad(float2 p, float t, float footprint, float strength, float baseLength,
-                            float2 wind) {
+public float2 waterWaveGrad(float2 p, float t, float footprint, WaterWaveParams params) {
     float height;
     float2 grad, gradDt;
-    waterWaveSpectrum<0, 0>(p, t, footprint, strength, baseLength, wind, height, grad, gradDt);
+    waterWaveSpectrum<0, 0>(p, t, footprint, params, height, grad, gradDt);
     return grad;
 }
 
@@ -164,28 +209,26 @@ public float2 waterWaveGrad(float2 p, float t, float footprint, float strength, 
  * components hold 96% of the rms height (λ ≥ 2.77 m of a 14 m … 0.38 m spectrum), so the chop the mesh
  * drops was never shape. It was always slope, and slope is the normal's job.
  */
-public float waterWaveHeight(float2 p, float t, float footprint, float strength, float baseLength,
-                             float2 wind) {
+public float waterWaveHeight(float2 p, float t, float footprint, WaterWaveParams params) {
     float height;
     float2 grad, gradDt;
-    waterWaveSpectrum<0, 1>(p, t, footprint, strength, baseLength, wind, height, grad, gradDt);
+    waterWaveSpectrum<0, 1>(p, t, footprint, params, height, grad, gradDt);
     return height;
 }
 
-public float2 waterWaveGrad(float2 p, float t, float strength, float baseLength, float2 wind) {
-    return waterWaveGrad(p, t, 0.0, strength, baseLength, wind);
+public float2 waterWaveGrad(float2 p, float t, WaterWaveParams params) {
+    return waterWaveGrad(p, t, 0.0, params);
 }
 
 // Evaluate the current gradient and linearly rewind it to the previous phase in one spectrum walk.
 // Frame deltas are bounded on the CPU, so this avoids a second set of trigonometric/exponential work
 // while remaining accurate over the sub-frame interval used by reflection reprojection.
 public void waterWaveGradTemporal(float2 p, float currentT, float previousT, float footprint,
-                           float strength, float baseLength, float2 wind,
+                           WaterWaveParams params,
                            out float2 currentGrad, out float2 previousGrad) {
     float height;
     float2 gradDt;
-    waterWaveSpectrum<1, 0>(p, currentT, footprint, strength, baseLength, wind,
-                            height, currentGrad, gradDt);
+    waterWaveSpectrum<1, 0>(p, currentT, footprint, params, height, currentGrad, gradDt);
     previousGrad = currentGrad - (currentT - previousT) * WAVE_SPEED * gradDt;
 }
 
@@ -336,8 +379,7 @@ float waterSimHeightBandLimited(Sampler2D<float> tex, float4 domain, float4 plan
 }
 
 public float waterSurfaceHeight(Sampler2D<float> simTex, float4 simDomain, float4 simPlane,
-                                float3 world, float t, float cellSize, float strength, float baseLength,
-                                float2 wind) {
-    return waterWaveHeight(world.xz, t, cellSize, strength, baseLength, wind)
+                                float3 world, float t, float cellSize, WaterWaveParams params) {
+    return waterWaveHeight(world.xz, t, cellSize, params)
             + waterSimHeightBandLimited(simTex, simDomain, simPlane, world, cellSize);
 }

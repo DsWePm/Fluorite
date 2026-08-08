@@ -1499,6 +1499,35 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simStrength", "water.sim-strength", 1.0f, 0f, 4f);
 
             /**
+             * How irregular the sea is, 0 to 1 — one knob for three things that all fight the same
+             * problem, which is that ten plane waves read as a comb.
+             *
+             * <p>It ramps in a SECOND wave system crossing the first, widens and jitters the fan of
+             * headings, and extends the crest meander from the four longest components to seven. They are
+             * one control because they are one intent, and because three sliders that each do a fifth of
+             * the job is worse than one that does it.
+             *
+             * <p>The crossing swell is the load-bearing one. Two wave systems interfere, and the shifting
+             * diamond lattice that produces reads as far more complex than any single fan can — which is
+             * also why real water almost always has one: a swell outlives the wind that made it and
+             * arrives from wherever that was.
+             *
+             * <p>WHAT IT DOES NOT DO is add spectral content. There are still ten components. It changes
+             * their character and their arrangement; if the sea still looks repetitive at 1, the answer is
+             * more components (about 0.09 ms each, measured) and not this.
+             *
+             * <p>0 is the shipped field exactly.
+             */
+            public static final FloatSetting WAVE_COMPLEXITY =
+                    clampedFloat("fluorite.rt.water.waveComplexity", "water.wave-complexity",
+                            0.5f, 0f, 1f);
+
+            /** Degrees the second wave system runs off the first. Only bites while complexity > 0. */
+            public static final FloatSetting WAVE_CROSS_ANGLE =
+                    clampedFloat("fluorite.rt.water.waveCrossAngle", "water.wave-cross-angle",
+                            50f, -180f, 180f);
+
+            /**
              * Degrees the swell runs off the global wind (Composite.WIND_ANGLE).
              *
              * <p>The default is -15.71 rather than 0, and that is not a taste choice: the wave direction

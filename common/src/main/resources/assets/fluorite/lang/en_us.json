@@ -287,5 +287,9 @@
   "fluorite.options.rt.cloudCirrusWindOffset": "Cirrus Wind Offset",
   "fluorite.options.rt.cloudCirrusWindOffset.tooltip": "How far the cirrus sheet runs off the global wind direction. High ice really does travel at an angle to the surface wind, which is why this is an offset rather than something to zero out.",
   "fluorite.options.rt.waveWindOffset": "Swell Direction Offset",
-  "fluorite.options.rt.waveWindOffset.tooltip": "How far the swell runs off the global wind direction. The individual wave trains still fan out around it -- tightly for the long swell, widely for the short chop."
+  "fluorite.options.rt.waveWindOffset.tooltip": "How far the swell runs off the global wind direction. The individual wave trains still fan out around it -- tightly for the long swell, widely for the short chop.",
+  "fluorite.options.rt.waveComplexity": "Wave Complexity",
+  "fluorite.options.rt.waveComplexity.tooltip": "How irregular the sea is. Ramps in a second wave system crossing the first, widens the fan of wave directions, and lets more of the wavefronts wander instead of ruling straight lines. The crossing system is the important part -- two wave trains interfere into a shifting lattice that reads as far more complex than one fan, and real water almost always has one, because a swell outlives the wind that made it. It does NOT add more waves: there are still ten. Zero is the original look.",
+  "fluorite.options.rt.waveCrossAngle": "Crossing Swell Angle",
+  "fluorite.options.rt.waveCrossAngle.tooltip": "How far the second wave system runs off the first. Only has an effect while Wave Complexity is above zero."
 }
