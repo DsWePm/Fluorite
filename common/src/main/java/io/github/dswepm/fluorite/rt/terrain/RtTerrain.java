@@ -462,12 +462,10 @@ public final class RtTerrain {
      * @param waveOffsetX added to a section-local x to reach the wave coordinate the shading uses
      */
     public void recordWaterDeform(RtContext ctx, org.lwjgl.vulkan.VkCommandBuffer cmd,
-                                  io.github.dswepm.fluorite.rt.sky.RtSky sky,
-                                  float[] simDomain, float[] simPlane,
+                                  io.github.dswepm.fluorite.rt.sky.RtSky sky, long worldPushAddr,
                                   double waveOffsetX, double waveOffsetZ,
                                   float fadeCentreX, float fadeCentreZ, float fadeStart, float fadeEnd,
-                                  float time, float cellSize, float amplitude, float baseLength,
-                                  float windAngle) {
+                                  float cellSize) {
         if (table.slots.isEmpty()) {
             return;
         }
@@ -478,10 +476,9 @@ public final class RtTerrain {
                 continue;
             }
             sky.recordWaterDeform(cmd, g.positions.deviceAddress, g.waterRest.deviceAddress,
-                    g.waterVertBase, g.waterVertCount, simDomain, simPlane,
+                    worldPushAddr, g.waterVertBase, g.waterVertCount,
                     (float) (g.sx + waveOffsetX), (float) (g.sz + waveOffsetZ),
-                    fadeCentreX, fadeCentreZ, fadeStart, fadeEnd, time, cellSize, amplitude, baseLength,
-                    windAngle);
+                    fadeCentreX, fadeCentreZ, fadeStart, fadeEnd, cellSize);
             long required = Math.max(g.updateScratchSize, 1L);
             if (g.refitScratch == null || g.refitScratch.size < required) {
                 if (g.refitScratch != null) {
@@ -509,13 +506,9 @@ public final class RtTerrain {
         // and "the setting arrives and the result is subtle" stop looking the same.
         if ((deformLogTick++ % 60L) == 0L) {
             FluoriteMod.LOGGER.info(
-                    "[water-deform] displaced {} section(s), {} vertices | amplitude={} baseLength={} "
-                            + "cell={} plane={}",
+                    "[water-deform] displaced {} section(s), {} vertices | cell={}",
                     refits.size(), deformVerts,
-                    String.format(java.util.Locale.ROOT, "%.2f", amplitude),
-                    String.format(java.util.Locale.ROOT, "%.2f", baseLength),
-                    String.format(java.util.Locale.ROOT, "%.2f", cellSize),
-                    String.format(java.util.Locale.ROOT, "%.2f", simPlane[0]));
+                    String.format(java.util.Locale.ROOT, "%.2f", cellSize));
         }
         io.github.dswepm.fluorite.rt.sky.RtSky.recordWaterDeformBarrier(cmd);
         RtAccel.recordBlasBuilds(ctx, cmd, refits);

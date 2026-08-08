@@ -26,12 +26,19 @@ public struct WaterDeformPush {
     // rest buffer is indexed from zero; the live one from vertBase.
     public uint64_t positionsAddr;
     public uint64_t restAddr;
-    // xy origin (rebased), z blocks per cell, w strength -- the same lane the shading reads, so the
-    // geometry and the normal cannot disagree about where the ripples are.
-    public float4 simDomain;
-    // The plane the simulation runs on; see WorldPush.waterSimPlane. Passed through so the displacement
-    // reads the field under exactly the test the shading applies to it.
-    public float4 simPlane;
+    // THE SAME WorldPush THE SHADING READS, by address, rather than a copy of the handful of lanes this
+    // pass happens to need.
+    //
+    // Copying them was the earlier design and it was wrong twice over. It made every wave parameter a
+    // thing that had to be written into two places and kept in step -- exactly the shape that produced
+    // the acceleration-structure flag bug (8.2c-2) and that water_wave.slang's header warns about, since
+    // geometry and shading disagreeing about the field is undiagnosable from a screenshot. And it does
+    // not scale: push constants are only guaranteed to be 128 bytes, the copy had already reached 112,
+    // and the wave field is about to gain six more parameters.
+    //
+    // Reading worldPush also removes simDomain, simPlane and time from this struct, because they were
+    // copies of lanes too. What is left is genuinely per-section.
+    public uint64_t worldPushAddr;
     // Added to a vertex's section-local xz to reach the world-stable wave coordinate: the section origin
     // relative to the terrain rebase, plus the wave anchor. Assembled on the CPU because that is where
     // both halves are known, and because a vertex position plus a rebase origin plus an anchor is three
@@ -42,16 +49,10 @@ public struct WaterDeformPush {
     public float2 fadeCentre;
     public float fadeStart;
     public float fadeEnd;
-    public float time;
     public float cellSize;      // the mesh's spacing: this is the band limit, not a quality dial
-    public float amplitude;     // D49; 1 is the shipped field exactly
     public uint vertBase;
     public uint vertCount;
-    public float baseLength;   // D50; the pad lane this replaces was never read
-    // D51. Resolved on the CPU from the SAME global wind + offset the shading reads out of
-    // waterAmbient.z, because a swell that travels one way in the geometry and another in the normal
-    // is the exact failure water_wave.slang's header warns about.
-    public float windAngle;
+    public uint pad;
 };
 
 [[vk::push_constant]] WaterDeformPush pc;
@@ -73,6 +74,8 @@ void main(uint3 tid: SV_DispatchThreadID) {
     uint restBase = 3u * i;
     float3 p = float3(rest[restBase], rest[restBase + 1u], rest[restBase + 2u]);
 
+    WorldPush wp = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+
     float2 worldXZ = p.xz + pc.worldOffset;
     float2 d = worldXZ - pc.fadeCentre;
     float fade = 1.0 - smoothstep(pc.fadeStart, pc.fadeEnd, length(d));
@@ -81,10 +84,11 @@ void main(uint3 tid: SV_DispatchThreadID) {
     // since, and a vertex left holding a stale displacement is a permanent lump in the water.
     float h = fade <= 0.0
             ? 0.0
-            : fade * waterSurfaceHeight(waterSimHeightTex, pc.simDomain, pc.simPlane,
-                                        float3(worldXZ.x, pc.simPlane.x, worldXZ.y),
-                                        pc.time, pc.cellSize, pc.amplitude, pc.baseLength,
-                                        float2(cos(pc.windAngle), sin(pc.windAngle)));
+            : fade * waterSurfaceHeight(waterSimHeightTex, wp.waterSimDomain, wp.waterSimPlane,
+                                        float3(worldXZ.x, wp.waterSimPlane.x, worldXZ.y),
+                                        wp.waterParams.w, pc.cellSize,
+                                        wp.waterAmbient.x, wp.waterAmbient.y,
+                                        float2(cos(wp.waterAmbient.z), sin(wp.waterAmbient.z)));
 
     // Y only. Real deep-water particles move in circles, so a physical surface also shifts horizontally
     // (that is what sharpens the crests), but moving xz here would shear the quads away from the block

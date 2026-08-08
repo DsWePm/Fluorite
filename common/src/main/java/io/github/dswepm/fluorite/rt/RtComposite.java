@@ -2109,16 +2109,10 @@ public final class RtComposite {
                     // does, assembled here because this is where all three are known (F21).
                     double waveOffsetX = -terrain.blockX + (terrain.blockX & WATER_ANCHOR_MASK);
                     double waveOffsetZ = -terrain.blockZ + (terrain.blockZ & WATER_ANCHOR_MASK);
-                    terrain.recordWaterDeform(ctx, cmd, skyLuts,
-                            new float[]{waterDomain.x(), waterDomain.y(), waterDomain.z(), waterDomain.w()},
-                            new float[]{waterPlaneRebasedY, 1.5f, 0f, 0f},
+                    terrain.recordWaterDeform(ctx, cmd, skyLuts, pushBuf.deviceAddress,
                             waveOffsetX, waveOffsetZ,
                             (float) (camX + waveOffsetX), (float) (camZ + waveOffsetZ),
-                            range * 0.75f, range,
-                            waterWaveTime, 1.0f,
-                            FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(),
-                            FluoriteConfig.Rt.Water.WAVE_LENGTH.value(),
-                            (float) Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle()));
+                            range * 0.75f, range, 1.0f);
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
             }
