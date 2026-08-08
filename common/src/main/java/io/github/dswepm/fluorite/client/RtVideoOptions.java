@@ -149,18 +149,19 @@ public final class RtVideoOptions {
                                 waterSimImpulseSize(), waterSimImpulseDepth()),
                         // The geometry, separate from the ripples that ride on it: one controls whether
                         // the surface is a shape at all, the others how much of it is and how finely.
-                        // The wave field's shape lives with the deformation rather than with the
-                        // on/off switch above, because these two are what you reach for while watching
-                        // the surface move -- and one of them, the wavelength, is the setting the
-                        // deformation is most sensitive to (the mesh cannot hold a wave much shorter
-                        // than a couple of blocks, so shortening the swell flattens the geometry while
-                        // leaving the normal alone).
-                        Section.titled("fluorite.options.rt.section.waterDeform",
-                                waterDeform(), windAngle(), waveWindOffset(),
-                                waveLength(), waveAmplitude(),
+                        // THE WAVE FIELD IS NOT THE DEFORMATION. Everything here shapes the field
+                        // itself, and the field reaches the picture through the NORMAL whether or not
+                        // any geometry ever moves -- the deformation is one optional consumer of it,
+                        // and a band-limited one at that. Filing these under it said the opposite, and
+                        // would have had anyone with deformation off assume the whole group was inert.
+                        Section.titled("fluorite.options.rt.section.waterWaves",
+                                windAngle(), waveWindOffset(), waveLength(), waveAmplitude(),
                                 waveComplexity(), waveCrossAngle(),
-                                waveGust(), waveGustScale(), waveGustSpeed(), waveWeather(),
-                                waterDeformRange(), waterDeformCell(), waterDeformReanchor()),
+                                waveGust(), waveGustScale(), waveGustSpeed(), waveWeather()),
+                        // What is genuinely about moving vertices.
+                        Section.titled("fluorite.options.rt.section.waterDeform",
+                                waterDeform(), waterDeformRange(), waterDeformCell(),
+                                waterDeformReanchor()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));

@@ -299,5 +299,6 @@
   "fluorite.options.rt.waveGustSpeed": "Gust Drift Speed",
   "fluorite.options.rt.waveGustSpeed.tooltip": "How fast the patches travel downwind. Zero pins them to the world, which looks like a stain on the sea -- the waves move through the patches while the patches sit still.",
   "fluorite.options.rt.waveWeather": "Weather Response",
-  "fluorite.options.rt.waveWeather.tooltip": "How much rain and thunder move the sea. The clouds have always responded to the weather; the water did not, so a storm could roll in overhead while the sea below stayed as glassy as it was at noon. It drives three things, not one: the waves grow taller, steeper, and gustier -- and steepness is the part that actually reads as violent, because scaling only the height gives a bigger calm sea. Zero leaves the water indifferent to the sky."
+  "fluorite.options.rt.waveWeather.tooltip": "How much rain and thunder move the sea. The clouds have always responded to the weather; the water did not, so a storm could roll in overhead while the sea below stayed as glassy as it was at noon. It drives three things, not one: the waves grow taller, steeper, and gustier -- and steepness is the part that actually reads as violent, because scaling only the height gives a bigger calm sea. Zero leaves the water indifferent to the sky.",
+  "fluorite.options.rt.section.waterWaves": "Wave Field"
 }

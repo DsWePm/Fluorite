@@ -299,5 +299,6 @@
   "fluorite.options.rt.waveGustSpeed": "阵风移动速度",
   "fluorite.options.rt.waveGustSpeed.tooltip": "斑块顺风移动的快慢。为零会把它们钉死在世界上，看起来像海面上的污渍——波在斑块中穿过，而斑块纹丝不动。",
   "fluorite.options.rt.waveWeather": "天气响应",
-  "fluorite.options.rt.waveWeather.tooltip": "雨和雷暴对海面的影响强度。云一直都会响应天气，而水不会——于是暴风雨在头顶压过来，底下的海还是正午那副镜面模样。它同时驱动三件事而不是一件：浪更高、更陡、阵风更烈——其中「陡度」才是真正读起来凶的那一项，只放大高度只会得到一片变大的平静海面。为零则水面完全不理会天空。"
+  "fluorite.options.rt.waveWeather.tooltip": "雨和雷暴对海面的影响强度。云一直都会响应天气，而水不会——于是暴风雨在头顶压过来，底下的海还是正午那副镜面模样。它同时驱动三件事而不是一件：浪更高、更陡、阵风更烈——其中「陡度」才是真正读起来凶的那一项，只放大高度只会得到一片变大的平静海面。为零则水面完全不理会天空。",
+  "fluorite.options.rt.section.waterWaves": "波浪"
 }

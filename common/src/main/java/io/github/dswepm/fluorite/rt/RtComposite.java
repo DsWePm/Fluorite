@@ -2121,9 +2121,13 @@ public final class RtComposite {
                     cloudCirrus(),
                     cloudCirrusShape(),
                     cloudCirrusOrigin(terrain, level),
+                    // ORDER MATTERS AND NOTHING CHECKS IT FOR YOU. WorldPushData is generated from the
+                    // shader's reflection, so its constructor is POSITIONAL and follows world_common's
+                    // declaration order -- waterSimDomain, then the two wave lanes, then the plane.
+                    // Getting it wrong compiles, runs, and silently feeds every lane the one beside it.
+                    waterSimDomain(),
                     waterWaveShape(level),
                     waterWaveGust(level),
-                    waterSimDomain(),
                     waterSimPlane()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
