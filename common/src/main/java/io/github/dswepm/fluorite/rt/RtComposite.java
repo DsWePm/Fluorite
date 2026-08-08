@@ -819,6 +819,61 @@ public final class RtComposite {
     private static final float WATER_ABSORB_FLOOR_G = 0.010f;
     private static final float WATER_ABSORB_FLOOR_B = 0.008f;
 
+    /**
+     * Shout when the three answers about "is the camera in water" disagree with each other.
+     *
+     * <p>SILENT UNLESS SOMETHING IS ACTUALLY WRONG, which is what makes it usable against an
+     * intermittent fault: it costs a handful of comparisons per frame and says nothing for hours, then
+     * records the exact frame the contradiction appears. Reproducing an intermittent bug on demand is
+     * expensive; having it write its own evidence down is not.
+     *
+     * <p>The three have to agree because the shading uses them for different jobs and assumes one world:
+     * bit 0 decides which medium the camera ray STARTS in, the reference surface decides how DEEP every
+     * scattering point is, and the camera's own height is the thing both are about. A submerged flag with
+     * the surface below the eye means the ray starts in water while every depth reads negative -- no
+     * absorption anywhere, which is over-bright, and an interface the integrator never enters, which is a
+     * water surface that is not there.
+     *
+     * <p>This file already carries a long note about the last time these two were conflated (depth pinned
+     * one block over the camera's head, reported as layered flicker on vertical movement), so the failure
+     * mode is not hypothetical.
+     */
+    private void logWaterMediumContradiction(int flags, float surfaceY, double camY,
+                                             int rebaseY, boolean simLive) {
+        boolean submerged = (flags & 1) != 0;
+        float camRebased = (float) (camY - rebaseY);
+        boolean sentinel = surfaceY < -1.0e8f;
+        String fault = null;
+        if (submerged && sentinel) {
+            fault = "submerged but no reference surface was found";
+        } else if (submerged && surfaceY < camRebased - 0.01f) {
+            fault = "submerged but the surface is BELOW the eye";
+        } else if (!submerged && !sentinel && surfaceY > camRebased + 1.0f) {
+            fault = "not submerged but the surface is well ABOVE the eye";
+        } else if (Float.isNaN(surfaceY) || Double.isNaN(camY)) {
+            fault = "NaN in the camera height or the reference surface";
+        }
+        if (fault == null) {
+            waterMediumFaultFrames = 0;
+            return;
+        }
+        // Log the first frame of a fault and then back off, so a persistent contradiction does not
+        // become a persistent log.
+        if (waterMediumFaultFrames == 0 || (waterMediumFaultFrames % 300) == 0) {
+            FluoriteMod.LOGGER.warn(
+                    "[water-medium] {} | submerged={} surfaceY(rebased)={} camY(rebased)={} "
+                            + "rebaseY={} simLive={} frames={}",
+                    fault, submerged,
+                    String.format(java.util.Locale.ROOT, "%.3f", surfaceY),
+                    String.format(java.util.Locale.ROOT, "%.3f", camRebased),
+                    rebaseY, simLive, waterMediumFaultFrames);
+        }
+        waterMediumFaultFrames++;
+    }
+
+    /** How long the current water-medium contradiction has lasted, in frames. 0 = consistent. */
+    private int waterMediumFaultFrames;
+
     /** Absorption dialled by hand, replacing the biome's, for art direction and for diagnosis. */
     private static Float4 waterAbsorbOverride() {
         if (!FluoriteConfig.Rt.Water.ABSORB_OVERRIDE.value()) {
@@ -2055,6 +2110,7 @@ public final class RtComposite {
             if (waterSimLive) {
                 collectWaterImpulses(camX, camZ, level);
             }
+            logWaterMediumContradiction(flags, waterSurfaceY, camY, terrain.blockY, waterSimLive);
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
                     terrain.blockZ & WATER_ANCHOR_MASK, priorWaterWaveTime, waterSurfaceY);
 
@@ -2173,7 +2229,11 @@ public final class RtComposite {
             if (gpuTimers != null) {
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_WATER_DEFORM);
             }
-            if (FluoriteConfig.Rt.Water.WATER_DEFORM.value() && waterSimLive) {
+            // deformBuiltIn() is the snapshot from the last terrain load; the live setting can still
+            // switch the pass OFF instantly, which is always safe and free. It cannot switch it ON,
+            // because nothing resident was built to deform -- that is what the reload is for.
+            if (RtTerrain.deformBuiltIn() && FluoriteConfig.Rt.Water.WATER_DEFORM.value()
+                    && waterSimLive) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("water.deform")) {
                     float range = FluoriteConfig.Rt.Water.WATER_DEFORM_RANGE.value();
                     // Section-local xz reaches the wave domain by adding the section origin, dropping the

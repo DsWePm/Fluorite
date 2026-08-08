@@ -312,7 +312,7 @@
   "fluorite.options.rt.waveBandLimit": "波段限",
   "fluorite.options.rt.waveBandLimit.tooltip": "把遠處小到光線分辨不出的短波淡出。關掉它是錯的——遠處會嚴重混疊——而這正是它的用途：讓水面上的環狀或線狀邊界能夠被歸因。如果關掉後那條線消失了，那它就是某道分量在固定距離處淡出，而不是波本身的問題。",
   "fluorite.options.rt.waterDeformMode": "形變覆蓋範圍",
-  "fluorite.options.rt.waterDeformMode.tooltip": "哪些水面在**構建時**就準備好形變。「全部」徹底取消邊界，於是沒有任何 section 會因為跨越邊界而重建，重建閃爍也就不可能發生；它**不增加每幀開銷**，因為位移仍然只作用於你附近的水。它的代價是固定記憶體，以及含水 section 放棄 BLAS 壓縮。「僅近處」是省記憶體的選項，但保留閃爍。下次載入世界時生效——即時切換需要重建每一個含水 section，而那正是它要避免的成本。",
+  "fluorite.options.rt.waterDeformMode.tooltip": "哪些水面在**構建時**就準備好形變。「全部」徹底取消邊界，於是沒有任何 section 會因為跨越邊界而重建，重建閃爍也就不可能發生；它**不增加每幀開銷**，因為位移仍然只作用於你附近的水。代價是固定記憶體，以及含水 section 放棄 BLAS 壓縮。「僅近處」省記憶體但保留閃爍。**這一項和形變開關都在下次載入世界時生效**——一個 section 能不能形變是在它被構建時決定的，而沒有任何東西會因為設定變了就去重建它。關掉形變仍然立即生效；打開則需要重載。",
   "fluorite.options.rt.waterDeformMode.all": "全部水面",
   "fluorite.options.rt.waterDeformMode.near": "僅近處"
 }

@@ -357,6 +357,32 @@ public final class RtTerrain {
     private static volatile int deformAnchorY;
     private static volatile int deformAnchorZ;
     private static volatile int deformReach;
+    // The deformation settings AS OF THE LAST TERRAIN LOAD, not as of this frame.
+    //
+    // Whether a section can deform is decided when it is BUILT, and nothing rebuilds a section because a
+    // setting changed. Reading the live config here therefore produced two different wrong behaviours
+    // rather than one: in "near" mode the anchor happened to mark a ring dirty whenever the player moved,
+    // so sections were rebuilt often enough that the switch LOOKED live; in "all" mode there is no anchor
+    // marking anything, so the switch appeared to do nothing at all. The liveness was an accident of the
+    // flicker, and removing the flicker removed it.
+    //
+    // Snapshotting makes both modes behave the same and say so. Refreshed on the terrain's own full
+    // clear, which is what a world load is.
+    private static volatile String deformModeAtLoad;
+    private static volatile boolean deformEnabledAtLoad;
+
+    /** True when the resident terrain was BUILT with deformation available. */
+    public static boolean deformBuiltIn() {
+        snapshotDeformSettings(false);
+        return deformEnabledAtLoad;
+    }
+
+    private static void snapshotDeformSettings(boolean force) {
+        if (force || deformModeAtLoad == null) {
+            deformModeAtLoad = FluoriteConfig.Rt.Water.WATER_DEFORM_MODE.get();
+            deformEnabledAtLoad = FluoriteConfig.Rt.Water.WATER_DEFORM.value();
+        }
+    }
     private long deformLogTick;
 
     /**
@@ -368,12 +394,16 @@ public final class RtTerrain {
      * built a frame apart must not disagree about where the boundary was.
      */
     static boolean sectionDeformable(int sox, int soy, int soz) {
+        snapshotDeformSettings(false);
+        if (!deformEnabledAtLoad) {
+            return false;
+        }
         // In "all" mode there is no boundary at all: every water-bearing section is built ready, so none
         // of them is ever rebuilt for crossing one, and the flicker that came with those rebuilds cannot
         // occur. The per-frame dispatch still filters by distance -- see recordWaterDeform -- so this
         // buys the flicker away without costing anything per frame.
-        if (!"near".equals(FluoriteConfig.Rt.Water.WATER_DEFORM_MODE.get())) {
-            return FluoriteConfig.Rt.Water.WATER_DEFORM.value();
+        if (!"near".equals(deformModeAtLoad)) {
+            return true;
         }
         int ax = deformAnchorX;
         if (ax == Integer.MIN_VALUE) {
@@ -408,7 +438,8 @@ public final class RtTerrain {
         }
         // "all" mode has no boundary to move, so there is nothing to re-extract and this whole path --
         // the one that produced the flicker -- simply does not run.
-        if (!"near".equals(FluoriteConfig.Rt.Water.WATER_DEFORM_MODE.get())) {
+        snapshotDeformSettings(false);
+        if (!"near".equals(deformModeAtLoad)) {
             return;
         }
         int wantX = (int) Math.floor(camX);
@@ -1984,6 +2015,9 @@ public final class RtTerrain {
     private void clearAsync(RtContext ctx) {
         ctx.gpuExecutor().throwIfFailed();
         terrainEpoch++;
+        // Everything is about to be rebuilt, so this is the moment the deformation settings may change
+        // what gets built. It is also the only such moment.
+        snapshotDeformSettings(true);
 
         // Token maps are render-thread ownership, so clearing them makes every old completion unpublishable
         // even in the narrow race where it observed the previous epoch immediately before this increment.
