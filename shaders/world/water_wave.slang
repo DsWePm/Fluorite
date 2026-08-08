@@ -35,7 +35,13 @@ public static const int WATER_SIM_DIM = 256;
 // nearly invisible as displacement. Callers scale it by an authored factor (1 = exactly this, which is
 // the shipped look); see FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.
 public static const float WATER_WAVE_STRENGTH = 0.3;
-public static const float WAVE_SPEED = 0.8;           // global time scale; dispersion keeps relative speeds physical
+// The shipped global time scale. Authored on top of it (D57), never per component.
+//
+// A UNIFORM time scale is the safe kind of speed control: it scales every wave equally, so the relation
+// between them survives -- long swell still strides past while short chop flutters nearly in place, which
+// is the thing that reads as water. A per-wavelength speed knob would break exactly that, and there is
+// deliberately no way to ask for one.
+public static const float WAVE_SPEED = 0.8;
 public static const int   WAVE_COUNT = 10;            // λ = 14 m … 0.38 m (each octave 1.5× shorter)
 public static const float WAVE_G = 9.81;
 // The wind is an ARGUMENT now, not a constant (D51): one global heading drives the sea and both cloud
@@ -113,6 +119,7 @@ public struct WaterWaveParams {
     public float  gustScale;   // patch size in blocks; <= 0 disables the gusts entirely
     public float  gustStrength;
     public float  gustSpeed;
+    public float  timeScale;       // D57; 1 = the shipped speed
     public float  warpAmplitude;   // blocks of domain bend; 0 disables it and its noise fetches
     public float  warpScale;       // blocks between bends
     // ISOLATION (D54). Which components run, 1-based and inclusive, and whether the distance-based
@@ -330,7 +337,7 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
     p = pw;
     // Per-wave steepness a·k: gentle in the long swell, concentrated in the mid/short chop.
     const float Q[WAVE_COUNT] = { 0.030, 0.035, 0.042, 0.050, 0.060, 0.065, 0.065, 0.058, 0.048, 0.038 };
-    t *= WAVE_SPEED;
+    t *= WAVE_SPEED * params.timeScale;
     height = 0.0;
     grad = float2(0.0, 0.0);
     gradDt = float2(0.0, 0.0);

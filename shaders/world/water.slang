@@ -89,6 +89,7 @@ public WaterWaveParams waterWaveParams() {
     p.gustScale = worldPush.waterWaveGust.x;
     p.gustStrength = worldPush.waterWaveGust.y;
     p.gustSpeed = worldPush.waterWaveGust.z;
+    p.timeScale = worldPush.waterWaveGust.w;
     p.warpAmplitude = worldPush.waterWaveWarp.x;
     p.warpScale = worldPush.waterWaveWarp.y;
     // z packs the isolation range as first*16 + last, both 1-based; w is the band-limit switch. Packed

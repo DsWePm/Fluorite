@@ -156,7 +156,8 @@ public final class RtVideoOptions {
                         // would have had anyone with deformation off assume the whole group was inert.
                         Section.titled("fluorite.options.rt.section.waterWaves",
                                 windAngle(), waveWindOffset(), waveLength(), waveAmplitude(),
-                                waveComplexity(), waveCrossAngle(), waveWarp(), waveWarpScale(),
+                                waveSpeed(), waveComplexity(), waveCrossAngle(),
+                                waveWarp(), waveWarpScale(),
                                 waveFirst(), waveLast(), waveBandLimit(),
                                 waveGust(), waveGustScale(), waveGustSpeed(), waveWeather()),
                         // What is genuinely about moving vertices.
@@ -732,6 +733,10 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> waveWarpScale() {
         return blockSlider("fluorite.options.rt.waveWarpScale",
                 FluoriteConfig.Rt.Water.WAVE_WARP_SCALE, 20, 400);
+    }
+
+    private static OptionInstance<Integer> waveSpeed() {
+        return scaleSlider("fluorite.options.rt.waveSpeed", FluoriteConfig.Rt.Water.WAVE_SPEED);
     }
 
     private static OptionInstance<Integer> waveGust() {

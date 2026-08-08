@@ -314,5 +314,7 @@
   "fluorite.options.rt.waterDeformMode": "形变覆盖范围",
   "fluorite.options.rt.waterDeformMode.tooltip": "哪些水面在**构建时**就准备好形变。「全部」彻底取消边界，于是没有任何 section 会因为跨越边界而重建，重建闪烁也就不可能发生；它**不增加每帧开销**，因为位移仍然只作用于你附近的水。代价是固定内存，以及含水 section 放弃 BLAS 压缩。「仅近处」省内存但保留闪烁。**这一项和形变开关都在下次加载世界时生效**——一个 section 能不能形变是在它被构建时决定的，而没有任何东西会因为设置变了就去重建它。关掉形变仍然立即生效；打开则需要重载。",
   "fluorite.options.rt.waterDeformMode.all": "全部水面",
-  "fluorite.options.rt.waterDeformMode.near": "仅近处"
+  "fluorite.options.rt.waterDeformMode.near": "仅近处",
+  "fluorite.options.rt.waveSpeed": "波浪速度",
+  "fluorite.options.rt.waveSpeed.tooltip": "整片海移动的快慢。**刻意是等比的**：它同等缩放每一道波，所以波与波之间的关系得以保留——长涌浪仍然大步走过，短碎波仍然几乎原地抖。这里刻意没有「按波长调速」的选项，因为那个关系正是最能让人读出「这是水」的单一因素。天气不作用在这里——深水中波速只取决于波长，所以风暴是通过**把波变长**来提速的，长波本来就更快。"
 }

@@ -200,7 +200,7 @@ public struct WorldPush {
     // Gusts (D52): x patch size in blocks (<= 0 off), y depth of the modulation, z how fast patches
     // drift. Weighted toward the SHORT components inside the walk -- a gust ruffles the surface, it does
     // not raise the swell.
-    public float4   waterWaveGust;
+    public float4   waterWaveGust;   // x patch size, y strength, z drift speed, w wave time scale
     // Domain warp (D53): x amplitude in blocks, y scale in blocks, zw spare. Zero amplitude skips it
     // and its two noise fetches entirely, which is also the shipped field exactly.
     public float4   waterWaveWarp;   // x warp blocks, y warp scale, z first*16+last, w band-limit on

@@ -1605,6 +1605,23 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.waveWarpScale", "water.wave-warp-scale",
                             100f, 20f, 400f);
 
+            /**
+             * How fast the whole sea moves, as a multiple of its shipped speed.
+             *
+             * <p>UNIFORM ON PURPOSE, and that is what makes it safe. It scales every wave equally, so the
+             * relation between them survives: long swell still strides past while short chop flutters
+             * nearly in place. A per-wavelength speed control would destroy that relation, which
+             * water_wave.slang calls the biggest tell of fake water, so there deliberately is not one.
+             *
+             * <p>The weather does NOT act here, and that is deliberate too. In deep water a wave's speed
+             * depends only on its wavelength -- c = sqrt(g/k) -- so wind does not make a given wave
+             * travel faster, it makes waves LONGER, and longer waves are faster for free. So a storm
+             * reaches the speed through WAVE_WEATHER lengthening the spectrum, not by multiplying time.
+             * Multiplying time would have looked similar and meant something false.
+             */
+            public static final FloatSetting WAVE_SPEED =
+                    clampedFloat("fluorite.rt.water.waveSpeed", "water.wave-speed", 1f, 0f, 3f);
+
             /** How big a gust patch is, in blocks. */
             public static final FloatSetting WAVE_GUST_SCALE =
                     clampedFloat("fluorite.rt.water.waveGustScale", "water.wave-gust-scale",

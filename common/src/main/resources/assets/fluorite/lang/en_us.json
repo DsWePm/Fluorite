@@ -314,5 +314,7 @@
   "fluorite.options.rt.waterDeformMode": "Deformation Coverage",
   "fluorite.options.rt.waterDeformMode.tooltip": "Which water is BUILT ready to deform. 'all' removes the boundary entirely, so no section is ever rebuilt for crossing it and the rebuild flicker cannot happen; it does not cost more per frame, because the displacement still only touches water near you. What it costs is fixed memory, and BLAS compaction given up on water sections. 'near' is the low-memory option and keeps the flicker. BOTH THIS AND THE DEFORMATION SWITCH TAKE EFFECT ON THE NEXT WORLD LOAD -- whether a section can deform is decided when it is built, and nothing rebuilds a section because a setting changed. Turning deformation off still stops it immediately; turning it on needs the reload.",
   "fluorite.options.rt.waterDeformMode.all": "All water",
-  "fluorite.options.rt.waterDeformMode.near": "Near only"
+  "fluorite.options.rt.waterDeformMode.near": "Near only",
+  "fluorite.options.rt.waveSpeed": "Wave Speed",
+  "fluorite.options.rt.waveSpeed.tooltip": "How fast the whole sea moves. Uniform on purpose: it scales every wave equally, so the relation between them survives and long swell still strides past while short chop flutters in place. There is deliberately no per-wavelength speed control, because that relation is the biggest single thing that reads as water. The weather does not act here -- in deep water a wave's speed depends only on its length, so a storm reaches the speed by making waves LONGER, which makes them faster on their own."
 }

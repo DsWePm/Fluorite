@@ -956,13 +956,17 @@ public final class RtComposite {
         float gust = Math.min(1f, FluoriteConfig.Rt.Water.WAVE_GUST.value()
                 * (1f + waterStorm(level) * 0.8f));
         return new Float4(FluoriteConfig.Rt.Water.WAVE_GUST_SCALE.value(), gust,
-                FluoriteConfig.Rt.Water.WAVE_GUST_SPEED.value(), 0f);
+                FluoriteConfig.Rt.Water.WAVE_GUST_SPEED.value(),
+                FluoriteConfig.Rt.Water.WAVE_SPEED.value());
     }
 
     private static Float4 waterAux(ClientLevel level) {
         return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value()
                         * (1f + waterStorm(level) * 0.9f),
-                FluoriteConfig.Rt.Water.WAVE_LENGTH.value(),
+                // Storms lengthen the sea, and longer waves travel faster on their own through
+                // w = sqrt(g*k). That is how the weather reaches the speed -- not by winding the
+                // clock forward, which would have looked similar and meant something false.
+                FluoriteConfig.Rt.Water.WAVE_LENGTH.value() * (1f + waterStorm(level) * 0.45f),
                 (float) Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle()),
                 FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
     }
