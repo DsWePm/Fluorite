@@ -75,6 +75,11 @@ WaterWaveParams deformWaveParams(WorldPush wp) {
     p.gustScale = wp.waterWaveGust.x;
     p.gustStrength = wp.waterWaveGust.y;
     p.gustSpeed = wp.waterWaveGust.z;
+    // The warp too. It moves where every component is sampled, so geometry built without it and
+    // shading built with it would be two different surfaces -- the exact failure this module's
+    // header exists to prevent.
+    p.warpAmplitude = wp.waterWaveWarp.x;
+    p.warpScale = wp.waterWaveWarp.y;
     return p;
 }
 

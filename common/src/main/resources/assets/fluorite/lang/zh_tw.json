@@ -300,5 +300,9 @@
   "fluorite.options.rt.waveGustSpeed.tooltip": "斑塊順風移動的快慢。為零會把它們釘死在世界上，看起來像海面上的污漬——波在斑塊中穿過，而斑塊紋絲不動。",
   "fluorite.options.rt.waveWeather": "天氣響應",
   "fluorite.options.rt.waveWeather.tooltip": "雨和雷暴對海面的影響強度。雲一直都會響應天氣，而水不會——於是暴風雨在頭頂壓過來，底下的海還是正午那副鏡面模樣。它同時驅動三件事而不是一件：浪更高、更陡、陣風更烈——其中「陡度」才是真正讀起來凶的那一項，只放大高度只會得到一片變大的平靜海面。為零則水面完全不理會天空。",
-  "fluorite.options.rt.section.waterWaves": "波浪"
+  "fluorite.options.rt.section.waterWaves": "波浪",
+  "fluorite.options.rt.waveWarp": "域扭曲",
+  "fluorite.options.rt.waveWarp.tooltip": "波所穿行的空間被彎曲的程度。這是真正消除格子的那一項。十道平面波的和無論怎麼調都是準週期的——抖動波長、無理比例、加寬扇形、甚至加到三十二道波，都仍然留下可見的重複——因為各分量之間的相位關係處處相同。彎曲空間讓這些關係隨位置漂移，實測把長程重複削掉了十倍以上。它也不是作弊：真實水面會因洋流和地形折射而正是這樣彎曲波峰。調過頭就不像水了。為零即原本的波場。",
+  "fluorite.options.rt.waveWarpScale": "扭曲尺度",
+  "fluorite.options.rt.waveWarpScale.tooltip": "兩次彎曲之間的距離。大值是橫跨海面的緩慢游移，小值會把近處的波列攪碎。"
 }

@@ -1557,6 +1557,30 @@ public final class FluoriteConfig {
             public static final FloatSetting WAVE_WEATHER =
                     clampedFloat("fluorite.rt.water.waveWeather", "water.wave-weather", 1f, 0f, 2f);
 
+            /**
+             * How far the world the waves travel through is bent, in blocks.
+             *
+             * <p>WHAT THIS FIXES is the lattice. A sum of ten plane waves is quasi-periodic whatever you
+             * do to it -- measured, wavelength jitter, irrational ratios, a wider fan, a flatter
+             * amplitude law and even thirty-two components all left the long-range autocorrelation above
+             * about 0.42, against 0.69 for the original. Bending the domain took it to 0.056 for one
+             * noise fetch, because it attacks the cause rather than the symptom: the phase relationships
+             * between components stop being the same everywhere in the world.
+             *
+             * <p>It is not a cheat either. Real water refracts over currents and bathymetry and bends its
+             * crests in exactly this way. It stops being physical as the bend approaches a wavelength,
+             * which is why this is authored and why its useful range sits well under the swell's length.
+             *
+             * <p>0 is the shipped field exactly, and skips the noise entirely.
+             */
+            public static final FloatSetting WAVE_WARP =
+                    clampedFloat("fluorite.rt.water.waveWarp", "water.wave-warp", 10f, 0f, 40f);
+
+            /** How far apart the bends are, in blocks. Large is a slow lazy meander, small is churn. */
+            public static final FloatSetting WAVE_WARP_SCALE =
+                    clampedFloat("fluorite.rt.water.waveWarpScale", "water.wave-warp-scale",
+                            100f, 20f, 400f);
+
             /** How big a gust patch is, in blocks. */
             public static final FloatSetting WAVE_GUST_SCALE =
                     clampedFloat("fluorite.rt.water.waveGustScale", "water.wave-gust-scale",

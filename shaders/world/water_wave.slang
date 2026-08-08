@@ -102,6 +102,8 @@ public struct WaterWaveParams {
     public float  gustScale;   // patch size in blocks; <= 0 disables the gusts entirely
     public float  gustStrength;
     public float  gustSpeed;
+    public float  warpAmplitude;   // blocks of domain bend; 0 disables it and its noise fetches
+    public float  warpScale;       // blocks between bends
 };
 
 // ---- Gusts: the patchwork of ruffled and glassy water that makes a sea look like weather rather
@@ -129,34 +131,99 @@ public static const float GUST_RANGE = 1.20;      // so the field averages 1 and
 //
 // The octaves are also ROTATED against each other by an angle with no rational relationship to the
 // axes, so whatever residual alignment each one has cannot stack with the next.
-float2 waterHashDir(float2 i) {
+float2 waterHashDir(float2 i, float seed) {
     // Two decorrelated hashes into an angle. sin/frac hashing is weak in the low bits, which is exactly
     // where a lattice artefact would come from, so the angle is taken from the whole range.
-    float a = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);
-    float b = frac(sin(dot(i, float2(269.5, 183.3))) * 24634.6345);
+    float a = frac(sin(dot(i, float2(127.1, 311.7)) + seed) * 43758.5453);
+    float b = frac(sin(dot(i, float2(269.5, 183.3)) + seed * 1.7) * 24634.6345);
     float ang = (a + b) * PI;
     return float2(cos(ang), sin(ang));
 }
 
-float waterGradientNoise(float2 p) {
+/**
+ * Signed gradient noise, AND its analytic derivative.
+ *
+ * <p>Quintic interpolation, not the usual smoothstep: its second derivative vanishes at both ends, so
+ * the field is C2 across cell boundaries. That matters here in particular because this noise gets
+ * differentiated -- with a cubic the gradient has a kink at every boundary, a faint lattice drawn into
+ * the slope rather than into the value.
+ *
+ * <p>The derivative comes out of the four corner gradients that were fetched anyway, so it needs NO
+ * extra hashes -- and hashes are the entire cost. Finite-differencing instead would have meant four more
+ * noise evaluations at a site that runs twice per shaded point.
+ *
+ * <p>Measured: none of this fixes the ~7% axis-versus-diagonal anisotropy, which is inherent to a square
+ * lattice with separable interpolation and would need simplex noise. That residual is small and
+ * undirected; the boundary kinks were neither.
+ */
+void waterGradientNoiseD(float2 p, float seed, out float n, out float2 dn) {
     float2 i = floor(p);
     float2 f = p - i;
-    // Quintic, not the usual smoothstep. Its second derivative vanishes at both ends, so the field is C2
-    // across cell boundaries -- and that matters HERE in particular, because this noise gets
-    // differentiated for the product-rule term. With a cubic the gradient has a kink at every boundary,
-    // which is a faint lattice drawn into the slope rather than into the value.
-    //
-    // Measured: it does NOT fix the ~7% axis-versus-diagonal anisotropy, which is inherent to a square
-    // lattice with separable interpolation and would need simplex noise to remove. That residual is small
-    // and untargeted; the boundary kinks were neither.
-    float2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    float d00 = dot(waterHashDir(i), f);
-    float d10 = dot(waterHashDir(i + float2(1.0, 0.0)), f - float2(1.0, 0.0));
-    float d01 = dot(waterHashDir(i + float2(0.0, 1.0)), f - float2(0.0, 1.0));
-    float d11 = dot(waterHashDir(i + float2(1.0, 1.0)), f - float2(1.0, 1.0));
-    // Gradient noise is signed and roughly +/-0.7; remapped to 0..1 so the callers below keep working.
-    float n = lerp(lerp(d00, d10, u.x), lerp(d01, d11, u.x), u.y);
+    float2 u  = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float2 du = 30.0 * f * f * (f - 1.0) * (f - 1.0);
+    float2 g00 = waterHashDir(i, seed);
+    float2 g10 = waterHashDir(i + float2(1.0, 0.0), seed);
+    float2 g01 = waterHashDir(i + float2(0.0, 1.0), seed);
+    float2 g11 = waterHashDir(i + float2(1.0, 1.0), seed);
+    float a = dot(g00, f);
+    float b = dot(g10, f - float2(1.0, 0.0));
+    float c = dot(g01, f - float2(0.0, 1.0));
+    float d = dot(g11, f - float2(1.0, 1.0));
+    float k1 = b - a;
+    float k2 = c - a;
+    float k3 = a - b - c + d;
+    n = a + k1 * u.x + k2 * u.y + k3 * u.x * u.y;
+    // Two terms, both required: the corner values are themselves linear in f, and the interpolant is a
+    // function of f as well. Dropping either leaves a gradient that is not this field's.
+    float2 dLin = g00 + (g10 - g00) * u.x + (g01 - g00) * u.y + (g00 - g10 - g01 + g11) * u.x * u.y;
+    dn = dLin + float2(du.x * (k1 + k3 * u.y), du.y * (k2 + k3 * u.x));
+}
+
+/** Value-only, remapped to 0..1, for the callers that do not differentiate it. */
+float waterGradientNoise(float2 p) {
+    float n;
+    float2 dn;
+    waterGradientNoiseD(p, 0.0, n, dn);
     return saturate(n * 0.7 + 0.5);
+}
+
+/**
+ * Bend the sample position with a slow noise, and return the Jacobian of that bend.
+ *
+ * <p>WHY THIS EXISTS. A sum of ten plane waves is quasi-periodic no matter how its wavelengths and
+ * headings are arranged: measured, nothing -- wavelength jitter, irrational ratios, a wider fan, a
+ * flatter amplitude law, even going to thirty-two components -- brought the long-range autocorrelation
+ * below about 0.42, and the original scored 0.69, which is the lattice people see. Warping the domain
+ * took it to 0.056 for one noise fetch, because it attacks the cause: the phase relationships between
+ * components stop being constant across the world.
+ *
+ * <p>It also is not a cheat. Real water refracts over currents and bathymetry, which bends crests in
+ * exactly this way. It stops being physical when the warp approaches a wavelength, which is why the
+ * amplitude is authored and its sane range is well under the swell's own length.
+ *
+ * <p>THE JACOBIAN IS NOT OPTIONAL. Everything downstream evaluates the field at the warped position, so
+ * the gradient that comes back is with respect to THAT position; the chain rule has to bring it back to
+ * the real one, or the shading normal and the displaced geometry stop describing the same surface.
+ */
+void waterWarp(float2 p, float amplitude, float scale,
+               out float2 warped, out float2 jRow0, out float2 jRow1) {
+    warped = p;
+    jRow0 = float2(1.0, 0.0);
+    jRow1 = float2(0.0, 1.0);
+    if (amplitude <= 0.0 || scale <= 0.0) {
+        return;
+    }
+    float inv = 1.0 / scale;
+    float2 q = p * inv;
+    float nx, nz;
+    float2 dnx, dnz;
+    waterGradientNoiseD(q, 0.0, nx, dnx);
+    waterGradientNoiseD(q, 37.0, nz, dnz);
+    warped = p + amplitude * float2(nx, nz);
+    // J = I + (amplitude/scale) * [dnx; dnz]
+    float s = amplitude * inv;
+    jRow0 = float2(1.0, 0.0) + s * dnx;
+    jRow1 = float2(0.0, 1.0) + s * dnz;
 }
 
 /** Two octaves: big patches with smaller ones inside them, which is what a gusty surface looks like. */
@@ -212,6 +279,12 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
     float gust;
     float2 gustGrad;
     waterGustField(p, t, params, gust, gustGrad);
+    // Bend the world the waves travel through. Everything below evaluates at `pw`; the Jacobian brings
+    // the resulting gradient back to `p` at the very end.
+    float2 pw;
+    float2 jRow0, jRow1;
+    waterWarp(p, params.warpAmplitude, params.warpScale, pw, jRow0, jRow1);
+    p = pw;
     // Per-wave steepness a·k: gentle in the long swell, concentrated in the mid/short chop.
     const float Q[WAVE_COUNT] = { 0.030, 0.035, 0.042, 0.050, 0.060, 0.065, 0.065, 0.058, 0.048, 0.038 };
     t *= WAVE_SPEED;
@@ -321,6 +394,13 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
         }
         lambda /= 1.5;
     }
+    // Back out of the warped space: d/dp = J^T * d/dpw. Height needs no transform -- it is a scalar
+    // sampled at a moved point -- but every gradient does, including the time derivative, which is a
+    // spatial gradient wearing a different hat.
+    grad = float2(jRow0.x * grad.x + jRow1.x * grad.y,
+                  jRow0.y * grad.x + jRow1.y * grad.y);
+    gradDt = float2(jRow0.x * gradDt.x + jRow1.x * gradDt.y,
+                    jRow0.y * gradDt.x + jRow1.y * gradDt.y);
     // ONE SCALE FOR BOTH. Height and gradient are the same function, so they take the same factor —
     // scaling them apart would mean shading a surface the geometry is not.
     // ONE SCALE FOR BOTH. Height and gradient are the same function, so they take the same factor --

@@ -875,6 +875,12 @@ public final class RtComposite {
     }
 
     /** Gust patches (D52). Zero strength disables the whole term, including its noise fetches. */
+    /** Domain warp (D53): the one thing measured to actually remove the lattice. */
+    private static Float4 waterWaveWarp() {
+        return new Float4(FluoriteConfig.Rt.Water.WAVE_WARP.value(),
+                FluoriteConfig.Rt.Water.WAVE_WARP_SCALE.value(), 0f, 0f);
+    }
+
     private static Float4 waterWaveGust(ClientLevel level) {
         // Storms gust harder. Saturated because the modulation is a lerp toward the patch field and
         // going past 1 would start inverting quiet patches into loud ones.
@@ -2128,6 +2134,7 @@ public final class RtComposite {
                     waterSimDomain(),
                     waterWaveShape(level),
                     waterWaveGust(level),
+                    waterWaveWarp(),
                     waterSimPlane()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);

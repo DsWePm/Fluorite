@@ -300,5 +300,9 @@
   "fluorite.options.rt.waveGustSpeed.tooltip": "How fast the patches travel downwind. Zero pins them to the world, which looks like a stain on the sea -- the waves move through the patches while the patches sit still.",
   "fluorite.options.rt.waveWeather": "Weather Response",
   "fluorite.options.rt.waveWeather.tooltip": "How much rain and thunder move the sea. The clouds have always responded to the weather; the water did not, so a storm could roll in overhead while the sea below stayed as glassy as it was at noon. It drives three things, not one: the waves grow taller, steeper, and gustier -- and steepness is the part that actually reads as violent, because scaling only the height gives a bigger calm sea. Zero leaves the water indifferent to the sky.",
-  "fluorite.options.rt.section.waterWaves": "Wave Field"
+  "fluorite.options.rt.section.waterWaves": "Wave Field",
+  "fluorite.options.rt.waveWarp": "Domain Warp",
+  "fluorite.options.rt.waveWarp.tooltip": "How far the world the waves travel through is bent. This is what removes the lattice. A sum of ten plane waves is quasi-periodic whatever you do to it -- jittered wavelengths, irrational ratios, a wider fan and even thirty-two components all leave a visible repeat -- because the phase relationships between components are the same everywhere. Bending the domain makes them drift with position instead, and measured it cuts the long-range repetition by more than ten times. It is not a cheat: real water refracts over currents and bends its crests exactly this way. Too much stops looking like water. Zero is the original field.",
+  "fluorite.options.rt.waveWarpScale": "Warp Scale",
+  "fluorite.options.rt.waveWarpScale.tooltip": "How far apart the bends are. Large is a slow lazy wander across the sea; small churns the wave trains up close."
 }

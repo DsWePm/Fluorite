@@ -89,6 +89,8 @@ public WaterWaveParams waterWaveParams() {
     p.gustScale = worldPush.waterWaveGust.x;
     p.gustStrength = worldPush.waterWaveGust.y;
     p.gustSpeed = worldPush.waterWaveGust.z;
+    p.warpAmplitude = worldPush.waterWaveWarp.x;
+    p.warpScale = worldPush.waterWaveWarp.y;
     return p;
 }
 

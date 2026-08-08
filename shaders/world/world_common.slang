@@ -201,6 +201,9 @@ public struct WorldPush {
     // drift. Weighted toward the SHORT components inside the walk -- a gust ruffles the surface, it does
     // not raise the swell.
     public float4   waterWaveGust;
+    // Domain warp (D53): x amplitude in blocks, y scale in blocks, zw spare. Zero amplitude skips it
+    // and its two noise fetches entirely, which is also the shipped field exactly.
+    public float4   waterWaveWarp;
     public float4   waterSimPlane;
 };
 
