@@ -1541,6 +1541,22 @@ public final class FluoriteConfig {
             public static final FloatSetting WAVE_GUST =
                     clampedFloat("fluorite.rt.water.waveGust", "water.wave-gust", 0.5f, 0f, 1f);
 
+            /**
+             * How much the weather moves the sea, 0 to 2.
+             *
+             * <p>The rain and thunder levels have been available all along and the clouds lean on them
+             * heavily; the water read neither, so a storm rolled in overhead and the sea below it stayed
+             * exactly as glassy as it was at noon.
+             *
+             * <p>It drives THREE things, not one. A storm sea is taller, and steeper, and gustier -- and
+             * of those, steepness is what actually reads as violent. Scaling only the amplitude gives a
+             * bigger calm sea, which looks like the camera moved closer rather than like weather.
+             *
+             * <p>0 leaves the sea indifferent to the sky, which is the shipped behaviour.
+             */
+            public static final FloatSetting WAVE_WEATHER =
+                    clampedFloat("fluorite.rt.water.waveWeather", "water.wave-weather", 1f, 0f, 2f);
+
             /** How big a gust patch is, in blocks. */
             public static final FloatSetting WAVE_GUST_SCALE =
                     clampedFloat("fluorite.rt.water.waveGustScale", "water.wave-gust-scale",

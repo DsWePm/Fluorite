@@ -841,29 +841,52 @@ public final class RtComposite {
      * function — the shading normal and the displaced geometry have to describe one surface.
      */
     /**
+     * How stormy the sea is right now: 0 calm, 1 a full downpour, higher under thunder.
+     *
+     * <p>Read from the same rain and thunder levels the clouds use, so the sky and the sea are responding
+     * to one weather rather than two. Thunder counts for less than rain on its own because it arrives
+     * with rain already at full -- it is the extra on top, not a second axis.
+     */
+    private static float waterStorm(ClientLevel level) {
+        float gain = FluoriteConfig.Rt.Water.WAVE_WEATHER.value();
+        if (level == null || gain <= 0f) {
+            return 0f;
+        }
+        float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+        return (level.getRainLevel(partial) + level.getThunderLevel(partial) * 0.6f) * gain;
+    }
+
+    /**
      * The wave field's shape: the second system's heading, the complexity ramp, the steepness scale.
      *
      * <p>The cross heading is resolved HERE, folded with the complexity, so that at complexity 0 it comes
      * out exactly equal to the primary wind and the shader's select changes nothing. That is what makes
      * the off state bit-identical rather than merely similar.
      */
-    private static Float4 waterWaveShape() {
+    private static Float4 waterWaveShape(ClientLevel level) {
         float complexity = FluoriteConfig.Rt.Water.WAVE_COMPLEXITY.value();
         double primary = Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle());
         double cross = primary
                 + Math.toRadians(FluoriteConfig.Rt.Water.WAVE_CROSS_ANGLE.value()) * complexity;
-        return new Float4((float) Math.cos(cross), (float) Math.sin(cross), complexity, 1f);
+        // Steepness, not just height. A storm sea is steeper, and that is the part that reads as
+        // violent -- scaling the amplitude alone gives a bigger calm sea.
+        return new Float4((float) Math.cos(cross), (float) Math.sin(cross), complexity,
+                1f + waterStorm(level) * 0.6f);
     }
 
     /** Gust patches (D52). Zero strength disables the whole term, including its noise fetches. */
-    private static Float4 waterWaveGust() {
-        return new Float4(FluoriteConfig.Rt.Water.WAVE_GUST_SCALE.value(),
-                FluoriteConfig.Rt.Water.WAVE_GUST.value(),
+    private static Float4 waterWaveGust(ClientLevel level) {
+        // Storms gust harder. Saturated because the modulation is a lerp toward the patch field and
+        // going past 1 would start inverting quiet patches into loud ones.
+        float gust = Math.min(1f, FluoriteConfig.Rt.Water.WAVE_GUST.value()
+                * (1f + waterStorm(level) * 0.8f));
+        return new Float4(FluoriteConfig.Rt.Water.WAVE_GUST_SCALE.value(), gust,
                 FluoriteConfig.Rt.Water.WAVE_GUST_SPEED.value(), 0f);
     }
 
-    private static Float4 waterAux() {
-        return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value(),
+    private static Float4 waterAux(ClientLevel level) {
+        return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value()
+                        * (1f + waterStorm(level) * 0.9f),
                 FluoriteConfig.Rt.Water.WAVE_LENGTH.value(),
                 (float) Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle()),
                 FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
@@ -2089,7 +2112,7 @@ public final class RtComposite {
                     new Float4(0f, 0f, 0f, 0f),
                     waterScatter(),
                     waterAbsorbOverride(),
-                    waterAux(),
+                    waterAux(level),
                     visibilityGridOrigin(camX, camY, camZ, terrain),
                     cloudParams(level),
                     cloudShape(),
@@ -2098,8 +2121,8 @@ public final class RtComposite {
                     cloudCirrus(),
                     cloudCirrusShape(),
                     cloudCirrusOrigin(terrain, level),
-                    waterWaveShape(),
-                    waterWaveGust(),
+                    waterWaveShape(level),
+                    waterWaveGust(level),
                     waterSimDomain(),
                     waterSimPlane()
             ).write(push);
