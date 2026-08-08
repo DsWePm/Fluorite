@@ -233,7 +233,18 @@ public static const float CAUSTIC_IOR_SPREAD = 0.0045;
 // field is the only expensive part of a caustic and it does not know about colour: all three
 // wavelengths share these, so dispersion costs three refracts and no extra field evaluations.
 float3 causticNormal(float2 xz, float t) {
-    float2 g = waterWaveGrad(xz, t, 0.0, waterWaveParams());
+    // THE SIMULATION TOO. This used to differentiate the procedural spectrum alone, so the caustics on
+    // the floor showed the swell and were blind to every ripple an entity made -- a splash bent the
+    // reflection and left the light pattern underneath it untouched.
+    //
+    // That is the F22 shape again: a consumer reaching past the funnel and assembling its own version of
+    // the field. It is the third one this file has grown, and the file's own banner says adding a
+    // consumer means adding it at the entry points, not beside them.
+    //
+    // The surface point is by construction ON the simulated plane, so the y handed to the sampler is the
+    // plane's own -- the same construction the displacement pass uses.
+    float3 world = float3(xz.x, worldPush.waterSimPlane.x, xz.y);
+    float2 g = waterWaveGrad(xz, t, 0.0, waterWaveParams()) + waterSimGrad(world);
     return normalize(float3(-g.x, 1.0, -g.y));
 }
 
