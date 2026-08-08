@@ -91,6 +91,12 @@ public WaterWaveParams waterWaveParams() {
     p.gustSpeed = worldPush.waterWaveGust.z;
     p.warpAmplitude = worldPush.waterWaveWarp.x;
     p.warpScale = worldPush.waterWaveWarp.y;
+    // z packs the isolation range as first*16 + last, both 1-based; w is the band-limit switch. Packed
+    // rather than growing WorldPush a second time in one session for two diagnostic integers.
+    int packed = int(worldPush.waterWaveWarp.z);
+    p.firstComponent = packed / 16;
+    p.lastComponent = packed % 16;
+    p.lodFade = worldPush.waterWaveWarp.w;
     return p;
 }
 

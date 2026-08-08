@@ -1576,6 +1576,30 @@ public final class FluoriteConfig {
             public static final FloatSetting WAVE_WARP =
                     clampedFloat("fluorite.rt.water.waveWarp", "water.wave-warp", 10f, 0f, 40f);
 
+            /**
+             * Which wave components run, 1 to 10, inclusive. DIAGNOSTIC, not art.
+             *
+             * <p>A sum of ten waves cannot tell you which of them you are looking at, and reading the
+             * code has now failed at that four times over one visible artefact. Set both to the same
+             * number to see one component alone; walk the upper one up from 1 to see the field
+             * accumulate and catch the exact step where something appears.
+             */
+            public static final FloatSetting WAVE_FIRST =
+                    clampedFloat("fluorite.rt.water.waveFirst", "water.wave-first", 1f, 1f, 10f);
+
+            public static final FloatSetting WAVE_LAST =
+                    clampedFloat("fluorite.rt.water.waveLast", "water.wave-last", 10f, 1f, 10f);
+
+            /**
+             * The distance-based band limit that fades short waves out as the ray footprint grows.
+             *
+             * <p>Off is WRONG -- it aliases, badly, at any distance -- and that is the point: it exists
+             * so a ring or a line on the water can be attributed. If a boundary vanishes with this off,
+             * it is a component fading out at a fixed distance rather than anything in the field itself.
+             */
+            public static final BooleanSetting WAVE_BAND_LIMIT =
+                    bool("fluorite.rt.water.waveBandLimit", "water.wave-band-limit", true);
+
             /** How far apart the bends are, in blocks. Large is a slow lazy meander, small is churn. */
             public static final FloatSetting WAVE_WARP_SCALE =
                     clampedFloat("fluorite.rt.water.waveWarpScale", "water.wave-warp-scale",

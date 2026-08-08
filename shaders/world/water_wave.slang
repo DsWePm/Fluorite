@@ -104,6 +104,12 @@ public struct WaterWaveParams {
     public float  gustSpeed;
     public float  warpAmplitude;   // blocks of domain bend; 0 disables it and its noise fetches
     public float  warpScale;       // blocks between bends
+    // ISOLATION (D54). Which components run, 1-based and inclusive, and whether the distance-based
+    // band limit runs at all. Diagnostics, not art: a sum of ten waves has no way of telling you
+    // WHICH of them you are looking at, and reading the code has now failed at that four times.
+    public int    firstComponent;
+    public int    lastComponent;
+    public float  lodFade;         // 1 = the usual footprint band limit, 0 = every component always on
 };
 
 // ---- Gusts: the patchwork of ruffled and glassy water that makes a sea look like weather rather
@@ -296,8 +302,17 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
     float lambda = max(baseLength, 0.5);
     float complexity = saturate(params.complexity);
     for (int i = 0; i < WAVE_COUNT; i++) {
-        float lodWeight = waterWaveLodWeight(lambda, footprint);
+        // The band limit, and the switch that silences it. With lodFade at 0 every component runs at
+        // full weight regardless of distance -- which aliases badly, and is exactly what you want when
+        // the question is whether a visible ring IS the band limit.
+        float lodWeight = lerp(1.0, waterWaveLodWeight(lambda, footprint), params.lodFade);
         if (lodWeight <= 0.0) break;
+        // Isolation: skip this component entirely, but keep walking so the wavelength ladder below still
+        // advances. `continue` rather than a narrower loop, so component 5 is component 5 either way.
+        if (i + 1 < params.firstComponent || i + 1 > params.lastComponent) {
+            lambda /= 1.5;
+            continue;
+        }
         float k = 2.0 * PI / lambda;
         float w = sqrt(WAVE_G * k);   // deep-water dispersion: phase speed √(g/k)
         // TWO WAVE SYSTEMS, not one fan. Every third component travels on the second heading, so the

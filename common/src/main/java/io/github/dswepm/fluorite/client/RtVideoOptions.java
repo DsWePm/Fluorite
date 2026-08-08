@@ -157,6 +157,7 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.waterWaves",
                                 windAngle(), waveWindOffset(), waveLength(), waveAmplitude(),
                                 waveComplexity(), waveCrossAngle(), waveWarp(), waveWarpScale(),
+                                waveFirst(), waveLast(), waveBandLimit(),
                                 waveGust(), waveGustScale(), waveGustSpeed(), waveWeather()),
                         // What is genuinely about moving vertices.
                         Section.titled("fluorite.options.rt.section.waterDeform",
@@ -686,6 +687,29 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Integer> waveWeather() {
         return scaleSlider("fluorite.options.rt.waveWeather", FluoriteConfig.Rt.Water.WAVE_WEATHER);
+    }
+
+    /** A plain integer index over a float-backed setting; the wave components are numbered, not sized. */
+    private static OptionInstance<Integer> indexSlider(String key, FloatSetting setting, int min, int max) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value()), min, max),
+            v -> setting.set((float) v));
+    }
+
+    private static OptionInstance<Integer> waveFirst() {
+        return indexSlider("fluorite.options.rt.waveFirst", FluoriteConfig.Rt.Water.WAVE_FIRST, 1, 10);
+    }
+
+    private static OptionInstance<Integer> waveLast() {
+        return indexSlider("fluorite.options.rt.waveLast", FluoriteConfig.Rt.Water.WAVE_LAST, 1, 10);
+    }
+
+    private static OptionInstance<Boolean> waveBandLimit() {
+        return bool("fluorite.options.rt.waveBandLimit", FluoriteConfig.Rt.Water.WAVE_BAND_LIMIT);
     }
 
     private static OptionInstance<Integer> waveWarp() {

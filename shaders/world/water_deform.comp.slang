@@ -80,6 +80,10 @@ WaterWaveParams deformWaveParams(WorldPush wp) {
     // header exists to prevent.
     p.warpAmplitude = wp.waterWaveWarp.x;
     p.warpScale = wp.waterWaveWarp.y;
+    int packed = int(wp.waterWaveWarp.z);
+    p.firstComponent = packed / 16;
+    p.lastComponent = packed % 16;
+    p.lodFade = wp.waterWaveWarp.w;
     return p;
 }
 

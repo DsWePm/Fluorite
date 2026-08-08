@@ -304,5 +304,11 @@
   "fluorite.options.rt.waveWarp": "域扭曲",
   "fluorite.options.rt.waveWarp.tooltip": "波所穿行的空間被彎曲的程度。這是真正消除格子的那一項。十道平面波的和無論怎麼調都是準週期的——抖動波長、無理比例、加寬扇形、甚至加到三十二道波，都仍然留下可見的重複——因為各分量之間的相位關係處處相同。彎曲空間讓這些關係隨位置漂移，實測把長程重複削掉了十倍以上。它也不是作弊：真實水面會因洋流和地形折射而正是這樣彎曲波峰。調過頭就不像水了。為零即原本的波場。",
   "fluorite.options.rt.waveWarpScale": "扭曲尺度",
-  "fluorite.options.rt.waveWarpScale.tooltip": "兩次彎曲之間的距離。大值是橫跨海面的緩慢游移，小值會把近處的波列攪碎。"
+  "fluorite.options.rt.waveWarpScale.tooltip": "兩次彎曲之間的距離。大值是橫跨海面的緩慢游移，小值會把近處的波列攪碎。",
+  "fluorite.options.rt.waveFirst": "起始波分量",
+  "fluorite.options.rt.waveFirst.tooltip": "診斷用。波場從第幾道分量開始。把它和「結束波分量」設成同一個數，就能單獨看某一道波。",
+  "fluorite.options.rt.waveLast": "結束波分量",
+  "fluorite.options.rt.waveLast.tooltip": "診斷用。波場到第幾道分量為止。從 1 開始往上拉，看著海面逐道累加——偽影出現的那一步就是罪魁，而十道波的和本身沒法告訴你這件事。",
+  "fluorite.options.rt.waveBandLimit": "波段限",
+  "fluorite.options.rt.waveBandLimit.tooltip": "把遠處小到光線分辨不出的短波淡出。關掉它是錯的——遠處會嚴重混疊——而這正是它的用途：讓水面上的環狀或線狀邊界能夠被歸因。如果關掉後那條線消失了，那它就是某道分量在固定距離處淡出，而不是波本身的問題。"
 }

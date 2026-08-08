@@ -203,7 +203,7 @@ public struct WorldPush {
     public float4   waterWaveGust;
     // Domain warp (D53): x amplitude in blocks, y scale in blocks, zw spare. Zero amplitude skips it
     // and its two noise fetches entirely, which is also the shipped field exactly.
-    public float4   waterWaveWarp;
+    public float4   waterWaveWarp;   // x warp blocks, y warp scale, z first*16+last, w band-limit on
     public float4   waterSimPlane;
 };
 
