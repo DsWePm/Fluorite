@@ -357,6 +357,7 @@ public final class RtTerrain {
     private static volatile int deformAnchorY;
     private static volatile int deformAnchorZ;
     private static volatile int deformReach;
+    private long deformLogTick;
 
     /**
      * Is this section inside the deformation region, and therefore to be built with its water ready to
@@ -414,7 +415,9 @@ public final class RtTerrain {
             }
             return;
         }
-        int dead = Math.max(1, Math.round(FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR.value()));
+        // Zero is allowed and means "follow every block": the region then moves as continuously as a
+        // block-quantised anchor can, which is the closest this design gets to not stepping at all.
+        int dead = Math.max(0, Math.round(FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR.value()));
         if (wasOn && reach == deformReach
                 && Math.abs(wantX - oldX) <= dead
                 && Math.abs(wantY - deformAnchorY) <= dead
@@ -468,6 +471,7 @@ public final class RtTerrain {
             return;
         }
         List<RtAccel.PreparedBlas> refits = null;
+        int deformVerts = 0;
         for (SectionGeom g : table.slots) {
             if (g == null || g.waterRest == null || g.waterVertCount <= 0) {
                 continue;
@@ -486,6 +490,7 @@ public final class RtTerrain {
                 // a plain buffer happens to satisfy it often enough to look right until it does not.
                 g.refitScratch = RtAccel.createScratchBuffer(ctx, required, "terrain water refit scratch");
             }
+            deformVerts += g.waterVertCount;
             if (refits == null) {
                 refits = new ArrayList<>();
             }
@@ -495,6 +500,20 @@ public final class RtTerrain {
         }
         if (refits == null) {
             return;
+        }
+        // What the pass actually did, about once a second. Four readings of the plumbing found nothing
+        // wrong with the wave settings, which is the point at which reading stops being evidence: this
+        // says how many sections were displaced and with which numbers, so "the setting does nothing"
+        // and "the setting arrives and the result is subtle" stop looking the same.
+        if ((deformLogTick++ % 60L) == 0L) {
+            FluoriteMod.LOGGER.info(
+                    "[water-deform] displaced {} section(s), {} vertices | amplitude={} baseLength={} "
+                            + "cell={} plane={}",
+                    refits.size(), deformVerts,
+                    String.format(java.util.Locale.ROOT, "%.2f", amplitude),
+                    String.format(java.util.Locale.ROOT, "%.2f", baseLength),
+                    String.format(java.util.Locale.ROOT, "%.2f", cellSize),
+                    String.format(java.util.Locale.ROOT, "%.2f", simPlane[0]));
         }
         io.github.dswepm.fluorite.rt.sky.RtSky.recordWaterDeformBarrier(cmd);
         RtAccel.recordBlasBuilds(ctx, cmd, refits);

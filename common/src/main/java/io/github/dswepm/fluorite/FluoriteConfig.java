@@ -1585,7 +1585,7 @@ public final class FluoriteConfig {
              * show as the surface crawling rather than as a smeared ripple.
              */
             public static final FloatSetting WATER_DEFORM_REANCHOR =
-                    clampedFloat("fluorite.rt.water.deformReanchor", "water.deform-reanchor", 8f, 1f, 32f);
+                    clampedFloat("fluorite.rt.water.deformReanchor", "water.deform-reanchor", 8f, 0f, 32f);
 
             /**
              * The ripple domain's reach once the deformation range has had its say: ripples are not

@@ -132,7 +132,7 @@ public final class RtVideoOptions {
                                 cloudCirrusDetailScale(),
                                 cloudCirrusWindSpeed(), cloudCirrusWindAngle()));
                 case WATER -> List.of(
-                        Section.of(waterWaves(), waveLength(), waveAmplitude(), waterCausticDispersion(),
+                        Section.of(waterWaves(), waterCausticDispersion(),
                                 waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
                                         FluoriteConfig.Rt.Water.SUN_SHADOW),
@@ -146,9 +146,15 @@ public final class RtVideoOptions {
                                 waterSimImpulseDepth()),
                         // The geometry, separate from the ripples that ride on it: one controls whether
                         // the surface is a shape at all, the others how much of it is and how finely.
+                        // The wave field's shape lives with the deformation rather than with the
+                        // on/off switch above, because these two are what you reach for while watching
+                        // the surface move -- and one of them, the wavelength, is the setting the
+                        // deformation is most sensitive to (the mesh cannot hold a wave much shorter
+                        // than a couple of blocks, so shortening the swell flattens the geometry while
+                        // leaving the normal alone).
                         Section.titled("fluorite.options.rt.section.waterDeform",
-                                waterDeform(), waterDeformRange(), waterDeformCell(),
-                                waterDeformReanchor()),
+                                waterDeform(), waveLength(), waveAmplitude(),
+                                waterDeformRange(), waterDeformCell(), waterDeformReanchor()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
@@ -367,8 +373,10 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<Integer> waterDeformReanchor() {
+        // Down to ZERO, which re-anchors on every block of movement -- the continuous case, kept
+        // reachable so the cost of it can be felt rather than argued about.
         return blockSlider("fluorite.options.rt.waterDeformReanchor",
-                FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR, 1, 32);
+                FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR, 0, 32);
     }
 
     private static OptionInstance<Integer> waterSimRange() {
