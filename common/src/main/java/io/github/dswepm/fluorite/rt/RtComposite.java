@@ -2145,26 +2145,34 @@ public final class RtComposite {
             if (FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
                     && FluoriteConfig.Rt.Volumetrics.ENABLED.value()) {
                 skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
-                if (waterSimLive) {
-                    // (c*dt/dx)^2, clamped to the CFL limit HERE, where the timestep and the cell size
-                    // are both known. Past c*dt/dx = 1/sqrt(2) explicit leapfrog does not lose accuracy,
-                    // it amplifies every step and the field explodes inside a second -- so this is a
-                    // hard bound on an authored value, not a taste adjustment.
-                    float dt = 1f / 60f;
-                    float courant = FluoriteConfig.Rt.Water.WATER_SIM_SPEED.value() * dt
-                            / waterCellSize();
-                    courant = Math.min(courant, 0.70f);
-                    skyLuts.recordWaterSim(cmd, frameTlas.accel.handle, graphicsUse,
-                            waterDomain.x(), waterDomain.y(), waterCellSize(),
-                            (float) (waterSurfaceY - terrain.blockY),
-                            courant * courant,
-                            FluoriteConfig.Rt.Water.WATER_SIM_DAMPING.value(),
-                            RtSky.WATER_SIM_DIM * 0.10f,
-                            waterImpulses, waterImpulseCount, waterReanchor,
-                            // The domain's absolute cell origin, so the solver can resolve a
-                            // re-anchor by shifting its reads instead of losing the field.
-                            waterCellX, waterCellZ);
-                }
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
+            }
+            // OUTSIDE the visibility gate, which is where it used to be and had no business being. The
+            // water solver was nested inside `VISIBILITY_CELL_SIZE > 0 && Volumetrics.ENABLED`, so
+            // turning the fog off silently stopped the ripples -- two settings with nothing to do with
+            // each other, coupled by nothing but where a brace happened to fall, and no way to tell from
+            // the symptom that the fog switch was responsible.
+            if (waterSimLive) {
+                // (c*dt/dx)^2, clamped to the CFL limit HERE, where the timestep and the cell size
+                // are both known. Past c*dt/dx = 1/sqrt(2) explicit leapfrog does not lose accuracy,
+                // it amplifies every step and the field explodes inside a second -- so this is a
+                // hard bound on an authored value, not a taste adjustment.
+                float dt = 1f / 60f;
+                float courant = FluoriteConfig.Rt.Water.WATER_SIM_SPEED.value() * dt
+                        / waterCellSize();
+                courant = Math.min(courant, 0.70f);
+                skyLuts.recordWaterSim(cmd, frameTlas.accel.handle, graphicsUse,
+                        waterDomain.x(), waterDomain.y(), waterCellSize(),
+                        (float) (waterSurfaceY - terrain.blockY),
+                        courant * courant,
+                        FluoriteConfig.Rt.Water.WATER_SIM_DAMPING.value(),
+                        RtSky.WATER_SIM_DIM * 0.10f,
+                        waterImpulses, waterImpulseCount, waterReanchor,
+                        // The domain's absolute cell origin, so the solver can resolve a
+                        // re-anchor by shifting its reads instead of losing the field.
+                        waterCellX, waterCellZ);
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
