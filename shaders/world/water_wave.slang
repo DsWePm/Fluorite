@@ -67,9 +67,20 @@ public static const float WAVE_PROFILE_MEAN[WAVE_COUNT] = {
 // side (M12.5) passes its CELL SIZE and gets the Nyquist band-limit out of the same expression, because
 // "detail finer than the sampling can carry" is one question asked by two consumers. This is D46's
 // wavelength split, and it needed no new machinery.
+// Fades from a footprint of lambda/8 to lambda/2.5, where it used to run lambda/4 to lambda/2.
+//
+// The old window reached zero exactly at Nyquist, which is textbook and is still too late in practice:
+// a wave is already visibly aliasing well before its wavelength equals two footprints, because the
+// footprint is a disc against a wave that is a ridge, and because the surface is shaded through a
+// NORMAL -- slope aliases harder than height. The shortest components (0.8 m and under) were arriving
+// as moire read as straight lines drawn across the sea.
+//
+// The cost of fading earlier is a slightly softer surface at middle distances. That is the right side to
+// err on: a wave that is too smooth looks like calm water, and a wave that is undersampled looks like a
+// rendering artefact.
 public float waterWaveLodWeight(float wavelength, float footprint) {
     float cyclesPerPixel = max(footprint, 0.0) / max(wavelength, 1.0e-4);
-    return 1.0 - smoothstep(0.25, 0.5, cyclesPerPixel);
+    return 1.0 - smoothstep(0.125, 0.40, cyclesPerPixel);
 }
 
 // One walk of the wave spectrum, shared by every consumer so the spectrum constants exist once. WITH_DT
@@ -122,8 +133,16 @@ public struct WaterWaveParams {
 // A gust front passing over open water darkens it with chop while the long waves underneath carry on
 // unchanged, and modulating everything equally instead gives a sea that breathes in and out, which is a
 // completely different and much worse effect.
-public static const float GUST_LAMBDA_LO = 2.0;   // fully ruffled below this wavelength
-public static const float GUST_LAMBDA_HI = 8.0;   // untouched above it
+// Which wavelengths a gust ruffles.
+//
+// This used to be 2 m to 8 m, which was physically defensible and practically invisible: those are the
+// components the band limit fades first, so the gusts were modulating waves that had already gone. The
+// patchwork only showed within a few metres of the camera, which is not where anyone looks at a sea.
+//
+// Moved up to bite the components that actually survive at distance. Still weighted -- a gust ruffles a
+// surface and does not raise a swell -- but the band it ruffles is now one you can see.
+public static const float GUST_LAMBDA_LO = 4.0;   // fully ruffled below this wavelength
+public static const float GUST_LAMBDA_HI = 16.0;  // untouched above it
 public static const float GUST_BASE = 0.40;
 public static const float GUST_RANGE = 1.20;      // so the field averages 1 and spans about 0.4 .. 1.6
 

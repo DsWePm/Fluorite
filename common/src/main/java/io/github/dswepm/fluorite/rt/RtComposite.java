@@ -877,10 +877,20 @@ public final class RtComposite {
     /** Gust patches (D52). Zero strength disables the whole term, including its noise fetches. */
     /** Domain warp (D53): the one thing measured to actually remove the lattice. */
     private static Float4 waterWaveWarp() {
+        // CLAMPED SO THE WARP CANNOT FOLD. The map is p -> p + A*n(p/L), whose Jacobian is
+        // I + (A/L)*grad(n). Once (A/L) grows enough, det J passes through zero and the map stops being
+        // injective: two places map to one, and the field creases along the boundary between them. That
+        // is the seam, and the rings that appear when the amplitude is pushed are the same fault seen
+        // from inside.
+        //
+        // Measured rather than guessed: |grad n| tops out at 2.0 for this noise, and det J first goes
+        // negative between A/L = 0.30 and 0.50. A quarter leaves det J above 0.35 everywhere, which is
+        // a full factor of margin, and the authored range reached A/L = 2.0 -- det J = -12.8.
+        float warpScale = FluoriteConfig.Rt.Water.WAVE_WARP_SCALE.value();
+        float warp = Math.min(FluoriteConfig.Rt.Water.WAVE_WARP.value(), 0.25f * warpScale);
         int first = Math.round(FluoriteConfig.Rt.Water.WAVE_FIRST.value());
         int last = Math.max(first, Math.round(FluoriteConfig.Rt.Water.WAVE_LAST.value()));
-        return new Float4(FluoriteConfig.Rt.Water.WAVE_WARP.value(),
-                FluoriteConfig.Rt.Water.WAVE_WARP_SCALE.value(),
+        return new Float4(warp, warpScale,
                 first * 16 + last,
                 FluoriteConfig.Rt.Water.WAVE_BAND_LIMIT.value() ? 1f : 0f);
     }
