@@ -110,14 +110,57 @@ public final class RtComposite {
     // Per-dimension presets are not here yet, so these are the overworld's numbers scaled by the player's
     // multipliers. When presets arrive the preset supplies the base and these keep being the multipliers.
 
+    /**
+     * How much the hour of day multiplies the fog, 0 at its clearest and 1 at its thickest.
+     *
+     * <p>Radiation fog, which is the kind that lies over a landscape at dawn. The ground radiates its
+     * heat away overnight and the air above it cools to the dew point, so the mist is thickest when the
+     * ground is coldest -- just before and at sunrise, NOT at midnight, which is the intuition worth
+     * overriding here. The sun then burns it off over the first hours of the day, and the clearest air
+     * comes mid-afternoon after the ground has had all morning to warm.
+     *
+     * <p>Driven by the hour rather than by the sun's elevation, and that is the whole reason it is a
+     * curve: at equal elevations morning and evening look nothing alike, because what matters is how long
+     * the ground has been cooling or heating rather than where the sun is.
+     *
+     * <p>Continuous across midnight by construction -- the build-up term reaches 1 exactly as the burn-off
+     * term starts again, so there is no step at the wrap.
+     */
+    private static float fogTimeOfDay(ClientLevel level) {
+        if (level == null) {
+            return 0f;
+        }
+        // From the SAME sun angle everything else in this file uses, rather than from the day-time
+        // counter. Two clocks that agree today are two clocks that can drift, and the fog looking wrong
+        // relative to the sun would be a hard thing to attribute.
+        //
+        // The attribute's zero is noon and it advances with the day, so sunrise is at 270 degrees.
+        Minecraft mc = Minecraft.getInstance();
+        float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
+        float sunAngle = mc.gameRenderer.mainCamera().attributeProbe()
+                .getValue(EnvironmentAttributes.SUN_ANGLE, partial);
+        float hours = ((sunAngle - 270f) % 360f + 360f) % 360f / 360f * 24f;
+        float burnOff = smoothstep(0f, 5f, hours);    // the sun clearing it through the morning
+        float buildUp = smoothstep(11f, 24f, hours);  // the ground cooling again from dusk to dawn
+        return (1f - burnOff) + buildUp;
+    }
+
     /** Reference density, height falloff, reference height and the distance past which fog stops. */
-    private static Float4 fogParams() {
+    private static Float4 fogParams(ClientLevel level) {
         var v = FluoriteConfig.Rt.Volumetrics.class;
         boolean on = FluoriteConfig.Rt.Volumetrics.ENABLED.value()
                 && FluoriteConfig.Rt.Volumetrics.HEIGHT_FOG.value();
         // A density of zero is the disable path: volume.slang returns early on it, so switching fog off
         // costs one comparison per segment rather than a shader variant.
         float density = on ? BASE_FOG_DENSITY * FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE.value() : 0f;
+        // The hour and the weather, both as multipliers on the authored density so that either at zero
+        // leaves the fog exactly as it was.
+        density *= 1f + fogTimeOfDay(level) * FluoriteConfig.Rt.Volumetrics.FOG_TIME_GAIN.value();
+        float wetPartial = Minecraft.getInstance().getDeltaTracker()
+                .getGameTimeDeltaPartialTick(false);
+        float wet = level == null ? 0f
+                : level.getRainLevel(wetPartial) + level.getThunderLevel(wetPartial) * 0.5f;
+        density *= 1f + wet * FluoriteConfig.Rt.Volumetrics.FOG_WEATHER_GAIN.value();
         return new Float4(density,
                 FluoriteConfig.Rt.Volumetrics.HEIGHT_SCALE.value(),
                 FluoriteConfig.Rt.Volumetrics.HEIGHT_BASE.value(),
@@ -2186,7 +2229,7 @@ public final class RtComposite {
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
                     FluoriteConfig.Rt.Lights.RIS_CANDIDATES.value(),
-                    fogParams(),
+                    fogParams(level),
                     fogExtinction(),
                     fogScatter(),
                     fogAux(),

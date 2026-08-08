@@ -316,5 +316,9 @@
   "fluorite.options.rt.waterDeformMode.all": "全部水面",
   "fluorite.options.rt.waterDeformMode.near": "仅近处",
   "fluorite.options.rt.waveSpeed": "波浪速度",
-  "fluorite.options.rt.waveSpeed.tooltip": "整片海移动的快慢。**刻意是等比的**：它同等缩放每一道波，所以波与波之间的关系得以保留——长涌浪仍然大步走过，短碎波仍然几乎原地抖。这里刻意没有「按波长调速」的选项，因为那个关系正是最能让人读出「这是水」的单一因素。天气不作用在这里——深水中波速只取决于波长，所以风暴是通过**把波变长**来提速的，长波本来就更快。"
+  "fluorite.options.rt.waveSpeed.tooltip": "整片海移动的快慢。**刻意是等比的**：它同等缩放每一道波，所以波与波之间的关系得以保留——长涌浪仍然大步走过，短碎波仍然几乎原地抖。这里刻意没有「按波长调速」的选项，因为那个关系正是最能让人读出「这是水」的单一因素。天气不作用在这里——深水中波速只取决于波长，所以风暴是通过**把波变长**来提速的，长波本来就更快。",
+  "fluorite.options.rt.fogTimeGain": "晨雾",
+  "fluorite.options.rt.fogTimeGain.tooltip": "黎明前后雾会浓多少。这是**辐射雾**，也就是清晨伏在原野上的那种：地面整夜把热量辐射掉，上方空气冷到露点、水汽凝结，所以雾最浓的时刻是**地面最冷的时候——日出前后，而不是午夜**。之后太阳升起把它烤散，一天中空气最通透的是**下午**。为零则各时辰的雾一样浓。",
+  "fluorite.options.rt.fogWeatherGain": "雨雾",
+  "fluorite.options.rt.fogWeatherGain.tooltip": "下雨时雾会浓多少。它随雨势**连续变化**而不是开关：小雨只是让远处发灰，倾盆大雨会把视野整个压下来。雷暴在此之上再加一层。为零则雾完全不理会天气。"
 }

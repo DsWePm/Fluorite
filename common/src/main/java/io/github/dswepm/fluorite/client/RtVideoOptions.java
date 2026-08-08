@@ -170,6 +170,7 @@ public final class RtVideoOptions {
                 // What is left is genuinely the fog and only the fog. fogSunShadowRays stays because the
                 // water has its own sun-shadow switch under WATER and these two do not affect each other.
                 case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
+                        fogTimeGain(), fogWeatherGain(),
                         fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
                         fogPhaseG(), fogScatterTint(), fogSunShadowRays()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
@@ -521,6 +522,16 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> fogEnabled() {
         return bool("fluorite.options.rt.fog", FluoriteConfig.Rt.Volumetrics.ENABLED);
+    }
+
+    private static OptionInstance<Integer> fogTimeGain() {
+        return scaleSlider("fluorite.options.rt.fogTimeGain",
+                FluoriteConfig.Rt.Volumetrics.FOG_TIME_GAIN);
+    }
+
+    private static OptionInstance<Integer> fogWeatherGain() {
+        return scaleSlider("fluorite.options.rt.fogWeatherGain",
+                FluoriteConfig.Rt.Volumetrics.FOG_WEATHER_GAIN);
     }
 
     private static OptionInstance<Integer> fogDensity() {

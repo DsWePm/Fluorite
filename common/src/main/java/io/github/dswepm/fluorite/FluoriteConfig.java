@@ -653,6 +653,38 @@ public final class FluoriteConfig {
             public static final BooleanSetting HEIGHT_FOG =
                     bool("fluorite.rt.fog.heightFog", "volumetrics.height-fog", true);
 
+            /**
+             * How much thicker the fog gets at dawn, as a multiple of the base density.
+             *
+             * <p>THE SHAPE IS RADIATION FOG, which is the kind you actually see over a landscape. The
+             * ground radiates its heat away overnight, the air above it cools to the dew point, and the
+             * water in it condenses -- so the mist is thickest when the ground is coldest, which is just
+             * before and at sunrise, NOT at midnight. Then the sun comes up, warms the ground, and burns
+             * it off over the first few hours; the clearest air of the day is mid-afternoon, after the
+             * ground has had all morning to heat.
+             *
+             * <p>That is why this is a curve over the day rather than a function of the sun's height: at
+             * equal elevations the morning is misty and the evening is not, because what matters is how
+             * long the ground has been cooling or heating, not where the sun happens to be.
+             *
+             * <p>0 leaves the fog the same at every hour, which is the shipped behaviour.
+             */
+            public static final FloatSetting FOG_TIME_GAIN =
+                    clampedFloat("fluorite.rt.fog.timeGain", "volumetrics.fog-time-gain", 1f, 0f, 4f);
+
+            /**
+             * How much thicker the fog gets in rain, as a multiple of the base density.
+             *
+             * <p>Scales with how hard it is raining rather than switching on: drizzle hazes the distance
+             * a little, a downpour closes it right down. Thunder counts on top, because it arrives with
+             * the rain already at full and still makes things worse.
+             *
+             * <p>0 leaves the fog indifferent to the weather, which is the shipped behaviour.
+             */
+            public static final FloatSetting FOG_WEATHER_GAIN =
+                    clampedFloat("fluorite.rt.fog.weatherGain", "volumetrics.fog-weather-gain",
+                            1f, 0f, 4f);
+
             /** Scales the preset's density. 1 is the preset as authored. */
             public static final FloatSetting DENSITY_SCALE =
                     clampedFloat("fluorite.rt.fog.densityScale", "volumetrics.density-scale", 1.0f, 0.0f, 10.0f);
