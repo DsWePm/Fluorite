@@ -355,7 +355,14 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
         // Meander: the phase wobbles along the crest, so wavefronts wander instead of ruling straight
         // lines. It used to stop at the four longest components, which left the mid band as visible
         // straight edges; complexity extends it to seven, fading in so 0 is unchanged.
-        float meander = i < 4 ? WAVE_MEANDER : (i < 7 ? WAVE_MEANDER * complexity : 0.0);
+        // EVERY component, not just the long ones. The cut-off used to be four, on the reasoning that
+        // only long wavefronts "read as lines" -- which is exactly backwards. The three shortest
+        // components got no meander at all, so they stayed pure plane waves, and three pure plane waves
+        // under a metre stacked up as regular corrugation: the close-range ribbing that looks like a
+        // sheet-metal roof. The long waves were never the ones drawing straight lines.
+        //
+        // Nor is this gated on complexity any more. Straight crests are a defect, not a style.
+        float meander = WAVE_MEANDER;
         if (meander > 0.0) {
             // TWO modulations, not one, and this is a fix rather than a refinement.
             //
@@ -380,8 +387,15 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
             // second axis is well away from perpendicular, and the weights are near equal so neither
             // modulation dominates enough to reimpose its own period.
             float2 md = normalize(pd + 0.70 * d);
-            float f1 = (0.33 + 0.059 * float(i)) * k;
-            float f2 = (0.23 + 0.071 * float(i)) * k;
+            // BOUNDED, not a ramp. These used to walk linearly with the index, which was fine while the
+            // meander stopped at component four (0.33k to 0.51k) and becomes nonsense extended to ten:
+            // at 0.86k the modulation is nearly as fast as the wave it modulates, which does not make a
+            // crest wander, it scrambles it into harmonics. A crest reads as WANDERING when its wobble
+            // spans several wavelengths, so both frequencies stay inside the band that means -- jittered
+            // per component so no two share a lattice, rather than ramped into a regime that does not
+            // work.
+            float f1 = (0.22 + 0.13 * (waterWaveJitter(i, 5.0) * 0.5 + 0.5)) * k;
+            float f2 = (0.17 + 0.11 * (waterWaveJitter(i, 8.0) * 0.5 + 0.5)) * k;
             float wph1 = f1 * dot(pd, p) + 0.50 * w * t;
             float wph2 = f2 * dot(md, p) - 0.31 * w * t;
             float c1 = 0.46, c2 = 0.54;
