@@ -310,5 +310,9 @@
   "fluorite.options.rt.waveLast": "Last Wave Component",
   "fluorite.options.rt.waveLast.tooltip": "Diagnostic. Which component the field stops at. Walk it up from 1 and watch the sea accumulate -- the step where an artefact appears is the component responsible, which a sum of ten waves cannot otherwise tell you.",
   "fluorite.options.rt.waveBandLimit": "Wave Band Limit",
-  "fluorite.options.rt.waveBandLimit.tooltip": "Fades short waves out as they get too small for the ray to resolve. Turning it OFF is wrong -- it aliases badly at distance -- and that is the point: it is here so a ring or a boundary line on the water can be attributed. If a line vanishes with this off, it was a component fading out at a fixed distance rather than anything in the waves themselves."
+  "fluorite.options.rt.waveBandLimit.tooltip": "Fades short waves out as they get too small for the ray to resolve. Turning it OFF is wrong -- it aliases badly at distance -- and that is the point: it is here so a ring or a boundary line on the water can be attributed. If a line vanishes with this off, it was a component fading out at a fixed distance rather than anything in the waves themselves.",
+  "fluorite.options.rt.waterDeformMode": "Deformation Coverage",
+  "fluorite.options.rt.waterDeformMode.tooltip": "Which water is BUILT ready to deform. 'all' removes the boundary entirely, so no section is ever rebuilt for crossing it and the rebuild flicker cannot happen; it does not cost more per frame, because the displacement still only touches water near you. What it costs is fixed memory, and BLAS compaction given up on water sections. 'near' is the low-memory option and keeps the flicker. Takes effect on the next world load -- switching live would rebuild every water section, which is the cost being avoided.",
+  "fluorite.options.rt.waterDeformMode.all": "All water",
+  "fluorite.options.rt.waterDeformMode.near": "Near only"
 }

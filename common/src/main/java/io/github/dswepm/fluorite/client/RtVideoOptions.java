@@ -161,7 +161,7 @@ public final class RtVideoOptions {
                                 waveGust(), waveGustScale(), waveGustSpeed(), waveWeather()),
                         // What is genuinely about moving vertices.
                         Section.titled("fluorite.options.rt.section.waterDeform",
-                                waterDeform(), waterDeformRange(), waterDeformCell(),
+                                waterDeform(), waterDeformMode(), waterDeformRange(), waterDeformCell(),
                                 waterDeformReanchor()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
@@ -359,6 +359,19 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterDeform() {
         return bool("fluorite.options.rt.waterDeform", FluoriteConfig.Rt.Water.WATER_DEFORM);
+    }
+
+    /** Restart-scoped: switching it would rebuild every water section, which is the cost it avoids. */
+    private static OptionInstance<String> waterDeformMode() {
+        StringSetting setting = FluoriteConfig.Rt.Water.WATER_DEFORM_MODE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterDeformMode",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterDeformMode.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.waterDeformMode." + value),
+            new OptionInstance.Enum<>(List.of("all", "near"), Codec.STRING),
+            setting.get(),
+            setting::set);
     }
 
     private static OptionInstance<Integer> waterDeformRange() {

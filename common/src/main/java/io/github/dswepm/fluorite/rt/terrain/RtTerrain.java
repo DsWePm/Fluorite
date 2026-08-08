@@ -368,6 +368,13 @@ public final class RtTerrain {
      * built a frame apart must not disagree about where the boundary was.
      */
     static boolean sectionDeformable(int sox, int soy, int soz) {
+        // In "all" mode there is no boundary at all: every water-bearing section is built ready, so none
+        // of them is ever rebuilt for crossing one, and the flicker that came with those rebuilds cannot
+        // occur. The per-frame dispatch still filters by distance -- see recordWaterDeform -- so this
+        // buys the flicker away without costing anything per frame.
+        if (!"near".equals(FluoriteConfig.Rt.Water.WATER_DEFORM_MODE.get())) {
+            return FluoriteConfig.Rt.Water.WATER_DEFORM.value();
+        }
         int ax = deformAnchorX;
         if (ax == Integer.MIN_VALUE) {
             return false;
@@ -397,6 +404,11 @@ public final class RtTerrain {
                                           boolean enabled, int reach) {
         RtTerrain terrain = INSTANCE;
         if (terrain == null) {
+            return;
+        }
+        // "all" mode has no boundary to move, so there is nothing to re-extract and this whole path --
+        // the one that produced the flicker -- simply does not run.
+        if (!"near".equals(FluoriteConfig.Rt.Water.WATER_DEFORM_MODE.get())) {
             return;
         }
         int wantX = (int) Math.floor(camX);
@@ -471,8 +483,21 @@ public final class RtTerrain {
         }
         List<RtAccel.PreparedBlas> refits = null;
         int deformVerts = 0;
+        // Sections far enough out that the fade has already reached zero. THIS is what separates being
+        // built ready to deform from actually being deformed, and it is the whole of path 3': without it
+        // "all" mode would displace and refit every water section in the world every frame, which is the
+        // cost the mode exists to avoid rather than to pay.
+        //
+        // Half a section past fadeEnd, because the test is against the section's centre and its corners
+        // reach further.
+        float cull = fadeEnd + 16.0f;
         for (SectionGeom g : table.slots) {
             if (g == null || g.waterRest == null || g.waterVertCount <= 0) {
+                continue;
+            }
+            float dx = (float) (g.sx + 8 + waveOffsetX) - fadeCentreX;
+            float dz = (float) (g.sz + 8 + waveOffsetZ) - fadeCentreZ;
+            if (dx * dx + dz * dz > cull * cull) {
                 continue;
             }
             sky.recordWaterDeform(cmd, g.positions.deviceAddress, g.waterRest.deviceAddress,

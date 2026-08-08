@@ -310,5 +310,9 @@
   "fluorite.options.rt.waveLast": "结束波分量",
   "fluorite.options.rt.waveLast.tooltip": "诊断用。波场到第几道分量为止。从 1 开始往上拉，看着海面逐道累加——伪影出现的那一步就是罪魁，而十道波的和本身没法告诉你这件事。",
   "fluorite.options.rt.waveBandLimit": "波段限",
-  "fluorite.options.rt.waveBandLimit.tooltip": "把远处小到光线分辨不出的短波淡出。关掉它是错的——远处会严重混叠——而这正是它的用途：让水面上的环状或线状边界能够被归因。如果关掉后那条线消失了，那它就是某道分量在固定距离处淡出，而不是波本身的问题。"
+  "fluorite.options.rt.waveBandLimit.tooltip": "把远处小到光线分辨不出的短波淡出。关掉它是错的——远处会严重混叠——而这正是它的用途：让水面上的环状或线状边界能够被归因。如果关掉后那条线消失了，那它就是某道分量在固定距离处淡出，而不是波本身的问题。",
+  "fluorite.options.rt.waterDeformMode": "形变覆盖范围",
+  "fluorite.options.rt.waterDeformMode.tooltip": "哪些水面在**构建时**就准备好形变。「全部」彻底取消边界，于是没有任何 section 会因为跨越边界而重建，重建闪烁也就不可能发生；它**不增加每帧开销**，因为位移仍然只作用于你附近的水。它的代价是固定内存，以及含水 section 放弃 BLAS 压缩。「仅近处」是省内存的选项，但保留闪烁。下次加载世界时生效——实时切换需要重建每一个含水 section，而那正是它要避免的成本。",
+  "fluorite.options.rt.waterDeformMode.all": "全部水面",
+  "fluorite.options.rt.waterDeformMode.near": "仅近处"
 }

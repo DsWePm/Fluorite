@@ -1741,6 +1741,34 @@ public final class FluoriteConfig {
                     bool("fluorite.rt.water.deform", "water.deform", false);
 
             /**
+             * Which sections are BUILT ready to deform: {@code all} water-bearing ones, or only those
+             * {@code near} the camera. Takes effect on the next terrain load.
+             *
+             * <p>WHAT THIS DECIDES IS THE FLICKER. Crossing the deformation boundary changes how a
+             * section is built -- updatable and uncompacted, with its build inputs retained -- and the
+             * only way to change that is to build it again. In {@code near} mode every re-anchor
+             * therefore re-extracts a ring of sections, and that rebuild is visible.
+             *
+             * <p>{@code all} removes the boundary entirely: nothing ever crosses it, so nothing is ever
+             * rebuilt, and the flicker cannot happen. It does NOT cost more per frame -- the dispatch
+             * still only touches sections near the camera, which is the whole point of separating the
+             * two questions. What it costs is fixed: vertices, indices and a rest copy retained for
+             * every water-bearing section, and BLAS compaction given up on them.
+             *
+             * <p>{@code near} is the low-memory option and keeps the flicker. Restart-scoped rather than
+             * live, because switching would require rebuilding every water section -- precisely the cost
+             * being avoided.
+             */
+            public static final StringSetting WATER_DEFORM_MODE =
+                    string("fluorite.rt.water.deformMode", "water.deform-mode", "all",
+                            Water::sanitizeDeformMode);
+
+            private static String sanitizeDeformMode(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return v.equals("near") ? "near" : "all";
+            }
+
+            /**
              * How far from the camera the water is real geometry, in blocks. Beyond it the surface is
              * flat and the waves live entirely in the normal, as they always have.
              *
