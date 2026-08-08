@@ -86,6 +86,11 @@ public final class RtFrameStats {
                     "gpu.skyBake",
                     "gpu.visBake",
                     "gpu.froxelBake",
+                    // The two water passes. The spectrum is deliberately absent -- it runs inline in
+                    // the raygen shaders, so it is measured by the water.waves isolation switch
+                    // against gpu.tracePrimary/gpu.traceIndirect, not by a zone.
+                    "gpu.waterSim",
+                    "gpu.waterDeform",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",

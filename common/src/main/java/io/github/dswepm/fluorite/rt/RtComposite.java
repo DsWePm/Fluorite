@@ -1018,6 +1018,19 @@ public final class RtComposite {
     // count and costs 0.072 ms. Eighteen times is a number worth acting on, but not before it is
     // attributed.
     private static final int GPU_ZONE_FROXEL_BAKE = 4;
+    // The two water passes. Neither had been attributed: the deformation only ever had a CPU-side stage,
+    // which times the thread recording the commands rather than the device doing the work -- for a
+    // dispatch those differ by orders of magnitude, and iron rule 7 does not accept the former.
+    //
+    // The deformation's number is the one the milestone actually needs. It decides whether the cheaper
+    // rebuild-only path is worth building, and whether the deformation range's quadratic cost bites.
+    //
+    // NOTE WHAT CANNOT BE A ZONE: the procedural wave spectrum. It is evaluated inline inside the raygen
+    // shaders, and a timestamp brackets commands, not parts of a shader. Its cost is measured by the
+    // isolation switch instead -- water.waves off against on, comparing gpu.tracePrimary and
+    // gpu.traceIndirect in the same session -- which is the ratio method iron rule 7 asks for regardless.
+    private static final int GPU_ZONE_WATER_SIM = 5;
+    private static final int GPU_ZONE_WATER_DEFORM = 6;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
@@ -1480,7 +1493,8 @@ public final class RtComposite {
             }
             if (gpuTimers == null) {
                 gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect",
-                        "gpu.skyBake", "gpu.visBake", "gpu.froxelBake");
+                        "gpu.skyBake", "gpu.visBake", "gpu.froxelBake",
+                        "gpu.waterSim", "gpu.waterDeform");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -2063,6 +2077,9 @@ public final class RtComposite {
             }
             // Water geometry, before the TLAS is built over the bounds it produces. Guarded on the
             // domain being live: with no plane there is nothing to displace onto.
+            if (gpuTimers != null) {
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_WATER_DEFORM);
+            }
             if (FluoriteConfig.Rt.Water.WATER_DEFORM.value() && waterSimLive) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("water.deform")) {
                     float range = FluoriteConfig.Rt.Water.WATER_DEFORM_RANGE.value();
@@ -2083,6 +2100,9 @@ public final class RtComposite {
                             (float) Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle()));
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_WATER_DEFORM);
             }
             RtAccel.PreparedTlas frameTlas;
             try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.prepareTlas")) {
@@ -2157,6 +2177,11 @@ public final class RtComposite {
             // turning the fog off silently stopped the ripples -- two settings with nothing to do with
             // each other, coupled by nothing but where a brace happened to fall, and no way to tell from
             // the symptom that the fog switch was responsible.
+            // Unconditional around the gated work, so the column reads ~0 rather than going stale --
+            // the same reasoning the visibility bake's zone is documented with.
+            if (gpuTimers != null) {
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_WATER_SIM);
+            }
             if (waterSimLive) {
                 // (c*dt/dx)^2, clamped to the CFL limit HERE, where the timestep and the cell size
                 // are both known. Past c*dt/dx = 1/sqrt(2) explicit leapfrog does not lose accuracy,
@@ -2176,6 +2201,9 @@ public final class RtComposite {
                         // The domain's absolute cell origin, so the solver can resolve a
                         // re-anchor by shifting its reads instead of losing the field.
                         waterCellX, waterCellZ);
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_WATER_SIM);
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
