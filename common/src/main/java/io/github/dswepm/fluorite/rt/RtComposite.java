@@ -968,6 +968,22 @@ public final class RtComposite {
             fault = "not submerged but the surface is well ABOVE the eye";
         } else if (Float.isNaN(surfaceY) || Double.isNaN(camY)) {
             fault = "NaN in the camera height or the reference surface";
+        } else if (simLive && !sentinel
+                && Math.abs(waterPlaneRebasedY - surfaceY) > WATER_PLANE_TOLERANCE) {
+            // A FOURTH ANSWER, and it was the one nothing checked.
+            //
+            // "Where is the water surface" is worked out twice, by two routines that never meet: the
+            // medium's reference surface walks up the CAMERA'S OWN column and stops at the fractional
+            // top of the fluid, while the simulation's plane is latched by CONTACT and returns the whole
+            // block top. Two answers to one question with no comparison between them is the shape that
+            // has cost this milestone the most (F22, F26), and it is worse here than usual because the
+            // two are used together: the shading decides a hit is ON the simulated plane, then asks the
+            // medium how deep that same point is.
+            //
+            // Flowing water is where they are furthest apart, because that is where a block's fluid
+            // height is least like 1 -- which is exactly the situation the over-bright report came from.
+            // Whether that is the cause is not yet established; this makes the next occurrence say so.
+            fault = "the medium's surface and the simulation's plane disagree";
         }
         if (fault == null) {
             waterMediumFaultFrames = 0;
@@ -977,10 +993,11 @@ public final class RtComposite {
         // become a persistent log.
         if (waterMediumFaultFrames == 0 || (waterMediumFaultFrames % 300) == 0) {
             FluoriteMod.LOGGER.warn(
-                    "[water-medium] {} | submerged={} surfaceY(rebased)={} camY(rebased)={} "
-                            + "rebaseY={} simLive={} frames={}",
+                    "[water-medium] {} | submerged={} surfaceY(rebased)={} simPlane(rebased)={} "
+                            + "camY(rebased)={} rebaseY={} simLive={} frames={}",
                     fault, submerged,
                     String.format(java.util.Locale.ROOT, "%.3f", surfaceY),
+                    String.format(java.util.Locale.ROOT, "%.3f", waterPlaneRebasedY),
                     String.format(java.util.Locale.ROOT, "%.3f", camRebased),
                     rebaseY, simLive, waterMediumFaultFrames);
         }
