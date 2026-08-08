@@ -25,9 +25,23 @@ final class RtSectionBuilder {
     }
 
     /** Upload a non-empty packed section and prepare, but do not record, its BLAS build. */
+    /**
+     * Build one section's GPU residency.
+     *
+     * <p>{@code deformable} keeps this section ready for the water deformation (M12.5): its positions and
+     * indices STAY RESIDENT rather than being freed after the build, it gets an untouched copy of its
+     * water vertices to displace from, and its BLAS is built updatable so the displaced vertices can be
+     * refit in place.
+     *
+     * <p>All three are the same decision and none of them is free. Compaction is given up (an updatable
+     * BLAS cannot be compacted -- see F24, where the spec turns out not to say and the validation layer
+     * turns out not to check), the build inputs stay resident instead of being reclaimed, and the rest
+     * copy is a third buffer. That is why this is asked for per section and only for the few inside the
+     * deformation range, rather than for every section that happens to contain water.
+     */
     static PreparedSection prepare(RtContext ctx, PackedSection packed,
                                    RtAccel.OpacityMicromapInput ommInput,
-                                   boolean compactBlas,
+                                   boolean compactBlas, boolean deformable,
                                    long key, int sox, int soy, int soz) {
         RtMaterialAbi.requireTriangleParity(packed.material().length, packed.indices().length);
         // Hash the packed arrays before they are uploaded and the CPU copies go away. No-op unless the
@@ -45,7 +59,11 @@ final class RtSectionBuilder {
         RtBuffer uvs = null;
         RtBuffer material = null;
         RtBuffer upload = null;
+        RtBuffer waterRest = null;
         RtAccel.PreparedBlas blas = null;
+        long updateScratch = 0L;
+        // Nothing to displace means nothing to keep resident, whatever the caller asked for.
+        boolean deform = deformable && packed.waterVertCount() > 0;
         try {
             long positionsBytes = (long) packed.positions().length * Float.BYTES;
             long indicesBytes = (long) packed.indices().length * Integer.BYTES;
@@ -53,7 +71,10 @@ final class RtSectionBuilder {
             long materialBytes = (long) packed.material().length * Float.BYTES;
             int transferDst = VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-            positions = ctx.createAsyncBuffer(positionsBytes, asInput | transferDst, false,
+            // The displacement compute pass WRITES the live positions and READS the rest copy, so both
+            // need storage usage on top of being build inputs.
+            int deformUsage = deform ? storage : 0;
+            positions = ctx.createAsyncBuffer(positionsBytes, asInput | transferDst | deformUsage, false,
                     label + " positions");
             indices = ctx.createAsyncBuffer(indicesBytes, asInput | transferDst, false,
                     label + " indices");
@@ -61,6 +82,14 @@ final class RtSectionBuilder {
             material = ctx.createAsyncBuffer(materialBytes, storage | transferDst, false, label + " material");
             upload = ctx.createUploadBuffer(positionsBytes + indicesBytes + uvsBytes + materialBytes,
                     label + " upload");
+            if (deform) {
+                // The vertices as the mesher laid them out, never written again. Displacing in place
+                // would make this frame's output next frame's input and the surface would walk away from
+                // the block face within a second. One contiguous range, which is only possible because
+                // the mesher packs each bucket's vertices in a single run.
+                waterRest = ctx.createAsyncBuffer((long) packed.waterVertCount() * 3L * Float.BYTES,
+                        storage | transferDst, false, label + " water rest");
+            }
 
             long cursor = upload.mapped;
             MemoryUtil.memFloatBuffer(cursor, packed.positions().length).put(packed.positions());
@@ -72,15 +101,27 @@ final class RtSectionBuilder {
             MemoryUtil.memFloatBuffer(cursor, packed.material().length).put(packed.material());
             upload.flush();
 
-            blas = RtAccel.prepareTerrainBlas(ctx, positions, vertCount, indices,
-                    packed.bucketTris(), ommInput, compactBlas, label + " BLAS");
-            return new PreparedSection(key, positions, indices, uvs, material, upload, blas,
-                    packed.triBase(), sox, soy, soz, packed.lights());
+            if (deform) {
+                RtAccel.UpdatableBuild build = RtAccel.prepareTerrainBlas(ctx, positions, vertCount,
+                        indices, packed.bucketTris(), ommInput, false, true, label + " BLAS");
+                blas = build.op();
+                updateScratch = build.updateScratchSize();
+            } else {
+                blas = RtAccel.prepareTerrainBlas(ctx, positions, vertCount, indices,
+                        packed.bucketTris(), ommInput, compactBlas, label + " BLAS");
+            }
+            return new PreparedSection(key, positions, indices, uvs, material, upload, waterRest, blas,
+                    packed.triBase(), sox, soy, soz, packed.lights(),
+                    deform ? packed.waterVertBase() : 0, deform ? packed.waterVertCount() : 0,
+                    updateScratch, packed.bucketTris(),
+                    new java.util.concurrent.atomic.AtomicBoolean(false));
         } catch (Throwable t) {
             if (blas != null) {
-                destroy(new PreparedSection(key, positions, indices, uvs, material, upload, blas,
-                        packed.triBase(), sox, soy, soz, packed.lights()));
+                destroy(new PreparedSection(key, positions, indices, uvs, material, upload, waterRest,
+                        blas, packed.triBase(), sox, soy, soz, packed.lights(), 0, 0, 0L,
+                        packed.bucketTris(), new java.util.concurrent.atomic.AtomicBoolean(false)));
             } else {
+                if (waterRest != null) waterRest.destroy();
                 if (upload != null) upload.destroy();
                 if (material != null) material.destroy();
                 if (uvs != null) uvs.destroy();
@@ -103,6 +144,13 @@ final class RtSectionBuilder {
             copy(cmd, prepared.upload, prepared.uvs, srcOffset, region);
             srcOffset += prepared.uvs.size;
             copy(cmd, prepared.upload, prepared.material, srcOffset, region);
+            if (prepared.waterRest != null) {
+                // From the SAME staging bytes the live positions came from, so the two are identical by
+                // construction rather than by a copy that could be recorded out of order.
+                region.get(0).srcOffset((long) prepared.waterVertBase * 3L * Float.BYTES)
+                        .dstOffset(0L).size(prepared.waterRest.size);
+                VK10.vkCmdCopyBuffer(cmd, prepared.upload.handle, prepared.waterRest.handle, region);
+            }
 
             VkMemoryBarrier2.Buffer barrier = VkMemoryBarrier2.calloc(1, stack);
             barrier.get(0).sType$Default()
@@ -129,27 +177,72 @@ final class RtSectionBuilder {
         prepared.upload.destroy();
         prepared.material.destroy();
         prepared.uvs.destroy();
+        if (prepared.inputsTransferred.get()) {
+            // A published deformable section owns these now and frees them with itself. Freeing them
+            // here as well is a double free, and what it looks like from outside is the TLAS reading a
+            // BLAS that is already gone -- a device fault with no Java stack pointing anywhere near here.
+            return;
+        }
+        if (prepared.waterRest != null) {
+            prepared.waterRest.destroy();
+        }
         prepared.indices.destroy();
         prepared.positions.destroy();
     }
 
     /** Worker-owned native section state paired with its prepared BLAS. {@code lights} = packed
      *  section-local RIS light records (CPU-side, flattened into the global buffer at publish). */
+    /**
+     * @param inputsTransferred set once a published SectionGeom has taken over positions/indices/rest.
+     *        WITHOUT THIS THEY ARE OWNED TWICE. The pipeline's standing invariant is that
+     *        releaseBuildInputs and destroy are mutually exclusive -- exactly one of them frees the build
+     *        inputs. A deformable section breaks that on its own: releaseBuildInputs must NOT free them
+     *        (the refit still needs them) and destroy still must, for the builds that never publish. So
+     *        the transfer has to be recorded rather than inferred, and it is recorded here rather than by
+     *        nulling fields because a record cannot null them.
+     */
     record PreparedSection(long key, RtBuffer positions, RtBuffer indices, RtBuffer uvs,
-                           RtBuffer material, RtBuffer upload, RtAccel.PreparedBlas blas, int[] triBase,
-                           int sx, int sy, int sz, float[] lights) {
+                           RtBuffer material, RtBuffer upload, RtBuffer waterRest,
+                           RtAccel.PreparedBlas blas, int[] triBase,
+                           int sx, int sy, int sz, float[] lights,
+                           int waterVertBase, int waterVertCount, long updateScratchSize,
+                           int[] bucketTris,
+                           java.util.concurrent.atomic.AtomicBoolean inputsTransferred) {
+        boolean deformable() {
+            return waterRest != null;
+        }
+
+        /** The published geometry now owns the build inputs; this section must stop freeing them. */
+        void transferBuildInputs() {
+            inputsTransferred.set(true);
+        }
+
         void releaseUpload() {
             upload.destroy();
         }
 
+        /**
+         * Reclaim what the build needed and the shading does not.
+         *
+         * <p>A DEFORMABLE SECTION KEEPS BOTH. The displacement rewrites the positions every frame and the
+         * refit reads positions and indices back as build inputs, so freeing them here would leave the
+         * refit pointing at dead memory -- and per F24 nothing would report that, it would just produce
+         * wrong geometry. They are freed with the section instead.
+         */
         void releaseBuildInputs() {
+            if (deformable()) {
+                return;
+            }
             indices.destroy();
             positions.destroy();
         }
 
         PreparedSection withBlas(RtAccel.PreparedBlas replacement) {
-            return new PreparedSection(key, positions, indices, uvs, material, upload, replacement,
-                    triBase, sx, sy, sz, lights);
+            // Same AtomicBoolean instance, not a fresh one: a copy that forgot the transfer would free
+            // buffers the published geometry is still using.
+            return new PreparedSection(key, positions, indices, uvs, material, upload, waterRest,
+                    replacement, triBase, sx, sy, sz, lights,
+                    waterVertBase, waterVertCount, updateScratchSize, bucketTris, inputsTransferred);
         }
     }
 }

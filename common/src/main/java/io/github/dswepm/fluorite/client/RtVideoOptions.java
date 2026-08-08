@@ -105,6 +105,9 @@ public final class RtVideoOptions {
                 // reasons and nothing else: a cloud deck is a thing you look UP at, authored alongside
                 // the sun and the sky it hangs in, while the fog is the air you stand in.
                 case SKY -> List.of(
+                        // The one wind at the top of the sky screen, where what it drives -- both
+                        // cloud layers -- is exactly what you are looking at.
+                        Section.of(windAngle()),
                         Section.titled("fluorite.options.rt.section.sunArt",
                                 sunIntensity(), sunTemperature()),
                         Section.titled("fluorite.options.rt.section.skyArt",
@@ -117,7 +120,7 @@ public final class RtVideoOptions {
                                 clouds(), cloudWeather(), cloudCoverage(), cloudType(), cloudDensity(),
                                 cloudExtinction(), cloudAltitude(), cloudThickness(),
                                 cloudFieldScale(), cloudBaseScale(), cloudDetailScale(),
-                                cloudWindSpeed(), cloudWindAngle()),
+                                cloudWindSpeed(), cloudWindOffset()),
                         Section.titled("fluorite.options.rt.section.cloudLighting",
                                 cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo(),
                                 cloudSecondary()),
@@ -130,9 +133,9 @@ public final class RtVideoOptions {
                                 cloudCirrusExtinction(), cloudCirrusAltitude(), cloudCirrusThickness(),
                                 cloudCirrusFieldScale(), cloudCirrusBaseScale(),
                                 cloudCirrusDetailScale(),
-                                cloudCirrusWindSpeed(), cloudCirrusWindAngle()));
+                                cloudCirrusWindSpeed(), cloudCirrusWindOffset()));
                 case WATER -> List.of(
-                        Section.of(waterWaves(), waveAmplitude(), waterCausticDispersion(),
+                        Section.of(waterWaves(), waterCausticDispersion(),
                                 waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
                                         FluoriteConfig.Rt.Water.SUN_SHADOW),
@@ -143,11 +146,23 @@ public final class RtVideoOptions {
                                 waterSim(), waterSimRange(), waterSimHeight(), waterSimReanchor(),
                                 waterSimStrength(),
                                 waterSimSpeed(), waterSimDamping(), waterSimImpulse(),
-                                waterSimImpulseDepth()),
+                                waterSimImpulseSize(), waterSimImpulseDepth()),
                         // The geometry, separate from the ripples that ride on it: one controls whether
                         // the surface is a shape at all, the others how much of it is and how finely.
+                        // THE WAVE FIELD IS NOT THE DEFORMATION. Everything here shapes the field
+                        // itself, and the field reaches the picture through the NORMAL whether or not
+                        // any geometry ever moves -- the deformation is one optional consumer of it,
+                        // and a band-limited one at that. Filing these under it said the opposite, and
+                        // would have had anyone with deformation off assume the whole group was inert.
+                        Section.titled("fluorite.options.rt.section.waterWaves",
+                                windAngle(), waveWindOffset(), waveLength(), waveAmplitude(),
+                                waveSpeed(), waveComplexity(), waveCrossAngle(),
+                                waveWarp(), waveWarpScale(),
+                                waveFirst(), waveLast(), waveBandLimit(),
+                                waveGust(), waveGustScale(), waveGustSpeed(), waveWeather()),
+                        // What is genuinely about moving vertices.
                         Section.titled("fluorite.options.rt.section.waterDeform",
-                                waterDeform(), waterDeformRange(), waterDeformCell(),
+                                waterDeform(), waterDeformMode(), waterDeformRange(), waterDeformCell(),
                                 waterDeformReanchor()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
@@ -347,6 +362,19 @@ public final class RtVideoOptions {
         return bool("fluorite.options.rt.waterDeform", FluoriteConfig.Rt.Water.WATER_DEFORM);
     }
 
+    /** Restart-scoped: switching it would rebuild every water section, which is the cost it avoids. */
+    private static OptionInstance<String> waterDeformMode() {
+        StringSetting setting = FluoriteConfig.Rt.Water.WATER_DEFORM_MODE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterDeformMode",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterDeformMode.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.waterDeformMode." + value),
+            new OptionInstance.Enum<>(List.of("all", "near"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
     private static OptionInstance<Integer> waterDeformRange() {
         return blockSlider("fluorite.options.rt.waterDeformRange",
                 FluoriteConfig.Rt.Water.WATER_DEFORM_RANGE, 8, 128);
@@ -367,13 +395,20 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<Integer> waterDeformReanchor() {
+        // Down to ZERO, which re-anchors on every block of movement -- the continuous case, kept
+        // reachable so the cost of it can be felt rather than argued about.
         return blockSlider("fluorite.options.rt.waterDeformReanchor",
-                FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR, 1, 32);
+                FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR, 0, 32);
     }
 
     private static OptionInstance<Integer> waterSimRange() {
         return blockSlider("fluorite.options.rt.waterSimRange",
                 FluoriteConfig.Rt.Water.WATER_SIM_RANGE, 32, 256);
+    }
+
+    private static OptionInstance<Integer> waveLength() {
+        return blockSlider("fluorite.options.rt.waveLength",
+                FluoriteConfig.Rt.Water.WAVE_LENGTH, 2, 40);
     }
 
     private static OptionInstance<Integer> waterSimHeight() {
@@ -407,6 +442,20 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 100),
             Math.clamp(Math.round((setting.value() - 0.9f) * 1000f), 0, 100),
             v -> setting.set(0.9f + v / 1000.0f));
+    }
+
+    /** As a multiple of the entity's width, in quarters — this is the ripple's wavelength. */
+    private static OptionInstance<Integer> waterSimImpulseSize() {
+        FloatSetting setting = FluoriteConfig.Rt.Water.WATER_SIM_IMPULSE_SIZE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.waterSimImpulseSize",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.waterSimImpulseSize.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2fx", v / 4.0))),
+            new OptionInstance.IntRange(1, 24),
+            Math.clamp(Math.round(setting.value() * 4f), 1, 24),
+            v -> setting.set(v / 4.0f));
     }
 
     private static OptionInstance<Integer> waterSimImpulseDepth() {
@@ -614,16 +663,109 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED);
     }
 
-    private static OptionInstance<Integer> cloudWindAngle() {
-        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_ANGLE;
+    /**
+     * The one wind, shown on both the sky and the water screens.
+     *
+     * <p>Deliberately the SAME setting surfaced twice rather than duplicated: whichever screen you are on
+     * while judging how the weather moves, the control is there. Each screen builds its widget from the
+     * current value when it opens, so the two cannot drift apart.
+     */
+    private static OptionInstance<Integer> windAngle() {
+        FloatSetting setting = FluoriteConfig.Rt.Composite.WIND_ANGLE;
         return new OptionInstance<>(
-            "fluorite.options.rt.cloudWindAngle",
+            "fluorite.options.rt.windAngle",
             OptionInstance.cachedConstantTooltip(
-                    Component.translatable("fluorite.options.rt.cloudWindAngle.tooltip")),
+                    Component.translatable("fluorite.options.rt.windAngle.tooltip")),
             (caption, v) -> Options.genericValueLabel(caption, Component.literal(v + "°")),
             new OptionInstance.IntRange(0, 359),
             Math.clamp(Math.round(setting.value()), 0, 359),
             v -> setting.set((float) v));
+    }
+
+    /** Degrees off the global wind, signed. */
+    private static OptionInstance<Integer> windOffset(String key, FloatSetting setting) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal((v > 0 ? "+" : "") + v + "°")),
+            new OptionInstance.IntRange(-180, 180),
+            Math.clamp(Math.round(setting.value()), -180, 180),
+            v -> setting.set((float) v));
+    }
+
+    private static OptionInstance<Integer> cloudWindOffset() {
+        return windOffset("fluorite.options.rt.cloudWindOffset",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_OFFSET);
+    }
+
+    private static OptionInstance<Integer> waveWeather() {
+        return scaleSlider("fluorite.options.rt.waveWeather", FluoriteConfig.Rt.Water.WAVE_WEATHER);
+    }
+
+    /** A plain integer index over a float-backed setting; the wave components are numbered, not sized. */
+    private static OptionInstance<Integer> indexSlider(String key, FloatSetting setting, int min, int max) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value()), min, max),
+            v -> setting.set((float) v));
+    }
+
+    private static OptionInstance<Integer> waveFirst() {
+        return indexSlider("fluorite.options.rt.waveFirst", FluoriteConfig.Rt.Water.WAVE_FIRST, 1, 10);
+    }
+
+    private static OptionInstance<Integer> waveLast() {
+        return indexSlider("fluorite.options.rt.waveLast", FluoriteConfig.Rt.Water.WAVE_LAST, 1, 10);
+    }
+
+    private static OptionInstance<Boolean> waveBandLimit() {
+        return bool("fluorite.options.rt.waveBandLimit", FluoriteConfig.Rt.Water.WAVE_BAND_LIMIT);
+    }
+
+    private static OptionInstance<Integer> waveWarp() {
+        return blockSlider("fluorite.options.rt.waveWarp", FluoriteConfig.Rt.Water.WAVE_WARP, 0, 40);
+    }
+
+    private static OptionInstance<Integer> waveWarpScale() {
+        return blockSlider("fluorite.options.rt.waveWarpScale",
+                FluoriteConfig.Rt.Water.WAVE_WARP_SCALE, 20, 400);
+    }
+
+    private static OptionInstance<Integer> waveSpeed() {
+        return scaleSlider("fluorite.options.rt.waveSpeed", FluoriteConfig.Rt.Water.WAVE_SPEED);
+    }
+
+    private static OptionInstance<Integer> waveGust() {
+        return scaleSlider("fluorite.options.rt.waveGust", FluoriteConfig.Rt.Water.WAVE_GUST);
+    }
+
+    private static OptionInstance<Integer> waveGustScale() {
+        return blockSlider("fluorite.options.rt.waveGustScale",
+                FluoriteConfig.Rt.Water.WAVE_GUST_SCALE, 8, 200);
+    }
+
+    private static OptionInstance<Integer> waveGustSpeed() {
+        return blockSlider("fluorite.options.rt.waveGustSpeed",
+                FluoriteConfig.Rt.Water.WAVE_GUST_SPEED, 0, 30);
+    }
+
+    private static OptionInstance<Integer> waveComplexity() {
+        return scaleSlider("fluorite.options.rt.waveComplexity",
+                FluoriteConfig.Rt.Water.WAVE_COMPLEXITY);
+    }
+
+    private static OptionInstance<Integer> waveCrossAngle() {
+        return windOffset("fluorite.options.rt.waveCrossAngle",
+                FluoriteConfig.Rt.Water.WAVE_CROSS_ANGLE);
+    }
+
+    private static OptionInstance<Integer> waveWindOffset() {
+        return windOffset("fluorite.options.rt.waveWindOffset",
+                FluoriteConfig.Rt.Water.WAVE_WIND_OFFSET);
     }
 
     /** The 2D field: how far apart the sky's clumps and clearings are, as opposed to how big one cloud is. */
@@ -733,16 +875,9 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED);
     }
 
-    private static OptionInstance<Integer> cloudCirrusWindAngle() {
-        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_ANGLE;
-        return new OptionInstance<>(
-            "fluorite.options.rt.cloudCirrusWindAngle",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("fluorite.options.rt.cloudCirrusWindAngle.tooltip")),
-            (caption, v) -> Options.genericValueLabel(caption, Component.literal(v + "°")),
-            new OptionInstance.IntRange(0, 359),
-            Math.clamp(Math.round(setting.value()), 0, 359),
-            v -> setting.set((float) v));
+    private static OptionInstance<Integer> cloudCirrusWindOffset() {
+        return windOffset("fluorite.options.rt.cloudCirrusWindOffset",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_OFFSET);
     }
 
     private static OptionInstance<Integer> cloudCirrusExtinction() {

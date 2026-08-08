@@ -192,7 +192,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
         float3 interfaceNormal = geometricNormal;
         if (isWater && (worldPush.flags & 16u) != 0u) {
             float waterFootprint = rayConeWidth
-                    / max(abs(dot(-direction, geometricNormal)), 0.2);
+                    / max(abs(dot(-direction, geometricNormal)), 0.12);
             interfaceNormal = applyWaterWaves(geometricNormal,
                     float3(interfacePos.x + worldPush.waterAnchor.x, interfacePos.y,
                            interfacePos.z + worldPush.waterAnchor.y),

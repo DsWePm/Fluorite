@@ -51,6 +51,56 @@ public float waterWaveAmplitude() {
     return worldPush.waterAmbient.x;
 }
 
+/** The longest wave in the spectrum, in blocks (D50). Rides waterAmbient.y, retired since M16. */
+public float waterWaveBaseLength() {
+    return worldPush.waterAmbient.y;
+}
+
+/**
+ * The direction the swell travels, as a unit vector (D51). Rides waterAmbient.z, the last of M16's
+ * retired slots, so WorldPush still does not grow.
+ *
+ * <p>The angle is the ONE global wind plus this layer's own offset, resolved on the CPU -- the same
+ * number the cloud layers resolve from. The displacement pass gets it through its own push constant and
+ * must resolve to the identical vector, or the geometry and the shading describe surfaces travelling in
+ * different directions.
+ */
+public float2 waterWaveWind() {
+    float a = worldPush.waterAmbient.z;
+    return float2(cos(a), sin(a));
+}
+
+/**
+ * The wave field's parameters, assembled from worldPush in ONE place.
+ *
+ * <p>One builder rather than each consumer picking lanes for itself: the primary pass, the path pass,
+ * the guide pass, the caustics and the displacement must all describe the same sea, and the way that
+ * stops being true is somebody adding a lane to four call sites and missing the fifth. Adding a
+ * parameter means editing this function.
+ */
+public WaterWaveParams waterWaveParams() {
+    WaterWaveParams p;
+    p.wind = waterWaveWind();
+    p.crossWind = float2(worldPush.waterWaveShape.x, worldPush.waterWaveShape.y);
+    p.strength = worldPush.waterAmbient.x;
+    p.baseLength = worldPush.waterAmbient.y;
+    p.complexity = worldPush.waterWaveShape.z;
+    p.steepness = worldPush.waterWaveShape.w;
+    p.gustScale = worldPush.waterWaveGust.x;
+    p.gustStrength = worldPush.waterWaveGust.y;
+    p.gustSpeed = worldPush.waterWaveGust.z;
+    p.timeScale = worldPush.waterWaveGust.w;
+    p.warpAmplitude = worldPush.waterWaveWarp.x;
+    p.warpScale = worldPush.waterWaveWarp.y;
+    // z packs the isolation range as first*16 + last, both 1-based; w is the band-limit switch. Packed
+    // rather than growing WorldPush a second time in one session for two diagnostic integers.
+    int packed = int(worldPush.waterWaveWarp.z);
+    p.firstComponent = packed / 16;
+    p.lastComponent = packed % 16;
+    p.lodFade = worldPush.waterWaveWarp.w;
+    return p;
+}
+
 /**
  * Debug view 23: the simulated height field, painted across the screen.
  *
@@ -126,7 +176,7 @@ public float3 waterSimDebug(float2 screenUv) {
 // not steepen the shading, and near and far water are shaded by the identical expression.
 public float3 applyWaterWaves(float3 nGeo, float3 world, float t, float footprint) {
     if (abs(nGeo.y) < 0.5) return nGeo;
-    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveAmplitude()) + waterSimGrad(world);
+    float2 grad = waterWaveGrad(world.xz, t, footprint, waterWaveParams()) + waterSimGrad(world);
     float3 up = normalize(float3(-grad.x, 1.0, -grad.y));
     return nGeo.y >= 0.0 ? up : -up;
 }
@@ -150,7 +200,7 @@ public void applyWaterWavesTemporal(float3 nGeo, float3 world, float t, float pr
                                     float footprint, out float3 n, out float3 previousN) {
     float2 currentGrad;
     float2 previousGrad;
-    waterWaveGradTemporal(world.xz, t, previousT, footprint, waterWaveAmplitude(),
+    waterWaveGradTemporal(world.xz, t, previousT, footprint, waterWaveParams(),
                           currentGrad, previousGrad);
     float2 sim = waterSimGrad(world);
     currentGrad += sim;
@@ -192,7 +242,18 @@ public static const float CAUSTIC_IOR_SPREAD = 0.0045;
 // field is the only expensive part of a caustic and it does not know about colour: all three
 // wavelengths share these, so dispersion costs three refracts and no extra field evaluations.
 float3 causticNormal(float2 xz, float t) {
-    float2 g = waterWaveGrad(xz, t, waterWaveAmplitude());
+    // THE SIMULATION TOO. This used to differentiate the procedural spectrum alone, so the caustics on
+    // the floor showed the swell and were blind to every ripple an entity made -- a splash bent the
+    // reflection and left the light pattern underneath it untouched.
+    //
+    // That is the F22 shape again: a consumer reaching past the funnel and assembling its own version of
+    // the field. It is the third one this file has grown, and the file's own banner says adding a
+    // consumer means adding it at the entry points, not beside them.
+    //
+    // The surface point is by construction ON the simulated plane, so the y handed to the sampler is the
+    // plane's own -- the same construction the displacement pass uses.
+    float3 world = float3(xz.x, worldPush.waterSimPlane.x, xz.y);
+    float2 g = waterWaveGrad(xz, t, 0.0, waterWaveParams()) + waterSimGrad(world);
     return normalize(float3(-g.x, 1.0, -g.y));
 }
 

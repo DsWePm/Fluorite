@@ -26,12 +26,19 @@ public struct WaterDeformPush {
     // rest buffer is indexed from zero; the live one from vertBase.
     public uint64_t positionsAddr;
     public uint64_t restAddr;
-    // xy origin (rebased), z blocks per cell, w strength -- the same lane the shading reads, so the
-    // geometry and the normal cannot disagree about where the ripples are.
-    public float4 simDomain;
-    // The plane the simulation runs on; see WorldPush.waterSimPlane. Passed through so the displacement
-    // reads the field under exactly the test the shading applies to it.
-    public float4 simPlane;
+    // THE SAME WorldPush THE SHADING READS, by address, rather than a copy of the handful of lanes this
+    // pass happens to need.
+    //
+    // Copying them was the earlier design and it was wrong twice over. It made every wave parameter a
+    // thing that had to be written into two places and kept in step -- exactly the shape that produced
+    // the acceleration-structure flag bug (8.2c-2) and that water_wave.slang's header warns about, since
+    // geometry and shading disagreeing about the field is undiagnosable from a screenshot. And it does
+    // not scale: push constants are only guaranteed to be 128 bytes, the copy had already reached 112,
+    // and the wave field is about to gain six more parameters.
+    //
+    // Reading worldPush also removes simDomain, simPlane and time from this struct, because they were
+    // copies of lanes too. What is left is genuinely per-section.
+    public uint64_t worldPushAddr;
     // Added to a vertex's section-local xz to reach the world-stable wave coordinate: the section origin
     // relative to the terrain rebase, plus the wave anchor. Assembled on the CPU because that is where
     // both halves are known, and because a vertex position plus a rebase origin plus an anchor is three
@@ -42,9 +49,7 @@ public struct WaterDeformPush {
     public float2 fadeCentre;
     public float fadeStart;
     public float fadeEnd;
-    public float time;
     public float cellSize;      // the mesh's spacing: this is the band limit, not a quality dial
-    public float amplitude;     // D49; 1 is the shipped field exactly
     public uint vertBase;
     public uint vertCount;
     public uint pad;
@@ -55,6 +60,33 @@ public struct WaterDeformPush {
 // The simulated height field. Bound here rather than reached through water.slang, which would drag
 // world_core's whole descriptor set into a compute pass that needs one texture.
 [[vk::binding(0, 0)]] Sampler2D<float> waterSimHeightTex;
+
+// Assembled from the SAME lanes water.slang's waterWaveParams() reads. It cannot call that function --
+// it lives behind world_core's descriptor set -- so this is the one place in the project where the two
+// have to be kept in step by hand, and it is worth knowing that.
+WaterWaveParams deformWaveParams(WorldPush wp) {
+    WaterWaveParams p;
+    p.wind = float2(cos(wp.waterAmbient.z), sin(wp.waterAmbient.z));
+    p.crossWind = float2(wp.waterWaveShape.x, wp.waterWaveShape.y);
+    p.strength = wp.waterAmbient.x;
+    p.baseLength = wp.waterAmbient.y;
+    p.complexity = wp.waterWaveShape.z;
+    p.steepness = wp.waterWaveShape.w;
+    p.gustScale = wp.waterWaveGust.x;
+    p.gustStrength = wp.waterWaveGust.y;
+    p.gustSpeed = wp.waterWaveGust.z;
+    p.timeScale = wp.waterWaveGust.w;
+    // The warp too. It moves where every component is sampled, so geometry built without it and
+    // shading built with it would be two different surfaces -- the exact failure this module's
+    // header exists to prevent.
+    p.warpAmplitude = wp.waterWaveWarp.x;
+    p.warpScale = wp.waterWaveWarp.y;
+    int packed = int(wp.waterWaveWarp.z);
+    p.firstComponent = packed / 16;
+    p.lastComponent = packed % 16;
+    p.lodFade = wp.waterWaveWarp.w;
+    return p;
+}
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -69,6 +101,8 @@ void main(uint3 tid: SV_DispatchThreadID) {
     uint restBase = 3u * i;
     float3 p = float3(rest[restBase], rest[restBase + 1u], rest[restBase + 2u]);
 
+    WorldPush wp = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+
     float2 worldXZ = p.xz + pc.worldOffset;
     float2 d = worldXZ - pc.fadeCentre;
     float fade = 1.0 - smoothstep(pc.fadeStart, pc.fadeEnd, length(d));
@@ -77,9 +111,9 @@ void main(uint3 tid: SV_DispatchThreadID) {
     // since, and a vertex left holding a stale displacement is a permanent lump in the water.
     float h = fade <= 0.0
             ? 0.0
-            : fade * waterSurfaceHeight(waterSimHeightTex, pc.simDomain, pc.simPlane,
-                                        float3(worldXZ.x, pc.simPlane.x, worldXZ.y),
-                                        pc.time, pc.cellSize, pc.amplitude);
+            : fade * waterSurfaceHeight(waterSimHeightTex, wp.waterSimDomain, wp.waterSimPlane,
+                                        float3(worldXZ.x, wp.waterSimPlane.x, worldXZ.y),
+                                        wp.waterParams.w, pc.cellSize, deformWaveParams(wp));
 
     // Y only. Real deep-water particles move in circles, so a physical surface also shifts horizontally
     // (that is what sharpens the crests), but moving xz here would shear the quads away from the block

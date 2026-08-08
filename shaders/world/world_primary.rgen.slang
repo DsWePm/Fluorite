@@ -125,7 +125,7 @@ public PathSegment tracePrimary(PathSegment seg,
         if (isWater && waterWaves) {
             float3 waterDomain = float3(hitPos.x + worldPush.waterAnchor.x, hitPos.y,
                                         hitPos.z + worldPush.waterAnchor.y);
-            float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
+            float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.12);
             if (bounce == 0 && abs(geometricNormal.y) >= 0.5) {
                 // Through water.slang rather than assembled here. Built inline, this path added the
                 // spectrum and silently omitted the simulation, so the one surface the player looks at

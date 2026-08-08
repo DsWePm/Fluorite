@@ -84,7 +84,14 @@ public final class RtAccel {
     // multiples of 256 (VUID-vkCmdBuildMicromapsEXT-pInfos-07515).
     private static final long MICROMAP_INPUT_ADDRESS_ALIGNMENT = 256L;
 
-    private static RtBuffer createScratchBuffer(RtContext ctx, long requiredSize, String label) {
+    /**
+     * Scratch for an acceleration-structure build or refit, aligned as the device demands.
+     *
+     * <p>Public because every caller that allocates its own instead gets it wrong: the alignment is a
+     * device property, the requirement is on the DEVICE ADDRESS rather than the allocation, and a plain
+     * createBuffer satisfies it often enough to look correct until it does not.
+     */
+    public static RtBuffer createScratchBuffer(RtContext ctx, long requiredSize, String label) {
         long alignment = ctx.accelerationStructureScratchAlignment();
         return ctx.createAlignedBuffer(Math.max(requiredSize, alignment), VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                 false, label, alignment);
@@ -1265,7 +1272,13 @@ public final class RtAccel {
                 b.maxVertex + 1, b.terrainTris, b.opacityMicromap);
         VkAccelerationStructureBuildGeometryInfoKHR.Buffer build = VkAccelerationStructureBuildGeometryInfoKHR.calloc(1, stack);
         build.sType$Default().type(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR)
-                .flags(buildFlags(false) | (compact ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0))
+                // b.updatable, NOT false. These flags must match the ones queryTerrainBlasSizes was given
+                // bit for bit: the scratch was sized for THAT build, and a build whose flags say something
+                // else may need more of it than was allocated. The failure is not an error -- the driver
+                // runs off the end of the scratch buffer and the GPU faults with its instruction pointer
+                // in unmapped memory, which is what a deformable section did on its very first build.
+                .flags(buildFlags(b.updatable)
+                        | (compact ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0))
                 .mode(VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR)
                 .geometryCount(geom.capacity()).pGeometries(geom)
                 .dstAccelerationStructure(b.accel.handle);

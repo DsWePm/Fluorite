@@ -280,7 +280,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 // surface it belongs to, or every water in this column ripples together.
                 float3 waterDomain = float3(hitPos.x + worldPush.waterAnchor.x, hitPos.y,
                                             hitPos.z + worldPush.waterAnchor.y);
-                float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.2);
+                float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.12);
                 n = applyWaterWaves(geometricNormal, waterDomain,
                                     worldPush.waterParams.w, waterFootprint);
             }

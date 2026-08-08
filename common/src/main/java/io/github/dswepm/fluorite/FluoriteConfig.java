@@ -578,6 +578,23 @@ public final class FluoriteConfig {
         }
 
         public static final class Composite {
+            /**
+             * ONE wind for the whole world, in degrees clockwise from +X — the direction weather travels.
+             *
+             * <p>Everything that is blown by wind takes its heading from here plus its own offset: the
+             * cumulus deck, the cirrus sheet, and the sea. They genuinely do differ in reality — a high
+             * ice sheet runs tens of degrees off the surface wind — so the offsets stay, but they are
+             * offsets now rather than three unrelated numbers that happened to need hand-matching.
+             *
+             * <p>ONLY THE HEADING IS SHARED, AND ONLY THE HEADING CAN BE. The clouds' speed is authored in
+             * blocks per second; the waves' is not authored at all — it falls out of deep-water dispersion
+             * w = sqrt(g*k), one speed per wavelength. Forcing a blocks-per-second onto the waves would
+             * destroy the relationship that makes long swell stride past while short chop flutters in
+             * place, which water_wave.slang calls the biggest tell of fake water.
+             */
+            public static final FloatSetting WIND_ANGLE =
+                    clampedFloat("fluorite.rt.windAngle", "composite.wind-angle", 35f, 0f, 360f);
+
             public static final IntSetting DEBUG_VIEW = intValue("fluorite.rt.debugView", "composite.debug-view", 0);
             public static final IntSetting SPP = intAtLeast("fluorite.rt.spp", "composite.spp", 1, 1);
             public static final IntSetting MAX_BOUNCES =
@@ -945,9 +962,15 @@ public final class FluoriteConfig {
                             2.0f, 0f, 60f);
 
             /** Which way the wind blows, in degrees clockwise from +X. */
-            public static final FloatSetting CLOUD_WIND_ANGLE =
-                    clampedFloat("fluorite.rt.fog.cloudWindAngle", "volumetrics.cloud-wind-angle",
-                            35f, 0f, 360f);
+            /** Degrees off the global wind (Composite.WIND_ANGLE). 0 = the deck runs with the wind. */
+            public static final FloatSetting CLOUD_WIND_OFFSET =
+                    clampedFloat("fluorite.rt.fog.cloudWindOffset", "volumetrics.cloud-wind-offset",
+                            0f, -180f, 180f);
+
+            /** Absolute heading of the deck, in degrees clockwise from +X. */
+            public static float cloudWindAngle() {
+                return Rt.Composite.WIND_ANGLE.value() + CLOUD_WIND_OFFSET.value();
+            }
 
             /**
              * How wide the cloud FIELD's cells are, in blocks — the 2D distribution, not the 3D puffs.
@@ -1101,9 +1124,19 @@ public final class FluoriteConfig {
                             "volumetrics.cloud-cirrus-wind-speed", 6f, 0f, 120f);
 
             /** Which way the cirrus layer's own wind blows, in degrees clockwise from +X. */
-            public static final FloatSetting CLOUD_CIRRUS_WIND_ANGLE =
-                    clampedFloat("fluorite.rt.fog.cloudCirrusWindAngle",
-                            "volumetrics.cloud-cirrus-wind-angle", 65f, 0f, 360f);
+            /**
+             * Degrees off the global wind. Defaults to +30, which reproduces the shipped 65 against a
+             * global 35 — and is physically the right shape: high cirrus really does run at an angle to
+             * the surface wind, which is why the offset is kept rather than collapsed.
+             */
+            public static final FloatSetting CLOUD_CIRRUS_WIND_OFFSET =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusWindOffset",
+                            "volumetrics.cloud-cirrus-wind-offset", 30f, -180f, 180f);
+
+            /** Absolute heading of the cirrus sheet, in degrees clockwise from +X. */
+            public static float cloudCirrusWindAngle() {
+                return Rt.Composite.WIND_ANGLE.value() + CLOUD_CIRRUS_WIND_OFFSET.value();
+            }
 
             /**
              * What clouds a ray that is not the first of its path gets: {@code off}, {@code reduced} or
@@ -1466,6 +1499,185 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.simStrength", "water.sim-strength", 1.0f, 0f, 4f);
 
             /**
+             * How irregular the sea is, 0 to 1 — one knob for three things that all fight the same
+             * problem, which is that ten plane waves read as a comb.
+             *
+             * <p>It ramps in a SECOND wave system crossing the first, widens and jitters the fan of
+             * headings, and extends the crest meander from the four longest components to seven. They are
+             * one control because they are one intent, and because three sliders that each do a fifth of
+             * the job is worse than one that does it.
+             *
+             * <p>The crossing swell is the load-bearing one. Two wave systems interfere, and the shifting
+             * diamond lattice that produces reads as far more complex than any single fan can — which is
+             * also why real water almost always has one: a swell outlives the wind that made it and
+             * arrives from wherever that was.
+             *
+             * <p>WHAT IT DOES NOT DO is add spectral content. There are still ten components. It changes
+             * their character and their arrangement; if the sea still looks repetitive at 1, the answer is
+             * more components (about 0.09 ms each, measured) and not this.
+             *
+             * <p>0 is the shipped field exactly.
+             */
+            public static final FloatSetting WAVE_COMPLEXITY =
+                    clampedFloat("fluorite.rt.water.waveComplexity", "water.wave-complexity",
+                            0.5f, 0f, 1f);
+
+            /**
+             * How strongly gusts ruffle the surface, 0 to 1.
+             *
+             * <p>WHAT THIS FIXES is that the sea is otherwise equally rough everywhere, which is the
+             * single thing that most makes it read as a pattern rather than as weather. Real water is
+             * patchy: a dark ruffled stretch here, a glassy calm one there, and the boundary crawling
+             * downwind. That patchwork is most of what "alive" means on open water.
+             *
+             * <p>It is weighted toward the SHORT waves, because a gust ruffles a surface, it does not
+             * raise a swell. A gust front passing over water darkens it with chop while the long waves
+             * underneath carry on unchanged; modulating everything equally would give a sea that breathes
+             * in and out, which is a different and much worse effect.
+             *
+             * <p>Costs three noise fetches per shaded point, not per wave, so it does not scale with the
+             * component count. 0 is the shipped field exactly.
+             */
+            public static final FloatSetting WAVE_GUST =
+                    clampedFloat("fluorite.rt.water.waveGust", "water.wave-gust", 0.5f, 0f, 1f);
+
+            /**
+             * How much the weather moves the sea, 0 to 2.
+             *
+             * <p>The rain and thunder levels have been available all along and the clouds lean on them
+             * heavily; the water read neither, so a storm rolled in overhead and the sea below it stayed
+             * exactly as glassy as it was at noon.
+             *
+             * <p>It drives THREE things, not one. A storm sea is taller, and steeper, and gustier -- and
+             * of those, steepness is what actually reads as violent. Scaling only the amplitude gives a
+             * bigger calm sea, which looks like the camera moved closer rather than like weather.
+             *
+             * <p>0 leaves the sea indifferent to the sky, which is the shipped behaviour.
+             */
+            public static final FloatSetting WAVE_WEATHER =
+                    clampedFloat("fluorite.rt.water.waveWeather", "water.wave-weather", 1f, 0f, 2f);
+
+            /**
+             * How far the world the waves travel through is bent, in blocks.
+             *
+             * <p>WHAT THIS FIXES is the lattice. A sum of ten plane waves is quasi-periodic whatever you
+             * do to it -- measured, wavelength jitter, irrational ratios, a wider fan, a flatter
+             * amplitude law and even thirty-two components all left the long-range autocorrelation above
+             * about 0.42, against 0.69 for the original. Bending the domain took it to 0.056 for one
+             * noise fetch, because it attacks the cause rather than the symptom: the phase relationships
+             * between components stop being the same everywhere in the world.
+             *
+             * <p>It is not a cheat either. Real water refracts over currents and bathymetry and bends its
+             * crests in exactly this way. It stops being physical as the bend approaches a wavelength,
+             * which is why this is authored and why its useful range sits well under the swell's length.
+             *
+             * <p>0 is the shipped field exactly, and skips the noise entirely.
+             */
+            public static final FloatSetting WAVE_WARP =
+                    clampedFloat("fluorite.rt.water.waveWarp", "water.wave-warp", 10f, 0f, 40f);
+
+            /**
+             * Which wave components run, 1 to 10, inclusive. DIAGNOSTIC, not art.
+             *
+             * <p>A sum of ten waves cannot tell you which of them you are looking at, and reading the
+             * code has now failed at that four times over one visible artefact. Set both to the same
+             * number to see one component alone; walk the upper one up from 1 to see the field
+             * accumulate and catch the exact step where something appears.
+             */
+            public static final FloatSetting WAVE_FIRST =
+                    clampedFloat("fluorite.rt.water.waveFirst", "water.wave-first", 1f, 1f, 10f);
+
+            public static final FloatSetting WAVE_LAST =
+                    clampedFloat("fluorite.rt.water.waveLast", "water.wave-last", 10f, 1f, 10f);
+
+            /**
+             * The distance-based band limit that fades short waves out as the ray footprint grows.
+             *
+             * <p>Off is WRONG -- it aliases, badly, at any distance -- and that is the point: it exists
+             * so a ring or a line on the water can be attributed. If a boundary vanishes with this off,
+             * it is a component fading out at a fixed distance rather than anything in the field itself.
+             */
+            public static final BooleanSetting WAVE_BAND_LIMIT =
+                    bool("fluorite.rt.water.waveBandLimit", "water.wave-band-limit", true);
+
+            /** How far apart the bends are, in blocks. Large is a slow lazy meander, small is churn. */
+            public static final FloatSetting WAVE_WARP_SCALE =
+                    clampedFloat("fluorite.rt.water.waveWarpScale", "water.wave-warp-scale",
+                            100f, 20f, 400f);
+
+            /**
+             * How fast the whole sea moves, as a multiple of its shipped speed.
+             *
+             * <p>UNIFORM ON PURPOSE, and that is what makes it safe. It scales every wave equally, so the
+             * relation between them survives: long swell still strides past while short chop flutters
+             * nearly in place. A per-wavelength speed control would destroy that relation, which
+             * water_wave.slang calls the biggest tell of fake water, so there deliberately is not one.
+             *
+             * <p>The weather does NOT act here, and that is deliberate too. In deep water a wave's speed
+             * depends only on its wavelength -- c = sqrt(g/k) -- so wind does not make a given wave
+             * travel faster, it makes waves LONGER, and longer waves are faster for free. So a storm
+             * reaches the speed through WAVE_WEATHER lengthening the spectrum, not by multiplying time.
+             * Multiplying time would have looked similar and meant something false.
+             */
+            public static final FloatSetting WAVE_SPEED =
+                    clampedFloat("fluorite.rt.water.waveSpeed", "water.wave-speed", 1f, 0f, 3f);
+
+            /** How big a gust patch is, in blocks. */
+            public static final FloatSetting WAVE_GUST_SCALE =
+                    clampedFloat("fluorite.rt.water.waveGustScale", "water.wave-gust-scale",
+                            40f, 8f, 200f);
+
+            /**
+             * How fast the patches travel downwind, in blocks per second.
+             *
+             * <p>Not optional in spirit: a patch field pinned to the world is a stain on the sea, with the
+             * waves moving through it while it sits still. That reads worse than no patches at all.
+             */
+            public static final FloatSetting WAVE_GUST_SPEED =
+                    clampedFloat("fluorite.rt.water.waveGustSpeed", "water.wave-gust-speed",
+                            4f, 0f, 30f);
+
+            /** Degrees the second wave system runs off the first. Only bites while complexity > 0. */
+            public static final FloatSetting WAVE_CROSS_ANGLE =
+                    clampedFloat("fluorite.rt.water.waveCrossAngle", "water.wave-cross-angle",
+                            50f, -180f, 180f);
+
+            /**
+             * Degrees the swell runs off the global wind (Composite.WIND_ANGLE).
+             *
+             * <p>The default is -15.71 rather than 0, and that is not a taste choice: the wave direction
+             * used to be a compile-time constant normalize(1.0, 0.35), which is 19.29 degrees, and
+             * 35 - 15.71 reproduces it exactly. Iron rule 8 is about switches, but the principle is the
+             * same -- adding a control must not silently move what the control now controls.
+             */
+            public static final FloatSetting WAVE_WIND_OFFSET =
+                    clampedFloat("fluorite.rt.water.waveWindOffset", "water.wave-wind-offset",
+                            -15.71f, -180f, 180f);
+
+            /** Absolute heading of the swell, in degrees clockwise from +X. */
+            public static float waveWindAngle() {
+                return Rt.Composite.WIND_ANGLE.value() + WAVE_WIND_OFFSET.value();
+            }
+
+            /**
+             * How big a patch an entity disturbs, as a multiple of its own width.
+             *
+             * <p>THIS IS THE RIPPLE'S WAVELENGTH, which is not obvious and is worth writing down. The
+             * solver is the linear wave equation, which is NON-DISPERSIVE: every wavelength travels at
+             * the same c (that one is water.sim-speed). So a ripple's wavelength is not a property of the
+             * water at all -- it is set entirely by the size of whatever disturbed it. A bump of radius R
+             * radiates waves of about 2R. Scaling the source is the only honest way to author it.
+             *
+             * <p>Turning it up has a second effect worth knowing: past a radius of two or three blocks
+             * the ripples are long enough to survive the water mesh's band limit, so they stop being a
+             * normal-map effect and start actually moving the geometry -- without waiting for the
+             * subdivided mesh (D48).
+             */
+            public static final FloatSetting WATER_SIM_IMPULSE_SIZE =
+                    clampedFloat("fluorite.rt.water.simImpulseSize", "water.sim-impulse-size",
+                            1f, 0.25f, 6f);
+
+            /**
              * How deep below the surface something can be and still disturb it, in blocks.
              *
              * <p>PHYSICAL, not a preference. A surface wave's motion decays as e^(-k·d) with depth, so a
@@ -1508,6 +1720,23 @@ public final class FluoriteConfig {
              * visible change to shipped behaviour, which is why it is authored rather than simply raised.
              * Around 3–8 reaches the steepness real water has.
              */
+            /**
+             * The longest wave in the spectrum, in blocks. Every component follows from it: ten of them,
+             * each 1.5x shorter, so 14 reaches down to about 0.36.
+             *
+             * <p>SPEED IS NOT A SEPARATE SETTING AND MUST NOT BECOME ONE. Deep-water dispersion ties it
+             * to wavelength as w = sqrt(g*k), so shortening the swell makes it travel slower on its own,
+             * and the relative speeds across the spectrum stay physical. That relationship — long swell
+             * striding past while short chop flutters nearly in place — is the single biggest reason the
+             * water reads as water, and a speed knob would be a knob for destroying it.
+             *
+             * <p>Amplitude follows too, because the per-component steepness a*k is what is authored: a
+             * longer wave of the same steepness is a taller wave. So this changes the sea's character —
+             * a pond of short choppy waves against an ocean swell — rather than merely its scale.
+             */
+            public static final FloatSetting WAVE_LENGTH =
+                    clampedFloat("fluorite.rt.water.waveLength", "water.wave-length", 14f, 2f, 40f);
+
             public static final FloatSetting WAVE_AMPLITUDE =
                     clampedFloat("fluorite.rt.water.waveAmplitude", "water.wave-amplitude", 1f, 0f, 8f);
 
@@ -1527,6 +1756,34 @@ public final class FluoriteConfig {
              */
             public static final BooleanSetting WATER_DEFORM =
                     bool("fluorite.rt.water.deform", "water.deform", false);
+
+            /**
+             * Which sections are BUILT ready to deform: {@code all} water-bearing ones, or only those
+             * {@code near} the camera. Takes effect on the next terrain load.
+             *
+             * <p>WHAT THIS DECIDES IS THE FLICKER. Crossing the deformation boundary changes how a
+             * section is built -- updatable and uncompacted, with its build inputs retained -- and the
+             * only way to change that is to build it again. In {@code near} mode every re-anchor
+             * therefore re-extracts a ring of sections, and that rebuild is visible.
+             *
+             * <p>{@code all} removes the boundary entirely: nothing ever crosses it, so nothing is ever
+             * rebuilt, and the flicker cannot happen. It does NOT cost more per frame -- the dispatch
+             * still only touches sections near the camera, which is the whole point of separating the
+             * two questions. What it costs is fixed: vertices, indices and a rest copy retained for
+             * every water-bearing section, and BLAS compaction given up on them.
+             *
+             * <p>{@code near} is the low-memory option and keeps the flicker. Restart-scoped rather than
+             * live, because switching would require rebuilding every water section -- precisely the cost
+             * being avoided.
+             */
+            public static final StringSetting WATER_DEFORM_MODE =
+                    string("fluorite.rt.water.deformMode", "water.deform-mode", "all",
+                            Water::sanitizeDeformMode);
+
+            private static String sanitizeDeformMode(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return v.equals("near") ? "near" : "all";
+            }
 
             /**
              * How far from the camera the water is real geometry, in blocks. Beyond it the surface is
@@ -1568,7 +1825,7 @@ public final class FluoriteConfig {
              * show as the surface crawling rather than as a smeared ripple.
              */
             public static final FloatSetting WATER_DEFORM_REANCHOR =
-                    clampedFloat("fluorite.rt.water.deformReanchor", "water.deform-reanchor", 8f, 1f, 32f);
+                    clampedFloat("fluorite.rt.water.deformReanchor", "water.deform-reanchor", 8f, 0f, 32f);
 
             /**
              * The ripple domain's reach once the deformation range has had its say: ripples are not

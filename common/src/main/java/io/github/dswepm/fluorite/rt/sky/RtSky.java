@@ -116,6 +116,10 @@ public final class RtSky {
     private static final int WATER_SIM_GROUP = 8;
     /** 16-byte header plus six inline 16-byte impulses; inside Vulkan's guaranteed 128. */
     private static final int WATER_SIM_PUSH_BYTES = 128;
+    /** Matches WaterDeformPush in water_deform.comp.slang; see that struct for the field order. */
+    private static final int WATER_DEFORM_PUSH_BYTES = 64;
+    private static final int WATER_DEFORM_GROUP = 64;
+    private Bake waterDeformBake;
     // The absolute cell origin each height image's CONTENT was written in, so a re-anchor can be resolved
     // by shifting the reads instead of copying the images. Long.MIN_VALUE = never written, treated as the
     // current origin so the first step reads its (zeroed) self rather than a wild offset.
@@ -222,6 +226,17 @@ public final class RtSky {
             Bake cloudNoiseBake = createBake(ctx, stack, "cloud_noise.comp.spv", "cloud noise",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
 
+            // One binding: the simulated height. Everything else the displacement needs arrives as a
+            // device address in the push constants, because the buffers it writes belong to a terrain
+            // section rather than to this chain, and there is one of them per section per frame --
+            // descriptor writes at that rate would cost more than the dispatch.
+            //
+            // COMBINED_IMAGE_SAMPLER, matching Sampler2D on the shader side and writeSampledImage on this
+            // one, for the same reason spelled out on the sim bake below.
+            Bake waterDeformBake = createBake(ctx, stack, "water_deform.comp.spv", "water deform",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
+                    WATER_DEFORM_PUSH_BYTES);
+
             Bake[] waterSimBakes = new Bake[3];
             for (int phase = 0; phase < 3; phase++) {
                 waterSimBakes[phase] = createBake(ctx, stack, "water_sim.comp.spv", "water sim " + phase,
@@ -252,6 +267,7 @@ public final class RtSky {
                     mediumSkyReduceBake, froxelBake, froxelTlas,
                     visibilityBake, visibilityTlas, cloudNoiseBake, sampler);
             sky.waterSimBakes = waterSimBakes;
+            sky.waterDeformBake = waterDeformBake;
             sky.waterObstacleBake = waterObstacleBake;
             sky.waterObstacleTlas = waterObstacleTlas;
             // The images are allocated HERE rather than lazily inside the bake, so the views exist from
@@ -306,6 +322,10 @@ public final class RtSky {
                     VK10.VK_FORMAT_R8_UNORM, "water sim obstacle mask");
             sky.waterDisplay = ctx.createStorageImage(WATER_SIM_DIM, WATER_SIM_DIM,
                     VK10.VK_FORMAT_R16_SFLOAT, "water sim height (display)");
+            // The DISPLAY image, which is exactly what the shading reads -- so the geometry and the
+            // normal cannot be looking at different states of the same field.
+            writeSampledImage(vk, stack, sky.waterDeformBake.descriptorSet(), 0,
+                    sky.waterDisplay.view, sampler);
             for (int phase = 0; phase < 3; phase++) {
                 long set = sky.waterSimBakes[phase].descriptorSet();
                 writeSampledImage(vk, stack, set, 0, sky.waterHeight[phase].view, sampler);
@@ -373,6 +393,65 @@ public final class RtSky {
     }
 
     /** The height field the shading samples. Fixed; the rotation happens behind it. */
+    /**
+     * Displace one section's water vertices onto the wave surface, and record the barrier that lets the
+     * BLAS refit read them.
+     *
+     * <p>ORDER IS THE WHOLE RISK HERE. The dispatch writes the vertex buffer and the refit reads it back
+     * as an acceleration-structure build input; without the barrier between them the refit is free to
+     * consume last frame's positions, and per F24 nothing in Vulkan will say so -- no error, no device
+     * loss, just geometry that is quietly wrong. The barrier is recorded here, beside the dispatch, so it
+     * cannot be forgotten by a caller that only wanted to move some vertices.
+     *
+     * <p>Caller records the refit itself, after this returns, because the BLAS and its scratch belong to
+     * the terrain.
+     */
+    public void recordWaterDeform(VkCommandBuffer cmd, long positionsAddr, long restAddr,
+                                  long worldPushAddr, int vertBase, int vertCount,
+                                  float worldOffsetX, float worldOffsetZ,
+                                  float fadeCentreX, float fadeCentreZ,
+                                  float fadeStart, float fadeEnd, float cellSize) {
+        if (waterDeformBake == null || vertCount <= 0) {
+            return;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "water deform")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, waterDeformBake.pipeline());
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    waterDeformBake.pipelineLayout(), 0,
+                    stack.longs(waterDeformBake.descriptorSet()), null);
+            ByteBuffer push = stack.malloc(WATER_DEFORM_PUSH_BYTES);
+            push.putLong(0, positionsAddr).putLong(8, restAddr).putLong(16, worldPushAddr);
+            push.putFloat(24, worldOffsetX).putFloat(28, worldOffsetZ);
+            push.putFloat(32, fadeCentreX).putFloat(36, fadeCentreZ);
+            push.putFloat(40, fadeStart).putFloat(44, fadeEnd).putFloat(48, cellSize);
+            push.putInt(52, vertBase).putInt(56, vertCount).putInt(60, 0);
+            VK10.vkCmdPushConstants(cmd, waterDeformBake.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+            VK10.vkCmdDispatch(cmd, (vertCount + WATER_DEFORM_GROUP - 1) / WATER_DEFORM_GROUP, 1, 1);
+        }
+    }
+
+    /**
+     * The one barrier between every displacement recorded this frame and the refits that read them.
+     *
+     * <p>Once for the whole batch rather than once per section: they all write disjoint buffers and all
+     * feed the same later stage, so a barrier apiece would serialise dispatches that have no reason to
+     * wait for each other.
+     */
+    public static void recordWaterDeformBarrier(VkCommandBuffer cmd) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkMemoryBarrier.Buffer barrier = VkMemoryBarrier.calloc(1, stack);
+            barrier.get(0).sType$Default()
+                    .srcAccessMask(VK10.VK_ACCESS_SHADER_WRITE_BIT)
+                    .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT);
+            VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    org.lwjgl.vulkan.KHRAccelerationStructure
+                            .VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                    0, barrier, null, null);
+        }
+    }
+
     /** Beyond a whole grid there is no overlap left, so saturate rather than wrap. */
     private static int clampCellShift(long delta) {
         return (int) Math.max(-WATER_SIM_DIM, Math.min(WATER_SIM_DIM, delta));

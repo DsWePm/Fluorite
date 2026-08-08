@@ -19,10 +19,24 @@ final class RtSkyMediumLayoutTest {
         // deriving its shape and its wind from the deck below it, 864 with M12's water-sim domain, and 880
         // when that domain gained the PLANE it runs on -- the field is two-dimensional, so without a y to
         // belong to it handed the same ripples to every water surface in its column. This
+        // belong to, and 912 with the wave field's shape and gust lanes (D52). This
         // buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
         // but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(880, WorldPushData.BYTE_SIZE);
+        assertEquals(928, WorldPushData.BYTE_SIZE);
+        // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
+        // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
+        // world_common declares them. Passing them in a different order compiles, runs, and feeds every
+        // lane the contents of the one beside it -- which is exactly what happened when the two wave
+        // lanes were added, and the symptom was a steepness of zero and a sea that had gone perfectly
+        // flat with no error anywhere.
+        //
+        // If these numbers move, the declaration order changed, and the call site needs re-checking.
+        assertEquals(848, WorldPushData.WATER_SIM_DOMAIN_OFFSET);
+        assertEquals(864, WorldPushData.WATER_WAVE_SHAPE_OFFSET);
+        assertEquals(880, WorldPushData.WATER_WAVE_GUST_OFFSET);
+        assertEquals(896, WorldPushData.WATER_WAVE_WARP_OFFSET);
+        assertEquals(912, WorldPushData.WATER_SIM_PLANE_OFFSET);
     }
 
     /**

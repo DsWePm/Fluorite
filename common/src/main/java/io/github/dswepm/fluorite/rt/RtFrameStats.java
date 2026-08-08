@@ -68,6 +68,10 @@ public final class RtFrameStats {
                     "entity.blockEntities",
                     "entity.particles",
                     "entity.blasRecord",
+                    // Displacing the water and refitting its sections, recorded just before the
+                    // TLAS build. Its own stage so the deformation's cost is separable from the
+                    // terrain's -- the whole reason for taking path 1 was to get this number.
+                    "water.deform",
                     "frame.prepareTlas",
                     "frame.recordTlas",
                     "frame.tracePrimary",
@@ -82,6 +86,16 @@ public final class RtFrameStats {
                     "gpu.skyBake",
                     "gpu.visBake",
                     "gpu.froxelBake",
+                    // The two water passes. The spectrum is deliberately absent -- it runs inline in
+                    // the raygen shaders, so it is measured by the water.waves isolation switch
+                    // against gpu.tracePrimary/gpu.traceIndirect, not by a zone.
+                    "gpu.waterSim",
+                    "gpu.waterDeform",
+                    // The acceleration-structure builds. Their CPU record times existed already
+                    // (entity.blasRecord, frame.recordTlas) and measure the wrong thing: how long it
+                    // took to WRITE the commands, not to run them.
+                    "gpu.entityBlas",
+                    "gpu.tlasBuild",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",

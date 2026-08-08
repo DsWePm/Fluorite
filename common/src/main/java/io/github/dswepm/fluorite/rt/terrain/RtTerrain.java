@@ -350,6 +350,226 @@ public final class RtTerrain {
      * it the neighbour keeps stale geometry — opaque holes and a disconnected water surface at the seam.
      * Interior edits stay within one section (±1 doesn't cross a 16-block boundary).
      */
+    // Where the water deformation region sits, in blocks, and how far it reaches. Volatile because the
+    // render thread moves it and the section workers read it. Long.MIN_VALUE = the deformation is off, in
+    // which case every section builds exactly as it always did.
+    private static volatile int deformAnchorX = Integer.MIN_VALUE;
+    private static volatile int deformAnchorY;
+    private static volatile int deformAnchorZ;
+    private static volatile int deformReach;
+    // The deformation settings AS OF THE LAST TERRAIN LOAD, not as of this frame.
+    //
+    // Whether a section can deform is decided when it is BUILT, and nothing rebuilds a section because a
+    // setting changed. Reading the live config here therefore produced two different wrong behaviours
+    // rather than one: in "near" mode the anchor happened to mark a ring dirty whenever the player moved,
+    // so sections were rebuilt often enough that the switch LOOKED live; in "all" mode there is no anchor
+    // marking anything, so the switch appeared to do nothing at all. The liveness was an accident of the
+    // flicker, and removing the flicker removed it.
+    //
+    // Snapshotting makes both modes behave the same and say so. Refreshed on the terrain's own full
+    // clear, which is what a world load is.
+    private static volatile String deformModeAtLoad;
+    private static volatile boolean deformEnabledAtLoad;
+
+    /** True when the resident terrain was BUILT with deformation available. */
+    public static boolean deformBuiltIn() {
+        snapshotDeformSettings(false);
+        return deformEnabledAtLoad;
+    }
+
+    private static void snapshotDeformSettings(boolean force) {
+        if (force || deformModeAtLoad == null) {
+            deformModeAtLoad = FluoriteConfig.Rt.Water.WATER_DEFORM_MODE.get();
+            deformEnabledAtLoad = FluoriteConfig.Rt.Water.WATER_DEFORM.value();
+        }
+    }
+    private long deformLogTick;
+
+    /**
+     * Is this section inside the deformation region, and therefore to be built with its water ready to
+     * move (see RtSectionBuilder.prepare)?
+     *
+     * <p>ASKED AT BUILD TIME, on a worker, which is why this is a pure function of the published anchor
+     * rather than of the camera: the camera has moved on by the time a build lands, and two sections
+     * built a frame apart must not disagree about where the boundary was.
+     */
+    static boolean sectionDeformable(int sox, int soy, int soz) {
+        snapshotDeformSettings(false);
+        if (!deformEnabledAtLoad) {
+            return false;
+        }
+        // In "all" mode there is no boundary at all: every water-bearing section is built ready, so none
+        // of them is ever rebuilt for crossing one, and the flicker that came with those rebuilds cannot
+        // occur. The per-frame dispatch still filters by distance -- see recordWaterDeform -- so this
+        // buys the flicker away without costing anything per frame.
+        if (!"near".equals(deformModeAtLoad)) {
+            return true;
+        }
+        int ax = deformAnchorX;
+        if (ax == Integer.MIN_VALUE) {
+            return false;
+        }
+        int reach = deformReach;
+        return Math.abs(sox + 8 - ax) <= reach
+                && Math.abs(soz + 8 - deformAnchorZ) <= reach
+                && Math.abs(soy + 8 - deformAnchorY) <= reach;
+    }
+
+    /**
+     * Move the deformation region, re-extracting the sections whose build mode that changes.
+     *
+     * <p>HYSTERETIC, and the dead zone is the whole cost control. Crossing the boundary changes how a
+     * section is BUILT -- updatable and uncompacted instead of compacted, build inputs retained -- and
+     * the only way to change that is to build it again. So every move re-extracts a ring of sections, and
+     * at a 48-block reach that ring is tens of them. A block change is sparse and event-driven; this
+     * would fire continuously while walking. Unmeasured, R19-class, and the reason the re-anchor distance
+     * is authored (see docs 8.2c: this is path 1, chosen to get the number that decides whether the
+     * cheaper rebuild-only path is worth building).
+     *
+     * <p>Marks the union of the old and new regions in one call. The two overlap almost entirely at any
+     * sane re-anchor distance, so the union costs barely more than either and avoids emitting the
+     * intersection as dirty twice.
+     */
+    public static void updateDeformAnchor(double camX, double camY, double camZ,
+                                          boolean enabled, int reach) {
+        RtTerrain terrain = INSTANCE;
+        if (terrain == null) {
+            return;
+        }
+        // "all" mode has no boundary to move, so there is nothing to re-extract and this whole path --
+        // the one that produced the flicker -- simply does not run.
+        snapshotDeformSettings(false);
+        if (!"near".equals(deformModeAtLoad)) {
+            return;
+        }
+        int wantX = (int) Math.floor(camX);
+        int wantY = (int) Math.floor(camY);
+        int wantZ = (int) Math.floor(camZ);
+        int oldX = deformAnchorX;
+        boolean wasOn = oldX != Integer.MIN_VALUE;
+        if (!enabled) {
+            if (wasOn) {
+                // Turning it off is a build-mode change too, so the region has to be re-extracted back to
+                // ordinary compacted sections rather than left updatable forever.
+                int r = deformReach;
+                deformAnchorX = Integer.MIN_VALUE;
+                markBlocksDirty(oldX - r - 16, deformAnchorY - r - 16, deformAnchorZ - r - 16,
+                        oldX + r + 16, deformAnchorY + r + 16, deformAnchorZ + r + 16);
+            }
+            return;
+        }
+        // Zero is allowed and means "follow every block": the region then moves as continuously as a
+        // block-quantised anchor can, which is the closest this design gets to not stepping at all.
+        int dead = Math.max(0, Math.round(FluoriteConfig.Rt.Water.WATER_DEFORM_REANCHOR.value()));
+        if (wasOn && reach == deformReach
+                && Math.abs(wantX - oldX) <= dead
+                && Math.abs(wantY - deformAnchorY) <= dead
+                && Math.abs(wantZ - deformAnchorZ) <= dead) {
+            return;
+        }
+        int minX = wasOn ? Math.min(oldX, wantX) : wantX;
+        int minY = wasOn ? Math.min(deformAnchorY, wantY) : wantY;
+        int minZ = wasOn ? Math.min(deformAnchorZ, wantZ) : wantZ;
+        int maxX = wasOn ? Math.max(oldX, wantX) : wantX;
+        int maxY = wasOn ? Math.max(deformAnchorY, wantY) : wantY;
+        int maxZ = wasOn ? Math.max(deformAnchorZ, wantZ) : wantZ;
+        int r = Math.max(reach, deformReach) + 16;
+        deformAnchorX = wantX;
+        deformAnchorY = wantY;
+        deformAnchorZ = wantZ;
+        deformReach = reach;
+        markBlocksDirty(minX - r, minY - r, minZ - r, maxX + r, maxY + r, maxZ + r);
+        FluoriteMod.LOGGER.info(
+                "[water-deform] re-anchored to ({}, {}, {}) reach={} -- re-extracting the region",
+                wantX, wantY, wantZ, reach);
+    }
+
+    /**
+     * Displace every deformable section's water and refit its BLAS, for this frame.
+     *
+     * <p>Ordering, which is the whole of the risk: all the dispatches, then ONE barrier, then all the
+     * refits. The dispatches write disjoint vertex buffers so they need nothing from each other; the
+     * refits read those buffers back as acceleration-structure build inputs, and without the barrier
+     * between the two groups a refit may consume the previous frame's vertices. Per F24 nothing reports
+     * that -- no error, no device loss, just geometry quietly disagreeing with its own shading.
+     *
+     * <p>Called BEFORE the TLAS build. A refit changes a BLAS in place, and the TLAS is built over bounds
+     * derived from its BLASes, so refitting after it would leave those bounds describing the previous
+     * frame's surface. The displacement is centimetres and the error would be too, which is exactly the
+     * kind of wrongness that survives review.
+     *
+     * <p>The cost of that placement is that the interactive ripples are one frame stale here, because the
+     * simulation step is recorded later. The procedural spectrum, which carries 96% of the height, is
+     * evaluated at this frame's time and is not stale at all.
+     *
+     * @param waveOffsetX added to a section-local x to reach the wave coordinate the shading uses
+     */
+    public void recordWaterDeform(RtContext ctx, org.lwjgl.vulkan.VkCommandBuffer cmd,
+                                  io.github.dswepm.fluorite.rt.sky.RtSky sky, long worldPushAddr,
+                                  double waveOffsetX, double waveOffsetZ,
+                                  float fadeCentreX, float fadeCentreZ, float fadeStart, float fadeEnd,
+                                  float cellSize) {
+        if (table.slots.isEmpty()) {
+            return;
+        }
+        List<RtAccel.PreparedBlas> refits = null;
+        int deformVerts = 0;
+        // Sections far enough out that the fade has already reached zero. THIS is what separates being
+        // built ready to deform from actually being deformed, and it is the whole of path 3': without it
+        // "all" mode would displace and refit every water section in the world every frame, which is the
+        // cost the mode exists to avoid rather than to pay.
+        //
+        // Half a section past fadeEnd, because the test is against the section's centre and its corners
+        // reach further.
+        float cull = fadeEnd + 16.0f;
+        for (SectionGeom g : table.slots) {
+            if (g == null || g.waterRest == null || g.waterVertCount <= 0) {
+                continue;
+            }
+            float dx = (float) (g.sx + 8 + waveOffsetX) - fadeCentreX;
+            float dz = (float) (g.sz + 8 + waveOffsetZ) - fadeCentreZ;
+            if (dx * dx + dz * dz > cull * cull) {
+                continue;
+            }
+            sky.recordWaterDeform(cmd, g.positions.deviceAddress, g.waterRest.deviceAddress,
+                    worldPushAddr, g.waterVertBase, g.waterVertCount,
+                    (float) (g.sx + waveOffsetX), (float) (g.sz + waveOffsetZ),
+                    fadeCentreX, fadeCentreZ, fadeStart, fadeEnd, cellSize);
+            long required = Math.max(g.updateScratchSize, 1L);
+            if (g.refitScratch == null || g.refitScratch.size < required) {
+                if (g.refitScratch != null) {
+                    g.refitScratch.destroy();
+                }
+                // Through RtAccel's own allocator, not a hand-rolled createBuffer. The requirement is
+                // on the scratch's DEVICE ADDRESS, not on the allocation, and it is a device property --
+                // a plain buffer happens to satisfy it often enough to look right until it does not.
+                g.refitScratch = RtAccel.createScratchBuffer(ctx, required, "terrain water refit scratch");
+            }
+            deformVerts += g.waterVertCount;
+            if (refits == null) {
+                refits = new ArrayList<>();
+            }
+            refits.add(RtAccel.refitTerrainUpdate(g.blas, g.refitScratch,
+                    g.positions.deviceAddress, g.indices.deviceAddress,
+                    (int) (g.positions.size / 12L), g.bucketTris, "terrain water BLAS refit"));
+        }
+        if (refits == null) {
+            return;
+        }
+        // What the pass actually did, about once a second. Four readings of the plumbing found nothing
+        // wrong with the wave settings, which is the point at which reading stops being evidence: this
+        // says how many sections were displaced and with which numbers, so "the setting does nothing"
+        // and "the setting arrives and the result is subtle" stop looking the same.
+        if ((deformLogTick++ % 60L) == 0L) {
+            FluoriteMod.LOGGER.info(
+                    "[water-deform] displaced {} section(s), {} vertices | cell={}",
+                    refits.size(), deformVerts,
+                    String.format(java.util.Locale.ROOT, "%.2f", cellSize));
+        }
+        io.github.dswepm.fluorite.rt.sky.RtSky.recordWaterDeformBarrier(cmd);
+        RtAccel.recordBlasBuilds(ctx, cmd, refits);
+    }
+
     public static void markBlocksDirty(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
         RtTerrain terrain = INSTANCE;
         synchronized (terrain.dirtyLock) {
@@ -1117,8 +1337,19 @@ public final class RtTerrain {
                     if (packed == null) {
                         completeTask(task, null, null, null);
                     } else {
+                        // Deformable is decided per section and per build (M12.5): a section that holds
+                        // water and sits inside the deformation range keeps its build inputs and gets an
+                        // updatable BLAS. Not wired to a distance yet -- the dispatch that would use it
+                        // does not exist, and asking for it before then would only buy the costs.
+                        // AND it must actually have water. Asking by position alone made every stone
+                        // section inside the region give up compaction for a displacement it would
+                        // never receive.
+                        boolean deformable = packed.waterVertCount() > 0
+                                && sectionDeformable(task.sox, task.soy, task.soz);
                         PreparedSection prepared = RtSectionBuilder.prepare(dispatch.ctx(), packed,
-                                cpu.opacityMicromap(), FluoriteConfig.Rt.Terrain.BLAS_COMPACTION.value(),
+                                cpu.opacityMicromap(),
+                                FluoriteConfig.Rt.Terrain.BLAS_COMPACTION.value() && !deformable,
+                                deformable,
                                 task.key, task.sox, task.soy, task.soz);
                         if (!isTaskCurrent(task)) {
                             destroyPreparedSection(prepared);
@@ -1518,8 +1749,19 @@ public final class RtTerrain {
         }
 
         for (PreparedSection ps : prepared) {
-            SectionGeom g = new SectionGeom(ps.key(), ps.uvs(), ps.material(),
-                    ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights());
+            if (ps.deformable()) {
+                // From here on the geometry owns the build inputs, so the prepared section must stop
+                // freeing them. Recorded before the geometry exists, so no path can slip between.
+                ps.transferBuildInputs();
+            }
+            SectionGeom g = ps.deformable()
+                    ? new SectionGeom(ps.key(), ps.uvs(), ps.material(),
+                            ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights(),
+                            ps.positions(), ps.indices(), ps.waterRest(),
+                            ps.waterVertBase(), ps.waterVertCount(), ps.updateScratchSize(),
+                            ps.bucketTris())
+                    : new SectionGeom(ps.key(), ps.uvs(), ps.material(),
+                            ps.blas().accel, ps.triBase(), ps.sx(), ps.sy(), ps.sz(), ps.lights());
             if (!desired.contains(ps.key())) {
                 // Left the window while its batched BLAS build was in flight (window sync keeps running
                 // during builds). Never published — retire the fresh, unreferenced geometry.
@@ -1773,6 +2015,9 @@ public final class RtTerrain {
     private void clearAsync(RtContext ctx) {
         ctx.gpuExecutor().throwIfFailed();
         terrainEpoch++;
+        // Everything is about to be rebuilt, so this is the moment the deformation settings may change
+        // what gets built. It is also the only such moment.
+        snapshotDeformSettings(true);
 
         // Token maps are render-thread ownership, so clearing them makes every old completion unpublishable
         // even in the narrow race where it observed the previous epoch immediately before this increment.
