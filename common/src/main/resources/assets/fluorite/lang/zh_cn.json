@@ -291,5 +291,11 @@
   "fluorite.options.rt.waveComplexity": "波形复杂度",
   "fluorite.options.rt.waveComplexity.tooltip": "海面有多不规则。它会渐入一组与主波系交叉的第二波系、加宽波向的扇形散布、并让更多波前蜿蜒而不是笔直成线。交叉波系是其中最关键的一项——两组波列干涉出不断变化的菱形格纹，读起来远比单一扇形复杂，而真实海面几乎总有一组，因为涌浪比造出它的那阵风活得更久。它不会增加波的数量：仍然是十道。零等于原本的外观。",
   "fluorite.options.rt.waveCrossAngle": "交叉涌浪角度",
-  "fluorite.options.rt.waveCrossAngle.tooltip": "第二组波系相对第一组偏多少度。只在「波形复杂度」大于零时起作用。"
+  "fluorite.options.rt.waveCrossAngle.tooltip": "第二组波系相对第一组偏多少度。只在「波形复杂度」大于零时起作用。",
+  "fluorite.options.rt.waveGust": "阵风斑块",
+  "fluorite.options.rt.waveGust.tooltip": "阵风把水面吹皱的强度。没有它时整片海处处一样粗糙，而这正是让海面读起来像一张图案而不像天气的头号原因——真实水面是斑驳的：这里一片被吹皱的暗色，那里一片镜面般的平静，边界还顺风缓缓爬行。它偏向**短波**，因为阵风是把水面吹皱，不是把涌浪抬起来。开销是每个着色点三次噪声取样，而不是每道波三次。零等于原本的外观。",
+  "fluorite.options.rt.waveGustScale": "阵风斑块尺寸",
+  "fluorite.options.rt.waveGustScale.tooltip": "单个阵风斑块有多大。小值给出细碎斑驳的水面，大值给出缓慢开阔的粗糙与平静交替。",
+  "fluorite.options.rt.waveGustSpeed": "阵风移动速度",
+  "fluorite.options.rt.waveGustSpeed.tooltip": "斑块顺风移动的快慢。为零会把它们钉死在世界上，看起来像海面上的污渍——波在斑块中穿过，而斑块纹丝不动。"
 }

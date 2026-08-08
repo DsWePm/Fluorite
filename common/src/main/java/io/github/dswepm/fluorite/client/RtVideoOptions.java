@@ -159,6 +159,7 @@ public final class RtVideoOptions {
                                 waterDeform(), windAngle(), waveWindOffset(),
                                 waveLength(), waveAmplitude(),
                                 waveComplexity(), waveCrossAngle(),
+                                waveGust(), waveGustScale(), waveGustSpeed(),
                                 waterDeformRange(), waterDeformCell(), waterDeformReanchor()),
                         Section.titled("fluorite.options.rt.section.waterAbsorb",
                                 waterAbsorbOverride(), waterAbsorbStrength(),
@@ -680,6 +681,20 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> cloudWindOffset() {
         return windOffset("fluorite.options.rt.cloudWindOffset",
                 FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_OFFSET);
+    }
+
+    private static OptionInstance<Integer> waveGust() {
+        return scaleSlider("fluorite.options.rt.waveGust", FluoriteConfig.Rt.Water.WAVE_GUST);
+    }
+
+    private static OptionInstance<Integer> waveGustScale() {
+        return blockSlider("fluorite.options.rt.waveGustScale",
+                FluoriteConfig.Rt.Water.WAVE_GUST_SCALE, 8, 200);
+    }
+
+    private static OptionInstance<Integer> waveGustSpeed() {
+        return blockSlider("fluorite.options.rt.waveGustSpeed",
+                FluoriteConfig.Rt.Water.WAVE_GUST_SPEED, 0, 30);
     }
 
     private static OptionInstance<Integer> waveComplexity() {

@@ -104,6 +104,67 @@ public struct WaterWaveParams {
     public float  gustSpeed;
 };
 
+// ---- Gusts: the patchwork of ruffled and glassy water that makes a sea look like weather rather
+// than like a pattern. Two things about the design are not decoration:
+//
+// IT DRIFTS WITH THE WIND. A patch field pinned to the world is a stain on the sea -- the waves move
+// through it while it sits still, which reads as worse than no patches at all.
+//
+// IT IS WEIGHTED TOWARD THE SHORT COMPONENTS. A gust RUFFLES the surface; it does not raise the swell.
+// A gust front passing over open water darkens it with chop while the long waves underneath carry on
+// unchanged, and modulating everything equally instead gives a sea that breathes in and out, which is a
+// completely different and much worse effect.
+public static const float GUST_LAMBDA_LO = 2.0;   // fully ruffled below this wavelength
+public static const float GUST_LAMBDA_HI = 8.0;   // untouched above it
+public static const float GUST_BASE = 0.40;
+public static const float GUST_RANGE = 1.20;      // so the field averages 1 and spans about 0.4 .. 1.6
+
+float waterHash2(float2 p) {
+    return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float waterValueNoise(float2 p) {
+    float2 i = floor(p);
+    float2 f = frac(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+    return lerp(lerp(waterHash2(i), waterHash2(i + float2(1.0, 0.0)), u.x),
+                lerp(waterHash2(i + float2(0.0, 1.0)), waterHash2(i + float2(1.0, 1.0)), u.x), u.y);
+}
+
+/** Two octaves: big patches with smaller ones inside them, which is what a gusty surface looks like. */
+float waterGustNoise(float2 q) {
+    return 0.65 * waterValueNoise(q) + 0.35 * waterValueNoise(q * 2.1 + 17.0);
+}
+
+/**
+ * The gust multiplier at a point, AND its spatial gradient.
+ *
+ * <p>The gradient is not optional. This multiplies each component's amplitude, so the field it produces
+ * is g(p)*h(p) -- and the derivative of that is g*grad(h) + h*grad(g), not g*grad(h). Dropping the second
+ * term would leave the returned gradient no longer the gradient of the returned height, which is exactly
+ * the property the geometry and the shading rely on to describe one surface. The error would be small
+ * (the patches vary twenty times slower than the waves they modulate) and permanent.
+ *
+ * <p>Finite-differenced rather than derived analytically: the step is tiny against the patch size, the
+ * field is smooth at that scale, and three noise fetches per shaded point is cheaper than being clever.
+ */
+void waterGustField(float2 worldXZ, float t, WaterWaveParams params,
+                    out float gust, out float2 gustGrad) {
+    gust = 1.0;
+    gustGrad = float2(0.0, 0.0);
+    if (params.gustScale <= 0.0 || params.gustStrength <= 0.0) {
+        return;
+    }
+    float inv = 1.0 / max(params.gustScale, 1.0);
+    float2 q = (worldXZ - params.wind * (params.gustSpeed * t)) * inv;
+    const float eps = 0.05;
+    float n0 = waterGustNoise(q);
+    float nx = waterGustNoise(q + float2(eps, 0.0));
+    float nz = waterGustNoise(q + float2(0.0, eps));
+    gust = GUST_BASE + GUST_RANGE * n0;
+    gustGrad = (GUST_RANGE * inv / eps) * float2(nx - n0, nz - n0);
+}
+
 /** Deterministic per-component jitter in [-1, 1]. Cheap, and stable across frames and machines. */
 float waterWaveJitter(int i, float salt) {
     float x = sin(float(i) * 12.9898 + salt * 78.233) * 43758.5453;
@@ -115,6 +176,11 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
                                           out float height, out float2 grad, out float2 gradDt) {
     float strength = params.strength;
     float baseLength = params.baseLength;
+    // Once per evaluation, not once per component -- the patches are a property of the place, not of the
+    // wavelength. Only the WEIGHT below is per-component.
+    float gust;
+    float2 gustGrad;
+    waterGustField(p, t, params, gust, gustGrad);
     // Per-wave steepness a·k: gentle in the long swell, concentrated in the mid/short chop.
     const float Q[WAVE_COUNT] = { 0.030, 0.035, 0.042, 0.050, 0.060, 0.065, 0.065, 0.058, 0.048, 0.038 };
     t *= WAVE_SPEED;
@@ -167,17 +233,30 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
         float sinPh = sin(ph);
         float cosPh = cos(ph);
         float e = exp(S * (sinPh - 1.0));
+        // How much this component feels the gust. Short waves take all of it, the swell none.
+        float gustWeight = params.gustStrength
+                * (1.0 - smoothstep(GUST_LAMBDA_LO, GUST_LAMBDA_HI, lambda));
+        float g = lerp(1.0, gust, gustWeight);
         // a = Q/k; h = a·e^{S(sin φ−1)}; ∇h = a·S·cos φ·e^{S(sin φ−1)}·∇φ
-        float amplitude = lodWeight * (Q[i] * params.steepness / k) * S;
-        grad += amplitude * cosPh * e * dph;
+        float aBase = lodWeight * (Q[i] * params.steepness / k);
+        float amplitude = aBase * S;
+        // This component's own height, needed by the product rule below whether or not the caller wanted
+        // a height back. One multiply against a sin, a cos and an exp -- it does not show.
+        float hi = aBase * (e - WAVE_PROFILE_MEAN[i]);
+        // grad(g*h) = g*grad(h) + h*grad(g). The second term is what keeps the returned gradient the
+        // true gradient of the returned height across a gust boundary.
+        grad += g * (amplitude * cosPh * e * dph) + hi * (gustWeight * gustGrad);
         if (WITH_HEIGHT != 0) {
             // The mean comes off weighted by lodWeight too — otherwise a component fading out of band
             // would leave its offset behind and the surface would drift as the band limit moved.
-            height += lodWeight * (Q[i] * params.steepness / k) * (e - WAVE_PROFILE_MEAN[i]);
+            height += g * hi;
         }
         if (WITH_DT != 0) {
             // ∂/∂t of the term above, chain-ruled through φ and ∇φ.
-            gradDt += amplitude * e
+            // The gust field's own drift is not chain-ruled in: it moves at metres per second across
+            // patches tens of metres wide, so its contribution to how fast the NORMAL turns is orders
+            // below the waves' own. This term is a reprojection hint, not the normal itself.
+            gradDt += g * amplitude * e
                     * (phDt * (-sinPh + S * cosPh * cosPh) * dph + cosPh * dphDt);
         }
         lambda /= 1.5;

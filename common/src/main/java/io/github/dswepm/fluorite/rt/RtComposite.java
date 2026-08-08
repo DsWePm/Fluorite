@@ -855,9 +855,11 @@ public final class RtComposite {
         return new Float4((float) Math.cos(cross), (float) Math.sin(cross), complexity, 1f);
     }
 
-    /** Gust patches; zero scale disables them entirely. Filled in by the gust slice. */
+    /** Gust patches (D52). Zero strength disables the whole term, including its noise fetches. */
     private static Float4 waterWaveGust() {
-        return new Float4(0f, 0f, 0f, 0f);
+        return new Float4(FluoriteConfig.Rt.Water.WAVE_GUST_SCALE.value(),
+                FluoriteConfig.Rt.Water.WAVE_GUST.value(),
+                FluoriteConfig.Rt.Water.WAVE_GUST_SPEED.value(), 0f);
     }
 
     private static Float4 waterAux() {

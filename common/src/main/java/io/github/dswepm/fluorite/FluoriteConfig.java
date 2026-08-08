@@ -1522,6 +1522,40 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.water.waveComplexity", "water.wave-complexity",
                             0.5f, 0f, 1f);
 
+            /**
+             * How strongly gusts ruffle the surface, 0 to 1.
+             *
+             * <p>WHAT THIS FIXES is that the sea is otherwise equally rough everywhere, which is the
+             * single thing that most makes it read as a pattern rather than as weather. Real water is
+             * patchy: a dark ruffled stretch here, a glassy calm one there, and the boundary crawling
+             * downwind. That patchwork is most of what "alive" means on open water.
+             *
+             * <p>It is weighted toward the SHORT waves, because a gust ruffles a surface, it does not
+             * raise a swell. A gust front passing over water darkens it with chop while the long waves
+             * underneath carry on unchanged; modulating everything equally would give a sea that breathes
+             * in and out, which is a different and much worse effect.
+             *
+             * <p>Costs three noise fetches per shaded point, not per wave, so it does not scale with the
+             * component count. 0 is the shipped field exactly.
+             */
+            public static final FloatSetting WAVE_GUST =
+                    clampedFloat("fluorite.rt.water.waveGust", "water.wave-gust", 0.5f, 0f, 1f);
+
+            /** How big a gust patch is, in blocks. */
+            public static final FloatSetting WAVE_GUST_SCALE =
+                    clampedFloat("fluorite.rt.water.waveGustScale", "water.wave-gust-scale",
+                            40f, 8f, 200f);
+
+            /**
+             * How fast the patches travel downwind, in blocks per second.
+             *
+             * <p>Not optional in spirit: a patch field pinned to the world is a stain on the sea, with the
+             * waves moving through it while it sits still. That reads worse than no patches at all.
+             */
+            public static final FloatSetting WAVE_GUST_SPEED =
+                    clampedFloat("fluorite.rt.water.waveGustSpeed", "water.wave-gust-speed",
+                            4f, 0f, 30f);
+
             /** Degrees the second wave system runs off the first. Only bites while complexity > 0. */
             public static final FloatSetting WAVE_CROSS_ANGLE =
                     clampedFloat("fluorite.rt.water.waveCrossAngle", "water.wave-cross-angle",

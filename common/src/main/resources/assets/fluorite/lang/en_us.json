@@ -291,5 +291,11 @@
   "fluorite.options.rt.waveComplexity": "Wave Complexity",
   "fluorite.options.rt.waveComplexity.tooltip": "How irregular the sea is. Ramps in a second wave system crossing the first, widens the fan of wave directions, and lets more of the wavefronts wander instead of ruling straight lines. The crossing system is the important part -- two wave trains interfere into a shifting lattice that reads as far more complex than one fan, and real water almost always has one, because a swell outlives the wind that made it. It does NOT add more waves: there are still ten. Zero is the original look.",
   "fluorite.options.rt.waveCrossAngle": "Crossing Swell Angle",
-  "fluorite.options.rt.waveCrossAngle.tooltip": "How far the second wave system runs off the first. Only has an effect while Wave Complexity is above zero."
+  "fluorite.options.rt.waveCrossAngle.tooltip": "How far the second wave system runs off the first. Only has an effect while Wave Complexity is above zero.",
+  "fluorite.options.rt.waveGust": "Gust Patches",
+  "fluorite.options.rt.waveGust.tooltip": "How strongly gusts ruffle the surface. Without this the sea is equally rough everywhere, which is the single thing that most makes it read as a pattern instead of as weather -- real water is patchy, a dark ruffled stretch here and a glassy calm one there, with the boundary crawling downwind. Weighted toward the SHORT waves, because a gust ruffles a surface, it does not raise a swell. Costs three noise fetches per shaded point rather than per wave. Zero is the original look.",
+  "fluorite.options.rt.waveGustScale": "Gust Patch Size",
+  "fluorite.options.rt.waveGustScale.tooltip": "How big one gust patch is. Small values give a busy stippled surface; large ones give slow broad sweeps of rough and calm.",
+  "fluorite.options.rt.waveGustSpeed": "Gust Drift Speed",
+  "fluorite.options.rt.waveGustSpeed.tooltip": "How fast the patches travel downwind. Zero pins them to the world, which looks like a stain on the sea -- the waves move through the patches while the patches sit still."
 }
