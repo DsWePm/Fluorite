@@ -91,6 +91,11 @@ public final class RtFrameStats {
                     // against gpu.tracePrimary/gpu.traceIndirect, not by a zone.
                     "gpu.waterSim",
                     "gpu.waterDeform",
+                    // The acceleration-structure builds. Their CPU record times existed already
+                    // (entity.blasRecord, frame.recordTlas) and measure the wrong thing: how long it
+                    // took to WRITE the commands, not to run them.
+                    "gpu.entityBlas",
+                    "gpu.tlasBuild",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",

@@ -1031,6 +1031,20 @@ public final class RtComposite {
     // gpu.traceIndirect in the same session -- which is the ratio method iron rule 7 asks for regardless.
     private static final int GPU_ZONE_WATER_SIM = 5;
     private static final int GPU_ZONE_WATER_DEFORM = 6;
+    // The two acceleration-structure builds, both of which were measurement blind spots. Only their CPU
+    // RECORD times existed (entity.blasRecord, frame.recordTlas), and those say how long it took to write
+    // the commands, not how long the device took to run them.
+    //
+    // They are here because the water deformation's number cannot be judged without them. Water refits
+    // four section BLASes for 0.27 ms while entities refit sixty for a comparable CPU cost, which points
+    // at per-refit SIZE rather than count -- a terrain section carries all its stone, a mob carries a few
+    // hundred triangles. That is an inference until the entity builds have a device number of their own.
+    //
+    // And the TLAS one bounds the fix. Splitting water into its own BLAS would cut the refit down to the
+    // triangles that actually moved, at the price of one more instance per water-bearing section; without
+    // a TLAS zone there is no way to tell whether that price is smaller than the saving.
+    private static final int GPU_ZONE_ENTITY_BLAS = 7;
+    private static final int GPU_ZONE_TLAS_BUILD = 8;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtImage output;
@@ -1494,7 +1508,8 @@ public final class RtComposite {
             if (gpuTimers == null) {
                 gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect",
                         "gpu.skyBake", "gpu.visBake", "gpu.froxelBake",
-                        "gpu.waterSim", "gpu.waterDeform");
+                        "gpu.waterSim", "gpu.waterDeform",
+                        "gpu.entityBlas", "gpu.tlasBuild");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -2069,11 +2084,17 @@ public final class RtComposite {
             RtEntityTextures.INSTANCE.uploadPending(active, atlasSampler(ctx));
             // Build the entity BLAS, the TLAS that references it and the terrain BLAS, then the trace.
             // Barriers separate each stage; the graphics-use timeline guards resource reuse.
+            if (gpuTimers != null) {
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_ENTITY_BLAS);
+            }
             if (!fe.blas().isEmpty()) {
                 try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.blasRecord")) {
                     RtAccel.recordBlasBuilds(ctx, cmd, fe.blas());
                 }
                 VulkanCommandEncoder.memoryBarrier(cmd, stack); // entity BLAS writes visible to the TLAS build
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_ENTITY_BLAS);
             }
             // Water geometry, before the TLAS is built over the bounds it produces. Guarded on the
             // domain being live: with no plane there is nothing to displace onto.
@@ -2111,8 +2132,14 @@ public final class RtComposite {
             }
             active.setTlas(frameTlas.accel.handle, graphicsUse, graphicsUseWaiter);
             currentTlasHandle = frameTlas.accel.handle;
+            if (gpuTimers != null) {
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_TLAS_BUILD);
+            }
             try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.recordTlas")) {
                 RtAccel.recordTlasBuild(ctx, cmd, frameTlas);
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_TLAS_BUILD);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // TLAS build visible to the trace
 
