@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>The JVM cannot execute the Slang ray-generation stages, so these assertions guard the ownership
  * seam in the real shader sources. Shader compilation remains the executable type/ABI check, and the
- * DEVELOPMENT.md underwater protocol remains the visual feedback loop.
+ * docs/devlog/M15-M17-medium-lighting.md records the underwater visual/probe protocol.
  */
 final class RtMediumLifecycleRegressionTest {
     @Test

@@ -93,7 +93,7 @@ bool cloudMultiScatterOn() {
 /**
  * The rate the DIFFUSE light dims at, as a multiple of ordinary optical depth.
  *
- * <p>Re-derived here rather than transcribed (§6.4). Where a medium is optically thick and almost purely
+ * <p>Re-derived here rather than transcribed; see docs/devlog/M11-clouds.md. Where a medium is optically thick and almost purely
  * scattering, the radiance field goes nearly isotropic and the transport equation degenerates into the
  * diffusion equation, whose Green's function for a point source falls off as exp(-K*r)/(4*pi*D*r) with
  *
@@ -614,7 +614,7 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     // light, and neither moves along a straight ray. It stays sphere-normalised because lightRadiance is
     // irradiance, not the E/(4*pi) isotropic base that a relative phase gain would require.
     float phase = cloudPhase(dot(rd, lightDir), cloudPhaseG());
-    // Off must reproduce single scattering exactly rather than approximately (§3, rule 8), so it does two
+    // Off must reproduce single scattering exactly rather than approximately, per the off-state contract, so it does two
     // things: it removes the diffuse lobe entirely, and it puts the sky's occlusion back on the beam's
     // own extinction. Leaving the diffuse lobe in at rate 1 would not disable multiple scattering — it
     // would add a second, isotropic copy of the direct term.

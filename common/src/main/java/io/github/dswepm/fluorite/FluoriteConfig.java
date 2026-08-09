@@ -934,17 +934,16 @@ public final class FluoriteConfig {
              * is the identity to check first if the two ever disagree by more than noise.
              *
              * <p>Water's in-scatter, measured the same way: 10.49 ms of a 41.74 ms frame under the
-             * stratified estimator, 7.56 ms under this one. That figure is M9's oldest outstanding debt
-             * and had never been measured before this switch gave it a denominator.
+             * stratified estimator, 7.56 ms under this one. These measurements closed M9's old water
+             * benchmark debt and are the current underwater baseline.
              */
             /**
              * Volumetric clouds (M11).
              *
-             * <p>A spherical deck marched on the segment that escapes to sky, so it appears in
-             * reflections as well as overhead. DEFAULT OFF: this is the first slice of three — the shape
-             * is there and the lighting is ambient only, so the clouds are lit but flat until the sun
-             * term, the self-shadow march and phi_fwd land. R19 names this milestone's cost as its main
-             * risk, and slicing it this way is what lets the march be priced before any of that is built.
+             * <p>A world-anchored, two-layer spherical cloud field marched on sky-escaping segments, so
+             * it appears in reflections as well as overhead. Sun lighting, self-shadowing and the
+             * multiple-scattering approximation are present. DEFAULT OFF because R19's full-path cost
+             * remains unmeasured; use the cloud, sun-step and secondary-step controls for same-session A/B.
              */
             public static final BooleanSetting CLOUDS =
                     bool("fluorite.rt.fog.clouds", "volumetrics.clouds", false);
