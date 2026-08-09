@@ -739,8 +739,8 @@ public final class RtVideoOptions {
      * position inside one session.
      */
     /**
-     * Volumetric clouds. In the UI because slice one exists to be priced, and a cost is only meaningful
-     * flipped at a fixed camera position inside one session.
+     * Volumetric clouds. The complete M11 path remains in the UI for a same-session, fixed-camera A/B;
+     * R19's full-path cost is still unmeasured.
      */
     private static OptionInstance<Boolean> clouds() {
         return bool("fluorite.options.rt.clouds", FluoriteConfig.Rt.Volumetrics.CLOUDS);

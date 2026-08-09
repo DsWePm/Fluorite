@@ -2,11 +2,11 @@
 
 Minecraft 26.2 的 Vulkan 硬件光追渲染 mod（Fabric + NeoForge，包名 `io.github.dswepm.fluorite`）。
 
-**先读 `docs/DEVELOPMENT.md`** —— 工程知识的唯一汇总：现状、架构地图、铁律索引、方法论、工具、路线图（M15–M20）、参考项目政策、教训档案、决策日志。代码注释里的 `M*`/`R*`/`F*`/`D*`/`S3` 编号全部在那里解析。专题文档：`docs/WAVEFRONT_PLAN.md`（pass/队列 ABI）、`docs/PLATFORM_NOTES.md`（跨加载器）、`docs/MATERIAL_FORMAT.md`（资源包材质）、`docs/developer_guide.md`（构建）。
+**先读 `docs/DEVELOPMENT.md`** —— 当前架构、文件地图、铁律、方法论、风险和真实待办的唯一主文档。已经结束的实现过程、实验、失败路线和决策依据在 `docs/devlog/`；代码注释里的 `M*`/`R*`/`F*`/`D*`/`S3` 从 `docs/devlog/README.md` 定位。专题文档：`docs/WAVEFRONT_PLAN.md`（pass/队列 ABI）、`docs/PLATFORM_NOTES.md`（跨加载器）、`docs/MATERIAL_FORMAT.md`（资源包材质）、`docs/developer_guide.md`（构建）。
 
 ## 最高频铁律（全文见 DEVELOPMENT.md §3）
 
-1. **任何方向性决策必须请示用户**（列选项 + 物理差距 + 性能代价），结论记入 DEVELOPMENT.md §10 决策日志。禁止擅自决定。
+1. **任何方向性决策必须请示用户**（列选项 + 物理差距 + 性能代价）。进行中的选择留在 DEVELOPMENT.md 待办，结案依据归入对应 devlog。禁止擅自决定。
 2. **roughness 是线性的、就是 GGX alpha，永远不要平方**（`bsdf.slang` 顶部横幅）。
 3. `PackedPathSegment` 钉死 48 字节、只剩一个空 uint lane；动它之前先读 `RtPathSegmentLayoutTest` 的注释（+118 MB 的账）。新状态优先用 `pathFlags` 空位。
 4. `MediumStack` 深度 2、具名字段非数组；环境介质（空气/雾/云）**永不进栈**；阴影 payload 不许增长。
@@ -18,10 +18,10 @@ Minecraft 26.2 的 Vulkan 硬件光追渲染 mod（Fabric + NeoForge，包名 `i
 ## 常用工具速查
 
 - 基准：`tools/bench-world.sh [name]` 还原世界 → `./gradlew :fabric:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=<name>`，配 `-Dfluorite.rt.frameStats=true`。
-- 诊断：视频设置 → Fluorite Settings → 诊断 → debug view 8–22（体积/水/LUT/可见性；**22 = 云链路探针**，逐环指认空天空断在哪）；隔离开关 `water.scatter-source`、`volumetrics.segment-source` 等。
+- 诊断：视频设置 → Fluorite Settings → 诊断 → debug view 8–25（体积/水/LUT/可见性；22=云链路、23/24=水仿真、25=雾密度阶段）；隔离开关 `water.scatter-source`、`volumetrics.segment-source` 等。
 - 构建硬要求：slangc ≥ 2026.14（`docs/developer_guide.md`）；`-Xss16m` 必须是直接 vmArg。
 
-语言约定：代码注释英文；`docs/DEVELOPMENT.md` 中文正文 + 英文符号名。
+语言约定：代码注释英文；项目文档中文正文 + 英文符号名。设置只维护 `en_us`、`zh_cn`、`zh_tw`。
 
 ## Agent skills
 

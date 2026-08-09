@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>The JVM cannot execute Slang RayQuery stages, so this test deliberately verifies the real stage
  * sources rather than a second Java port of their maths. Full Slang compilation remains the executable
- * ABI/type check; the deterministic horizon probe in DEVELOPMENT.md is the numerical feedback loop.
+ * ABI/type check; docs/devlog/M15-M17-medium-lighting.md records the deterministic horizon probe.
  */
 final class RtCelestialMediumSamplingTest {
     @Test

@@ -1,1190 +1,550 @@
 # Fluorite 开发文档
 
-> **本文档是工程知识的唯一汇总入口。** 中文正文 + 英文术语/符号名（符号、配置键、文件名保持英文原样，可直接 grep）。
-> 代码注释里引用的编号（`M*` 里程碑、`R*` 风险、`F*` 事实、`D*` 决策、`S3`）全部在本文档解析。
+> Fluorite 的当前架构、规则、危险事项和待办以本文件为准。正文使用中文，代码符号、配置键和文件名保留英文，方便直接搜索。
 >
-> **维护规则**：新的方向性决策进 §10 决策日志；新教训进 §9 档案；新铁律进 §3 索引并同时在代码注释处落地；里程碑状态变更改 §1 的表。三份历史计划（`C:\Users\Denni\.claude\plans\` 下）已标记 SUPERSEDED，只作考古，不再更新。
->
-> **对所有协作者（含 AI agent）生效的硬规则**：任何方向性决策——方法选择、物理近似、默认档位、性能取舍——必须列出候选项 + 与物理准确的差距 + 性能实测或估计，**经用户批准后**记入 §10 决策日志。禁止擅自决定。（2026-08-02 用户确立）
+> 已结束的实现过程、实验数据、失败路线和决策依据不在这里展开；从“已取得的成果”进入 [`docs/devlog/`](devlog/README.md) 追溯。GitHub Issues 跟踪仍未结束的问题。
 
----
-
-## 1. 项目总览与现状
+## 1. 项目与当前状态
 
 ### 1.1 项目是什么
 
-Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪的世界渲染器，取消原版 `LevelRenderer.render()`，把自己的合成结果拷回 MC 的 main render target。约 30.6k 行 Java（包名 **`io.github.dswepm.fluorite`**）+ 43 个 shader 文件（`shaders/world/` 29 个，7272 行 Slang）。
+Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。它取消原版世界绘制，使用自己的 wavefront path tracer、DLSS-RR/显示管线和光栅 overlay，再把合成结果交回 Minecraft main render target。
 
-- Fork 自 **Caustica**（ComfyFluffy 等，LGPL-3.0-or-later），2026-07 改名独立开发；双版权（原作者 + Yuhan YAN / DsWePm）。
-- 双加载器：Fabric + NeoForge，`common/` 是**共享源码目录而非 Gradle 子项目**（各加载器 `srcDir` 引入，对着各自的 MC 产物编译）。
-- 已知历史遗留：旧文档中的包名 `dev.comfyfluffy.caustica` 已失效。
+- 代码包名：`io.github.dswepm.fluorite`。
+- 双加载器：Fabric + NeoForge。
+- `common/` 是两侧共同编译的源码目录，不是独立 Gradle 子项目。
+- 当前规模（2026-08-09）：131 个 Java 文件、约 35.6k 行；52 个 shader 文件、约 12.0k 行。
+- 源自 Caustica，按 LGPL-3.0-or-later 延续双版权；参考来源见 `THIRD_PARTY_NOTICES.md`。
 
-### 1.2 测试环境与硬件事实
+### 1.2 当前基线
 
-- **RTX 2080 移动版（Turing，8 GB）+ i7-8750H**；屏幕上限 1080p ⇒ 基准分辨率**定为 1920×1080 显式声明**（F8）。
-- 驱动报告 `SER=EXT`、OMM 支持——但 Turing 上**极可能是软件实现**：按「有接口、无收益」预算。OMM 已按硬件能力门控（R16 修复；`-Dfluorite.rt.omm`）。
-- DLSS-RR（`nvngx_dlssd.dll` 310.7.0）正常；FG 默认关。`runClient` 默认 dev 版 DLL（有水印），`-PngxVendorConfig=rel` 去掉。
-- **厂商中立约束（长期）**：新代码不得引入 NVIDIA 专属依赖；能力门控按「设备实际能不能做」而非扩展名/厂商名。AMD 结构性缺口：无降噪器时输出是 raw path trace，不可游玩（README TODO：NRD + FSR）。
-- Y 轴约定：`jitter-sign-y = -1.0` + 上报 RR 时再取反。任何新的 `gDepth`/`gMotion`/NGX 提交代码都要显式确认自己站在约定哪一侧（DLSS dev 水印上下颠倒即此约定的可见证据，不是 bug）。
+远端 `main` 的当前基线为 `a9e3c9e`（PR #22）。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
 
-### 1.3 里程碑状态（2026-08-08，HEAD `959fd05`）
+测试机事实：
 
-| # | 里程碑 | 状态 | 备注 |
-|---|---|---|---|
-| M0–M4 | 双平台迁移 + 基准锁定 | ✅ | 地形摘要 986/989 一致，残差=NeoForge `hidesNeighborFace` 补丁（双方各自正确），见 `docs/PLATFORM_NOTES.md` |
-| M5 | 渲染地基 | ✅ | segment ABI 进 codegen（48B 钉死）、break-before-attenuation 修复、`docs/WAVEFRONT_PLAN.md` |
-| M6 | 统一介质框架 + 解析高度雾 | ✅ | `volume.slang`/`medium.slang`；雾开销 +0.622 ms |
-| M7 | Disney BSDF | ✅ | sheen/clearcoat/各向异性/粗糙透射/太阳 MIS；`gpu.traceIndirect` 1.283×（门槛 1.5×） |
-| M8 | 随机游走 BSSRDF | ✅ 实现 / ⚠️ 门槛 | 游走 1.567× 超 1.5% 门槛；默认 `thin`，游走作高配。两个 PROVISIONAL 常数未标定（`subsurface.slang`） |
-| M9 | 水体散射（σa/σs） | ✅ | 七轮弯路后收尾：σa/σs 独立创作量、3 条分层**抖动**阴影线、折射太阳方向、焦散+色散。**性能欠账：bench-water 两机位从未采**（§4.4） |
-| M10 | LUT 大气 | ✅ | 子阶段编号（代码注释在引用）：**M10.1**=大气单一实现（删 CPU 版 `atmosphereTransmittance`、F5 收口、transmittance 256×64）· **M10.2**=multi-scatter 表 32×32（binding 11）· **M10.3**=sky-view **三张**表 192×128（bindings 12–14，相位函数留在表外读取时施加，逐帧烘）· **M10.4**=aerial-perspective froxel 64×36×64（binding 15）。rmiss 用 `sampleSkyView`，CPU 推「未染色峰值」、GPU 端 `dyeCelestialLight` 染色 |
-| M13.2/.3 | 体积可见性 + 能量标定 + 随机阴影线 | ✅ | 可见性网格 64×32×64（0.072 ms）；`MULTI_SCATTER_RETURN` 删除、当时 `AMBIENT_FOG_FRACTION` 0.25→0.05（M16 已退役）；雾默认 1 条抖动太阳阴影线；水分层抖动化 |
-| M11 | 体积云 | ✅ | 三片切片合入（PR #12–#14）：Perlin-Worley 云体 + 曲率噪声侵蚀、双层（积云甲板 + 卷云片，各自的形状/风/尺度）、太阳自阴影 + phi_fwd 多散射、debug view 22 云链路探针。**成本从未实测（R19），隔离开关 `clouds` / `cloud-sun-steps` / `cloud-secondary` 就绪** |
-| M12 | 交互水体仿真 | ✅ | PR #15–#17。显式蛙跳线性波方程、CFL 在 CPU 侧钳死、三缓冲轮换、障碍处 Neumann、边缘海绵吸收、平滑冲量。障碍掩码由 **CPU 直接问 level**（TLAS 下射线自我否定，且 cull mask 是逐实例的——石头和水共用一个实例）。debug view 23/24 |
-| M12.5 | 水面真形变 + 波场重做 | ✅ | PR #18（39 提交）。顶点位移 + 每帧 refit；**路 3′**（构建时全可形变、派发按距离剔除）消除重锚闪烁；波场加入交叉波系、域扭曲、阵风斑块、天气响应、全分量 meander、分量隔离开关。设计与裁定 §8.2b–§8.2f（D44–D58），教训 F22–F28。**FFT 已裁定不做（D56），设计留档备重启** |
-| M13 残余 | 3D 噪声雾 + froxel 线程映射 | 🔄 实现完成，待游戏内/性能验收 | D59 线程映射结案；D62–D71 的 3D 场、统一数值积分、结构 gate/对比度、全局风偏转与连续天气 forcing 已落地，见 §8.3 |
-| — | **待测量欠账** | ⚠️ | M11 云成本（R19）从未采；M9 `bench-water` 两机位从未采；M12.5 形变实测仅一次小水场景（4 section / 0.27 ms），海洋场景未测；粒子阴影成本两次未测出 |
-| — | **未复现故障** | ⚠️ | 调整曝光后下水偶发过亮 + 水面丢失。介质栈矛盾探针 `[water-medium]` 已就位，见 §8.2f |
-| M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
-| **M15–M20** | **体积介质统一 + 光源收集 + overlay + 粒子** | 🔄 M15.0 ✅；M15.1/.2 空气雾视觉验收 ✅，正式性能验收待补；M16 Radiance 统一的前三项视觉验收 ✅，D20/12A 地平线连续性修复待游戏内/性能验收；D27/21A 的单字活动介质分类已通过 raw 与 cleanup 后 GPU 长跑，待用户最终游戏内视觉验收；水天空开放度结构性缺陷记入 M17（2026-08-04）；**M19（overlay + 火焰 + glint）与 M17（散射顶点 + 发光体 NEE + D15 修复）均于 2026-08-05 游戏内验收通过 ✅**，M17 性能已实测（散射顶点 0.930× 反而更快、发光体 NEE +20.9 ms 挂起）；**M20 的 20.1/20.2/20.3 同日验收通过**，粒子阴影成本两次未能测出（需 `bench-particles` 世界），默认保持关 | §7，决策依据 §10 D1–D32 |
-| — | ReSTIR 整合 | ⛔（M14 后） | 前向约束现在就生效，§8.5 |
+- RTX 2080 Mobile（Turing，8 GB）+ i7-8750H，屏幕上限 1920×1080。
+- 正式性能基准必须显式使用 1920×1080，不能让窗口尺寸隐式决定结论。
+- SER/OMM 扩展可见不代表硬件高效；能力门控按实际行为，不按 NVIDIA/AMD 名称或扩展存在性。
+- DLSS-RR 可用；FG 默认关闭。没有降噪器的 AMD 路径仍是产品缺口。
+- Y 轴约定是 `jitter-sign-y=-1`，向 NGX 上报时再次翻转。新增 depth/motion/NGX 代码必须说明处在约定哪一侧。
 
----
+### 1.3 已取得的成果
+
+每行只说明现在具有什么能力；完整过程由日志保存。
+
+| 里程碑 | 当前成果 | 历史 |
+| --- | --- | --- |
+| M0–M4 | Fabric/NeoForge 双平台迁移完成，common 纯净性和地形摘要验证流程建立。 | [平台迁移](devlog/M00-M08-foundations.md#m0m4fabric--neoforge-迁移) |
+| M5 | 双 pass wavefront、48 B segment ABI 和天空逃逸段体积所有权固定。 | [wavefront 地基](devlog/M00-M08-foundations.md#m5wavefront-渲染地基) |
+| M6 | `Medium`/`MediumStack`、统一段积分入口与解析高度雾建立。 | [统一介质起点](devlog/M00-M08-foundations.md#m6统一介质框架的起点) |
+| M7 | Disney BSDF、太阳 MIS、各向异性、clearcoat、sheen 和粗糙透射完成。 | [Disney BSDF](devlog/M00-M08-foundations.md#m7disney-principled-bsdf) |
+| M8 | 随机游走 BSSRDF 完成，因成本超门槛保留为高质量档，`thin` 默认。 | [BSSRDF](devlog/M00-M08-foundations.md#m8随机游走-bssrdf) |
+| M9 | 水体 σa/σs、闭式散射、折射太阳、天空开放度、焦散与色散完成。 | [水体介质](devlog/M09-M10-water-atmosphere.md#m9-最终成果) |
+| M10 | transmittance、multi-scatter、三张 sky-view 和 aerial froxel LUT 链完成。 | [LUT 大气](devlog/M09-M10-water-atmosphere.md#m10lut-大气) |
+| M11 | 世界锚定双层体积云、天气云型、自阴影和扩散近似完成；D61 修正所有体积太阳源的 4π 能量错误。 | [体积云](devlog/M11-clouds.md) |
+| M12 | 256² 交互水体高度场、CFL、Neumann 障碍、海绵层和实体/方块冲量完成。 | [交互水体](devlog/M12-water-simulation.md#m12交互水体仿真) |
+| M12.5 | 水面顶点位移与 BLAS refit、路 3′ 形变覆盖、完整波谱重做完成；FFT 明确不实施。 | [水面真形变](devlog/M12-water-simulation.md#m125水面真形变) |
+| M13 | 世界空间可见性、随机体积阴影、3D 结构雾、统一风向和连续天气 forcing 完成并合入 PR #22。 | [雾与天气](devlog/M13-fog-weather.md) |
+| M15–M17 | 水/雾共享介质接口和 Radiance 源；水下前缀、Slang 活动状态和散射顶点完成，水天空开放度跳变修复。 | [统一介质与体积光照](devlog/M15-M17-medium-lighting.md) |
+| M19 | 受伤 overlay、实体火焰和近似 glint 已进入路径追踪并通过视觉验收。 | [实体 overlay](devlog/M19-M20-entities-particles.md#m19实体-overlay) |
+| M20.1–20.3 | 粒子发光、stochastic alpha 和可选阴影完成；阴影默认关。 | [粒子](devlog/M19-M20-entities-particles.md#m20粒子) |
+
+### 1.4 尚未完成的主线
+
+以下项目没有因旧计划或已合并 PR 自动获得完成状态：
+
+- 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
+- M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
+- M14 维度预设和配置收尾。
+- M18 动态光源收集层与 M20.4 发光粒子聚合。
+- ReSTIR 前全项目 review、诊断清理和性能欠账结算。
+- ReSTIR 整合。
+- 云向地面/水面投影阴影，以及焦散读取二维云太阳透射率图。
+- 文档重构在当前分支完成后关闭 GitHub [Issue #21](https://github.com/DsWePm/Fluorite/issues/21)。
 
 ## 2. 架构地图
 
-### 2.1 双 pass wavefront（详见 `docs/WAVEFRONT_PLAN.md`，此处只留骨架）
-
-- **Pass A** `world_primary.rgen.slang`：每像素一条相机光线，捕获 DLSS-RR guides 与运动矢量，走电介质链（最多**一次** delta 分裂），向队列写 1–2 条续段记录。普通 `TraceRay`（不摊 SER 屏障）。只解析边界、IOR/Fresnel、分支与几何 ray-cone 状态；**不施加被消费相机前缀的吸收或散射**。
-- **Pass B** `world.rgen.slang`：弹射循环（太阳 NEE+MIS、RIS、SSS、俄罗斯轮盘），**所有体积段的完整 `SegmentIntegral` 所有权都在这里**。相机前缀只积一次：ambient → froxel 的 in-scatter+transmittance；水下 → 真实水 `Medium` 的闭式 in-scatter+Beer transmittance。再以 `prefix.inScatter + prefix.transmittance × ΣleafRadiance` 合成 Fresnel 叶。编译两份：普通 + `world_ser`（SER）。
-- 队列：`2 × width × height` 条 `PackedPathSegment`，索引固定不分配（`pixelIndex` / `W*H + pixelIndex`），`PATH_HAS_NEXT` 位；`MAX_PATH_SEGMENTS == 2` 与 `2×` 尺寸是同一事实的两次陈述，必须一起改。
-- 分裂资格**只键于材质 model**（`MATERIAL_WATER`/`MATERIAL_DIELECTRIC`，粗糙电介质走终端续段由 Pass B 解析），永不键于叶集合。
-
-### 2.2 `shaders/world/` 文件职责
-
-**入口（编译 stage）**：
-
-| 文件 | 职责 |
-|---|---|
-| `world_primary.rgen.slang` | Pass A（见上） |
-| `world.rgen.slang` | Pass B（见上）+ debug 视图 |
-| `world.rchit.slang` | closest-hit：逐 section BDA 表、材质求值、payload guides |
-| `world.rahit.slang` | any-hit：alpha cutout + 阴影线染色累积（radiance/shadow 共用 Payload ABI） |
-| `world.rmiss.slang` | 天空：sky-view LUT 采样 + 星空 + 日月盘 |
-| `world_guide.rmiss.slang` / `shadow.rmiss.slang` | guide 探针 miss / SBT 占位（不实际运行） |
-| `sky_transmittance.comp.slang` | 256×64 透射表（一次性烘焙） |
-| `sky_multiscatter.comp.slang` | 32×32 大气多重散射表（一次性） |
-| `sky_view.comp.slang` | 192×128 sky-view 表（**三张**：相位函数在读取时施加而非烘入——Mie 前向尖峰窄于方位轴分辨率；**逐帧**——依赖太阳） |
-| `sky_medium_reduce.comp.slang` | M16：完整 sky-view 上半球按立体角做 `1/(4π)` reduction，写一份空气/水共享的 `mediumSkyRadiance`（逐帧、单 256-lane workgroup） |
-| `sky_froxel.comp.slang` | 64×36×64 相机前缀雾/空气透视 froxel（含大气项；自发光线，**不读**可见性网格） |
-| `volume_visibility.comp.slang` | 64×32×64 世界空间可见性网格（R=太阳、G=天顶、BA=可见天体样本坐标的一阶矩；各一条光线/cell，cell 中心写入） |
-| `world_layout_probe.slang` | 仅构建期反射探针，不打包 |
+### 2.1 一帧如何流动
+
+`RtComposite` 是渲染编排中心：收集世界/实体/天气状态，更新 LUT、云雾和水仿真资源，构建追踪参数，依次录制 Pass A、Pass B、DLSS-RR、曝光、overlay 和显示合成。
+
+1. **Pass A — `world_primary.rgen.slang`**：每像素一条相机光线，捕获 RR guides 与运动矢量；最多消费一个 delta 电介质分裂，向固定队列写 1–2 条 `PackedPathSegment`。它只解析边界、IOR/Fresnel、分支和 ray-cone，不施加被消费相机前缀的吸收或散射。
+2. **Pass B — `world.rgen.slang`**：弹射循环、太阳 NEE/MIS、RIS、SSS、体积段、云和俄罗斯轮盘。所有完整 `SegmentIntegral` 都归这里所有。
+3. **相机前缀合成**：空气用 froxel 的 in-scatter/transmittance；水下用真实起始水 `Medium`。最终形式是 `prefix.inScatter + prefix.transmittance × leafRadiance`。
+4. **显示**：raw HDR 进入 DLSS-RR/曝光/显示映射；细线 overlay 在 display 分辨率光栅化，因为它们无法可靠穿过 RR。
+
+队列固定为 `2 × width × height`，`MAX_PATH_SEGMENTS==2` 与缓冲大小是同一事实。分裂资格由材质 model 决定，不由最终叶集合反推。
+
+详细队列和 pass ABI 见 `docs/WAVEFRONT_PLAN.md`。
+
+### 2.2 Shader 文件职责
+
+| 区域 | 文件 | 职责 |
+| --- | --- | --- |
+| 入口 | `world_primary.rgen.slang` | Pass A、guides、队列写入 |
+| 入口 | `world.rgen.slang` | Pass B、弹射、体积、debug views |
+| 命中 | `world.rchit.slang` / `world.rahit.slang` | 材质求值；alpha/stochastic alpha；阴影透射累积 |
+| 天空 | `world.rmiss.slang` | sky-view LUT、星空、日月盘 |
+| 公共 ABI | `world_common.slang` / `world_core.slang` | `WorldPush`、地址、材质、segment、Light、bindings、payload |
+| 材质与光照 | `bsdf.slang` / `lighting.slang` / `subsurface.slang` | Disney、RIS/NEE、BSSRDF |
+| 介质 | `medium.slang` / `volume.slang` / `volume_source.slang` | Medium 参数、段积分、跨 compute/RT 的纯源数学 |
+| 大气 | `atmosphere*.slang` / `sky_*.comp.slang` | transmittance、multi-scatter、sky-view、reduction、froxel |
+| 可见性 | `volume_visibility*.slang` | 世界空间太阳/天顶可见性网格 |
+| 云 | `cloud.slang` / `cloud_noise.comp.slang` | 世界锚定双层云、密度、光照和二次光线预算 |
+| 雾 | `fog_noise.comp.slang` | 128³ 结构雾一次性烘焙 |
+| 水 | `water.slang` / `water_wave.slang` | 水材质、波场、法线、焦散 |
+| 水仿真 | `water_sim.comp.slang` / `water_obstacle.comp.slang` / `water_deform.comp.slang` | 高度场、障碍、顶点位移与 refit 输入 |
+| 追踪 | `trace.slang` / `trace_ser.slang` / `segment.slang` | 普通/SER TraceRay、分段数据 |
+
+`shaders/display/` 负责 HDR/SDR、直方图曝光和 UI composite；`shaders/overlay/` 负责方块轮廓、glow 与名牌。
+
+### 2.3 Java 文件职责
+
+| 路径 | 职责 |
+| --- | --- |
+| `FluoriteConfig` | `-Dfluorite.*` → TOML → 默认值三层配置；物理参数和资源重建设置 |
+| `client/RtVideoOptions`, `client/gui/` | 每帧可读设置与二级分类 UI |
+| `platform/` | 唯一 loader 抽象表面：paths、quads、sprite lookup |
+| `rt/RtComposite` | 帧编排、WorldPush、资源生命周期、Pass/compute 顺序 |
+| `rt/RtEnvironmentForcing` | 一帧一次读取天气/时间，解析为雾、云、水的最终 forcing |
+| `rt/RtCloudLighting` | D61 的云扩散源尺度，CPU 侧能量标定 |
+| `rt/sky/RtSky` | 大气 LUT 资源与唯一烘焙顺序 |
+| `rt/terrain/` | 地形驻留、section 构建、流体、静态发光 quad、light hierarchy/grid |
+| `rt/entity/` | 实体/粒子捕获、逐帧 BLAS/TLAS、overlay aux 数据 |
+| `rt/material/` | CPU decode-once 材质管线、LabPBR、发光资格、IOR 和 JSON overrides |
+| `rt/accel/` | Vulkan buffer/image、BLAS/TLAS/OMM |
+| `rt/pipeline/` | RT pipeline/SBT、DLSS-RR/FG、曝光和显示 |
+| `rt/overlay/` | display-resolution 共享 overlay buffer 和三个 feature |
+| `rt/RtGpuTimers`, `RtFrameStats` | GPU timestamp 与 CSV；性能结论的唯一数据源 |
+
+### 2.4 ABI 锚点
+
+| 结构 | 当前大小 | 闸门 | 危险点 |
+| --- | --- | --- | --- |
+| `PackedPathSegment` | 48 B | `RtPathSegmentLayoutTest` | 只剩一个空 uint lane；进位到 64 B 在 1440p 约 +118 MB，优先使用 `pathFlags` bit |
+| `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 64-bit 地址；Vulkan 128 B 保证下只余 24 B，每个新增字段由 closest-hit 高频读取 |
+| `WorldPushData` | 944 B | `RtSkyMediumLayoutTest` | 独立 GPU 数据，不受 128 B push-constant 限制；构造是 positional，Java/Slang 必须同步 |
+| `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移钉死 |
+| `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney lanes 逐位钉死 |
+| `Light` | 32 B | 未来 M18/ReSTIR 必须补充布局闸门 | 32 B 对齐 cache line；面积由 halfU/halfV 反推，不存可重算量 |
+
+`Ptr<T,...,Std430DataLayout>` 的 layout 参数承重；裸 `Ptr<T>` 会使用 natural layout 并静默错位。
+
+### 2.5 统一 Medium 的边界
+
+`Medium { ior, extinction, flags }`，栈深 2 且为具名字段。WATER/AMBIENT 使用原子 `uint flags`。环境介质永不进栈；Pass B 为规避 R24，直接从 queue `pathFlags` 解码唯一 `activeMediumFlags`。
+
+| 能力 | 水/封闭介质 | 空气雾 |
+| --- | --- | --- |
+| 透射 | 均质闭式 `exp(-σt·t)` | 结构关：解析高度积分；结构开：有限步非均质 march |
+| 参数 | `mediumSigmaT` / `ScatterAlbedo` / `PhaseG` / `Profile` | 同一接口 |
+| 段入口 | `integrateSegment` | 同一入口 |
+| τ→位置 | 均质解析 | 高度/结构密度反演 |
+| 太阳 | 同一有限面积天体采样、阴影纪律和 `E·phase` 能量口径 | 同一口径 |
+| 天空 | `mediumSkyRadiance` + 局部水深/开放度 | `mediumSkyRadiance` + 天顶开放度 |
+| 多次散射 | `g_eff` + 扩散衰减 | 大气 MS LUT + 扩散衰减；局部雾自身 MS 尚无独立模型 |
+
+刻意不统一的部分：均质水不退化成 march；云保留球壳纯光线函数和 phi_fwd；froxel 与 marched 永久并存，因为 froxel 只能覆盖相机前缀，进不了反射和 GI。
+
+### 2.6 天空、云、天气和水
+
+- `RtSky` 是 LUT 链的唯一顺序权威：transmittance → multi-scatter → sky-view → medium-sky reduction → froxel。
+- `mediumSkyRadiance` 是天空 Radiance 的 `1/(4π)` 立体角平均；水、雾和 froxel 共读。
+- `lightRadiance` 历史名字实际承载天体 irradiance `E`；体积单次散射必须写 `E·phase`，禁止恢复 D61 的 `4π`。
+- 云是世界锚定纯光线函数，`cloud.slang` 禁止出现相机位置。二次光线 off/reduced/full 只改变精度，不改变云所在世界。
+- `RtEnvironmentForcing` 一帧一次读取时间、rain、thunder。GPU 只看到最终 density/coverage/type/scatter/contrast/wave state，不读取原始天气。
+- Weather Effects 拥有全局风 heading 和天气响应；雾、低云、高云、水波保留速度和相对偏转。
+- 水波的十个波长与绝对相位固定；天气用 20 秒连续频带重加权，不改 `k/ω`。
+- 焦散强度和色散属于 Water；天气只能提供自动衰减。
+
+### 2.7 光源、实体和粒子
+
+当前静态光源链是 `RtLightCollector → RtLightHierarchy → RtLightGrid/RtLightGridManager`。一块发光 quad 对应一个矩形光源；GPU `Light` 为 32 B。RIS 使用降维目标选择，幸存者用完整 Disney 求值，结构保持无偏。
+
+太阳/月亮走独立有限面积天体接口。实体火焰、glint 和粒子 emission 已能在直接命中、反射和偶然 GI 中发光，但不进入静态 light buffer，因此不会被 NEE 选中。M18 将只建立动态光数据层；真正采样等 ReSTIR。
+
+粒子目前仅完整支持 `SingleQuadParticle`。粒子阴影有独立 cull bit，默认关闭；反射/GI 不随阴影开关自动开启。
+
+## 3. 铁律与危险契约
+
+代码附近的注释是局部权威；本节是入口。修改相关区域前必须读原注释和 layout test。
 
-**模块（import）**：`world_common.slang`（ABI：`WorldPush(Constants)`、`MaterialHeader/Extension`、`PackedPathSegment`、`Light`）· `world_core.slang`（bindings、payload、常量）· `math.slang` · `bsdf.slang` · `volume.slang`（体积积分器）· `volume_source.slang`（跨 stage 的纯高度积分/扩散/source 数学）· `medium.slang`（Medium/栈/参数/profile）· `water.slang`（波谱/法线/焦散）· `subsurface.slang` · `lighting.slang`（光网格+RIS）· `atmosphere.slang` · `atmosphere_lut.slang`（LUT bindings+读法）· `volume_visibility.slang` · `guides.slang`（仅 Pass A）· `segment.slang` · `trace.slang` / `trace_ser.slang`。
+### 3.1 所有方向性决策先请示
 
-另有 `shaders/display/`（tonemap、直方图曝光、HDR UI 合成、SDR present）与 `shaders/overlay/`（方块轮廓、glow 轮廓、名牌——**光栅、display 分辨率**，因为「nothing thin/crisp survives DLSS-RR」）。
+方法选择、物理近似、默认档、性能换质量和架构所有权都必须先向用户提供：
 
-### 2.3 Java 包职责（`common/src/main/java/io/github/dswepm/fluorite/`）
+1. 可选方案。
+2. 每项与物理准确结果的差距。
+3. GPU/CPU/显存成本的实测或明确标注的估计。
+4. 推荐理由。
+
+用户批准后才能实施。进行中的选择留在本文件待办；结案后把完整依据迁入对应 devlog，并在本文件更新长期规则或成果摘要。禁止擅自决定。
+
+### 3.2 BSDF 与材质
+
+- `roughness` 是线性 GGX `alpha`，永远不要平方。
+- `ggxD` epsilon 是除零保护，不是能量 clamp；不许调回 `1e-7`。
+- LabPBR 只在 CPU `RtLabPbr` 解码；不得重新引入 shader runtime decode。
+- 发光资格由外部证明后才调用 `RtEmissionHeuristic`，避免普通亮纹理被误判成灯。
+- delta 路径的太阳 MIS 权重 0 是当前发布行为；不要按教科书字面改回 1。
+- `UNWEIGHTED_SPEC_ALPHA_FLOOR` 是明确非物理的临时方差护栏，解除条件是 ReSTIR；新功能不得依赖它。
+- `Prim.normal.w` 是 emission mask，不是 HDR 强度；实体材质本身必须带强度。
+
+### 3.3 介质与体积
+
+- `MediumStack` 深度 2、具名字段、非数组；动态索引会让寄存器受限 raygen 落 scratch。
+- 环境介质不进栈，ambient 不能由 IOR/extinction 猜测。
+- R24 规避层不得在无真实 GPU cleanup 证据时删除；indirect raygen 禁止同时保存两个聚合 `Medium` 分类状态。
+- 阴影 payload 不增长；透射累积只通过唯一包装器。
+- 体积采样位置不能直接依赖段长，否则相邻命中距离会形成块状偏差。
+- 分层 jitter 是近似，不宣称严格无偏；冻结时域后误差应是噪点，不是块。
+- 太阳可见性与天顶开放度是不同物理量，禁止用一个替代另一个。
+- 可见性=1 时子步必须 telescoping 回原闭式；关闭新输入必须可证明 no-op。
+- `mediumSkyRadiance` 与天体 `E` 量纲不同；所有归一化 phase 已含 `1/(4π)`。
+
+### 3.4 水与形变
+
+- 水下太阳阴影方向先过 Snell 折射。
+- 焦散对同一波场求导；波形、法线、几何和焦散必须共享数学。
+- 色散默认是美术夸张，不得称为物理 1×。
+- 相机水深参考是相机所在水体表面；出水时不能把全场景深度归零。
+- CFL、Neumann 边界、海绵层和冲量钳制是稳定性契约。
+- 需要 refit 的 BLAS 不压缩；AS flags 在尺寸查询、创建和构建录制三处一致。
+- 形变开档在世界加载时快照；关闭可即时停止 dispatch，开启需要重载世界。
+- 波长改变会重解释绝对相位；天气不能实时改 `k/ω`。
+- 所有世界锚定场都先恢复 terrain rebase 之前的绝对坐标。
+
+### 3.5 天空与云
+
+- `RtSky` 内 LUT dispatch 与相邻 barrier 不得拆散。
+- sky-view 相位留在 LUT 外；Mie 前向峰不能被低分辨率方位轴烘平。
+- `world.rmiss` 保持零维度分支；M14 通过“谁填 LUT”表达维度差异。
+- `cloud.slang` 禁止相机位置；密度、层序和邻近处理按每条射线自身起点。
+- 云太阳源为 `E·phase`，恢复 `4π` 会让无源云反照率超过 1。
+- 关闭 cloud multi-scatter 必须删除整项扩散源，不能只把衰减率设成 1。
+- 未来二维云影必须由 3D 密度沿太阳积分为 Beer transmittance，禁止直接拿 raw coverage noise 当阴影。
 
-| 包 | 职责 |
-|---|---|
-| 根 | `FluoriteMod`、`FluoriteLifecycle`（mixin 驱动的生命周期，无加载器事件层）、`FluoriteConfig`（1.6k 行：`-Dfluorite.*` → TOML → 默认三层） |
-| `client/`, `client/gui/` | `RtVideoOptions`（仅收每帧重读的设置）、二级设置界面（`RtOptionsScreen`/`RtCategoryScreen`）、`WorldRenderScaler`、jitter |
-| `mixin/` | 24 个：Vulkan 后端/instance/surface（PQ HDR）、`GameRendererMixin`、`ScreenEffectRendererMixin`（压掉原版水下贴图）等 |
-| `platform/` | 加载器抽象全部表面（刻意极小、无事件层）：paths + quads |
-| `rt/` | `RtComposite`（2.4k 行帧编排）、`RtContext`、`RtDeviceBringup`、`RtGpuExecutor`（保留队列）、`RtGpuTimers`（**唯一真实的 GPU 计时**）、`RtFrameStats` |
-| `rt/accel/` `rt/pipeline/` | BLAS/TLAS/OMM；RT 管线+SBT、DLSS-RR/FG、曝光、display |
-| `rt/terrain/` | 地形驻留/网格化/流体、**光源三件套**（`RtLightCollector`→`RtLightHierarchy`→`RtLightGrid` + `RtLightGridManager` 异步发布）、digest（M9 的 `RtSkyLightGrid` 已于 M15.0 删除） |
-| `rt/entity/` | `RtEntities`（逐帧实体 BLAS/TLAS/几何表 + **粒子捕获**）、`RtEntityCollectorBase`、`RtEntityCapture`、`RtCuboidEmitter`（绝大多数生物的快路径）、`RtEntityTextures`、`RtParticleCapture` |
-| `rt/material/` | decode-once-on-CPU 材质管线（LabPBR 只在 `RtLabPbr` 认识）、发光启发式、IOR 表、JSON overrides |
-| `rt/sky/` | `RtSky`：全部大气 LUT 与**烘焙顺序**（链条依赖，顺序封在 `recordBakeIfNeeded` 内） |
-| `rt/overlay/` | 共享 overlay buffer + 三个 feature（方块轮廓/glow/名牌） |
+### 3.6 Wavefront、Vulkan 与资源生命周期
 
-### 2.4 ABI 锚点（layout test 是变更闸门）
+- `PackedPathSegment`、WorldPush 和材质 ABI 任何改动都先跑对应 layout test。
+- SER 前后重建 payload，不把 72 B payload 跨 `ReorderThread` 保活。
+- radiance/shadow ray 共用 Payload ABI；新增 shadow 状态不能另起结构。
+- 段积分发生在天空 break 之前。
+- 水面/介质边界不能由 Pass A、Pass B 分摊一半能量。
+- 加速结构资源所有权显式记录，不从异步路径状态推断。
+- 验证层沉默不代表正确；device fault 地址和资源名必须归档。
 
-| 结构 | 大小 | 闸门测试 | 关键事实 |
-|---|---|---|---|
-| `PackedPathSegment` | **48 B** | `RtPathSegmentLayoutTest` | std430 量化到 16B 倍数：**只剩一个空 uint lane**；再加一个字段进位到 64B = 1440p 下 **+118 MB**。`pathFlags` bits 0–13 已用（9/10 water、12/13 ambient），新 flag 永远优先用位不用 lane |
-| `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 `uint64_t` 地址 + 3 uint（M15.0 删 `skyLightAddr`：112→104）；Vulkan 保证 128B，**余量 24B**（下一个地址花 8）。每加一个 uint 由 closest-hit 每次命中付费 |
-| `WorldPushData` | **944 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；云、水仿真与波形 authored lanes 将 M12.5 后布局带到 928B；M13 残余新增 16B `fogNoiseOrigin`（世界锚点−独立风漂移、平铺尺度）。噪声强度/细节占比/march cap 复用 M16 退役的 `fogAmbient.xyz`，没有再为三个标量扩布局 |
-| `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移全部钉死 |
-| `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney 十个标量打进三个 float4；测试断言**逐 lane 偏移** |
-| `Light` | 32 B | — | 32 整除 64B cache line（48B 时代一半记录跨行、双倍事务）；面积不存储（`4·|halfU×halfV|` 反推） |
-
-### 2.5 体积介质现状（M13.3 后，M15 重构的起点）
-
-`Medium { float ior; float3 extinction; uint flags; }`，`MEDIUM_FLAG_WATER` / `MEDIUM_FLAG_AMBIENT` 在一个原子分类字中，栈深 2 具名字段。48B wavefront 记录仍传输 `MediumStack`；受 Slang 2026.14 raygen 分类值错误别名影响，Pass B 按 D27 直接从 `PackedPathSegment.pathFlags` 解码唯一 `activeMediumFlags`：低 16 位为 current、高 16 位为 outer，进入/退出时整体改写，积分、阴影和 reservoir 只在调用点提取 current。IOR/extinction 仍为 primitive active state；分类打包只是编译器规避层，不是第二套介质物理模型。`integrateSegment`（`volume.slang`）仍是单一能量契约、两种估计器分支：
-
-| | 封闭介质（水/玻璃/冰） | 环境介质（空气雾） |
-|---|---|---|
-| 透射率 | 闭式 `exp(-σt·t)` | `fog-noise-enabled=false`：解析高度积分；开启且 resolved contrast>0：D63 的统一有限步数非均质 march（高度×平均为 1 的 3D 密度），剖面仍在基准高度以下饱和 |
-| 太阳项 | `enclosedSingleScatter`：每个现有分层样本统一采有限面积天体方向→逐方向大气透射→Snell 折射→归一化相位 `p(ω)`→阴影；最多 3 条阴影线（τ=0/1.25/2.5，段内 jitter；`water.sun-shadow` 默认 false 只弃透射率，仍用射线的 `waterHitT`） | 辐照度 `E × hg`（HG 已含 `1/(4π)`）；默认 1 条抖动阴影线（`volumetrics.sun-shadow-rays=1`），同一有限天体样本驱动颜色/相位/阴影；0 = 读带天体样本一阶矩的可见性网格；太阳路径用扩散衰减 σ（multi-scatter 开时） |
-| 天空项 | 共享 `mediumSkyRadiance` × 上射线深度 × 可见性网格开阔度 × 深度衰减积分 | 同一 `mediumSkyRadiance`；天顶开阔度门控（网格 march 子步，telescoping 恒等式保证网格关闭=闭式 no-op） |
-| 多重散射近似 | `effectiveAnisotropy`（g_eff = g^(1/(1−ω))）+ `diffuseAttenuation`（K=√(3σa·σtr) 钳 [σa,σt]） | 大气 MS LUT + 扩散衰减；**局部雾自身 MS 无模型（已知 limitation）** |
-| 相位 | HG×95% + Rayleigh×5%（`enclosedPhase`） | HG（`fogScatter.w`，默认 0.55） |
-| 相机前缀 | Pass B 用真实水 `Medium` 一次返回 in-scatter + Beer transmittance；Pass A 不再预扣 | **froxel**（64×36×64，指数深度轴，含大气项） |
-
-**M16（2026-08-04）已收口的源分叉**：froxel、marched fog 与 water 共读 `mediumSkyRadiance`；旧 `waterAmbient/fogAmbient.xyz` 清零，只保留各自 `.w` 搭载的无关参数。**D20/12A 已收口的方向分叉**：`sampleSquareLight` 是有限面积太阳/月亮的单一随机接口；水、marched fog、froxel、可见性网格和表面 NEE 的大气颜色、相位、阴影与水折射均从同一枚样本导出。**M15.2（2026-08-03）已收口的估计器分叉**：froxel 与 marched 共用 `volume_source.slang`；局部雾太阳自衰减补进 froxel，`fogScatter` 两边统一为 albedo。froxel 独有的行星大气介质积分是有意口径差。**M15.0（2026-08-02）已修**：`=`/`+=` 潜伏缺陷（改 `+=` 带注释）、`RtSkyLightGrid` 死代码链整链删除（`WorldPushConstantsData` 112→104B）、`visibility-cell-size=0` 时跳过烘焙 dispatch、七处陈旧注释对齐。
-
----
-
-## 2.6 统一的边界：统一了什么、刻意没统一什么、代价在哪
-
-> 这一节回答一个被反复问到的问题：「这套统一架构做到什么地步、对优化友好吗」。结论散在 D2/D5/D11/D29/D33 里，这里给全貌。
-
-### 统一在「接口与纪律」，不在「数值方法」
-
-这是 D2 的原始裁决，后续每一个里程碑都在复用同一个形状：**统一接口 + 介质专属估计器**。
-
-| 已统一 | 形态 |
-|---|---|
-| 介质分类与活动状态 | 一个 `uint flags`（WATER/AMBIENT）+ D27 的 `activeMediumFlags` 打包字 |
-| 参数查询 | `mediumSigmaT` / `ScatterAlbedo` / `PhaseG` / `Profile` |
-| 外部接口 | `integrateSegment` 唯一入口 |
-| 光源与源 | `mediumSkyRadiance`（一次 reduction，水/雾/froxel 共读）+ `sampleSquareLight`（一枚有限天体样本驱动颜色/相位/遮挡/折射） |
-| 采样纪律 | τ 分层 + 段内 jitter + 按用途 rehash seed，水雾共用 |
-| 跨 stage 数学 | `volume_source.slang`（**零 binding**），compute 与 RT 共用 |
-| 散射事件权重 | 一个 `f/pdf`，两个 τ→位置 adapter（M17） |
-
-| 刻意**没**统一 | 理由 |
-|---|---|
-| 数值方法 | 均质封闭介质走**精确闭式**，非均质走 march。强行统一会让水从精确解退化成数值步进——**为「统一」二字付出质量与性能，是纯损失** |
-| 多重散射近似 | 雾=大气 MS LUT+扩散、水=g_eff+扩散、云=phi_fwd+双叶 HG（D5）。三者是 RTE 扩散极限在不同光学厚度区间的近似，各自在自己的区间最准 |
-| 云的行进位置 | 独立光线函数而非进 `integrateSegment`（D33） |
-| 雾的两台机器 | froxel（相机前缀）+ marched（所有弹射）**永久并存**——froxel 进不了反射。M15.2 消灭了两者的源分叉，但重复本身是结构性的 |
-
-### 另一条本可以走的路（供对照）
-
-工业界存在**两种都成立、但统一对象不同**的架构：
-
-- **(a) 统一接口 + 介质专属估计器** ← 本项目、实时渲染器常态
-- **(b) 统一估计器 + 介质只提供 majorant** ← PBRT v4 一路：所有介质走同一个 delta/ratio tracking 循环，均质只是「majorant 段只有一段」的退化情形
-
-(b) 更通用（任意非均质、null scattering 天然容纳），代价是**处处付拒绝采样的循环**，包括对均质水——而那里闭式解精确且免费。分野不在「现代不现代」，在**离线 vs 实时**：离线常数因子无所谓、通用性至上；实时的常数因子就是全部。
-
-**云是这条分界线上的第一个测试，M13 残余把第二个测试补齐了**：`MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT` 在 strength=0 时仍退化为闭式高度雾；打开 3D 场后，视线路径、光源路径与散射事件共同走数值密度。云仍因球壳边界与专属多散射近似保留独立光线函数，闭式水保持不变；统一的是介质契约与密度/能量口径，不是强迫三者共用一个循环。
-
-### 对优化友好吗：有数据的一面与没数据的一面
-
-**友好，且有实测支撑：**
-
-- **单一接口 = 单一测量与隔离点**。`SEGMENT_SOURCE`/`scatter-source`/`visibility-cell-size=0` 这些同会话开关能做到**可证明的 no-op**，M13.2 密闭房间那个 bug 正是靠它测出来的（此前六次推理全错，§9.2）。没有统一接口就没有这些闸门。
-- **均质闭式零 march**，数学上还比 march 准。
-- **`volume_source.slang` 零 binding** 是 froxel 与 marched 能共用一份源数学的结构前提（M15.2 消灭源分叉靠它）。
-- **散射顶点实测 0.930×**——统一 `f/pdf` 之后，水从「每段最多 3 条阴影线」降到 1 条，**接口统一顺带让它更快**。
-
-**代价，同样有实测：**
-
-- **寄存器压力是首要风险**（R6，raygen 明确 register-bound）。M17 把 `SegmentIntegral` 从 6 floats 涨到 12 —— **实测 1.001×，台阶未撞到**。这是目前唯一被证伪的悲观预期。
-- **逐段热路径极贵**：发光体 NEE 一条阴影线 **+20.9 ms**，而 D31 的判据实验证明**贵的不是射线**（删掉反而慢 5.2 ms，F15 观察者效应）——是光源网格的依赖加载链按段执行。**这条直接决定了 D33 把云的 march 放在逃逸段而非 `integrateSegment`。**
-- `integrateSegment` 每个弹射段都调用，塞进去的东西由**每一段**付费。
-
-**尚无数据的：** 水散射成本已测（10.49/7.56 ms），但 `bench-water-top` 未采（结论只覆盖全潜）；粒子阴影两次未能测出（需 `bench-particles`）；云的 march 成本待 M11.1 采集。
-
----
-
-## 3. 铁律与不变量索引
-
-> 注释本体是唯一真相源，本表只是地图。**行号会漂移**——用文件 + 符号/关键词定位。改动任何相关代码前先读原注释。
-
-### 3.1 BSDF / 材质
-
-| 锚点 | 铁律 |
-|---|---|
-| `bsdf.slang` 顶部横幅 | **roughness 是线性的、就是 GGX alpha，永远不要平方。** Disney 论文的每条公式抄过来都必须把 `roughness²` 换成 alpha 原样。搞错同时坏着色、RR 滤波宽度、镜面吸附，且无报错 |
-| `math.slang` `ggxD` | 分母 epsilon 已放到 `1e-20`（真除零保护）。**不许调回 `1e-7`**——旧值是被 MIS 取代的意外能量钳，回调会静默删掉已被正确加权的能量 |
-| `math.slang` 各向异性注释 | 「isotropic 归约恒等」这个断言曾经错过一次，改前先验证 |
-| `world_core.slang` | 有一个阈值「Deliberately NOT `MIRROR_ALPHA_MAX`」，差异承重（透射专用阈值 0.06 的由来见 `docs/MATERIAL_FORMAT.md`） |
-| `RtLabPbr.java` | **不要重新引入运行时解码**；「No shader in this renderer knows what a LabPBR channel means」——加 SEUS PBR = 加一个 CPU 解码器，不是第二条 shader 路径 |
-| `RtEmissionHeuristic.java` | 发光启发式的资格判定**刻意外置**：只对「已证明属于发光方块状态的 sprite」调用 |
-| `RtMaterialOverridesTest` | format-1 文件必须永远渲染不变（缺省参数=缺省，不是「默认成相似值」）——测试钉死的性质 |
-| `isDeltaAlpha ⇒ gNormal.w = 0` | 镜面吸附是 RR 保持反射锐利的机制，必须存活 |
-
-### 3.2 介质 / 体积
-
-| 锚点 | 铁律 |
-|---|---|
-| `medium.slang` `MediumStack` | 深度 2、具名字段、**非数组**（动态索引落 scratch，raygen 已寄存器受限）。`entering` 逐面重推导 ⇒ 走丢的路径下个界面自愈 |
-| `medium.slang` `Medium.flags` | WATER/AMBIENT 共用一个 `uint` 分类字，不再使用 shader `bool`；ambient 是显式位，不从 `ior==1 && extinction==0` 推断（无色电介质会误答）。**环境介质永不进栈** |
-| `world.rgen.slang` 活动介质状态 | **禁止在 indirect raygen 同时存活、复制、传递或原地修改两个 `Medium` 聚合量，也禁止把 current/outer flags 拆成两个持久 primitive。** `PathSegment.medium` 只传 IOR/extinction；分类必须由 queue `pathFlags` 直接解码成唯一 `activeMediumFlags`，进入/退出整体更新。改回任何聚合/双标量接口前必须用真实 GPU probe 证明目标工具链已修复，shader 编译和 `spirv-val` 通过不算证据 |
-| `medium.slang` `mediumScatterAlbedo` | σs 保持全局、反照率由 `σs/σt` 反推——48B 记录保住最后一个空 lane 的原因。σs∝σa 的灰色反照率教训写在原地 |
-| `volume.slang` 透射率包装器 | **阴影 payload 不许增长**（SER 在 `ReorderThread` 溢出全部存活值）；透射率乘法只存在于唯一包装器里，「第四条阴影线不会悄悄漏掉」 |
-| `volume.slang` 体积采样 | 采样位置**不得依赖段长**（否则相邻像素按命中距离读出量级不同的答案 = 斑块） |
-| `volume.slang` 抖动分层 | 与 M9 被否估计器的区别是**逐帧逐像素抖动**：把稳定块状误差转成时域可滤噪声；但层内 uniform-distance + 闭式权重是**分层近似，不宣称严格无偏**（D9，`f/pdf` 留 M17）。可证伪判据：冻结时域累积必须看到**噪点而非块状** |
-| `volume.slang` 源的分频 | 太阳项按太阳可达性门控、环境项按**天顶**可达性——山坡阴影不许抽走雾里的环境光（移除环境光的是屋顶不是山） |
-| `volume.slang` telescoping | 可见性=1 时子步分段精确望远镜化回闭式。「新输入缺席时可证明是 no-op 的改动，屏幕上的差异只能来自新输入」 |
-| `volume_visibility.slang` | 网格**采样不 storage**（nearest 会把 cell 边界画进雾里）；cell=1 对齐方块中心是一格墙不漏光的机制，cell=2 必然漏光 |
-| `volume.slang` 扩散衰减 | K 是教科书结果**刻意不拟合**；钳制边界是物理域不是调参。吸收主导介质里它正确地什么都不做——深水变黑是对的答案 |
-| `world_common.slang` `PackedPathSegment` 注释 + `RtPathSegmentLayoutTest` | 花掉最后一个 lane 之前先读测试注释；+118 MB 是代价 |
-
-### 3.3 水
-
-| 锚点 | 铁律 |
-|---|---|
-| `water.slang` 头注 | 读起来像水不像动玻璃的三性质：尖峰浪形、真深水色散 ω=√(gk)、风+蜿蜒。域世界锚定；**焦散对同一波场求导**所以永远同步 |
-| `volume.slang` 折射太阳 | 水下太阳方向必须过 Snell（48.6° 锥；否则日出时光柱水平乱跑）。阴影线朝**折射后**方向发 |
-| `water.slang` 色散 | 物理 1× 不可见（三通道差 <1%），默认 50× 是**刻意夸张**；`CAUSTIC_MAX` 夹平是嫌疑未定案。红通道 IOR 下限 1.05 防 `refract()` 静默退化 |
-| `ScreenEffectRendererMixin` | 原版水下整屏贴图已压掉：光栅时代替代品，介质已被真实渲染。**没有水线代码**——半潜水线是水面平面自己的地平线，免费。火焰/方块视野遮挡 overlay 刻意保留 |
-| `RtFluidMesher` | 从原版 `FluidRenderer` 改编但**不发背面**（原版为背面剔除光栅器双写顶面） |
-| `RtComposite` `waterAnchor` | 深度参考是「相机所在水体的水面高度」；出水时不能把全场景深度归零（曾整屏亮如水面） |
-
-### 3.4 光源 / RIS
-
-| 锚点 | 铁律 |
-|---|---|
-| `lighting.slang` 头注 | **INDIRECT PASS ONLY**——primary pass 不着色 |
-| `lighting.slang` `risInitial` | RIS 估计量 `f(y)·W` 对任何严格正目标无偏——目标用降维 BSDF、幸存者用完整 Disney 是**刻意且无偏**的，不要「修」 |
-| `lighting.slang` 成本注释 | M=8 时候选行走值 5.9ms/18ms 帧；成本在**依赖加载深度**不在分歧（强制相干只回收 1.3ms）。预采样池是 ReSTIR 整合的一部分，现在不做 |
-| `world.rgen.slang` 太阳 MIS | **两个太阳是美术选择**：画的日盘 16.7°（布景，权重恒 1）、NEE 光源 0.6°（方形，`payload.f0` 走辐照度因为辐射亮度会爆 half）。**delta 路径给光源权重 0**（教科书是 1）——否则水面每个波面爆炸。这也是该改动碰不到镜面的原因 |
-| `UNWEIGHTED_SPEC_ALPHA_FLOOR` | 发光体在近镜面上唯一的方差护栏，**明确标注非物理**。解除条件=ReSTIR。任何叠在它上面的新逻辑都要先问这一句 |
-| `RtLightCollector` | 一发光 quad 一矩形光；quad k = 三角形 2k,2k+1 = 顶点 4k..4k+3 的关系是 `emit()` 必须维持的不变量；辐射=包围矩形均值 ⇒ 总功率守恒 |
-| `RtLightHierarchy` | GPU 记录 32B 的理由是 cache line；**不要存可反推的量**（面积） |
-| `world.rgen.slang` 发光门 | 不在光 buffer 里的发光体永远 gather（逐位等于无 NEE 路径，无能量损失）；`PAYLOAD_EMITTER_IN_LIST` 防双计 |
-
-### 3.5 天空 / 大气
-
-| 锚点 | 铁律 |
-|---|---|
-| `RtSky.java` | LUT 是**链**（transmittance → multi-scatter → sky-view → medium-sky reduction → froxel）；相邻依赖的 barrier 与 dispatch 同封装。前两张一次性，后三项逐帧 |
-| `sky_view.comp.slang` | 逐帧表（依赖太阳）；完成后立刻被 `sky_medium_reduce.comp.slang` 全表读取，二者之间 compute barrier 不得外移 |
-| `atmosphere_lut.slang` | 相位函数**留在 LUT 外**（Mie 前向尖峰窄于方位轴分辨率；两相位只依赖视线-太阳角，因子化精确）；binding 与数学分离的理由（bake 的描述符集只有一个 binding） |
-| `world.rmiss.slang` | miss 里**零维度分支**（M14 原则）：LUT 是唯一接口。日月盘门控：镜面弹射后开、漫反射 NEE 顶点后关（防萤火虫双计） |
-| `RtComposite.skyPush` | 推**未染色峰值**，大气染色在 GPU 逐消费点做（`dyeCelestialLight`）——「一份实现而不是两份手工同步」（F5 收口后的形态） |
-
-### 3.6 Wavefront / 追踪
-
-| 锚点 | 铁律 |
-|---|---|
-| `world_common.slang` 顶部 | `Ptr<T, …, Std430DataLayout>` 的布局参数**承重**：裸 `Ptr<T>` 拿 natural layout（`WorldPush.sunDir` 200 vs Java 写的 208 = 静默错位）。这个 alias 是唯一的布局开关 |
-| `world_common.slang` | 64 位设备地址全部住 inline push lanes：「加新 buffer 只查一个结构」 |
-| `trace_ser.slang` | payload 在 SER 前后**构建两次**而非跨 `ReorderThread` 携带（72B 钉在寄存器里跨过 SER 必须溢出的那个点） |
-| `trace.slang` | 三个 cull-mask 位；`CULL_SELF` 独立成位的理由：「对次级光线可见」与「对从眼睛发出的次级光线可见」是两个问题，第一人称身体是唯一分歧实例 |
-| `world.rgen.slang` | 段积分在天空逃逸 break **之前**（面向天空的段是环境介质最长的段——M5 修的 break-before-attenuation） |
-| `segment.slang` | 第二条 Fresnel 分支是**数据不是第二份内联 tracer** |
-| `world.rahit.slang` | radiance 与 shadow 光线共用同一 Payload ABI（Vulkan 要求）；shadow 复用 `albedo.rgb` 当累积透射率、`hitT` 当最近水面交点 |
-| `guides.slang` | **PRIMARY PASS ONLY**；「Never let a TIR reflection become ordinary diffuse/depth」 |
-
-### 3.7 实体 / 粒子 / overlay
-
-| 锚点 | 铁律 |
-|---|---|
-| `RtEntityCapture` | 实体累加器与地形 `SectionMesh` **同布局**——上传+BLAS 路径逐字复用 |
-| `RtEntityTextures` | 槽位按**解析后的 image view** 键控，不按 `RenderType`（energySwirl 每帧新建 RenderType，按它键控每帧漏一槽） |
-| `RtCuboidEmitter` | 模板缓存按根 `ModelPart` 键控（`Model.Simple` 包装器逐次提交，按它缓存每帧漏一棵树）；完整有序树验证失败则不写、调用方回退 |
-| `RtEntities` | 名牌不进 RT mesh（billboard 每帧毁掉 rigid-reuse/MV）；假 blob 阴影正确丢弃（RT 有真阴影）；`isInvisible()` 整体跳过 |
-| `RtParticleCapture` | 粒子颜色作 raw albedo 直通，**vanilla lightmap 刻意不烘进**（RT 自己打光）；相机相对坐标经每帧 offset 转 rebased 空间 ⇒ TLAS identity |
-| `RtGlowOutlineFeature` | 「Never makes the entity itself emissive」——glow 是光栅轮廓 |
-| `Prim.normal.w` + `evaluateMaterial` | **它是遮罩，不是强度。** 真实 HDR 强度烘在材质头里（`EMISSIVE_STRENGTH=5` 基线、上限 32），`evaluateMaterial` 结尾把两者相乘。所以给自发光实体几何挑材质时**必须挑一个本身带强度的**——`entityFallbackId` 是 `emissionSource=NONE` 编译的，强度 0，遮罩给 1 也照样不发光（M19 火焰踩过）。同理，shader 里任何新的自发光量都要用同一 HDR 量纲，别按 0–1 乘子写 |
-| 实体不是 NEE 光源 | `RtLightCollector` 只收地形自发光 quad。**实体自发光只在直击与偶然打到它的 GI 光线里生效**，照不亮房间——这是结构现状不是缺陷，真光源要 M18 收集层 + ReSTIR 采样（D3） |
-| `RtWorldOverlay` | overlay 必须画在 display 分辨率（细线过不了 DLSS-RR）；feature 从共享池拿 scratch，**never own one-off pools** |
-| `RtBlockOutlineFeature` | 遮挡用 inline `rayQueryEXT` 打 TLAS，不用深度缓冲（`gDepth` 在 RR 内部分辨率） |
-
-### 3.8 平台 / 构建 / 配置 / 诊断
-
-| 锚点 | 铁律 |
-|---|---|
-| `Platform.java` | `get()` 抛异常**承重**：`FluoriteConfig.resolveConfigPath()` 靠 catch 它回退相对路径，JUnit 才能脱离加载器跑。「Do not soften this into returning null」 |
-| `fabric/build.gradle` `verifyCommonIsLoaderAgnostic` | 字节码扫描而非 import grep（接口注入无 import，F6）；allowlist 空且「meant to stay that way」；真正的证明是 `:neoforge:compileJava` |
-| `developer_guide.md` | **slangc ≥ 2026.14 硬要求**（四参数 `Ptr` 形式；旧版要么报 39999 要么静默错位）。Vulkan SDK 自带的 2026.1 太旧 |
-| `-Xss16m` | 必须是直接 vmArg 不能走 `JAVA_TOOL_OPTIONS`（渲染线程在 VM 解析该变量前定容；NGX init 栈溢出且栈迹无用） |
-| `FluoriteConfig` 旋钮退役规则 | 值定了之后必须二选一：要么删旋钮要么留着并写明为何保留。「旋钮在用途完成后留在 UI 里」是禁止态 |
-| `FluoriteConfig` | 「关档必须等于已发布行为，否则 A/B 无意义」（M7 经验，适用于每个开关）；`-Dfluorite.*` 扁平命名空间与 TOML 嵌套**刻意独立** |
-| `RtVideoOptions` | 只收每帧重读的设置；要重建资源的留在 `-D`/TOML 面（DLSS 档位是唯一例外，理由在原地） |
-| `RtTerrainDigest` | 「Do not trust a dump whose `stableDumps` is 0」；只比两次运行 `builds==1` 的 section；流体世界**不存在全局稳定** |
-| `RtGpuTimers` | 其他计时器量的都是录制线程 CPU 时间，「for a path tracer says nothing at all」——性能预算必须用时间戳查询 |
-| `run/vk_layer_settings.txt` | 没有它验证层静默——「a validation run that prints nothing looks exactly like a clean one」 |
-| `RtDeviceBringup` | `fluorite.rt` 在 `vkCreateDevice` 读一次，运行时翻配置不生效，重启才行 |
-
----
-
-## 4. 方法论
-
-### 4.1 性能测量（唯一有效流程）
-
-1. **GPU 时间戳是唯一真相**（F7：CPU scope 对 path tracer 毫无意义——`traceIndirect` CPU 侧 5µs vs GPU 毫秒级）。看 `gpu.tracePrimary` / `gpu.traceIndirect` / `gpu.skyBake` / `gpu.visBake` 等。
-2. **同会话比值法**（F10）：绝对毫秒不可跨位姿引用（M4 基准位姿没记录）。两侧同一存档、固定位姿、不碰输入，比中段固定窗口（如第 4000–8000 帧）的中位数**之比**；门槛写倍率不写毫秒。实测离散度 <0.1%（F9 的 ±8% 噪声底只在相机会动时成立）。
-3. **运行时开关优先于 git checkout**：`scatter-source`/`segment-source` 这类同会话 A/B 连构建差异都消除，比 F10 更干净。能用开关做的对照都该优先用开关。
-4. **分辨率显式声明**（F8）：`-PbenchWidth=1920 -PbenchHeight=1080`；开发窗口默认 427×240 渲染，不声明的数字全部作废。DLSS 档位按缩放比核对不信标签（F11：quality=0 是 Performance=0.5×，不是 Quality=0.667×）。
-5. **采集必须记录完整配置快照**（M9 教训：`subsurface-mode` 不同差 3.5ms，差点报成回归）——世界、位姿、分辨率、全部相关 TOML 值、事件数、窗口口径。
-6. **成本不测就会记错**（M8）；**计划里写作缓解手段的定量性质必须先测量或标注未测**（F13：「近乎线性」被引用多次、实测饱和，缓解方案是空的）。
-
-### 4.2 已知成本账本（含口径）
-
-| 项 | 数字 | 口径 |
-|---|---|---|
-| M4 基准 `gpu.traceIndirect` | 17.394 ms（中位） | 1920×1061/RR Performance/固定出生点——**位姿未记录，绝对值不可比** |
-| M6 解析高度雾 | +0.622 ms | 同上会话 |
-| M7 Disney 全量 | 1.283× | 同会话比值，10.647→13.662 |
-| M8 SSS | thin 1.342× / 游走@4 1.612×、@2 1.567× | 门槛 1.5×=22.15ms；事件数杠杆**饱和**（前 2 事件 3.33ms，第 3、4 只加 0.66ms） |
-| 可见性网格烘焙 | 0.072 ms | 64×32×64，每 cell 2 条光线（26 万条） |
-| froxel 烘焙 | 0.137 ms | 64×36×64（14.7 万条）；同为一列一线程时曾比 per-cell 慢 18× |
-| 雾太阳阴影线 | 2 条 ≈ +2.0±0.2 ms（+13%）；1 条≈一半 | 同会话翻开关；1 与 2 视觉难分 ⇒ 默认 1 |
-| M9 无条件 CPU（天光网格时代） | ≈0（测不出） | `bench` 世界；该网格已于 M15.0 删除 |
-| **M9 水段散射本身** | **10.49 ms（占 25%）** | **2026-08-05 结清欠账。** `bench-water-bottom`、1920×1080、同批次、地形落定窗口：关掉 `scatter-source` 后 41.744→31.251。换散射顶点估计器后降至 **7.56 ms（占 19%）** |
-| M17 散射顶点 | **0.930×（省 2.93 ms）** | 41.744→38.812。**比它取代的分层估计器更快**：水的分层每段最多 3 条阴影线，顶点 1 条。「射线预算不变」那句话对水是错的 |
-| M17 发光体 NEE | **+20.9 ms（1.538×）**；另一批次 +22.4 ms | 38.812→59.707。**判据实验（D31）：静默阴影线后不降反升 5.2 ms** ⇒ 射线不是驱动因素，F15 观察者效应。已挂起默认关，修法只能是结构性的（减少调用次数） |
-| M17 `SegmentIntegral` 6→12 floats | **1.001×（无成本）** | main 39.775 vs 分支两开关全关 39.807，同批次。**R6 占用率台阶未撞到**，不必走 callable shader 升级阶梯 |
-| 潜水 vs 旧 `bench` 世界 | **约 2 倍** | 42 ms vs 21 ms。M9 之后所有「在 `bench` 上无回归」的结论对水一律不成立 |
-| 室内帧数下降（未定位） | 进世界后 `gpu.traceIndirect` 后半程中位 **21.36 ms** | 2026-08-05 在 `f855d31`（M19 之前）采到，**机位/分辨率/配置均未记录，不可作基准**。用户实测确认 M19 之前就存在，归因到更早的改动，**按用户决定推迟到 ReSTIR 之后再查**。记在这里只为防止它日后被误认成新引入的回归 |
-
-### 4.3 A/B 与验收纪律
-
-- 每个开关的**关档必须等于已发布行为**（否则 A/B 没有对照意义——M7 把 MIS 关档做成带 floor 的已发布行为才让四条验收成立）。
-- RR guide 回归协议（R5）：固定场景固定时刻，(a) 参考=RR 关+spp16+maxBounces8，(b) RR 开+spp1；每个子里程碑各跑一次**不批量**。guide 回归表现为 (a)(b) 之间新出现的涂抹/ghosting/亮度偏移。
-- 材质 A/B 前**先确认写的字段真的生效**（M7 教训：`base.roughness` 被 LabPBR 纹理静默覆盖过）。
-- lang 11 份（`assets/fluorite/lang/`）批处理更新，不逐里程碑零敲碎打；每个选项要 `<key>` 和 `<key>.tooltip`。
+### 3.7 实体、粒子和 overlay
 
-### 4.4 水的基准（M9 欠账，2026-08-05 建立）
-
-MC 相机是**点**，不存在「半潜」机位。两机位分开采，已建为主副本：**`bench-water-bottom`**（完全潜入）与 **`bench-water-top`**（贴水面上方）。`bench` 世界继续测无条件开销（无大水体，水分支不执行——它对水什么都证明不了，别再拿它当「无回归」证据）。
-
-**首采即证实了「换世界」这件事本身的必要性**：`bench-water-bottom` 两开关全关的 `gpu.traceIndirect` 中位数是 **42.2 ms**，而旧 `bench` 世界同期约 21 ms——**水下是两倍**。M9 之后所有「在 `bench` 上无回归」的结论，对水介质一律不成立。
-
-**无人值守采集流程**（`scratchpad/capture.sh` 的形状，可重建）：还原主副本 → 改 `run/config/fluorite.toml` → `./gradlew :fabric:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=<name>` → 固定时长后按命令行匹配 `quickPlaySingleplayer` 杀掉客户端 JVM → 取走 `run/rt-frame-stats/frame.csv`（**每会话重建，必须在下一次运行前拷走**）。
-**统一取数规则**（每次运行同样施加，否则比值无意义）：只取 GPU zone 非零帧 → 丢弃前 15% 暖机 → 取中位数，并报分块离散度让漂移可见。实测暖机块比其余低约 1 ms，之后各块彼此在 0.5% 内。
-**采集期间不得碰输入**——一次误触改变位姿即毁掉该次采集。
-
-**运行时开关测不到的那一类**：`SegmentIntegral` 因 M17 导出散射顶点而从 6 floats 增至 12，这个代价**两个开关全关时也照付**，只能用 main 与分支两次构建、同位姿对比（F10），也是 R6 占用率台阶的正面检验。**已测（2026-08-05）：main 39.775 ms vs 分支两开关全关 39.807 ms = 1.001×，同批次，台阶未撞到。**
-
-### 4.4.1 批次纪律（F17，2026-08-05 实测确立）
-
-首采就撞上两个坑，两个都不是推理出来的：
-
-1. **一次批次里的第一次运行必须整个丢弃。** 首次运行（重新构建之后）的 `gpu.froxelBake` 读 0.582 ms，而同批次其余每一次都是 0.253–0.256；`gpu.tracePrimary` 同样偏离。15% 暖机丢弃规则**不足以**切掉它。做法：每批开头跑一次一次性的 `*-DISCARD` 采集，不参与任何比值。
-2. **跨批次的绝对值不可比。** 两批之间出现了系统性偏移（批次一 `tracePrimary` ≈ 0.61、批次二 ≈ 0.93，而 `traceIndirect` 方向相反），**原因未归因**——GPU 降频解释不了方向相反，按 §4.5 不给它命名。后果是硬的：**任何比值的分子分母必须来自同一批次且都不是该批的首次运行**，否则结论无效。第一次采集正是因此报出了两个后来必须收回的数（顶点省 3.5 ms、分层水散射 11.34 ms）。
-
-这两条与 F9/F10 是同族但更严：F10 解决的是「位姿不可复现」，这里解决的是「同一位姿、同一构建，跨批次仍然不可比」。
-
-3. **每次运行中途有一个约 2.4 ms 的阶跃下降，成因未归因。** 出现在第 7–9 块（各次不同），而地形构建在第 2 块就落定（`terrainBuildsCompleted` 从 3200+ 掉到几十）——**「地形流式加载」这个假设被自己的数据推翻**，按 §4.5 不再给它命名。唯一关掉 in-scatter 的那档（`scatter-source=none`）**没有阶跃**，说明它与 in-scatter 的成本相关而非与消光相关，仅此而已。
-   **取数窗口因此固定为第 2–6 块**：地形已落定、阶跃尚未发生，每次运行都有这一段。所有 M17 的数字都取自这个窗口。想彻底消除它，下一步是在 bench 世界里关掉昼夜循环并复采，但那是没做过的实验，不要当成已知结论。
+- 实体累加器与 terrain section mesh 同布局，复用上传/BLAS 路径。
+- 实体纹理槽按解析后的 image view 键控，不按每帧新建的 RenderType。
+- 名牌和细线 overlay 保留在 display-resolution 光栅 pass。
+- 粒子颜色是 raw albedo，不烘 vanilla lightmap；路径追踪自己打光。
+- float lane 搬整数位型必须完整 round-trip 测试。
+- 粒子 shadow、reflection、GI 是三项不同能力，不能用一个 cull bit 一起上线。
 
-### 4.5 归因纪律（F12——七轮 M9 的核心产出）
-
-**代码里错的东西和用户看到的现象是两个集合，交集靠隔离实验建立，不能靠推理宣称。** M9 七轮里前六个「根因」全是读代码读出来的（其中两个还是真缺陷——修是对的，但宣布它们是根因是错误归因），唯一站住的结论来自 `SCATTER_SOURCE` 四档 + `SUN_SHADOW` 开关的判据链。规程：
-1. 先设计**判据表**（每个观察结果指向哪个子系统），后动手；「不要先讲机制」。
-2. 隔离开关現役清单：`water.scatter-source`（both/sun/sky/none，none 保 σs 只去 in-scatter——把「太亮」和「太浑」分开）、`volumetrics.segment-source`（both/froxel/marched/none）、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`（可证明 no-op）、debug view 8–21。
-3. 修掉顺手发现的真缺陷**不等于**结案；结案标准是判据表闭合。
-
-### 4.6 GPU shader 运行期日志方法
-
-介质/ABI 类故障不能用「编译成功」或一张 debug 图结案。固定流程：
-
-1. 先跑 `generateShaderRecords compileShaders :neoforge:processResources :neoforge:compileJava`，避免只更新源码/根目录 SPIR-V、运行目录仍读旧资源。日志文件名必须带方案编号与加载器，例如 `codex-neoforge-20B-scalar-state-rerun-stdout.log`。
-2. 用原始复现存档启动，不另造简化世界代替真实路径。中心像素 probe 同时记录传输边界、活动状态、积分结果和 terrain 驻留；一次只增加能区分两个假设的字段。
-3. 对结构传值问题，至少布四个边界：queue 解包值、函数显式引用入口值、首次积分前值、首次积分后/profile 值。只看 callee 最终值无法区分「传输已坏」「局部复制坏」「积分调用坏」。本次成功判据为 queue/current/outer=`1/1/2`、post profile=`1`、`firstScatter>0`。
-4. **探针会改变被测 shader。** 两次带 caller/pre/post 读取的 20B 曾取得首次正确后 145/241 条零回退；删除这些读取后，通用 probe 连续 200 条仍为 profile=2，复用同一 lane 直记 raw `currentFlags` 又连续 44 条为 3。前两次是诊断读取改变活跃性/寄存器分配后偶然压住错编，不是修复。任何成功版本必须在删掉一次性观察点后再跑一次原始复现。
-5. pipeline cache/异步新建仍是启动时变化的候选解释，但本轮没有 pipeline generation/hash 日志，**不得把数值转折直接命名为 pipeline 切换**。同理，把 GPU 状态与 CPU/terrain 状态写在同一条日志不等于证明 GC/TLAS/区块发布有因果。
-6. 修复成立的标准：删除一次性 caller/pre/post lanes 和 Java offset/格式串后，保留通用 `water-medium-trace`（profile、散射、透射、Radiance、开阔度、首段与 terrain）仍连续通过；再跑生成记录、shader 编译、双侧 ABI 测试。失败与“被探针改变的假成功”日志都要保存。
-7. 工具链升级不能自动当作修复。Slang 生成 SPIR-V，Vulkan 驱动消费 SPIR-V；升级 Vulkan SDK 可能只替换 validator/header，升级驱动只可能改变驱动端编译，升级 Slang 才会直接改变这里的生成代码。升级任一层后都保留 D27，先用同一最小复现比较旧/新 SPIR-V，再跑 raw 边界 probe 和 cleanup 后原始存档长跑；只有跨目标 GPU 连续通过，才另行请示是否删除规避层。
-
-### 4.7 跨加载器验证
-
-两个 run 目录每次运行都改写存档——比对前必须从纯净主副本还原双方；只比 `builds==1` 的 section；`common/` 纯净性靠字节码扫描 + `:neoforge:compileJava`。全流程见 `docs/PLATFORM_NOTES.md`（那里的规则：**没列出的差异都是 bug**）。
-
----
-
-## 5. 工具手册
-
-| 工具 | 用法 | 说明 |
-|---|---|---|
-| `tools/bench-world.sh [name]` | 采集前还原基准世界（默认 `bench`）；`--adopt [name]` 把当前存档提升为主副本 | 主副本在 `run/bench-master/`（未跟踪）。**世界名是参数**：采集只测场景跑到的代码 |
-| 基准采集 | `./gradlew :fabric:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=<name>` | 三个 -P 缺一不可（§4.1）；NeoForge 同旗标 |
-| `profileMinecraft.ps1` | `-TargetPid`（0=自动找 MC JVM）`-RecordingName` `-Settings` | JFR 包装；输出 `run/jfr/<name>-<时间戳>.jfr`；交互式（Enter 停止） |
-| `runClient.ps1` | 直接跑 | 停 daemon、设 ZGC 等 JVM 参数、强制 `--graphicsBackend VULKAN` |
-| frameStats | `-Dfluorite.rt.frameStats=true` | CSV 到 `<gameDir>/rt-frame-stats/frame.csv`；含 GPU 时间戳 scope；hitch 线=1.5× 滚动中位 |
-| 验证层 | `-PvkValidation` | 挂 `run/vk_layer_settings.txt`（sync+core）；默认关（开着基准全废） |
-| 诊断键 | `diagnostics.heavy-crash-diagnostics` / `terrain-digest` / `terrain-digest-sections` / `cull-trace` / `water-medium-trace` | `water-medium-trace` 每 250 ms 回读一次已完成环槽的中心视线水介质数据；无当前帧 readback stall，开启时每帧只额外发射一条向上诊断光线 |
-| debug 视图 | `composite.debug-view`（视频设置→诊断） | 0–7 既有 guide/材质视图；**8** 队列首叶体积 in-scatter（固定逐像素 seed：稳定空间噪声，不作时域收敛）· **9** 首叶段（逃逸/长度/是否水）· **10** 水太阳阴影线 · **11** 焦散色差×20 · **12/13** 透射/多重散射 LUT 对照 · **14/15** sky-view LUT/参照 march · **16** 光染色 · **17** froxel · **18** 可见性网格（R 太阳 G 天顶）· **19** 网格 vs 射线真值示波器 · **20** 正常合成实际使用的相机前缀 in-scatter（右条：绿=水下且前缀非零，红=水下但前缀零长，蓝=CPU 判定不在水下）· **21** 完整 pre-RR 合成的前缀有/无交替条带；由于 Vulkan storage-image Y 原点与最终屏幕约定相反，亮度占比区实际显示在屏幕顶部 1/4（R=8×、G=2×、B=1×），条带在底部 3/4 |
-| 隔离开关 | §4.5 清单 | 全部在视频设置可翻，同会话 A/B 首选 |
-| shader 构建 | `compileShaders`（SPIR-V+spirv-val；`world.rgen` 编两份含 SER 变体）、`generateShaderRecords`（反射 JSON→Java ABI 记录） | **slangc ≥ 2026.14**；工具解析顺序 `-P<name>Path` → 环境变量 → `$VULKAN_SDK/Bin` → PATH；独立 toolchain 在 `F:\MC\Shader\tools\slang-2026.14` |
-| NGX | `-PdlssSdk`（属性优先于 `DLSS_SDK`——daemon 缓存环境，报错会叫你 `--stop`）、`-PngxVendorConfig=rel/dev`、`-PngxPlatforms` | shim 构建见 `docs/developer_guide.md` |
-| 跨加载器 | `verifyCommonIsLoaderAgnostic`（挂在 `check`） | 字节码常量池扫描 |
-
-注：`compare-digest.sh` **不存在**（旧计划提过）；PLATFORM_NOTES 描述的是手工 diff 两份 dump。
+### 3.8 平台、配置、语言和文档
 
----
-
-## 6. 参考项目政策（HPWater / HPVolumeCloud）
-
-### 6.1 净室约束（全程适用，任何一条单独成立）
-
-`F:\MC\Shader\Reference` 下两个参考实现**只学思路、不搬代码**：
+- `Platform.get()` 抛异常的行为承重；测试环境依赖 catch 后回退路径，不能软化成 null。
+- slangc 最低 2026.14；Vulkan SDK 自带旧版本不能替代。
+- `-Xss16m` 必须直接作为 JVM 参数，不能依赖 `JAVA_TOOL_OPTIONS`。
+- 设置用途结束后要么删除，要么记录长期理由；禁止废弃旋钮留在 UI。
+- `RtVideoOptions` 只放每帧可重读设置；需要重建资源的设置保留在 TOML/`-D`。
+- 新增/修改设置只维护 `en_us`、`zh_cn`、`zh_tw`。其他语言允许依赖 `en_us` fallback，禁止填英文占位凑齐键。
+- GitHub Issues 是未完成问题跟踪器；已结案过程进入 devlog。
+- `.claude/plans` 是历史考古，不是当前事实源。
 
-1. **法律**：两仓库都声明「portions derived from Unity HDRP」，HPWater 的文件直接声明在 `UnityEngine.Rendering.HighDefinition` 命名空间/HDRP 包内部——作者无权以 MPL/MIT 覆盖 Unity 代码，且哪些文件属于哪类**无逐文件标注**，所以连「看起来像它的写法」都要避开。
-2. **技术**：两者都是光栅延迟管线（gbuffer/RenderGraph/时域重投影/屏幕空间折射），Fluorite 没有任何光栅 pass，这些代码对我们没有可用部分。
-3. **正确性**：参考实现里有相机依赖 bug（云密度按相机水平距离下移、层序按相机高度判断），照抄会毁掉反射。
+## 4. 开发与验证方法
 
-**数值常数一个都不能带**（R20）：HPWater 的 `HenyeyPhase` 漏 `1/(4π)`，整套参数围着 ~4π 能量误差调出来（照抄亮约 12×）；`βR×1e6`、`SCATTER_DECODE_SCALE 0.01`、`min(1/|V.y|,4)` 全是凑数；HPVolumeCloud 的 `Intensity` 量纲是 m⁻² 的凑数常数。**只抄结构，常数一律自己标定。** `THIRD_PARTY_NOTICES.md` 保留思路来源致谢（成本为零，说明推导出处）。
+### 4.1 诊断顺序
 
-### 6.2 政策升级（2026-08-02，用户指示）
+遇到视觉故障时：
 
-**参考的对象是实现方法与物理选择，绝不照抄任何部分。** 每次借鉴参考项目落地一个子系统前，必须在本文档写出「HP 做法 vs 本项目做法」对比（异同、处理思路差异、推荐及理由、物理差距、性能代价），**交用户裁决后**才动工，结论记入 §10。
-
-### 6.3 HPWater 定案表（M9 已完成的对比，结论生效中）
+1. 先把现象写成可观察变量，不先命名机制。
+2. 为候选子系统设计判据表，每个实验说明什么结果支持/否决什么。
+3. 优先使用运行时隔离开关和共享真实路径的 debug view，保持同世界、同位姿、同会话。
+4. 修到顺手发现的真缺陷不等于结案；只有原现象的判据链闭合才算根因。
+5. 记录失败路线。被证伪方案不能换个名字重新进入代码。
 
-| 议题 | HPWater | Fluorite 定案 |
-|---|---|---|
-| 介质参数化 | `absorptionColor`/`scatterColor` 两个独立光谱创作量（逐水面画进 GBuffer） | **采纳思路**：σa（群系色调驱动，手动覆盖为强度 × mean-normalized RGB shape）与 σs（强度 × mean-normalized RGB shape）独立；「浑浊度」单旋钮已废（它数学上只能把水推白） |
-| 积分 | 6 步指数分布行进 + 逐采样点 shadow lookup | 闭式深度衰减积分 + 3 条分层**抖动**阴影线（RT 的解法，不是光栅的） |
-| 多次散射 | `lerp(phase, 1, smoothstep(0,0.5,albedo))` | **重推导**：`g_eff = g^(1/(1−ω))` + 扩散衰减（教科书 K，钳物理域） |
-| 环境项 | 烘焙间接光 × 强度 | 上射线深度 + 可见性网格开阔度 + 深度衰减（M16 起源换 LUT 辐射，D1-A） |
-| 焦散 | 光子抛撒 + 级联图集 + à-trous 降噪 | **不向 HP 靠**（定案）：解析雅可比（3 次波场求值/阴影线，无噪声无缝、逐射线天然进反射折射）+ RGB 三 eta 色散 |
-| 交互水仿真 | 2D 波动方程 + 海绵层 + 两次俯视正交渲染取障碍 | 方程与海绵层采纳；障碍改用 **TLAS 俯视短光线**（光追渲染器天然能做）——见 §8.2 |
+高价值隔离开关：`water.scatter-source`、`volumetrics.segment-source`、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`、`volumetrics.clouds`、`cloud-sun-steps`、`cloud-secondary`、雾结构开关和粒子阴影。
 
-### 6.4 HPVolumeCloud 对比表（M11 动工前逐项过一遍，「请示」项须用户裁决）
+### 4.2 性能测量
 
-| 议题 | HPVolumeCloud | 本项目方向（D1–D5 决策后） | 状态 |
-|---|---|---|---|
-| 承载结构 | 光栅 froxel + 屏幕空间 + 时域重投影 | 纯光线函数、世界锚定、进反射（R18 硬规则：`cloud.slang` 禁止出现相机位置） | 已定 |
-| 相位 | 双叶 HG（前向 ~0.85 + 后向 ~0.3 出银边） | 采纳结构，常数自定 | 已定 |
-| 多重散射 | phi_fwd 扩散项（推导文档正确、实现两处偏离）+ Hillaire 三倍频 | 采纳思路**重推导**：边界可信度 `C_top·C_bottom` 逐源点求值（参考实现提到接收点省 5 倍是错的）、`C_iso` 从**受光边界**量光学厚度（参考参数化反了）、`1/(4πr)` 的 4π 补回、Intensity 量纲重标定 | 已定（D5：云专用近似，不外推到水雾） |
-| 步进 | 自适应步长 | 步长上限 `(rangeStart+dist)/8` **从光线起点量**（对二次光线优雅退化）+ 廉价探针跳过空段 | 已定 |
-| 降噪 | 时域重投影 | DLSS-RR + 逐帧去相关（蓝噪/抖动） | 已定 |
-| 云的挂载点 | 独立 pass | 独立 `cloud.slang` 纯光线函数，在天空逃逸 break 之前 | **已定（D33）**：动工时发现 ambient 分支是闭式积分，云是第一个真需要数值 march 的客户 |
-| 云的光照源 | 常数 ambient + 太阳 | 太阳自阴影行进 + 双叶 HG + phi_fwd 扩散项 + `mediumSkyRadiance` 环境 | **已定（D34），切片②已落地**；环境遮蔽改用「局部密度 × 到本云型剖面顶」的解析估计，不再需要额外行进 |
-| 密度模型 | 2D 天气图（覆盖度/类型）× 3D 噪声（基础+侵蚀）× 高度剖面 LUT | 采纳结构、常数自定；双层共用球壳；3D 噪声启动烘焙（`cloud_noise.comp.slang`），不逐步过程噪声 | 已定 |
-| 二次光线 | n/a（屏幕空间进不了） | **削减档真行进**（`cloud-secondary` = off/reduced/full） | **已定（D43，用户 2026-08-06 裁决）：维持现状，LUT 烘焙路线放弃。** 理由是它保住了 R18 的核心性质——反射里的云是真的、世界锚定，湖里那朵和头顶那朵就是同一朵；LUT 便宜但相机锚定，且必须先拆开两个耦合（`mediumSkyRadiance` 是该 LUT 的 reduction 而雾/水共读它；云自身 ambient 项读同一个量会自我重复计数）。本行结案 |
-
-phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 时 RTE 退化为扩散方程，格林函数 `e^{−κr}/(4πr)`；`κ = √(3σaσtr)`，g→0 时 σtr=σt、σa=(1−ω₀)σt ⇒ `∫κds = OD·√(3(1−ω₀))`（ω₀=0.999 时常数 ≈0.055——**扩散衰减就是光学厚度乘编译期常数**，搭在本来要跑的太阳自阴影行进上）；源项衰减用 `T_abs = exp(−(1−ω₀)τ)` 而非 `exp(−τ)`（离开直射束的光子只是开始游走，只有吸收真正移除它——τ=20 云心仍亮的机制）。phi_fwd 各向同性 ⇒ 对给定世界位置视角无关，主光线/反射/折射可复用同值。云是解析行进不产生散射顶点，phi_fwd 就是多重散射模型本身**不存在双计**；若 M8 游走将来进云体，按路径深度门控。
-
----
-
-## 7. 体积介质统一路线图（M15–M20）
-
-> 依据：2026-08-02 决策 D1–D8（§10）。**推荐排序**：M15 → M16 →（M19、M20.1–20.2、M18 可并行穿插）→ M17 → M20.3 → M11 → M12 → ReSTIR → M14 收尾 → 首个正式版 → 可选 feature 评估（§8.6）。
-> 理由：M15 是云与 M17 的地基；M16 小而独立；M19/M20 前半与体积无关可交错出可见成果；M17 引入新成本须在云之前定型体积采样纪律；ReSTIR 前 M18 只收集（D3）。
-> 每个里程碑标注的 **⚖ 请示点** 按本文档头部硬规则执行。
-
-### M15 介质统一重构（D2：接口统一 + 估计器分派）
-
-**15.0 卫生（先行独立 commit，视觉 diff 应为零）**
-- 修 `integrateSegment` ambient 分支的 `seg.inScatter = acc.inScatter` → `+=`（「既吸收又 ambient」介质入栈时静默丢弃 enclosed in-scatter——云的前置）。
-- 删除死代码链：`RtSkyLightGrid` 每帧 CPU 扫描+上传（Java 构建/环缓冲/`pc.skyLightAddr`/`worldPush.skyLightOrigin/Dims`）+ shader 端无人调用的 `skyLightFactor`/`skyLightCell` + `sky_froxel.comp.slang` 未读的 `skyLightAddr`。`WorldPushConstantsData.BYTE_SIZE` 会变——同步 layout test 与余量注释。
-- `visibility-cell-size=0` 时跳过可见性烘焙 dispatch（现在无条件 131k 条射线打一个点）。
-- 注释与行为对齐批处理：bit15 「skip the shadow ray」措辞（实际只弃透射率、射线仍发——`waterHitT` 要用）；`volume.slang` 「Character for character the froxel's source」（已不真）；`world_primary.rgen` 「this pass integrates the camera prefix segment」；froxel 各处「32 slices」陈旧数字；`world_common.slang` 「bits above 11 free」（12/13 已用）；`lighting.slang` 「Light48」；`FluoriteConfig` `Water.SUN_SHADOW` 整段陈旧文档。
-
-**15.1 Medium 采样接口 + 统一体积阴影采样器（2026-08-03 已实现，空气雾视觉验收通过）**
-- `medium.slang` 收拢为 `mediumSigmaT` / `mediumScatterAlbedo` / `mediumPhaseG` / `mediumProfile`；一个 profile 同时选择 estimator 与 source adapter，避免两组浅查询产生一致性负担。`mediumDensityAt` 留在 Implementation 内部。`integrateSegment` 仍是唯一外部 Interface：**均质封闭介质走精确闭式路径**；ambient 在噪声强度为 0 时走解析高度路径，打开后走 D63 的真实非均质 march。D27 后这些查询提供 `*Fields/*Flags` 标量入口供 active raygen 使用，`Medium` 包装保留给传输与其他 stage；二者共享同一公式，不是两套 estimator。
-- **统一体积阴影采样器**：水与雾共享固定光学深度分层（τ 步长 1.25）、段内 jitter、`CULL_SECONDARY_NO_SELF`、shadow trace 与按用途 rehash 的 seed 纪律；均质 τ→distance 与 ambient τ→distance 是两个内部 adapter。
-- D9 明确：这是分层近似，不宣称严格无偏。层内按距离均匀采样、使用闭式 view-path 权重；严格 `f/pdf` 修正留到 M17，因为它会改变亮度与噪声。ambient 边界用 8 次二分反演并复用相邻边界；默认 1 ray 不反演。
-- D12 审计结论：水的 sun-shadow 关时仍保留最多 3 条。每层的 `waterHitT` 都在测自己的 source path；压成 1 条会在不平水面、洞顶与不同水体高度下引入衰减误差，不属于中性重构。
-
-**15.2 froxel/marched 源对齐（2026-08-03 已实现，空气雾视觉验收通过）**
-- 新建纯数学 Module `volume_source.slang`（无 bindings/globals/rays），两种 shader stage 共用高度积分、扩散衰减、HG 与 `evaluateAmbientRadianceSource`，避免 descriptor layout 相互污染。
-- 按 D10 把 marched 已有的局部雾太阳自衰减补进 froxel；froxel 的 direct path = atmosphere LUT × local fog，raygen 的 `WorldPush` 已经 atmosphere-dyed，所以只乘 local fog。无新增射线，增加解析 ALU/exp。
-- `fogScatter` 两边统一解释为 single-scattering albedo：froxel 改为 `σs=fogAlbedo×fogSigmaT`；行星大气仍作为 froxel-only 的附加介质项，理由是它覆盖相机前缀的 aerial perspective，注释明确。
-- **临时运行时烟测（非性能验收）**：1920×1080、`bench`、当前配置下稳定区间 `gpu.froxelBake` 中位数约 0.17–0.18 ms；仅证明新增解析衰减未出现数量级异常。没有同位姿、同会话的改前 A/B，禁止据此声称“无回归”或计算倍率。
-- **D13 能量守恒收口（用户选 5A）**：`volumetrics.intensity-scale` 为兼容旧配置保留路径名，但值域改为 0–1 的 physical-albedo multiplier；CPU 在写入 `fogScatter.rgb` 时再逐通道钳到 `[0,1]`。UI 政名“雾散射反照率”，高于 1 的旧配置加载时钳到 1。GPU 无新增 ALU/射线，代价是旧的非物理过亮档不再保留。
-- **D14/D16 设置语义收口（用户选 6A、8A）**：空气雾太阳可见性与水体太阳遮挡保持独立实现并在 UI 明确命名，任何一个旋钮都不宣称控制另一介质。水体散射与手动吸收覆盖均拆成“强度 × RGB 颜色形状”；颜色用算术均值归一化，旧配置自动迁移为逐通道系数完全相同的结果。仅 CPU 配置换算，无 shader ABI、ALU 或射线成本。
-
-**2026-08-03 游戏内视觉验收记录**：用户确认能量响应、froxel/marched 接缝、低太阳角与阴影三项“非常完美”。水下另发现结构性问题：当前天空源只从封闭水段起点发一条竖直探测，并以单个 `skyOpen` 标量门控整段；相机浸水时各主射线共享起点，因此头顶一块方块可让整屏水天空散射归零。可见性网格原点按 cell 取整又会把该单标量放大成深水洞口的一方块横向跳变。这不是空气雾 shadow-ray 配置位直接控制水，而是独立水体天空门控与最终画面合成造成的歧义。按 D15 不做临时逐层/网格补丁，留到 M17 在真实散射顶点采样局部天空可见性。
-
-**2026-08-04 水下相机前缀回归（D21–D23）**：用户用 RR 关闭、`water.scatter-source=none/sky` 无视觉差异的单变量实验确认：Pass A 消费水→空气界面后提前把 Beer absorption 乘入各 Fresnel 叶，Pass B 却用 `ambient=false, water=false, extinction=0` 的被动介质重建相机到水面的共享前缀，导致该水段 in-scatter 恒为零。封闭水房间的 debug 9 为水、debug 8 在 water source=none 时纯黑且不受空气雾开关影响，排除了“封闭水段被当成空气雾”；穿出水面后的空气雾本身合法，只因缺失前景水散射而显得突出。按 13B，Pass A 删除前缀 Beer，Pass B 以真实起始 `Medium` 一次消费完整 `SegmentIntegral`，无新增 march/阴影线。另确认世界重载时未请求 NGX history reset：上次在水底退出后重新载入会短暂显示旧散射，移动后消失；RR 预先关闭再载入则开局也无散射。按 14A 在 `allChanged()` 生命周期只置下一次 RR evaluate 的 reset flag，不销毁 feature。debug 8 原来只用 frame seed，所有像素同帧同样本造成整屏蓝青闪烁；按 15A 改为固定逐像素 seed，保留原始估计器空间方差但冻结时域变化。
-
-**2026-08-04 Slang 活动介质回归（D24–D27，代码结案、待视觉验收）**：真正导致“数秒后水散射消失”的后级缺陷是 Slang 2026.14 在 indirect raygen 中把 WATER(1) 与 outer AMBIENT(2) 的两个同时存活分类值错误合为 3；于是 profile 从 enclosed water(1) 变成 ambient fog(2)，水积分返回零而空气雾路径接管。失败路线依次为：单 `uint flags`、显式 `__ref PathSegment`、叶字段复制 `MediumStack`、先后换序、两个独立 `Medium`、直接原地修改唯一 `seg.medium`，以及 current/outer 六 primitive 标量；20B 只在 caller/pre/post 诊断存在时恢复，cleanup 后复发，属于 observer effect。用户批准 21A/D27 后，current+outer 分类改为直接从 queue `pathFlags` 解码的唯一 32-bit 活动字；raw 运行 197 条在 terrain resident 38→2604 期间全部为 current WATER=1、散射非零，删除 raw 探针并恢复普通 profile 后又运行 211 条至 resident=2252，0 条回退、profile 恒为 1。物理公式、48B ABI、采样/阴影线/march 均未改变。
-
-**归因边界**：当前可高置信称为“Slang→SPIR-V→驱动编译链上的表示/活跃性错编”，因为只改变源码表示与诊断读取就改变 GPU 结果，而 CPU queue、介质参数和物理积分不变；尚未制作最小复现并差分 SPIR-V，故不能 100% 区分“Slang 发出错误 SPIR-V”和“Slang 发出合法但触发 NVIDIA 驱动错编的 SPIR-V”。Vulkan API/SDK 升级本身不自动改变项目固定使用的 Slang 生成结果。
-
-**剩余验收**：`visibility-cell-size=0` 的 telescoping 归零测试仍成立；`RtPathSegmentLayoutTest` 仍 48；同会话比值 `bench` ≈1.0×（重构应中性）；**顺带偿还 M9 欠账：`bench-water` 两机位首采**，数字进 §4.2 作 M16/M17 的基线。水天空开放度的视觉出口改由 M17 条目定义，M15 不用临时补丁伪装通过。
-
-### M16 散射源 Radiance 化 — LUT 档（D1-A；D20/12A 代码完成，待连续性复验/性能验收）
-
-- 水、雾天空项统一读取 `mediumSkyRadiance`。`sky_medium_reduce.comp.slang` 用一个 256-lane workgroup 遍历完整 192×128 三表，按 LUT 的折叠方位与非线性高度轴求精确 cell 立体角，并积成 `1/(4π)∫上半球 Lsky dω`。已有水上射线深度、开阔度与深度衰减门控保留。
-- reduction 在合成时施加 Rayleigh/Mie phase，并直接包含 sky-view multi 表；原先单独相加的 `sampleMultiScatter×SUN_INTENSITY` 删除，避免把已在 sky-view 路径积分过的能量再加一次。
-- D17/9A：`water.ambient-scale` 与 `AMBIENT_FOG_FRACTION` 删除，不保留艺术倍率；旧 TOML 键在下一次正常保存时移除。`fogAmbient.xyz`/`waterAmbient.xyz` 清零，`.w` 的 SSS thickness/caustic dispersion 继续使用。
-- D19/11A：`WorldPushData` 新增唯一 `mediumSkyRadiance`（720→736B）；sky-view→reduction、reduction→froxel 两个 compute barrier 封在 `RtSky.recordSkyViewBake` 内。无新增 RT descriptor 或逐射线纹理读取。
-- **可观察改进**：夜晚/黄昏水下亮度随 LUT 正确衰减（旧常数是太阳峰值比例，日落后偏亮）。
-- **2026-08-04 首轮游戏内验收**：用户确认正午/黄昏/夜晚时水与雾共同跟随天空亮度和色温，且 water 与 marched/froxel fog 无新增颜色或亮度接缝；但太阳盘露出/没入地平线附近出现蓝夜↔橙红黎明/黄昏的确定性跳变。
-- **D20/12A 根因与修复**：`mediumSkyRadiance` 数值扫描连续，排除 M16 reduction；真正的分叉是水的 `sunY > 1e-3` 整项门、froxel/可见性网格只对天体中心发阴影线，以及“中心方向大气颜色 + 抖动方向可见性”的不相关组合。现在每条**既有**太阳阴影查询先采同一方形天体点，由该点同时决定逐方向 LUT Radiance、局部雾透射、相位、遮挡和水面 Snell 折射。默认 0.6° 半角、平面水地平线的确定性几何探针显示：可见面积从中心高度 −0.6° 到 +0.6° 连续由 0→1（−0.4/−0.2/0/+0.2/+0.4° 约为 0.166/0.334/0.500/0.666/0.834），旧点门则在一个阈值整项翻转。
-- **D20 成本与物理边界**：不增加阴影射线预算；surface NEE 复用既有 2 个 RNG，水/compute 估计器增加相同的 2 个 RNG，另有方向构造及逐方向 LUT/解析运算；地平线下零贡献样本可少发射线。默认 marched、water、froxel 是所选有限天体分布下的随机估计，误差应表现为可被时域降噪的噪点而非整屏跳变；既有 D9 分层近似仍非严格 `f/pdf`。`sun-shadow-rays=0` 的网格档把 BA 存为可见样本坐标一阶矩，再在过滤后的均值方向求非线性颜色/相位，属于有意的低成本有偏近似，不宣称与逐射线档等价。
-- **验收**：以默认非零太阳角半径缓慢跨越日出、日落各一次；水下、开阔地空气雾、室内洞口和 froxel/marched 切换都不得再出现全屏同帧蓝↔橙或亮度阶跃。暂时关闭 RR/时域积累时，允许看到逐像素/逐 froxel 随机噪声，若仍是整块/整屏同刻翻转则失败。`sun-angular-radius=0` 会退化为点光源硬切，不能拿来判定面积光连续性。另记录 `gpu.froxelBake`、`gpu.visBake`、`bench` 与 `bench-water` 同会话 A/B；性能数字回来后再请示是否需要质量档调整。11 份语言 JSON 已删除退役 UI 键。
-
-### M17 体积散射顶点 + NEE — 质量档（D1-C）— **2026-08-05 代码完成，待游戏内验收与性能实测**
-
-**已落地**（`0c005b3` + `765abfb`，两个默认关的开关）：
-- `volumetrics.scatter-vertex`：每段按 σt·T 采一个散射事件。**两种介质共用同一个 `f/pdf` 权重**——换元到密度积分深度后高度雾的被积函数变成均质的形式，只有 τ→位置的映射不同（均质是常数、ambient 复用分层用的八步二分）。标量 σ 驱动 pdf、RGB 系数驱动 f，二者之比即光谱修正；灰介质下相消为 `albedo·(1−T)`，与闭式恒等。
-- **D15 结构性缺陷已修**：水的天空项不再从段起点探一次并用单标量门控整段，深度与开放度都成为采样点自身的属性——头顶一方块只压暗它下面的水，不再整屏归零，深水洞口也不再一方块级跳变。
-- `volumetrics.emitter-nee`（嵌套在顶点开关下）：`volumeNee` 住在 `lighting.slang`、由 raygen 调用（`lighting` 导入 `volume`，依赖单向），复用 M6 预留的全部**选择**机制（抖动网格 cell、功率 alias、混合 pdf 重建），只把目标换成相位函数。**M=1、无 reservoir、无复用、无解析 MIS 权重、不碰 `evalSampleContrib`**——守 ReSTIR 前向约束。
-- 事件由 `integrateSegment` 统一采一次经 `SegmentIntegral` 导出：太阳项与发光体项描述的是**同一次散射**，各采各的等于一段里塞两次散射。
-
-**2026-08-05 实测与裁决**（数字见 §4.2，方法见 §4.4/§4.4.1）：散射顶点 **0.930×、省 2.93 ms** ⇒ D30 默认开；发光体 NEE **+20.9 ms** ⇒ D31 挂起默认关，判据实验待做；`SegmentIntegral` 增长 **1.001× 无成本**，R6 台阶未撞到。M9 水散射欠账结清：**分层 10.49 ms / 顶点 7.56 ms**。
-
-**2026-08-05 游戏内验收通过 ✅**：D15 修复生效（头顶方块只压暗其下方的水，不再整屏归零；深水洞口横移不再一方块级跳变）、散射顶点开档的噪声特征可接受、运行日志零异常。**M17 收口。**
-
-**留在后面的**：⚖ 相位 vs 光源采样的 MIS——仍未定，它要的是噪声带图而不是成本数，等有具体噪声诉求时再谈 · `bench-water-top` 未采（水面之上的雾+水混合场景，现有结论只覆盖全潜） · D31 的结构性修法等 ReSTIR。
-
-- 新开关（如 `volumetrics.scatter-vertex`，默认关）：每段按 τ 均匀逆采样一个散射距离（雾的高度积分解析可逆——采样 τ 均匀即按 σt·T 重要性；水均质更简单），在散射点做：
-  - 太阳 NEE：1 条阴影线，相位加权（与 15.1 采样器共用纪律）；
-  - 水天空开放度（D15）：在实际水体散射顶点采样天空方向与该点局部可见性，删除“段起点单标量门控整段”的依赖；天空方向与相位/光源方向之间是否 MIS，合并进下方既有请示点，不预先决定；
-  - **volumeNee**（发光方块首次照亮水与雾）：M=1，复用 `findLightGridCell`/`selectLightGridLight`/`proposalPdf`/`lightRadiance` 等选择机制，目标函数换相位——这是 M6 就预留的设计，**不违反 ReSTIR 前向约束**（无复用、无解析 MIS 权重、不动 `evalSampleContrib` 热路径）。挂独立开关默认关。
-- ⚖ **请示点**：相位采样 vs 光源方向采样之间是否加 MIS——按落地后的实测噪声带图请示；默认档位（关/仅太阳/太阳+发光体）按实测成本请示。
-- **成本闸门**：`bench` + `bench-water` 两机位实测（粗估 traceIndirect +2~5ms）；水天空可见性至少增加 1 条 visibility ray/散射顶点，计入同一成本闸门。数字报用户后定默认档与质量分级。
-- **验收**：岩浆/火把旁的水与雾出现带遮挡的光晕；关档逐位回到 M16 行为；RR 关时误差表现为噪点非块状（§3.2 判据）；头顶方块只遮挡其实际占据的天空立体角，不再使整屏水散射归零；深水洞口横移不再出现整屏一方块级跳变。
-
-### M18 光源收集层（D3：只收集不采样）
-
-- 新 `rt/light/RtDynamicLights.java`：收集**手持物品光**（主/副手 `BlockItem→Block.getLightEmission`）、**实体附着光**（简表：燃烧实体、发光鱿鱼等）、**发光粒子聚合光**（按空间 cell 聚类为代表光，依赖 M20.1 的发光判定）。产出与 `Light` 32B 同布局的记录 + 动态标记位（`section` lane bit31 空闲）；类型枚举与区域光扩展的落位设计写成注释留给 ReSTIR。
-- 上传为独立小 buffer 或 arena 尾段，每帧重建（数量 <百，成本可忽略）；**不接入 alias/grid/采样器**——渲染逐位不变。
-- ⚖ **请示点**：S3 死工作处置——`RtLightCollector` 逐帧算好又被 `RtLightHierarchy` 丢弃的 UV lanes（7/11/15/19：`materialId`/`uvHu`/`uvHv`/`uvCenter`，本为 exact-Le fetch 准备）：停算省 CPU，还是保留待 ReSTIR。
-- **验收**：新增 debug 视图列出动态光数量/位置；画面 bit-identical（因为不采样）。
-
-### M19 实体 overlay 同步（D6：per-prim aux lane）— **2026-08-05 代码完成，待游戏内验收**
-
-- **overlay 数据通路已接通**（`9401ae6`）：`submitModel` / `submitBlockModel` / `submitItem` 解码 `overlayCoords` → `RtEntityCapture.currentOverlay`（**提交级状态**，进入时设、退出时清零，防止 leash/告示牌文本等无 overlay 的提交继承上一个生物的红洗）→ `Prim.aux0`/`aux1` → `world.rchit` 实体分支混合。
-  - **落地时的两处实测修正**（照 §9.4 规矩回写）：
-    1. **`RtCuboidEmitter` 不需要新参数**。计划假设快路径要加 overlay 形参；实际把 overlay 做成 capture 的提交级状态（与 `currentTexSlot`/`currentMaterialId`/`currentAlphaBucket` 同构）后，`emit()` 走 `addDirectQuad → appendQuad` 自动带上，签名不动。
-    2. **单 lane 存 RGBA8 不可行**。lane 以 float 传输、以 uint 读回，而 overlay 的白色 RGB 必然把 1 填进 float 指数位：alpha=127 时编码为 `0x7FFFFFFF` = NaN（JVM 允许规范化 NaN 位型 ⇒ 静默改色），而 alpha=127 正是白闪斜坡上的普通取值（u=10）。改为**颜色进 aux0（`0x00RRGGBB`，上限 `0x00FFFFFF` 不可能是 NaN）、强度进 aux1（真 float）**。是 round-trip 测试抓到的，事前推理没有。
-  - **vanilla 语义（查证自 jar，非记忆）**：`entity.fsh` 是 `color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)`，**alpha=1 表示无 overlay**；`v<8` 全行是 `0xB2FF0000`（纯红 alpha 178/255 ≈ 30% 红洗，u 轴此时无效），`v≥8` 是白色 alpha `(int)((1−u/15×0.75)×255)`（u=0 恒等、u=15 为 75% 白闪）。存进 lane 的是 **1−alpha**，于是两个 lane 都是零即恒等，任何不设 overlay 的路径默认正确。
-  - **混合在 sRGB 空间**（线性化之前）：本效果的验收基准是「对照 vanilla 截图」，同样的 30% 红洗在线性空间混合会更暗更饱和。非白 tint 的实体其 overlay 会被 tint 二次调制，而所有真正被注意到的红闪都是白 tint，那里与 vanilla 逐位同构。
-- **`submitFlame` 已实现**（`9c72ebd`）：按 `FlameFeatureRenderer` 的构造（bounding box 上堆叠面向相机的 quad、fire_0/fire_1 交替、隔对镜像、每级缩 10% 步进 0.45）捕获为真实 cutout 几何进实体 mesh，`Prim.emission=1`。火因此照亮地面并进入反射/GI。
-  - **已知代价**：billboard 进 capture 会让燃烧中的静止实体失去 rigid-reuse（相机一转顶点就动）。判定按捕获顶点比对，所以失败模式是「少一次复用」而非「火焰朝向卡住」；能保住复用的替代方案（独立光栅 pass）恰恰是进不了反射的那种。
-  - 零宽实体已挡（vanilla 用宽度作除数且按常量步进，宽度 0 会死循环）。
-- **冰冻：计划前提不成立，本里程碑不做**。overlay 由 `hasRedOverlay` 驱动，而它是 `hurtTime > 0 || deathTime > 0`；26.2 既无 `powder_snow_outline` 贴图也无引用它的渲染器。若将来要做冰冻，那是独立机制而非本条通路的扩展。
-- 隐身保持整体跳过（「隐身生物穿甲不可见」记为已知简化）。
-- **附魔 glint：按 D28 走近似档，已实现**（`Prim.flags` bit0 = `ENTITY_PRIM_GLINT`）。`submitItem` 的 `foilType`（此前收到即丢弃）与 `submitModel` 的四个 glint RenderType（`entityGlint`/`armorEntityGlint`/`glint`/`glintTranslucent`，按单例身份比较，沿用 `RenderTypes.lines()` 的既有范式）都置位；glint pass 与 banner pattern 同样拿一个 decal rank，因为它是**与本体完全共面的重复网格**，不给 rank 会在 BVH 里打平手。shader 把它渲染成会呼吸的紫色 sheen（tint 混合 + 自发光），而不是把滚动贴图当 albedo 着色。
-  - **相位用 `pc.frameIndex` 而非世界时钟**：rchit 的铁律是绝不解引用 `WorldPush`（§3.6），而 `frameIndex` 本就在每次命中都读的 push constants 里。代价是微光速率跟随帧率而非世界时间——这是不为一个装饰性效果增加逐命中 BDA load 的诚实定价。
-  - 常数标注 **PROVISIONAL**（`GLINT_TINT` 等）：按「读起来像 vanilla 的紫」选的，无推导。
-- **2026-08-05 首轮游戏内验收结果**：受伤红闪 ✅；火焰在反射里可见 ✅；但火焰与 glint **都「看得见却不发光」**。两个不同根因，均已修（`95468c6`）：
-  1. **火焰**：`Prim.normal.w` 在本管线里**只是遮罩**，`evaluateMaterial` 用材质头里的强度去乘它；而火焰当时用的 `entityFallbackId` 是 `emissionSource=NONE` 编译的，强度为 0 ⇒ 遮罩 1 × 强度 0 = 不发光。改用**火焰精灵自己的块图集材质**（火是光照 15 的方块，发光编译器本就给了它真实强度）——顺带让实体火焰与火焰方块共用同一材质。
-  2. **glint**：常数单位写错。管线的发光是 HDR 量纲（满发光纹素 = `EMISSIVE_STRENGTH` 5，上限 32），而我按 0–1 乘子写了 0.30，比任何会发光的东西暗一个数量级。改为 2.0（刻意低于基线，让附魔物是 sheen 而不是灯）。
-- **结构性事实，不是 bug**：实体**永远不进光源 buffer**（`RtLightCollector` 只收地形自发光 quad）。所以燃烧实体会亮、在反射里亮、并通过**恰好打到它的 GI 光线**给附近表面一点间接光，但**不会被 NEE 采样**，因此照不亮房间。要让它成为真光源＝ M18 收集层 + ReSTIR 采样（D3 明确推迟）。用户反馈里的「没有光参与」一半是上述 bug、一半是这条。
-- **2026-08-05 复测：全部通过，M19 验收完成**。火焰自发光并在水面反射里发光、附魔物有紫色微光、受伤红闪与无 overlay 实体维持首轮结果、附魔盔甲的 glint decal rank 未出现共面闪烁。运行日志零异常（唯一报错是离线开发环境的鉴权 401，与 M19 之前那次同源）。
-
-### M20 粒子完善（D4-A：几何路线分步）— **2026-08-05 20.1/20.2/20.3 游戏内验收通过 ✅**
-
-三个缺陷共用一个根源：**粒子不携带材质记录**，所以一切经 `MaterialHeader` 到达其他几何的机制，在它们这里全部断掉。
-
-- **20.1 发光（D32：超额法，非类型表）**：粒子分支此前无条件写 emission=0。vanilla 标记发光粒子的方式是**在 `getLightCoords` 里把自己的方块光抬到世界光之上**（`LavaParticle` 强制 15、`FlameParticle` 用 `addSmoothBlockEmission`），而捕获侧把 `setLight` 整个丢弃了。现在存的是**粒子自报值减去它所在位置的世界方块光**——只有这个差额属于粒子自己：火焰在暗洞与火把旁都发光，而飘过火把的烟雾自报的正是火把的光、减完为零、保持不发光。**加上就等于把火把重复计一次**，路径追踪已经在照亮那团烟。
-  - **计划前提的修正**：路线图原写「粒子类型→emission 表」。超额法让 **vanilla 决定什么发光**（与 §3.1 `RtEmissionHeuristic` 的「资格判定外置」同构），不必维护会随版本失效的类型表，且**模组粒子自动正确**。
-  - **与 M19 的陷阱正好相反**：实体火焰需要一个自带强度的材质（`evaluateMaterial` 用材质头强度乘遮罩）；粒子**不索引材质表**，没有东西可乘，所以捕获侧写的是**最终 HDR 值**。为此把 `EMISSIVE_STRENGTH` 提为 public，免得两条路径为同一团火用不同的发光速率。
-- **20.2 半透明**：粒子过去全部掉进二值 `ENTITY_ALPHA_CUTOFF=0.1`（any-hit 从材质头读 stochastic-alpha 特性，而粒子从不索引该表）——这就是烟雾硬边的根因。现在 `SingleQuadParticle.Layer.translucent`（vanilla 自己的分类）经 prim flags 传入，驱动与实体相同的抖动。M19 的 `currentGlint` 布尔顺带泛化成 flags 字：两个独立布尔写同一条 lane，正是 D11 在别处消除掉的形状。
-- **20.3 阴影：独立 mask 位，只进阴影线**。粒子过去只对主光线可见。现在经 `CULL_PARTICLE_SHADOW`（TLAS 位 3）进入阴影线，**反射与 GI 仍关闭**——「挡光」与「出现在反射里」是两个问题，而面向相机的 billboard 正是两者分歧最大的情形（从反射光线看过去它是侧对的）。设共享的 bit 0 会让两个特性一起上线，且无法分别定价。
-  - **八处 masked visibility 里三处刻意不动**：水路径的向上探测测的是水柱深度与天空开放度，一团飘过的烟雾不该改变这两个答案——含进去不是多花钱，是**静默的物理错误**。
-  - **成本未测，默认保持关**（F13）。两次尝试都失败，原因不同：第一次采集脚本把键插进 `[particles]` 段，而设置声明在 `entities.particle-shadows`，于是写出一个没人读的孤儿键——**若没被打断，它会「成功」报出「零成本」**（§9.5 仪器教训）。第二次采集器已能验证键确实翻动，但 `bench` 世界的粒子只出现在约 15% 的帧、最多 64 个，且不确定是否位于光路上；有粒子帧的差值 **+0.003 ms 比无粒子帧的噪声零点 −0.007 ms 还小**。这是 §4.4「在没有大水体的世界里测水」的原样重演。
-  - **待办**：`--adopt bench-particles`（烟柱位于阳光与地面之间的固定机位）后重采 · `MAX_PARTICLES=1024` 上限重评 · ⚖ 反射/GI 位是否继续开放，等成本数字。
-- **20.4** 发光粒子聚合喂 M18 收集层（被采样等 ReSTIR）——未做。
-- **已知缺口**：非 `SingleQuadParticle` 粒子（物品拾取、远古守卫者）仍整个跳过（§8.6）。
+正式结论必须满足：
 
----
+- 1920×1080 显式启动。
+- 固定 world、camera pose、存档和配置快照。
+- 使用 `RtGpuTimers`/frame CSV，不使用 CPU 录制时间或 FPS 猜测。
+- 每批第一次运行整体丢弃。
+- 分子分母来自同一批次且均非首次运行。
+- 每次运行丢弃前 15% 暖机帧，再在预先定义的稳定窗口取 GPU zone 中位数，并报告分块离散度。
+- 采集期间不碰输入。
+- 开关关档必须等于发布行为，否则 A/B 无对照意义。
 
-## 8. 其余待办域
+场景必须覆盖被测代码：普通 `bench`、`bench-water-bottom`、`bench-water-top`、未来 `bench-particles` 不能互相替代。
 
-### 8.1 M11 体积云（前置：M15；方法对比见 §6.4，动工裁决 D33–D35）— **切片① 2026-08-05 落地，待验收**
+### 4.3 已知成本账本
 
-**已落地（切片①：形状）**：`cloud_noise.comp.slang` 一次性烘 128³ RGBA8（R 云体 billow、G 边缘侵蚀、**B 云型**；按各倍频自己的周期取模哈希以真正可平铺——只靠采样器 REPEAT 会平铺纹理却让格点在接缝处跳变）；`cloud.slang` 纯光线函数挂在**逃逸段、sky break 之前**；**球壳而非平板**（球心在光线起点下方一个行星半径处，远处云随地平线下沉）；自适应步长与空段跳跃；源为 ambient-only（`mediumSkyRadiance`），所以云**有形状但平**。烘焙挂在 `RtSky` 链上（一次性、不依赖太阳或相机，与 transmittance 同类；该类的价值就是 order 只有一个权威）。binding 17，RAYGEN-only。开关 `volumetrics.clouds` 默认关。
+| 功能 | 当前证据 | 口径 |
+| --- | --- | --- |
+| M6 解析高度雾 | +0.622 ms | 历史同位姿 GPU A/B |
+| M7 Disney BSDF | 1.283× | 低于 1.5× 当时门槛 |
+| M8 random walk | 1.567× | 超门槛，thin 默认 |
+| 可见性网格 | 约 0.072 ms | 64×32×64；关闭会跳过 dispatch |
+| froxel bake | 约 0.28–0.64 ms | 隔离计时，不是统一硬件承诺 |
+| M9 分层水散射 | 10.49 ms | `bench-water-bottom` 同批窗口 |
+| M17 散射顶点 | 7.56 ms；相对 0.930×，省 2.93 ms | 同上，默认开 |
+| M17 发光体 NEE | +20.9 ms | 默认关；阴影线不是主要成本 |
+| `SegmentIntegral` 6→12 floats | 1.001× | 未撞 R6 台阶 |
+| M12.5 水形变 | 小场景约 4 section / 0.27 ms | 海洋场景未测，不可外推 |
+| M11 云 | 未测 | R19 活跃风险 |
+| M13 结构雾 | 未完成正式 0/A/0 | 不得仅凭“12 步”估成本 |
+| 粒子阴影 | 未测 | 默认关，需 `bench-particles` |
 
-**已落地（切片①补：云型 + 参数化 + 天气联动，D36–D38）**：
+室内 `gpu.traceIndirect` 下降曾被观察到，但机位、分辨率和配置不完整，不能作基线；按用户决定在 ReSTIR 后再诊断。
 
-- **云型维度**。`cloudHeightProfile(altitude, type)` 由一条 [0,1] 轴选形，两段插值（0 层云薄片 → 0.5 晴天积云 → 1 积雨云）。积雨云在 t≈0.6–0.8 处**重新变宽**（砧状顶：上升气流撞上稳定层后向侧面铺开）——没有这一段，风暴云读起来是一根柱子而不是一场风暴。三者共享平底，因为凝结高度在一个区域内是同一个值，云野的下表面本来就是一个平面。云型同时**抬密度**（`1 + type*1.6`）：积雨云不是「高一点的积云」，是「光穿不过去的积云」，而后者才是从底下看它像风暴的原因。云型场自己一片噪声（B 通道，周期 26000 blocks ≫ 云量的 9000），所以「阴天」与「雷暴」是两个独立轴。
-- **云壳加深**：140 → 380 blocks（`CLOUD_ALTITUDE` 180 + `CLOUD_THICKNESS` 380），积雨云要有地方站。层云只占最下面约 18%，加深只在**真的长出高云的地方**才多花行进步数（空段跳跃走完其余部分）。
-- **九个编译期常数提为逐帧参数**：`WorldPush` 新增 `cloudParams`（云量偏置 / 密度缩放 / 云型偏置 / 每方块消光）与 `cloudShape`（底面高度 / 厚度 / 云朵尺度 / 细节尺度），**736 → 768 B**（`RtSkyMediumLayoutTest` 已更新并加钉 `cloudParams`/`cloudShape` 存在）。留在 `cloud.slang` 里的只有两个：`CLOUD_WEATHER_SCALE`、`CLOUD_TYPE_SCALE`——它们不是「观感」，是天空允许与自己不同的尺度。
-- **原版天气联动**（此前**一行都没有**）：`RtComposite.cloudParams` 读 `getRainLevel/getThunderLevel`（按 partial tick 插值，否则慢坡会被量化到 20 Hz，在铺满屏幕的天空上看得见）。**雨驱动云量与密度、雷暴驱动云型**，两条独立轴——单个「风暴度」标量会把它们绑死，就永远做不出真正不同的两种天空（铺满地平线的阴雨 vs 晴空里孤零零一座雷暴云）；vanilla 自己也是分开的（可以下雨不打雷）。两者都是**叠加**而非替换：替换会让天气一变全天空的云变成同一个值，读起来是「拨了个开关」而不是「风暴来了」。开关 `volumetrics.cloud-weather` 默认开；关掉它滑条才是可用的创作工具（开着时滑条量到的是自己 + 天气）。
-- **`cloudDensity` 按成本排序**：所有因子相乘 ⇒ 任一个归零即可返回。先做**免费**的云壳高度剔除（多数射线的多数步在这里就出局），再一次 fetch 云量，最后才 fetch 云型——云型自己**剔除不了任何东西**，所以尽管高度剖面现在拿它当参数，也**故意不上提**；上提等于让天上每一个空步都付一次纹理读。
+### 4.4 Shader 运行期日志
 
-**已落地（切片②：光照，D34；D61 已校正能量口径）**：源从「只有 ambient」换成云真正有的三项，全部以辐亮度表达。`lightRadiance.xyz` 的历史命名不准确，实际承载天体**辐照度 E**；归一化相位 `p(ω)` 已含 `1/(4π)`，所以直射源是 `E·p`。`mediumSkyRadiance` 已是 `1/(4π)` 球面积分，直接作为各向同性辐亮度使用。旧写法把 `E` 乘上 `4πp`，雾、水、云和体积发光体 NEE 一起凭空增加 12.566× 能量，D61 已统一删除：
+介质/ABI 类故障必须：
 
-| 项 | 表达式 | 作用 |
-|---|---|---|
-| 直射太阳 | `E · exp(−τ_sun) · phase(cosθ)` | 云有亮面与暗面；背光时亮边；归一化 phase 球面积分为 1 |
-| 多次散射 | `E · [A/(4π)] · exp(−K·τ_sun)`，各向同性 | 厚云内部不发黑；`A=4R∞(1+K)` 由厚板反照率反解，不再用隐含振幅 1 |
-| 天空 | `mediumSkyRadiance · exp(−K·τ_up)` | 云顶亮、云底暗 |
+1. 先运行 `generateShaderRecords compileShaders` 和目标加载器 resources/Java 编译。
+2. 使用原始复现世界。
+3. 同时记录 queue 解包、函数入口、首次积分前、积分后/profile。
+4. 只增加能区分假设的字段。
+5. 删除一次性 probe 后，再用普通路径长跑。
+6. 工具链升级后比较 SPIR-V 与真实 GPU 行为，不能把 SDK/驱动/Slang 升级自动视为修复。
 
-- **phi_fwd 就地重推**（未翻参考代码）：τ≫1 时 RTE 退化为扩散方程，格林函数 `e^{−Kr}/(4πDr)`，`K = √(3σaσtr)`；g→0 时 σtr→σt、σa=(1−ω)σt ⇒ **`K = σt·√(3(1−ω))`**，于是**沿任意路径 ∫K ds = 该路径普通光学厚度 × 一个标量**。这就是它几乎免费的原因：太阳自阴影行进已经把光学厚度算出来了，扩散项只是同一个数再取一次 exp。ω=0.999 ⇒ 标量 0.055。同一恒等式的逐通道带钳版本就是 `volumeDiffuseAttenuation`（雾/水用）；云这边塌缩成标量（灰色云滴、单一 σt）。
-- **双叶 HG 用 lerp 而非相加**：每个 hg() 本身球面积分为 1，凸组合仍为 1 ⇒ **结构上就能量守恒**。参考实现是相加且漏 1/(4π)，那 ~4π 的能量误差正是 R20 说的「照抄亮 12×」的源头。前向叶 g 默认 0.8（水滴实测不对称因子，是物理不是观感），后向叶 g = −0.6g、权重 0.2（**我们自己的拟合**：真实 Mie 有次级后向峰即 glory，单叶 HG 根本表达不了，没有它顺光云是一张灰纸）。
-- **太阳自阴影行进**：步长逐步加倍，`s0 = thickness/(2^steps − 1)` ⇒ **改步数只改近场精度、不改覆盖范围**（恒为一个云层厚度）。覆盖范围刻意不设成「直到出壳」——低太阳时穿壳路径长达数千方块且几乎全在云外。用 `cheap` 密度（不取侵蚀）：这是个低频量，决定云内多暗而不是云边在哪。
-- **关档纪律**：`cloud-multi-scatter` 关 ⇒ 扩散叶**整项去掉**且天空遮蔽换回束流消光。若只把扩散率设回 1 而保留该项，那不是「关掉多次散射」，而是**再叠加一份各向同性的直射项**。
-- 新增 `cloudLighting` float4（phase g / 单散射反照率 / 自阴影步数 / `A/(4π)` 扩散源尺度），**768 → 784 B**；flags bit 29 = 云多次散射（嵌在 bit 30 之下）。第四 lane 原先保留，D61 复用它，因此修正不增加 ABI 大小。
+`diagnostics.water-medium-trace` 使用完成环槽低频回读，不制造当前帧 stall。Issue #20 根因确认前不得删除该诊断及水面 cross-check 分支。
 
-**本片的近似与待核查项（评审时请裁决）**：
+### 4.5 跨加载器验证
 
-1. **天空遮蔽没有第二次行进**，用「局部密度 × 到本云型剖面顶的垂直距离」估 τ_up，上界取 `cloudProfileTop(type)` 而非云层顶——否则层云会被埋在三百方块的空气底下变黑。代价：把采样点的局部密度当整列的代表，塔底会略高估、塔顶略低估。备选是真的再 march 一次（成本翻倍）或烘一张垂直光学厚度图（要新资源 + 与天气同步）。
-2. `CLOUD_ALBEDO` 默认 0.999，UI 滑条走 `1−albedo` 的对数刻度（每 250 格一个数量级）——线性刻度会把几乎全部行程花在「云像煤灰」的区间。
-3. **成本仍未测**。自阴影步数是乘在云内采样点上的，是 R19 风险的具体形态；`cloud-sun-steps` 就是为此留的 A/B 旋钮（0 = 关掉整个自阴影）。
+两个 run 目录都会改写存档。比对前从纯净主副本还原；地形摘要只比较 `builds==1` section。运行 `verifyCommonIsLoaderAgnostic` 和 NeoForge Java 编译。未列入 `docs/PLATFORM_NOTES.md` 的加载器差异默认按 bug 处理。
 
-**已落地（切片③：双层 + 邻近淡出 + 反射策略）**：
+## 5. 工具与操作入口
 
-- **`CloudLayer` 结构收口**：低层（对流云，有云型/深度/自阴影）与高层（卷云）走**同一套** march、相位、扩散项与合成，差别只在填进结构的数值。`cloudDensity`/`cloudHeightProfile`/`cloudCoverage`/`cloudShellSpan` 全部改为按层取参。
-- **卷云**：对称薄片剖面（不是从底面往上长的对流云——它是在本来就够冷的地方结的冰）；**各向异性采样**把体积沿一个水平轴拉伸 3.5×、垂直压到 0.35×，做出被风切变梳出的条缕（固定世界轴代替未建模的风向，世界锚定才是这里要的性质，逐帧方向会让天空爬行）；自有云量场（同一张天气图、周期 ×2.5、不同切片，否则卷云影会正好盖在每朵积云上）；**自阴影步数 = 0**（τ 几乎不离开 0，跑一趟证明 exp(−τ)≈1 是全帧最贵的「什么都没有」）。
-- **两层排序按「本射线先遇到谁」**：`highLayer()` 把高层底面钳到低层顶面之上 16 blocks，**两壳不相交** ⇒ 任意起点方向下射线必然完整穿过其一再进另一个，比较 `tEnter` 即为正确顺序。参考实现按**相机高度**排序：相机在两层之间、而湖面反射射线从两层之下往上看时，二者会对「谁在前面」给出相反答案（R18）。
-- **邻近淡出两项相乘、且都量自射线自己的起点**：高度邻近（`|ro.y − 层心|`）+ 射线邻近（`tEnter` 很小＝沿层掠射，穿越极长且逐像素剧变）。**只有卷云吃这个淡出**——对流云层有真实厚度，本来就该能飞进去。
-- **反射策略 = 预算而非第二套天空**（`volumetrics.cloud-secondary`，默认 `reduced`）：非路径首条射线把步数上限 96→40、去掉侵蚀取样、自阴影步数减半、透射率放弃阈值 0.01→0.05。`off`/`full` 两端保留做 A/B。**关键性质**：每条射线仍在同一个世界锚定的场里从自己的起点求交，所以这个开关**不可能**让湖里的云与天上的云错位，只能改变积分精度——这正是 R18 把「云在哪」与「云画得多细」分开之后换来的自由度。
-- 新增 `cloudHigh` float4（高度 / 厚度 / 云量偏置 / 消光），**784 → 800 B**；flags bits 2–3 = 反射预算档。
+### 5.1 构建
 
-**§6.4「二次光线默认烘进 sky-view LUT」暂缓，需用户裁决**：动工时发现该路线有当时未分析到的耦合——`mediumSkyRadiance` 是 sky-view LUT 的 reduction，**雾与水的环境源都读它**，把云烘进 LUT 会同时改变水下与雾的观感；且云自己的 ambient 项也读同一个量，会与烘进去的云**重复计数**。因此本片实现的是「削减档真行进」，把 LUT 烘焙留作待裁决项：它更便宜但相机锚定（远场近似，云在数千方块外时视差小），且需要解决上述两个耦合。
+Windows：
 
-**待办**：**成本采集**（R19 点名的风险，三片全落地后必须测：云壳加深、自阴影行进、第二层 march 三项叠加）· 游戏内验收（三片一起看）· §6.4 LUT 烘焙路线裁决。
-
-- **唯一硬规则（R18）**：`traceClouds(ro, rd, tMax, seed)` 内**禁止出现相机位置**——密度场、层序全部逐光线判断（层序逐光线比较两层 `meanDistance`）。验收专项：站在水边看天上的云与倒影，高度形状一致。
-- 结构：`cloud.slang` 纯光线函数 + `cloud_noise.comp.slang` 启动烘焙 3D 噪声（构建 glob 已覆盖 `**/*.comp.slang`）；挂統一 Medium ambient 非均质分支（D2）。
-- 双层 + 相机邻近淡出：两个乘性项缺一不可——高度邻近（**光线起点**高度 vs 层高）+ 光线邻近（`tPlane` 很小时溶解，处理沿层掠射）。
-- 二次光线：默认云烘进 sky-view LUT 一次采样；`Rt.Clouds.VOLUMETRIC_IN_REFLECTIONS` 走削减档真行进（光照步数减半、关侵蚀、更早透射率退出）。两路都要 A/B 截图与开销。
-- 出口：主光线与反射中云正确且一致；邻近淡出无跳变；性能门槛按 F10 同会话比值定（旧的 26.1ms 绝对值不可用——位姿不可复现）。
-
-### 8.2 M12 交互水体仿真（前置：M9 ✅）
-
-- 世界锚定 2D 高度场，显式蛙跳线性波动方程；**CFL `c·dt/dx < 1/√2` 必须守住**；三缓冲 ping-pong R16F（`water_sim.comp.slang`）。
-- 边界：障碍 Neumann 反射；外圈 ~10% **海绵吸收层**（缺了就是浴缸全反射，参考实现容易忽略的一环）。
-- 障碍物取法（与 HPWater 分道）：**每网格单元一条向下 TLAS 短光线**（256²=65k 条/帧，相对路径追踪可忽略）——不需要额外相机/剔除/渲染目标。
-- 实体涟漪：`RtEntities` 已逐帧收集实体，CPU 筛水面相交者产出冲量缓冲；**冲量必须钳位**（参考实现钳 0.05——显式积分稳定性护栏不是美术参数）。
-- 采样回着色：中心差分→法线，与程序化波谱**世界空间混合**；唯一接入点 `applyWaterWaves`（`water.slang`）——改这一处，主光线/guide/焦散（`causticLanding` 同一条法线路径）自动全部跟上。
-- 域跟随：沿用 `waterAnchor` 锚定；**域移动整纹素**否则拖糊（R22，参考实现未解决的问题）。
-- 出口：涟漪传播且被方块反射；关闭仿真回到程序化波谱；移动无拖影；涟漪出现在焦散里。
-
-**动工裁决（2026-08-06，用户逐项选定）**
-
-| # | 议题 | 决策 | 理由与代价 |
-|---|---|---|---|
-| D39 | 网格分辨率与格距 | **256² × 0.25 m**（域 64 m 见方，最短波长约 0.5 m） | 船桨与落方块的涟漪都能表达；6.5 万条障碍光线/帧约合 1080p 主光线数的 3%。CFL 不是约束：dx=0.25、dt=1/60 时允许 c ≤ 10.6 m/s，而可见涟漪 0.5–2 m/s。**真正的约束是覆盖范围 vs 涟漪精度**，固定网格下两者互斥；512² 能两头都要但光线数与显存各 ×4，属唯一需要真担心成本的档 |
-| D40 | 障碍光线投射时机 | **仅在域移动/地形变化时增量更新** | 稳态开销接近零。代价：要维护持久的障碍掩码与脏区逻辑，方块变化到涟漪响应之间有一帧延迟 |
-| D41 | 与程序化波谱的结合 | **斜率相加，域边缘淡出** | 物理上不严谨——两套波场互不作用，仿真涟漪不会绕着涌浪折射。换来的是**域内的海洋仍然是海洋**：波谱是处处存在的基底，仿真是叠加其上的扰动，跨界只淡出仿真那一项。备选「域内完全替换」更自洽却更难看：仿真凭空产生不了涌浪，域会变成跟着玩家跑的一块明显平静的矩形 |
-| D42 | 冲量来源 | **实体入水/游动**（核心）+ **方块放置/破坏** + **抛射物/浮漂**；**降雨不走冲量** | 降雨改用**全局循环 ripple 贴图**直接贴在水面或方块表面临时表示（用户指定）。走冲量的话每帧要注入海量小扰动，高频噪声会吃掉整个高度场，且需要额外的密度控制 |
-
-**已落地（第一步：物理与采样接入）**：`water_sim.comp.slang` 显式蛙跳（三缓冲轮转，因为蛙跳要同时读两个历史态，就地覆写会毁掉后续线程还要读的邻居）；障碍处 **Neumann 反射**（把中心值镜像回来，而不是把方块格当零读——后者模拟的是吞掉波的洞，岸线会吸收而不是反射）；**海绵吸收层**（缺了就是浴缸，所有出去的波都回来叠成驻波麻点）；冲量落在 next 态上且用平滑 bump 而非单格 delta（单格 delta 含网格 Nyquist，蛙跳会把它作为永不传播的棋盘格一直带着）。`water_obstacle.comp.slang` 每格一条向下 TLAS 短光线（**与 HPWater 分道**：它渲两遍正交相机取障碍，需要第二套相机/剔除/渲染目标，而光追渲染器本来就有这个加速结构）。采样侧接在 `applyWaterWaves` 这唯一入口，主光线/guide/焦散自动跟上。`WorldPush` 加 `waterSimDomain`（848 → 864 B），高度场 R16F ×3 + 障碍掩码 R8，binding 18。
-
-**障碍判据的返工（2026-08-07）**：TLAS 短光线的第一版**不成立** —— 水面本身就在 TLAS 里（它是渲染几何），探测光线从水面上方往下打，第一个命中的就是水面自己，于是**每一格都被标成障碍**，`heightNext` 处处归零，一点涟漪都传不出来。
-
-原本设想的修法「给水体实例单独一个 cull mask 位」**同样不成立**，查证后推翻：cull mask 是**逐实例**的 8 位，而地形实例是按 section 的 BLAS，**一个 section 内水与固体方块共用同一个实例**。要按实例区分就得把地形按水/非水拆成两个 BLAS，实例数、BLAS 构建量、TLAS 条目全部翻一档，代价远超原估计。
-
-因此实际可选的是两条，各开一条分支对照实现：
-
-| 分支 | 做法 | 代价与风险 |
-|---|---|---|
-| `milestone/m12-obstacles-a-cullmask` | **A′ geometry 层过滤**：RayQuery 改成不提交的候选循环，逐候选读 geometry index 判是否为水再决定接受 | 保住「用加速结构」的设计。但要在 compute shader 里拿到材质信息，复杂度远高于「加一个 mask 位」。地形 SBT offset 0、由 geometry index 选材质桶，这条路径可行但没验证过 |
-| `milestone/m12-obstacles-b-cpu` | **B CPU 方块查询**：重锚时对 256² 每格问 `getFluidState(x, surfaceY−1, z)`，是水即开放 | 判据**精确**（这本来就是要问的问题），完全绕开 TLAS。需要一条把 256² 掩码上传到图像的路径（`RtMaterialPageTexture` 有现成的 staging→barrier→copy 可抄）。代价是重锚时 6.5 万次方块查询集中在一帧，可后续挪到 worker |
-
-**顺序建议**：先 B 把物理跑通验证，再做 A′ 作对照 —— 这样「障碍判据」才是被隔离的唯一变量。
-
-**共用基座已落地**：域范围（32–256 方块，默认 64；网格固定 256 格，所以范围即格距）与重锚距离（4–64，默认 16）均为配置项并进 UI。原死区 `DIM/8` = 8 方块过紧：重锚是本系统唯一比一次 dispatch 更贵的事，而涟漪远在抵达域边缘前就衰减，把玩家钉在中心买不到任何东西。
-
-**待办（下一步）**：仿真派发与三缓冲轮转 · 域锚定（**整纹素吸附**，R22）· 障碍脏区增量 · `RtEntities` 冲量采集与钳位 · 配置项与 UI · 游戏内验收。当前 `waterSimDomain` 返回全零即**关闭档**——域还没被步进，指向一个未步进的场等于把平坦贡献伪装成能用的。
-
-### 8.2b M12.5 水面真形变（用户裁决 2026-08-07，选定方案二 + 近处限定）
-
-**动因**：现有波浪系统（含 M12 的仿真）**只扰动法线，不移动几何**。水面是地形提取进 BLAS 的真实四边形，`applyWaterWaves` 返回的是法线 —— 所以涟漪只能表现为倒影被弯曲，永远不是起伏的水面。用户指出 HPWater 的效果是顶点位移形变，并要求一并解决这个更普遍的问题。
-
-**为什么不能照搬**：HPWater 是光栅管线，顶点位移在 vertex shader 里几乎免费；这里没有 vertex shader 这一环，等价物是每帧重建 BLAS 或换 intersection shader。**同一个想法搬过来代价完全不是一回事**，这正是 §6.1 第 2 条的具体表现。另有一个 HPWater 不会遇到的问题：MC 水面是每方块顶面一个四边形，要表现 0.5 m 涟漪至少需 4×4 细分，三角形数 ×16。
-
-| # | 议题 | 决策 | 理由与代价 |
-|---|---|---|---|
-| D44 | 形变方案 | **方案二：近处细分 + 顶点位移 + 每帧 BLAS refit**；远处退回纯法线 | 三条路里只有它给**轮廓起伏与正确阴影**。原本判它对 Voxy 最差，前提是"给渲染距离内所有水付账"；**限定近处后该反对意见失效** —— 成本有界（64 m 域 ≈ 13 万三角形），而**近处正是 Voxy 不接管的地方**（Voxy 替换的是远景地形）。否决方案三（intersection shader）：其混合形态要在 TLAS 里同时维护两套水面表示、边界随相机移动，而**介质栈的进出配对要跨越这个边界** —— 弄错就是水下渲染整体损坏且极难查，本里程碑已有三个 bug 属于"两边单独看都对、错在相遇处" |
-| D45 | 距离控制 | **形变距离独立成项**；**仿真域范围被它钳住**（`min(涟漪距离, 形变距离)`）；边界处位移淡出为原法线 | 无法位移的涟漪不值得仿真。淡出让位移区几何与区外平面几何连续 |
-| D46 | 波形一致性 | **按波长分频，不是两套波形**：网格能表达的低频进顶点、更高频留给法线；区外全部留给法线，分频交界随位移淡出一起淡 | 直接回应「远处一个波形近处另一个波形」。**若不分频就是双重计数** —— 几何带一份波形、法线再扰动同一份，近处浪会陡一倍。项目已有 `waterWaveLodWeight(wavelength, footprint)` 在按波长加权，是现成的机器 |
-| D47 | 锚点与开关 | 形变域**沿用涟漪的整纹素锚定思路但独立控制**；提供纯法线 ↔ 形变的切换开关 | 锚定理由同 R22。开关是关档纪律：纯法线档必须逐位等于现在的已发布行为 |
-| D48 | 近远水面如何互斥（2026-08-07 追加裁定） | **先做方案 1（不细分、原位 refit 现有水面顶点），再把方案 2（细分 + 抑制）叠在上面** | 见下方「D48 的三条路」。方案 1 **根本没有边界问题**（水面永远只有一份），铁律 8 白拿；实测 1 m 四边形已承载程序波谱 **97%** 的高度，所以细分几乎不为涌浪服务、只为 0.5–2 m 的交互涟漪服务。先把方案 1 的 refit 成本测出来，再决定要不要为涟漪付抑制机制的账 |
-| D49 | 波场振幅 | **新增总振幅选项，默认 1 = 现状逐位一致**；同时缩放高度与坡度 | 实测：`WATER_WAVE_STRENGTH=0.3` 是**按坡度调的**，波场高度只有 ±2.5 cm、最大坡度 3.7°（真实微风水面 10–15°），作为几何位移近乎不可见。调高是让形变可见的唯一办法，**诚实的代价是反射外观同步改变**（更碎更亮）—— 属已发布外观的可见改动，故做成选项而非直接上调。物理合理区间约 3–8。占用 M16 退役后一直置零的 `waterAmbient.x`，钉死的 WorldPush 布局不增长 |
-
-#### D48 的三条路（裁定依据）
-
-| 方案 | 互斥机制 | 优点 | 代价 |
-|---|---|---|---|
-| **1 不细分、原位 refit** | 不需要 —— 水面本来就只有一份 | **边界危险完全不存在**，介质栈进出配对无从出错；铁律 8 天然满足（关档 = 不 refit）；不碰 mesher，无额外 TLAS 实例 | 波长 < 2 m 进不了几何 → **M12 涟漪仍只有法线**；含水 section 要保留顶点缓冲、放弃压缩、每帧 refit **整个 section**（含石头，浪费约 10×；48 m 内约 36 个 section、~36k 三角形） |
-| **2 细分 + 抑制原水面** | 抑制区与形变网格逐 section 精确对齐 | 涟漪能真正形变，细分度可调 | **差一格就是双层水面或空洞** —— 正是 D44 否决方案三时点名的危险；形变区移动要重建一圈 section；相机状态渗入异步 meshing（R18 味道） |
-| **3 水面永久拆成独立实例** | section 粒度，且是重建事件而非逐光线判断 | 边界叙事最干净 | **改变关档行为**（形变关闭时水也走不同实例路径）→ 违反铁律 8、A/B 失效；海洋场景 TLAS 实例数约 ×1.5；要动 SBT 偏移 |
-
-**D46 的修正（实测后）**：原表述预设着色法线会与网格的面法线**叠加**，那样确实双重计数。实际做法是**替换**——着色法线始终是整个场的解析法线，网格只是这个面的低频代理，也就是普通法线贴图的结构。因此：
-
-- **不存在双重计数**，分频只需作用在**网格一侧**（`waterWaveLodWeight(λ, 网格边长)` 就是 Nyquist 带限，现成的机器，无需新增）。
-- **远近着色表达式完全一致** —— 跨越形变边界改变的是「形状在不在几何里」，而不是「是哪个形状」，这比原方案更直接地满足用户「不能远处一个波形近处另一个波形」的要求。
-- 唯一残留风险是着色法线与几何法线夹角过大时的掠射黑边；当前最大 3.7°，振幅拉到 8 倍仍在安全范围，真出问题的标准做法是把着色法线夹回几何半球。
-
-**实现要点（待做）**：
-
-- ~~**一份波场，两个消费者**。位移要的是**高度**~~ **已落地**：`waterWaveSpectrum` 增加 `WITH_HEIGHT` 泛型分支，高度与梯度出自同一次谱行走。踩到一个只有几何才会暴露的坑：波峰剖面 `e^{S(sinφ−1)}` 恒正，**各分量直接求和会整体浮在静水面之上 27.8 mm**（对着 ±25 mm 的浪），法线看不见（导数吃掉常数）但几何看得见 —— 每条岸线都会有一道永久缝隙。现逐分量减去解析均值 `e^{−S}I₀(S)`（与 20 万点求积对到机器精度），且**均值也要乘 lodWeight**，否则分量淡出带外时会把自己的偏移留下。梯度确为该高度的导数：CPU 有限差分复刻，相对残差 5e-5，且随 footprint 下降（截断误差的行为，真实导数错误不会这样）。
-- ~~**位移在 GPU 上算，不要在 CPU 再实现一遍波场**~~ **已落地**：波场移入 **`shaders/world/water_wave.slang`** —— **无任何 binding、不碰 `worldPush`**，资源全部作为参数传入。原因是 compute pass 有自己的描述符集，而 `water.slang` 依赖 `world_core` 的 set 0，直接 import 会把整套 raygen binding 拖进来。`water.slang` 用 `__exported import` 转发，调用方无需知道搬过家。
-- 总高度 = 波谱高度 + 仿真高度（与 D41「斜率相加」同构）。仿真域的映射与边缘淡出也参数化进了 `water_wave`，让梯度与高度不可能对域的解释产生分歧 —— 本里程碑已有三个 bug 属于「两边单独看都对、错在相遇处」。
-- 每帧 refit 而非 rebuild；**refit 在顶点大幅移动时会让 BVH 质量退化**，这项成本未实测，属 R19 同类风险且此处是"确定发生"而非"可能"。
-- 与地形流式加载的交互：section 异步构建并缓存，含水 section 需单开一条每帧路径。
-
-### 8.2c M12.5 slice 3b 待裁定：形变边界如何触发 section 重建
-
-**已查明的入口**：`RtTerrain.markBlocksDirty(minX..maxZ)` 是线程安全的公开入口，按方块 AABB 标记重叠 section（**外扩一格**，所以邻接 section 一并重取）、分配 dirtyGroup、下一次 `tick` 排空。这是方块变更走的同一条路，不需要我另开一套 residency 机制。
-
-**但它做的是「重新提取」而不是「只重建 BLAS」** —— 会从方块数据重新网格化。用它来响应「形变边界移动」时，代价结构完全不同于方块变更：
-
-| | 方块变更 | 形变边界移动 |
-|---|---|---|
-| 触发频率 | 稀疏、事件驱动 | **玩家一直在走就一直在触发** |
-| 影响 section 数 | 1 + 邻接 | 半径 48 处的一整圈，约 20–40 个 |
-
-形变重锚默认 8 格，即每走 8 格重取几十个 section。地形本来就会因方块变更重取，但那是偶发的；这是**移动期间持续的**。属 R19 同类风险，且**未实测**。
-
-**三条路（待裁定）**：
-1. 直接用 `markBlocksDirty`，把形变重锚距离调大（16/32 格）压低频率。最省事，代价是重锚瞬间的 hitch 更大。
-2. 另开一条**只重建 BLAS 不重新提取**的轻路径：section 的方块数据没变，变的只是构建模式。省掉网格化，但要在 `RtTerrain` 里新增一条与现有 dirty 流并行的路径，而那套东西的不变量（in-flight 失效、dirtyGroup 原子性、copy-on-write 代）我尚未读透。
-3. **放弃按距离切换**，改为所有含水 section 一律可形变（用户此前已否决，成本 ≈33 MB + 全部丢压缩），但换来零重建。
-
-先量再选：路 1 能最快拿到「重取一圈 section 要多少毫秒」这个数字，而这个数字决定 2 值不值得做。
-
-#### 8.2c-1 路 1 首次开启即设备故障（2026-08-08，待修）
-
-开 `water.deform` 立刻 device fault。故障地址表最后一条是关键：
-
-```
-fault[5]: type=READ_INVALID, address=0x6230c2000, precision=0x1000
-          resource=unresolved (prev='terrain section -368,0,96 BLAS compacted backing')
+```powershell
+.\gradlew.bat :fabric:build
+.\gradlew.bat :neoforge:build
+.\gradlew.bat build --rerun-tasks --no-daemon
 ```
 
-**TLAS 读到了一个已经不存在的 BLAS**（地址落在某个已压缩 BLAS backing 之后的未映射区）。前四条 IP_FAULT 落在 TLAS instance buffer 与 path queue 之间，同样指向"实例指着死地址"。
-
-**首要嫌疑：可形变 section 构建输入的双重所有权。** `SectionGeom` 现在接管 `positions`/`indices`/`waterRest` 且 `releaseBuildInputs()` 对可形变 section 提前返回；但 `PreparedSection.destroy()` 仍**无条件**释放 `positions`/`indices`。任何同时走到这两条路的路径（在途构建被作废、离开窗口、脏组成员完成）都会双重释放。一次性标记 ~512 个 section 重建正是把这个竞争放大到必现。
-
-**次要嫌疑（也要一并核）**：
-- 区域内**不含水**的 section 现在拿到 `compact = BLAS_COMPACTION && !deformable` = false 但 `deform=false`，于是既不压缩也不可更新——功能无害但白白丢压缩，说明这个布尔该按"这个 section 真的要形变吗"算，而不是按"它在区域里吗"。
-- `prepareTerrainBlas` 可更新分支返回的 `accel` 其 backing 归属（`ownsBacking`）是否与 `SectionGeom.destroy()` 的 `blas.destroy()` 匹配。
-
-**已修（同日）**：根因确认为**构建输入被拥有两次**。管线的既有不变量是 **`releaseBuildInputs` 与 `destroy` 互斥**——恰好一个负责释放。可形变 section 单靠自己就破坏了它：`releaseBuildInputs` **不能**释放（refit 还要用），而 `destroy` 对那些从未发布的构建**仍然必须**释放。所以「已移交」必须被**记录**而不是推断：`PreparedSection` 增加 `inputsTransferred`（`AtomicBoolean`，`withBlas` 复制时必须传同一个实例），发布 `SectionGeom` 前置位，`destroy` 见到就跳过。
-
-顺带修掉次要嫌疑之一：`deformable` 现在要求 `packed.waterVertCount() > 0`——按位置单独判断会让区域内每个石头 section 都为一次永远不会发生的位移放弃压缩。
-
-次要嫌疑之二**已核实无问题**：地形可更新分支走 `createBlasOn(..., ownsBacking=true, ...)`，所以 `SectionGeom.destroy()` 的 `blas.destroy()` 会连 backing 一起释放，与非可更新分支一致。
-
-**教训形态**：这是本里程碑第三次「两边单独看都对、错在相遇处」。而它比前两次更难查，因为**症状里没有任何东西指向 Java**——双重释放的表现是 TLAS 读到已消失的 BLAS，即一次没有 Java 栈的 device fault。真正把它钉住的是故障地址表里 `prev=` 那一栏的资源名（`'terrain section -368,0,96 BLAS compacted backing'`），不是任何堆栈。
-
-#### 8.2c-2 第二次故障：尺寸查询与构建的 flags 不一致（2026-08-08，已修）
-
-修完双重释放后再开，换了个地方死：**GPU executor 线程、section 构建提交**，`RT terrain section build failed for section -28,2,7` / `vkQueueSubmit2KHR failed: -4`，七条 `IP_UNKNOWN`——指令指针落在未映射内存。和上一次的 `READ_INVALID`（读已消失的 BLAS）是完全不同的形态，说明不是同一个 bug 的残留。
-
-**根因**：`recordBlasBuilds` 的地形分支写死 `buildFlags(false)`，而 `queryTerrainBlasSizes` 收到的是 `buildFlags(allowUpdate)`。M12.5 slice 3a 给**查询**和**创建**加了 `allowUpdate`，唯独漏了**录制**。于是 scratch 按「可更新」尺寸分配、构建却按「不可更新」录制——**两者必须逐位一致**，否则驱动可以合法地跑出 scratch 之外。它不会报错，它让 GPU 崩。
-
-顺带：这个 BLAS 其实**从来没有真的可更新过**（录制时没设 ALLOW_UPDATE），所以后面的 refit 一定会踩 `VUID-...-03667`——而按 F24，那一条**验证层查不出来**。等于两个静默错误叠在一起。
-
-**教训（记入 F 系列的候选）**：加速结构的 flags 有**三个**必须一致的出现点——尺寸查询、结构创建、构建录制。加一个新 flag 时，`grep` 那个 flag 名只会找到你刚写的地方；要 `grep` 的是**构造 flags 的那个函数**（这里是 `buildFlags`），因为漏掉的那一处长得和其他处一模一样，只是参数被写死了。
-
-#### 8.2d D50 波长可调 + 冲量半径改用世界单位（2026-08-08）
-
-**D50 波长成为设置**（`water.wave-length`，默认 14 格，范围 2–40）。整个波谱由它推出：10 个分量、每个短 1.5 倍。
-
-**刻意不给「速度」选项，而且不能给**：深水色散 ω = √(g·k) 把速度绑在波长上，所以缩短涌浪它自己就慢下来，整个波谱之间的相对速度始终物理。「长涌浪大步走过、短碎波几乎原地抖」是水看起来像水的最大单一依据，一个速度旋钮就是专门用来破坏它的旋钮。振幅同理跟随——被设定的量是**陡度** a·k，同陡度下长波必然更高。所以这个选项改的是海的**性格**（碎浪池塘 vs 远洋涌浪），不只是尺度。
-
-搭载在 `waterAmbient.y`（M16 退役的空 lane），WorldPush 不增长。
-
-**冲量半径改用世界单位。** 原来是 `max(2.0, bbWidth / cell)`，下限单位是**格**——于是它在世界里的大小跟着域走：仿真范围 64 时玩家水花半径 0.6 m（正确），范围 256 时格边长 1 m，下限把它撑到 **2 m**。*拉大涟漪范围会让每个水花变宽三倍*，而那个设置本不该管水花大小。
-
-现在下限用米（0.5 m）表达；网格撑不下时**代价付在振幅上而不是宽度上**：半径撑到网格能承载的最小值，高度按面积比缩放，**移动的水量不变**。粗网格给出更宽更浅的扰动——这正是一个水花被带限之后该有的样子——而不是一个更大的水花。
-
-#### 8.2e 路 3′ 落地，FFT 撤下（2026-08-08，D55–D56）
-
-**D55 形变覆盖范围（`water.deform-mode`，默认 `all`，重启生效）。** 重锚闪烁只有一个成因：跨越形变边界改变的是 section **怎么构建**（可更新+不压缩+保留构建输入），而改变构建模式的唯一办法就是重建它。于是每次重锚都要重取一圈 section。
-
-修法是把**被错误合并成一个的两个问题分开**：「**被构建得可以形变**」和「**实际正在被形变**」不必有同一个答案。`all` 模式下所有含水 section 在构建时就准备好，于是没有边界可跨、没有重建、闪烁不可能发生；而**每帧派发保留自己的距离筛选**，所以每帧工作量不变。
-
-**那个派发端的剔除是这条路的全部，而它此前并不存在** —— 原来的循环对它能找到的每一个可形变 section 都派发+refit，距离只以着色器内的淡出形式出现。没有它，`all` 模式就会变成「每帧 refit 全世界的水」，正是这个模式要避免而非付出的代价。
-
-代价是**固定的而非每帧的**：所有含水 section 常驻顶点+索引+静止副本，且放弃 BLAS 压缩。`near` 保留旧行为及其闪烁，留给内存吃紧的机器。
-
-**路 2 不做**（§8.2c 里那条「只重建 BLAS 不重新提取」）。它要能重建就必须为所有含水 section 常驻顶点+索引 —— 已经是路 3′ 大部分的内存代价 —— 换来的只是保住压缩，而工程量压在 `RtTerrain` 最不该盲改的部分。在路 1/3′ 可选之后它的生态位太窄。
-
-**D56 FFT 撤下。** 上一轮实测波谱占 trace 的 **7.5%**（0.90 ms / 12 ms），我据此判断 FFT 的固定成本（估 0.3–0.6 ms）赚不回来。随后用户提出真实诉求是「波形更丰富」，而那**恰恰是 FFT 唯一真正赢的轴**（解析路径 ~0.09 ms/道线性增长，FFT 固定成本给上千道），一度让这个结论动摇。
-
-最终由用户裁定**不做**。理由站得住：本轮用**解析路径内的四层改动**（交叉波系、域扭曲、阵风斑块、天气响应，外加把 meander 铺满全部分量）已经解决了实际抱怨的那个伪影，而 FFT 会带来一个从零开始的子系统、平铺重复（`waterAnchor` 掩码强制 tile 整除 4096）、丢失解析时间导数、以及高斯场丢掉尖峰宽谷的波形。**设计分析保留在 §8.2c/8.2d 供将来重启。**
-
-#### 8.2f 波速可调、形变生效时机、以及一个未复现的水下渲染故障（2026-08-08，D57–D58）
-
-**D57 波速暴露为全局乘数**（`water.wave-speed`，默认 1 = 已发布速度）。原来是写死的 `WAVE_SPEED = 0.8`。
-
-**等比是刻意的，也正是它安全的原因**：它同等缩放每一道波，所以波与波之间的关系得以保留——长涌浪大步走过、短碎波几乎原地抖。**按波长调速的旋钮一律不给**，那个关系正是 `water_wave.slang` 顶上称为「假水最大破绽」的东西。
-
-**天气不作用在这里，这一条同样是刻意的。** 深水中波速只取决于波长（c = √(g/k)），风不会让某个波长跑得更快。D72 进一步修正了旧方案：不能在绝对相位时钟已经累计后改变波长，否则 `k·x−ω·t` 会被整片重新解释，所有浪峰瞬移。现在十个频带的波长与相位固定，天气只在 20 秒内逐渐强调本来就更长、更快的频带；乘时间同样会看起来相似而**含义是错的**。
-
-**D58 形变设置改为地形加载时快照**（`clearAsync` 里刷新）。
-
-根因：一个 section 能不能形变是在它**被构建时**决定的，而没有任何东西会因为设置变了就去重建它。读实时配置因此产生了**两种不同的错误行为**：`near` 模式下锚点在玩家移动时会标脏一圈，section 重建得足够频繁，于是开关**看起来是即时的**；`all` 模式下没有任何东西标脏，开关**看起来毫无作用**。
-
-**那份即时性是闪烁的副产品，消除闪烁就消除了它。** 现在两个模式行为一致并明说：**关掉形变仍然立即生效**（停止派发永远安全且免费），**打开**需要重载世界。
-
-**未结：调整曝光后下水的间歇性渲染故障。** 现象是过亮 + 水面丢失，日志无错误，且出问题时形变根本没跑（`gpu.waterDeform=0`）。用户已尝试复现失败。后续证据与状态统一记录在 [GitHub Issue #20](https://github.com/DsWePm/Fluorite/issues/20)。
-
-已加**介质栈矛盾探针**（`[water-medium]`）：关于「相机是否在水中」有三个答案——`flags` bit 0（相机光线起始介质）、参考水面（每个散射点的深度）、相机高度——它们必须自洽，因为着色把它们用在不同地方却假设描述同一个世界。**submerged 为真而水面在眼下** = 光线起于水中但所有深度为负 → 哪里都不吸收（过亮）+ 积分器从不进入界面（水面消失），恰好同时解释两个现象。探针只在矛盾时出声并退避。**下次发生时它会自己写下现场。**
-
-### 8.3 M13 残余
-
-- **3D 噪声雾与天气联动：🔄 代码完成，待视觉/性能验收（2026-08-09，D62–D73）。** 原计划的 128³ 基础 + 32³ 细节经用户裁决改为**一张独立 128³ RGBA8**：R=4 周期基础、G=16 周期细节，固定倍频烘入两通道，一次三线性 fetch 同取两频段；约 8MB、RT binding 19，水保持 binding 18。`fog_noise.comp.slang` 启动一次性烘焙，绝不在行进热路径现场算 Worley/Perlin FBM。
-
-  密度不是“给亮度贴噪声”：`heightDensity × noiseMultiplier` 同时驱动 froxel 视线消光/入散射、反射与 GI 段、太阳与发光体路径衰减、M17 散射顶点 τ→位置。marched 侧为每段构造一次 canonical 三段 partition（可见性网格前/内/后），总 τ、入散射与散射事件复用同一组密度样本，避免数值积分被不同 split 采出两份能量；froxel 读同一打包场与同一共享解码数学。
-
-  R/G 都由周期场 `f(p)-f(p+(0.5,0,0.5))` 构成严格零均值，再围绕 1 解码；水平半周期配对让**每个高度层**的横向平均都为 1，指数高度剖面不会偏重某一符号，所以时间/天气/密度滑条仍是唯一平均 σ 控制。D68 的 0–4 对比度不是线性放大后钳零，而是奇对称有界有理映射：正负配对仍和为 2，局部倍率仍在 0–2。低于步长可解析范围的频段淡回自己的均值，而不是混叠成相机移动时的闪烁。世界坐标为 `rebased p + (terrain origin − fog drift)`，重锚不跳；D69 后雾、两层云、水波共享全局 heading，各自保留偏转和速度。
-
-  **关档铁律**：`fog-noise-enabled=false`（默认）由 CPU 解析成 `fogAmbient.x=0`，在 texture fetch 之前退出；RT 继续走完整旧解析 estimator，froxel 的太阳路径继续走旧解析高度透射。8MB 资源仍存在并启动时 bake，换取游戏内即时 A/B，但逐帧热路径不读它。`fogAmbient.xyz` 复用为 resolved contrast / 固定 0.25 detail share / march cap；新增的唯一 WorldPush lane 仍是 16B `fogNoiseOrigin`，928→944B。
-
-  **连续天气 forcing（D70A-H）**：`RtEnvironmentForcing.capture(level)` 每帧只读取一次 partial tick、rain、thunder、`SUN_ANGLE` 与 game time。Fog / Cloud / Water 分别消费最终 density scale、signed field bias、structure contrast、wave storm 与 water scattering scale；shader 不见原始天气，不新增分支或 WorldPush lane。晴天基础物理参数仍归各介质页面，Weather Effects 只拥有 rain/thunder/time 相对响应。正系数使用非负 gain，coverage/type 使用 signed bias；水散射变化会自然进入 `sigma_t=sigma_a+sigma_s`，不是固定颜色或亮度覆盖。云/雾漂移继续用会随暂停停止的 game time；水波相位的 `System.nanoTime` 是既有运动语义，本轮未擅自合并时钟。
-
-  **设置 locality（D71）**：新增 Weather Effects 分类，唯一全局风向只在这里显示；Fog / Sky / Water 保留各自基础物理参数、风速与相对偏转。天气栏按 Fog / Cloud / Water 分节收纳时间、雨、雷暴响应。语言仍只维护 `en_us` / `zh_cn` / `zh_tw`。
-
-  **水波天气过渡（D72D-1）**：保留现有十个固定波长/相位，不增加频带；删除天气对基础波长的 ×0.45 实时修改。CPU 将水体 storm 状态按每单位 20 秒线性移向目标，默认 `storm swell bias=0.5`；GPU 只用一个有界频带权重让长波增强、部分短波减弱，晴天偏置 0 时逐位回到旧频谱。复用 `waterSimPlane.z`，无新 ABI、纹理、射线或三角函数；代价仅每个既有频带一次权重运算。它解决的是相位连续性，不声称重建真实风浪谱。
-
-  **水底焦散天气衰减（D73A-1）**：Water 页面将唯一 `0..1`「水底焦散强度」放在「焦散色散强度」旁边，默认 1；它属于水体聚焦模型，Weather Effects 只提供自动衰减。当前近似先由最终雾/云天气状态计算 `load=max(fogScale−1,0)+max(cloudDensity·(1+positiveCoverage)−1,0)`，再取 `S=strength/(1+load)`；shader 使用 `1+S·(focus−1)`，同时压低亮纹与补偿暗区，保持中性均值而非直接压暗日光。复用 `waterSimPlane.w`，不增加射线或纹理。
-
-  **D73 预留的统一云日光接口**：未来消费者统一调用 `cloudSunTransmittance(worldPosition)`。地面与水面阴影可在两种后端间切换：①次级云体积阴影 march（更物理、每查询多段密度采样）；②沿太阳方向对当前 3D 云密度积分得到的二维 Beer 透射率图（近似、便宜，不能退化为直接读原始 coverage noise）。水底焦散无论地面选择哪档都只采二维透射率图，避免为每个焦散查询追加云 march；届时只替换 D73 的 cloud-load 输入，不重写焦散模型。后端选择及预算仍须在实现前请示用户。
-
-  **预算口径必须说准确**：12 是每个连续数值积分区间的硬上限，不是整帧 fetch 总数。独立太阳/发光体路径各自最多 12 次；marched 视线为了在可见性网格边界不制造壳层，最多分成网格前/内/后三个连续区间，各自受上限约束；froxel 本身必须写 64 个前缀深度，因此每个输出 cell 仍有一次局部密度读取，并为每个 cell 的太阳路径另开一个至多 12 步的区间。D66 限制的是任一 march 的长尾，不可能把已有 64 层 froxel 压成 12 层；所以最终是否可接受必须看 `gpu.froxelBake` 与 `gpu.traceIndirect`，不能只看配置数字。
-
-  **首次视觉验收失败与 D67A 修正（2026-08-09；待二次视觉验收）**：用户报告「没有明显雾结构」。现场 Fabric 配置是 `strength=1 / field-scale=64 / march-steps=4`。独立 CPU 复刻烘焙数学并确定性抽取 8,192 个 texel 后，完整解析时旧密度倍率也只有 `std=0.0623`、`p01=0.8581`、`p99=1.1456`；同时该配置的基础/细节特征尺度仅约 16/4 blocks，长段每步 footprint 可达 128 blocks，D66 会按设计把两个不可解析频段都淡回均值 1。因此问题由两部分组成：**当前 64/4 配置主动消除了远段结构；即使完全解析，旧场的对比度也偏弱**。
-
-  用户选择 **D67A**：在一次性 bake 中分别给 paired base/detail 固定 `3.8/3.5` 奇函数增益并对称钳到 `[-1,1]`，运行时 strength、积分器与 D66 footprint 过滤不变。为了让「每高度均值 1」在 RGBA8 落盘后仍是严格契约，半周期体素复用同一个 canonical 计算并显式写互补 UNORM8 码；零值对写 `128/127`，解码为 `±1/255` 后精确抵消。相同 8,192 点抽样修正后倍率为 `std=0.2363`、`p01=0.4627`、`p99=1.5471`，波动提高 **3.79×**；base/detail 钳制率为 `0% / 0.0977%`，没有把结构压成大片平顶。新增成本只有启动烘焙的一次乘法、钳制与显式编码，逐帧/逐 march **零新增成本**。它仍是美术标定的气溶胶密度结构，而非实测湍流谱；守住的是能量与数值契约，不是假称形状本身来自测量。`64/4` 的远距离结构仍会被 D66 正确平均，二次视觉验收应先用 `384/12` 检查 fully-resolved 对比度，再单独判断是否需要更细尺度。
-
-  **二次视觉仍未通过；Debug 25 已加入（2026-08-09）**：第一轮实际落盘仍是 `strength=0.6 / scale=64 / wind=8 / steps=12`；在 `cull=515` 下 footprint≈42.9，基础/细节 16/4 blocks 的 D66 resolved 权重都严格为零，故该次没有检验到 D67A。改成精确诊断档 `1/384/0/12` 后用户仍报告「没有明显结构」，此时不得继续凭观感放大增益。Debug 25「雾密度阶段」关闭 RR/jitter，直接走 raygen binding 19 与实际 WorldPush，以四个从左到右的等宽竖带显示：原始 base、原始 detail、D66 resolved（R=base/G=detail）、最终 multiplier（0..2 映到黑..白，中灰=1）。它一次区分 bake/descriptor、采样 footprint、最终倍率与正常积分/合成四类问题；根因确认并完成回归后，按 ReSTIR 前 review 约定评估是否删除该诊断。
-
-  **待验收，不得提前写 ✅**：
-
-  1. 同场景 strength 0 → 0.6 → 0：两次 0 画面与 `gpu.traceIndirect`/`gpu.froxelBake` plateau 回到同一档；这是关档与测量可信度。
-  2. 开档后平移超过 terrain rebase 距离、原地转身、暂停/继续、跨午夜：雾团不跳、不粘镜头、不闪；风只连续平移结构。
-  3. `segment-source=froxel/marched/both` 对照反射与主视图：同一雾团的位置/综合色温一致，允许采样方差，不允许在 prefix 边界出现密度接缝。
-  4. 正对太阳看浓雾团：内部可以暗、边缘可以亮，但不应出现“密度越高反而越像自发光”的孤立白块；太阳路径也 march 同一密度正是这条的防线。
-  5. 水下调雾结构强度不应改变封闭水介质；若改变，先查 active medium 分类，禁止用调参掩盖空气/水串路。
-  6. 固定机位同会话采 0/0.6/0 三平台：至少记录 `gpu.froxelBake`、`gpu.traceIndirect`、总 GPU；12→24 步作质量/成本判据。没有这些数前不得默认开启。
-- **froxel 线程映射重审：✅ 结案（2026-08-08，D59），维持一列一线程。**
-
-  前提已满足：`gpu.froxelBake` 独立计时区早已存在，实测 **0.28–0.64 ms**，对照 `gpu.visBake` 的 0.078 ms。
-
-  原记录「一列一线程曾比 per-cell 慢 18×」**出自合并计时**——当时 `gpu.skyBake` 同时装着三张天空表和 froxel，而本条自己就写着「不拿合并数字做决策」。隔离之后那个 18× 不成立。
-
-  更要紧的是**正确性理由已经站住**：逐 cell 版本让同一条阴影线被它后面的每个 cell 重复追一遍，十六次得到同一个答案（见 `sky_froxel.comp.slang` 的 `ONE THREAD PER COLUMN` 注释）。这在一步只是 exp + 纹理取样时是划算的交换，一旦一步要投射光线就不再是。
-
-  **已知且接受的代价**：2304 线程 = 36 个 workgroup，在 46 SM 上不到一个/SM，占用率确实低。但它在 12–20 ms 的帧里占 2%，而替代方案要么恢复光线冗余、要么需要列内共享内存扫描。**若将来 froxel 成为瓶颈，重开本条时先看占用率而不是线程映射。**
-
-- **雾的时间与天气联动：✅ 完成（2026-08-08，D60）。** 曲线是**辐射雾**：地面整夜辐射散热，空气冷到露点，所以雾最浓在**地面最冷的时候——日出前后而非午夜**；日出后被烤散，最通透的是下午。实测 2.00× @ 日出、1.65× @ +2h、1.00× 上午晚些至傍晚、1.56× @ 午夜，跨午夜精确连续。
-
-  **按小时而非按太阳高度角**，这是本条的关键：同样高度角下清晨有雾、黄昏没有，决定它的是地面冷却/加热积累了多久。用高度角会更简单，也会让黄昏和黎明一样雾蒙蒙。
-
-  雨按雨势连续缩放（雷暴额外 ×0.5）。读的是**与太阳、天空同一个 `SUN_ANGLE`**，不是 day-time 计数器——今天一致的两个时钟就是将来会漂开的两个时钟。
-
-- 现状说明：froxel **不读**可见性网格（自己发光线）——两套可见性并存是有意的（口径不同），文档化即可。
-
-### 8.4 M14 维度预设 + 配置收尾
-
-- **核心原则：完整大气是代码默认**，只有下界/末地显式退出为 authored LUT；未声明的模组维度自动拿完整大气，**不做 `dimensionType()` 启发式降级**；`world.rmiss` 保持**零维度分支**（差异全部下沉到「谁填 sky-view LUT」：`sky_view.comp` vs `sky_view_authored.comp`）。
-- `RtSkyPreset` record（fill/atmosphere/ambient/celestials/stars/fog/双云层）；解析只有两级：`assets/fluorite/fluorite/sky/<dimension>.json`（资源包可覆盖）→ 内置默认=完整大气。加载器克隆 `RtMaterialOverrides` 的形状（format 版本、逐文件 try/catch、校验助手）。
-- 天气（rain/thunder 调制云覆盖与雾密度）：预设 record 留钩子**不实现**。
-- 大宗每维度数据进 JSON；用户滑条=作用于活跃预设之上的**全局倍率**（UI 保持扁平）。`RtVideoOptions` 规则不破：要重建资源的设置留在 `-D`/TOML。
-- 测试：`RtSkyPresetTest` **必须包含「未知模组维度 → 完整大气」断言**（原则的回归防线）。lang 11 份批处理。
-
-### 8.5 ReSTIR 整合（M14 后；约束**现在就生效**）
-
-现在**不要做**的四件事：面光源解析 MIS（ReSTIR 自带广义 MIS——Talbot/pairwise）；自制时域/空域 reservoir 复用；为预采样候选池单独投入；过度加固现有光源网格/alias 表（可能被替换）。现在**守住**：`UNWEIGHTED_SPEC_ALPHA_FLOOR` 不许变承重件（解除条件=ReSTIR 进来一并移除——`ggxD 1e-7` 的老路）。
-
-整合时的好消息（避免当成重写）：「更多光源不更贵」的形状**已经具备**（alias O(1) 选择、每顶点固定 M 候选、幸存者一条阴影线）——ReSTIR 加的是**复用**，MegaLights 加的是把阴影线预算钉死每像素。降维目标/完整幸存者的切分正是 ReSTIR 要的形状。整合时的接入点清单：M18 动态光接入采样；S3 exact-Le fetch（`RtLightCollector` 已备好 UV 帧）；`Light` 记录布局扩展（类型/区域光）；各向异性在 `evalSampleContrib` 的分支在空域复用后会被求值更多次——**重新测，不要假设今天的成本画像还成立**。
-
-### 8.6 可选 feature 区（首个正式版后评估；D4 用户裁定）
-
-- **粒子烟雾体积化（D4-B）**：烟雾/云雾/爆炸尘类粒子把密度注入统一 Medium 非均质场（真体积感：透光、自阴影、雾内相位），火焰类仍为发光几何。依赖：M15 march 路径 + 粒子分类表 + 密度注入网格。**等缺失项补全 + ReSTIR + 首个正式版后再定**（2026-08-02 用户原话）。
-- 非 `SingleQuadParticle` 粒子捕获（物品拾取、elder guardian 等，现静默跳过）。
-- 名牌 ghost 穿墙显示（现只隐藏，v1 简化）；隐身生物穿甲显示。
-- **附魔 glint 完整双层滚动 UV（2026-08-05 用户裁定：先按近似档走，此项作为后续改进保留）**：复制 vanilla 的两层不同速度/角度 UV 滚动 + 叠加混合，用真 glint 贴图。视觉最忠实；代价是要给每个附魔物额外几何层或在 rchit 多采一张贴图并传 UV 变换，需要占新的 lane/材质位，工作量比现档大一级。**有想法后再评估**，届时按 §10 流程请示。
-- 焦散 `CAUSTIC_MAX` 夹平重审（色散显色阈值 ~100× 的嫌疑，动它会改变焦散观感）。
-- 发光体 MIS（ReSTIR 自带，不单独做）。
-- NRD + FSR（AMD 可玩性）、LOD（README TODO）。
-
----
-
-## 9. 弯路与教训档案
-
-> 格式：假设 → 证伪方式 → 教训。被证伪的假设本身是资产。
-
-### 9.1 M9 水体散射（七轮，2026-07-31 收尾）
-
-**参数化三弯路**（全部被用户观察推翻，都是「物理上讲得通」的设计）：
-1. 「浑浊度」单标量只加 σs → **数学必然把 albedo 推向 1**：越浑浊只能越白，永远不能暗。O4「白灰难看」由此完全解释。
-2. σs ∝ σa（为了反照率「可推导」）→ 常数比=灰反照率；深水极限 σt 从积分约掉、反照率是唯一颜色 ⇒ 每个群系同样乳白。**教训：为非目标属性（可推导性）做的妥协把目标属性（颜色）弄丢了——而可推导性本来就不需要牺牲颜色（σs 全局同样可推导）。**
-3. 加深度衰减后仍白 → 根因同上，参数化不改观察不变。
-最终形态：σa/σs 两个独立创作量（HPWater 的思路、自己的实现），σs 保持全局保住 48B 记录。
-
-**y≈48 亮度跳变（六个被证伪假设 + 第七次定案）**：①第一人称身体挡阴影线（只对反射里的半截身体成立）②TAA 抖动 ③曝光测光双峰 ④深度积分的水面之上分支 ⑤全屏共用一条相机阴影线（分层后仍跳）⑥`waterAnchor.w` 塌陷 + Snell 光程（真缺陷、修了、但不是跳变根因——**第六次错误归因**）。第七次用 `SCATTER_SOURCE` 四档 + `SUN_SHADOW` 开关的判据链**测出**根因：固定光深的太阳阴影线（二值、无逐帧去相关，跨遮挡边界整屏同翻）。处置：抖动分层化（M13.3 形状），体积阴影本体让给可见性网格+随机射线。**这是七轮里唯一测出来的结论，前六个全是读代码读出来的推断。**
-
-**其他**：水线效果放弃——**MC 相机是一个点**，不存在「半身入水」状态（同一事实否掉「半潜 bench 机位」）；原版水下整屏贴图压掉（光栅时代替代品）；色散物理 1× 不可见（三通道差 <1%，`CAUSTIC_MAX` 夹平是嫌疑），默认 50× 用户目视选定；焦散不向 HPWater 靠（解析雅可比 vs 光子抛撒，§6.3）。
-
-**Pass 拆分的能量所有权教训（2026-08-04）**：同一介质段的 in-scatter 与 transmittance 不能分给两个 pass。把 Beer 提前乘进分支、再让后级为了“避免双计”构造零消光介质，会保住吸收却静默删除散射；设置仍正常写入、系数日志仍非零，因此表面症状会像热更新失效。回归防线：Pass A 只解析被消费边界，Pass B 独占完整 `SegmentIntegral`，源码契约测试钉死两端。
-
-### 9.2 M13.x 体积可见性与光柱（2026-08-01/02）
-
-- 密闭房间雾亮着=弹射段太阳项带相位前向增益无人移除——`SEGMENT_SOURCE` 隔离测出（不是推理出）。修法=世界空间可见性网格（两条光线两个量：太阳/天顶，**不可互换**——山影不许抽走环境光）。
-- 光柱不锐的三嫌疑排除法：子步 6→24 无变化（排除采样密度）、关 DLSS 仍溢出（排除降噪器）⇒ 网格带限（1 方块 cell 载不动 9cm 半影）。**锐度=可见性函数的锐度**；工业界每种能画锐光柱的技术，可见性都来自亚分米精度的东西（阴影图纹素或真光线）——体素网格结构上不在名单里。修法=太阳项换逐帧抖动随机阴影线（高频），天空项留网格（真低频）。
-- 能量标定：`0.25×太阳辐射`（fogAmbient）与 `0.35×(1−T)`（MULTI_SCATTER_RETURN）两个编造常数在高密度下合成 0.6× 各向同性洪水，淹死 0.16× 的侧向太阳叶——光柱侧面消失、水面爆亮的完整解释。修法=删常数、用物理烘的多重散射表。**教训：两个「temporary」常数各自讲得通，合起来在最该小心的区间最失控。**
-- froxel 黑屏：跳过近平面迭代让 alpha 留在初始 0，整屏乘零。**「只想加阴影的改动」也能全黑，边界条件先于功能。**
-
-### 9.3 M8 SSS（成本饱和）
-
-事件上限 4→2 只省 17%（前 2 事件 3.33ms，第 3、4 共 0.66ms）——**「近乎线性」被引用多次从未测量，实测饱和，写进计划的缓解方案在需要时是空的（F13）**。真正的杠杆是「游走被进入的频率」不是「进入后走多远」。处置：`thin` 默认、游走高配。
-
-### 9.4 M7 BSDF
-
-- 材质 JSON 被 LabPBR 纹理静默覆盖（写 0.30 完全看不出磨砂才反查出来）→ **A/B 前先确认字段生效**；若写的是微妙值会被记成「改动无效果」。
-- `ggxD 1e-7` 承重史：临时护栏被默认下来变成「移除就炸」，拆掉花了一整轮——`UNWEIGHTED_SPEC_ALPHA_FLOOR` 正走在同一条路上，解除条件已写死（ReSTIR）。
-- 两个太阳/delta 权重 0/关档=已发布行为：§3.4。
-- 原版电介质粗糙度 0.0025 > `MIRROR_ALPHA_MAX`：照计划字面执行会停用所有玻璃的分裂——**计划落地时的实测修正必须回写计划**。
-
-### 9.5 测量与仪器（F 系列全表）
-
-| # | 事实/教训 |
-|---|---|
-| F1 | 迁移基线异常有利：官方名编译、无 AW/事件依赖 ⇒ mixin 零成本移植 |
-| F2 | 三处 Fabric 事件全部有 mixin 等价物 ⇒ 平台层不需要事件层 |
-| F3 | `PackedPathSegment` 16B 量化：+1 uint = 48→64B = +118MB@1440p |
-| F4 | `nextRecord` lane 可白拿回（`PATH_HAS_NEXT` 位 + 重算索引）——M9 介质参数的预算来源 |
-| F5 | `lightRadiance` 只 GPU 消费 ⇒ CPU 版大气透射删除（已收口：推未染色峰值，GPU `dyeCelestialLight`） |
-| F6 | 导入 grep 不足以判迁移完成（接口注入无 import）⇒ 字节码常量池扫描 |
-| F7 | CPU 墙钟对 path tracer 无意义（`traceIndirect` 5µs vs GPU 毫秒级）⇒ 时间戳查询 |
-| F8 | 基准分辨率必须显式（曾在 427×240 采「基准」且无标注） |
-| F9 | ±8% 噪声底只属于会动的相机；固定位姿+同存档 <0.1% |
-| F10 | 位姿未记录 ⇒ 绝对毫秒不可比 ⇒ 同会话比值法，门槛写倍率 |
-| F11 | DLSS 档位标签错（quality=0 是 Performance）：按缩放比核对不信标签 |
-| F12 | （归因纪律，§4.5）代码里的错和看到的现象是两个集合，交集靠隔离实验 |
-| F13 | 计划里的定量缓解手段必须先测量或标注未测 |
-| F14 | shader 编译、`spirv-val` 与源码结构测试只能证明静态契约；Slang 后端聚合量错编必须由真实 GPU 边界 probe 裁决 |
-| F15 | shader probe 会改变寄存器活跃性与优化结果；带 probe 的连续成功必须在删掉一次性观察点后复验。“进入世界几秒后变化”不能自动归因给 pipeline cache、GC、区块/TLAS 或时域后处理。**它同样适用于性能判据实验**：D31 移除一条阴影线后帧时间**上升** 5.2 ms，负成本只能是活跃范围变化——**但负结果照样有判定力**，它排除了「优化射线」这整条路 |
-| F17 | **同一位姿、同一构建，跨批次仍然不可比；每批的第一次运行必须整个丢弃。** 实测：首次运行的 `froxelBake` 0.582 vs 同批其余 0.253，两批之间 `tracePrimary` 0.61 vs 0.93 且 `traceIndirect` 方向相反（降频解释不了）。比值的分子分母必须同批且均非首次运行——第一次 M17 采集就因此报出两个后来收回的数。详见 §4.4.1 |
-| F16 | **以 float lane 搬运整数位型的 ABI，必须对全取值域做 round-trip 测试。** M19 的 overlay 单 lane 存 `0xAARRGGBB` 时，白色 RGB 把 1 填进 float 指数位，alpha=127 编码成 `0x7FFFFFFF`（NaN，JVM 允许规范化 ⇒ 静默改色），而 alpha=127 是白闪斜坡上的普通取值。**穷举测试抓到，事前推理没有**——同一风险适用于 `materialId` 之外任何新占用的 lane |
-| F18 | **几何求交的分支不要写在「根的符号」上，要写在「起点在哪个壳里」上。** M11 云壳的 `inner.x > 0` 本意是「在云层下方往上看」，但从云底以下出发的射线**起点在内球之内**，近根恒为负——这个判断从来没触发过，几乎所有射线都掉进「已在云层内部」分支，拿到的是相机到云底之间那段空气。行进老实走完、每个采样点都在云层下方、密度恒零 ⇒ **任何设置下天空全空**。改为按 `length(centreRelative)` 与 `rBottom`/`rTop` 比较后，CPU 穷举「云下/云中/云上 × 七个仰角」21 例零错误 |
-| F19 | **空画面的因果链上每一环都长得一模一样，必须做成能自报断点的仪器。** 「没有云」我先后读调用图诊断了两次：第一次对了一半（采样器 CLAMP 是真 bug），第二次直接推错（怪到密度配平上，而 CPU 复算显示 37% 的列有云、天顶 τ=14）。debug view 22 一次进游戏就把断点指到了「进了壳但密度恒零」。**教训还有第二层**：探针第一版对密度失败只返回一个平黄色，而三个因子相乘、光看乘积说不出是哪个零，白跑一趟——诊断视图要返回**分量**而不是结论 |
-| F20 | **「看起来必然坏」的东西要先量再动。** `PLANET_R=6371000` 而云层厚 380，`raySphere` 在 fp32 下算 `dot(o,o)-r*r` 是两个 4e13 相减（ULP 4e6），看上去必炸；实测入口高度与 fp64 只差 0.1–0.3 方块。当时若"顺手换成 fp64 或改写公式"，就会把 F18 那个真 bug 盖在一个看似合理的改动底下 |
-| F21 | **光追渲染器里的"世界坐标"默认不是世界坐标。** 一切都相对 `terrain.blockX/Y/Z` 这个**跟随相机**的重定位原点（超过 `rebase-distance-blocks` 就重设）。云的密度场直接在这套坐标上求值，于是云被锚在了**玩家**身上而不是世界上：写 192 的云层实际待在「你头顶 192」，飞到 y=432 仍在头顶、永远进不去；水平方向则是每次重定位整片云跳一次。**症状不像 bug，像设计**——这是它能活到用户手上的原因。凡是要在世界里有固定位置的场，取样前必须把原点加回去（`worldOf()`），球壳的球心也要按世界 y=0 而不是重定位 y=0 放。同类纪律见 `visibilityGridOrigin`：**先按绝对坐标吸附、再重定位** |
-| F24 | **压缩后的 BLAS 能否 refit：规范未定义，且验证层不会告诉你。** 查证结论（2026-08-07）：`VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667` 要求 UPDATE 的 `srcAccelerationStructure`「**must have previously been constructed with ALLOW_UPDATE ... in the build**」——而压缩产物来自 `vkCmdCopyAccelerationStructureKHR` 的**拷贝**，不是 build。规范讲 COMPACT 的那一段（accelstructures.adoc）**只字未提**构建标志是否随拷贝继承。更要命的是查了 Vulkan-ValidationLayers：`PostCallRecordCmdCopyAccelerationStructureKHR` **不把 src 的 build info 传给 dst**，而当前 `vvl::AccelerationStructureKHR` 状态对象**根本不记录构建标志**——所以 03667 对 KHR AS 静态查不出来。**结论：要 refit 的 BLAS 就不要压缩。** 依据不是"规范禁止"，而是"规范没说 + 验证层不报 + 错了是静默的几何损坏"。本项目对静默错误的容忍度应当为零：M12 里一个**可见**的 bug 尚且花了四轮仪器才定位 |
-| F25 | **一个视觉伪影，读代码四轮全错，隔离开关一次命中。** 用户报告水面有「平行四边形网格」。我依次猜了：位移网格刻面、阵风噪声、交叉波系、meander 周期性、波长有理比、平面波数量不足——**全部错误**，而且每一次我都自信到直接动手改了代码。真正的答案是**分量 8/9/10（λ = 0.82/0.55/0.36 m）没有 meander、是纯平面波**，三道叠成规则波纹板。找到它花的时间：加两个滑块（起始/结束分量），用户拉一次。**推论**：对「N 个东西求和」的系统，**能逐项关闭的开关不是调试便利，是唯一可行的调试方式**——和式本身没有任何办法告诉你你在看哪一项。这条与 F19 同源但更强：F19 说仪器优于推理，这条说**某些结构下推理根本不可用**。|
-| F26 | **注释可能把结论写反，而它读起来仍然通顺。** meander 的注释写着「只给波前长到能读成线条的分量加」（`i < 4`）——而实际画出直线的**恰恰是最短的三道**。这不是描述过时，是**当初就推错了**，然后那句话保护了这个错误好几年：任何人读到它都会觉得短波不需要 meander。同类见 F22（注释断言了一个不成立的不变量）。**共同形态：注释在陈述"为什么不做某事"时最危险**，因为它同时提供了不去检查的理由。|
-| F27 | **`sin/frac` 哈希是可测量地坏，不只是"理论上不够好"。** 实测：`frac(sin(dot(i,(127.1,311.7)))*43758.5453)` 在 40×40 = 1600 个格子上只产生约 **660 个不同值**——五分之二的格子与邻居共用同一个噪声值。雷同排布在格点阵上就是可见结构，表现为**固定待在世界某处的接缝**。而且它随坐标增大退化（水波域跑到 4096 格，fp32 的 `sin` 在五位数参数上几乎没有小数位）。换成整数哈希（LCG + xor-shift）后 **1600/1600 全不同，到坐标 20000 仍然如此**。**这个项目里任何 `frac(sin(...))` 哈希都应视为待修。** |
-| F28 | **域扭曲只能打散与它自身尺度可比的结构。** `p → p + A·n(p/L)` 对波长 ≪ L 的分量而言只是一个近乎均匀的平移，对它们的规则性毫无作用。用 L=100 m 的扭曲去救 0.36 m 的波是徒劳的，而这一点在我把它当成"通用去周期化手段"时并不显然。**另有一条硬约束**：雅可比 `I + (A/L)·∇n` 在 A/L 足够大时 det 过零，映射不再单射、场出现折痕（实测 |∇n|max = 2.0，det J 在 A/L ∈ (0.30, 0.50) 首次转负）。**任何域扭曲都必须把 A/L 钳在折叠阈值以下**，本项目取 0.25，留一倍裕度。 |
-| F22 | **注释断言的不变量不是不变量，而且它会替你挡住检查。** `water.slang` 顶上写着「**ONE ENTRY POINT** —— 主光线/RR guide/焦散都经过 `applyWaterWaves`」，仿真涟漪就加在那个函数里。实际上主光线 pass 因为还需要一条 previous normal 做 specular MV，**自己用 `waterWaveGradTemporal` 拼了一份**，那个函数只返回程序波谱。于是涟漪唯独缺席**玩家正对着看的那片水**（bounce 0 且接近水平），只活在二次弹射里——等于不存在。查了三轮：冲量链路（日志证明在发）、坐标空间（锚点修过、view 24 证明能取到）、场本身（view 23 有内容），**每一环单独看都对**，因为断链在那句"都经过"上，而那句话是假的。教训有两层：(a) 「唯一入口」这类性质要么用类型/结构强制（本次的修法：新增 `applyWaterWavesTemporal`，让 `waterWaveGradTemporal` 只能从 water.slang 内部调用），要么就别写进注释——写了反而让人跳过核对；(b) **调用点自己拼装一份等价逻辑**是这类断链的通用形态，`grep` 被调用者比读被调用者更快定位 |
-| F23 | **诊断视图的取样路径必须与被诊断路径一致，否则它证明的是另一件事。** debug view 23 把仿真高度场按 `screenUv` 直接铺满屏幕——它**完全绕过世界→域的映射**，而着色恰恰依赖那套映射。于是「场算得完全正确但一点都传不到水面」与「一切正常」在 23 里长得一模一样，我据此下过一次错结论。补的 view 24 反着来：拿水面命中点自己的位置、走**着色用的同一个** `waterSimSample`，把结果画在水面上（红=域外/着色拿到零，蓝=域内含边缘淡出，绿=`waterSimGrad` 真正返回的坡度）。两个视图查的是两件独立会坏的事，所以要两个。**推论**：写诊断时先问「它和真实路径共享哪几步」，不共享的那几步它就证明不了 |
-
-仪器教训：**采集脚本改 TOML 时必须验证改的是真键**——M20.3 的采集脚本按「找不到就插到 `[particles]` 段」的逻辑写入 `particle-shadows`，而该项声明的路径是 `entities.particle-shadows`，于是它插了一个没人读的孤儿键。**若那轮基准没被打断，它会「成功」跑完并报出「粒子阴影零成本」**——两次运行读的都是同一个默认值，开关从未被翻动。判据：采集前后 grep 一次目标键，确认它在预期段内且值确实变了；曝光日志 `now - Long.MIN_VALUE` 溢出为负 ⇒ 永久沉默——「为回答『源是否过亮』而造的仪器整个会话什么都没报，沉默看起来和『没变化』一样」；水系数诊断打印了**被拒模型**的数字（该被对账的那行本身错了）；只记录 post 值会把传输/复制/调用三个边界混在一起；启动早期 probe 可能来自上一代缓存 pipeline；验证层无 messenger 时静默（`vk_layer_settings.txt` 的存在理由）；归档文件名不带配置 ⇒ 拿游走档比 thin 档差点报回归。
-
-### 9.6 硬件 / 平台
-
-- OMM：**扩展被支持 ≠ 硬件加速**。Turing 走软件路径 AS 构建卡穿 5 秒 TDR（Ada 以下默认全崩）——能力门控按「实际能不能做」（R16，已修；同教训适用于 SER）。
-- 摘要比对：流体世界**永不全局收敛**，`builds==1` 是唯一可信集（R17）。
-- NeoForge `hidesNeighborFace` 残差：双方各自正确，记录不修（PLATFORM_NOTES 的「列出即非 bug」原则）。
-
-### 9.7 风险登记簿现状（R1–R24）
-
-| # | 一句话 | 状态 |
-|---|---|---|
-| R1–R2 | NeoForge quad 解码 / SpriteLookup 分歧 | 已按 digest+测试闭环 |
-| R3 | 记录悄悄涨到 64B（+118MB） | layout test 钉死 |
-| R4–R5 | 粗糙度平方 / RR guide 退化 | 横幅注释+逐里程碑 A/B 协议 |
-| R6 | VGPR 占用率台阶 | 升级阶梯：froxel pass → callable → 更紧打包 |
-| R7 | SSS 成本超支 | 已发生，thin 默认（§9.3） |
-| R8–R9 | MIS/大气收口的亮度漂移被归错因 | 独立 commit + 全天扫描 A/B 留档 |
-| R10–R14 | mixin 顺序 / NightConfig / -Xss16m / FG-HDR / RR 前合成涂抹 | 各自缓解在位；R13/R14 在 M13 合成点保持可切换 |
-| R15–R16 | TDR / OMM 门控 | 已修 |
-| R17 | 摘要永不收敛 | `builds==1` 方法论 |
-| R18 | 云的相机依赖 | **前置规则**，M11 出口专项验收 |
-| R19 | 云开销 | 二次光线默认 LUT + 削减档 |
-| R20 | 照抄参考常数 | 政策 §6.1，常数一律重标定 |
-| R21–R22 | 交互水发散 / 域拖糊 | CFL+钳位+海绵层；整纹素移动 |
-| R23 | RIS 阴影线绕过雾与焦散 | 已修两半（`visibilityThroughAmbient` + `shadeReservoir` 焦散） |
-| R24 | Slang 2026.14 错误别名 raygen 中并存的嵌套/局部乃至两个独立 primitive flags | D27 把 current/outer 分类压入一个从 48B queue `pathFlags` 直接解码的活动字；raw 197 条与 cleanup 后普通 profile 211 条 GPU 日志均零回退。规避层保留，工具链升级仍按 §4.6 重新裁决，禁止仅凭编译成功删除 |
-
----
-
-## 10. 决策日志
-
-> 追加式。每条：日期、议题、决策、理由摘要。未来所有 ⚖ 请示点的结论落在这里。
-
-### 2026-08-02 体积介质与渲染补全方向（D1–D8，用户逐项选定）
-
-| # | 议题 | 决策 | 理由摘要 |
-|---|---|---|---|
-| D1 | 散射亮度 Radiance 化 | **A+C 组合**：先 LUT 辐射统一（M16），再体积散射顶点+NEE 作质量档（M17） | A 近零成本消灭手调常数、水雾同源；C 无偏且让发光体照亮体积，成本 +2~5ms 做成开关档 |
-| D2 | 积分器统一 | **接口统一+估计器分派**（M15）：均质封闭介质保留闭式（精确解=快速路径），非均质共享 march；水雾阴影线合并为统一体积阴影采样器 | 统一「接口与采样纪律」而非强行统一「数值方法」；均质闭式在数学上优于 march，为统一二字退化它是纯损失 |
-| D3 | 统一光源接口 | **只做收集不做采样**（M18），采样等 ReSTIR | ReSTIR 前向约束（§8.5）明确禁止现在加固采样侧；收集层先落地让数据通路可验证 |
-| D4 | 粒子路线 | **几何路线分步现在做**（M20）；烟雾体积化写为可选 feature，**缺失项补全+ReSTIR+首个正式版后再定** | 分步可测可回退；体积化依赖 M15 march 且工程量大 |
-| D5 | 多重散射 | **按介质专用近似+统一参数语言**（雾=大气 MS LUT+扩散衰减；水=g_eff+扩散；云=phi_fwd+Hillaire 倍频+双叶 HG） | 三者是 RTE 扩散极限在不同光学厚度区间的近似，各自最准；强行统一降云的质量 |
-| D6 | 实体 overlay | **per-prim aux lane**（M19）：`Prim.aux0` 零结构增长，rchit 按 vanilla lerp 语义；`submitFlame` 恢复为真实发光几何 | 语义正确（lerp 非乘法）、成本≈0、不动静态材质 ABI |
-| D7 | 文档形态 | **repo 主文档（本文件）+ CLAUDE.md 入口**；四份专题文档保留并被索引 | 编号在 repo 内可解析；专题文档服务特定读者（资源包作者等）不吞并 |
-| D8 | 文档语言 | **中文正文+英文术语/符号名** | 阅读顺畅且符号可 grep |
-
-### 2026-08-03 M15 估计器、设置语义与性能裁决（D9–D16，用户逐项选定）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D9 | 统一阴影分层的统计口径 | **固定 τ 分层继续落地，但明确为分层近似；严格 `f/pdf` 延后 M17** | 当前层内按距离均匀 jitter、用闭式 view-path 权重，不严格无偏；现在修正会改变亮度/噪声并增加数学成本，超出 M15 中性重构。多射线雾需 ambient τ 反演；相邻边界复用后最坏约 48 次高度积分，默认 1 ray 为零次反演 |
-| D10 | froxel/marched 太阳自衰减对齐方向 | **把局部雾自衰减补进 froxel** | 保留物理正确项；删除 marched 自衰减会让低太阳/密雾产生过亮光晕。新增解析 ALU/exp，不新增射线 |
-| D11 | Medium Interface 形状 | **单一 `mediumProfile` 分类；`mediumDensityAt` 私有** | 一个查询同时决定 estimator/source adapter，删除 `mediumSource` + `mediumIsHomogeneous` 两个浅 Module 的隐含一致性；画面不变 |
-| D12 | 水在 sun-shadow 关闭时的射线预算 | **仍保留最多 3 条** | 每层 `waterHitT` 测量自己的 source path；只留 1 条虽最多省 2 ray/长水段，但会在不平水面、洞顶和不同水体高度下产生衰减误差 |
-| D13 | fog intensity/反照率守恒（用户选 5A） | **有效反照率逐通道钳到 `[0,1]`；UI 变为 0–1 physical-albedo multiplier** | 严格保证 `σs≤σt`，GPU 额外成本≈0；兼容保留旧 config key，但旧值 >1 加载为 1，放弃非物理过亮档 |
-| D14 | 空气雾/水体阴影设置归属（用户选 6A） | **保持两个独立实现；UI 分别命名“空气雾太阳可见性”与“水体太阳遮挡”** | 避免一个全局旋钮暗示错误耦合；物理模型与 GPU 工作量均不变 |
-| D15 | 水天空开放度跳变（用户选 7C） | **不做逐层网格临时修补；M17 在真实散射顶点求局部天空方向与可见性，并把 MIS 方向纳入请示** | 现状以段起点单标量门控整段，物理误差可整屏放大；临时多格采样会花射线但仍采错位置。M17 预计至少 +1 visibility ray/散射顶点，纳入 +2~5 ms 成本闸门后再决定档位 |
-| D16 | 水体散射/吸收颜色与强度（用户选 8A） | **算术均值强度 × mean-normalized RGB shape；旧配置自动迁移且最终 RGB 系数逐位等价** | 颜色只控制光谱形状、强度单独控制平均系数；CPU-only、shader ABI/GPU 成本为零。全黑 shape 采用中性灰，强度 0 才是关闭，避免除零与“颜色暗度偷偷改强度” |
-
-### 2026-08-04 M16 Radiance 源裁决（D17–D19，用户逐项选定）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D17 | 旧天空亮度倍率（用户选 9A） | **删除 `water.ambient-scale` 与 `AMBIENT_FOG_FRACTION`，LUT Radiance 直接进入积分器** | 最物理且不会用艺术倍率掩盖源错误；旧键单位是“太阳比例”，不能重解释为 LUT multiplier。无 GPU 成本，代价是旧观感倍率不兼容 |
-| D18 | sky-view 积分（用户选 10A） | **完整 192×128 三表按立体角 reduction，输出 `1/(4π)` 上半球积分；不再额外加 multi-scatter LUT** | 对当前各向同性天空近似是离散 LUT 上最准确的确定性积分；避免多重散射双计。每帧 24,576 texel×3 读取、单 workgroup reduction，成本并入 `gpu.skyBake` 实测 |
-| D19 | 统一源的传输（用户选 11A） | **`WorldPushData` 增加唯一 `mediumSkyRadiance`，GPU reduction 写，空气/水共读** | +16B/frame-slot；不占 128B push constants，不增加 RT descriptor/逐射线采样。两个 compute barrier 是必须同步成本 |
-| D20 | 黎明/黄昏天体跨地平线连续性（用户选 12A） | **完全随机有限面积天体：每个现有阴影查询采一枚方形天体点，并让方向、大气 Radiance、相位、阴影及水折射保持同样本相关** | 在当前面积光分布与既有分层估计器内最接近物理；由时间噪声替代确定性整屏跳变。阴影射线数不增加，但有 2 RNG + 方向/LUT/解析 ALU；网格 0-ray 档仅保存可见样本一阶矩，是有偏近似。若后续要增样本、改分布或改变默认质量档，必须带实测再次请示 |
-
-### 2026-08-04 水下前缀与时间诊断裁决（D21–D23，用户选 13B、14A、15A）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D21 | 被消费相机前缀的能量所有权（用户选 13B） | **Pass A 不预扣介质能量；Pass B 用真实起始 Medium 一次消费完整 `SegmentIntegral`** | 保持 `L = Ls + T·Li` 与统一积分器契约，水下前缀不再只有吸收没有散射；不增加 march、采样或阴影线，只把已有计算放回唯一所有者。风险是阶段间 throughput 语义改变，靠空气→水、水→空气、TIR/玻璃回归与源码契约测试守住 |
-| D22 | 世界切换时的 RR 历史（用户选 14A） | **`allChanged()` 请求下一次 DLSS-RR evaluate 清历史，不销毁/重建 NGX feature** | 世界/维度改变后旧样本没有任何物理对应；reset 下一帧重新收敛，无持续 GPU 成本。相比 feature 重建避免 device idle、分配与可见卡顿 |
-| D23 | debug 8 随机种子（用户选 15A） | **固定逐像素 seed，移除 frame seed** | 调试图用于归因而非时域收敛；冻结普通 Monte Carlo 空间方差，消除全屏同步闪烁。零新增射线/ALU（同量级 hash），代价是固定噪点可能保留单样本离群，不能拿 debug 8 判断最终降噪品质 |
-
-### 2026-08-04 Slang 介质 ABI/活动状态裁决（D24–D27，用户选 16A、17A-R、18A、19A、20A、20B、21A）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D24 | 介质分类表示（用户选 16A） | **`water/ambient` 两个 shader bool 合并为一个 `uint flags`，WATER=1、AMBIENT=2** | 分类是一个原子语义，避免 bool ABI 表示差异；48B queue 不变，无采样/ALU 实质增加。运行期证明表示正确但仍会在 Slang 聚合量降级中被错误合并为 3，因此它是必要条件而非完整修复 |
-| D25 | `tracePath` 传参（17A public constref 不可用后，用户选 17A-R） | **使用 Slang 内部 `__ref PathSegment`，按只读传输边界约定使用** | 入口 probe 稳定读到 WATER=1，绕开 ordinary `in` 的 `transformParamsToConstRef` 复制缝；不改变物理与 GPU 工作量。它不能保护函数内并存/可变的嵌套 `Medium`，所以仍需 D26 |
-| D26 | 活动介质表示（18A/19A/20A 均被真实 GPU probe 否决后，用户选 20B） | **primitive active state 方向成立；“current/outer 六个独立标量”实现被 cleanup 复验否决，已由 D27 取代** | σa/σs、IOR、Fresnel、相位、MIS、阴影与能量公式均不变；不增加 ray/march/sample，每 SPP 仍只解包一次。带 caller/pre/post 观察时曾通过，cleanup 后两个 primitive flags 仍合为 3，故该具体编码不得恢复 |
-| D27 | 活动分类加固（用户选 21A） | **current/outer flags 打包为唯一 `activeMediumFlags`，直接源自 `PackedPathSegment.pathFlags`；低/高 16 位分别表示 current/outer** | 不改变 σa/σs、IOR、Fresnel、相位、MIS、阴影、能量或 48B ABI；不新增 ray/march/sample，仅增加少量 mask/shift，且减少同时存活分类标量，VGPR 压力预期不升。raw 197 条与 cleanup 后 profile 211 条真实 RTX 2080/NeoForge 运行均零回退；保留 `RtMediumLifecycleRegressionTest` 和升级复验协议 |
-
-### 2026-08-04 水下散射消失的运行期证据链
-
-- Debug 20 已证明：CPU 水下分类、相机前缀长度、水体 Radiance 与水体光源开关均工作。
-- Debug 21 已证明：前缀散射进入完整 raw HDR 合成，且实测占比达到黄/白区间；空气雾覆盖、叶节点动态范围淹没、RR 与自动曝光均不再作为当前主因。
-- 初始 probe 显示 queue flags=1，显式 `__ref` 入口仍为 1，但普通 `in`/聚合局部状态在首次积分前变成 current=3、outer=3，profile=2、`firstScatter=0`。extinction luminance 始终正确，故不是水参数、GC、区块发布或积分公式归零，而是分类 lane 的 Slang 后端错误别名。
-- 否决顺序必须保留：16A 单 flags → 17A-R `__ref` → 18A 叶字段复制/换序 → 19A 两个独立 `Medium` → 20A 唯一可变 `seg.medium`。最后两项都在 `integrateSegment` **之前**读出 3/3，排除积分调用；不能把这些失败方案重新包装成“更干净的重构”带回来。
-- 20B 带 caller/pre/post 诊断时两次出现 1/2、profile=1 与 `firstScatter=(0.0063,0.0261,0.4123)`，首次正确后分别 145 条约 42 秒、241 条约 70 秒零回退。最初将它解释为 pipeline 代际切换；cleanup 复验推翻了这个结论。
-- 删除 caller/pre/post lanes 后，通用 probe 连续 200 条仍为 profile=2/散射零；随后不增加 layout、只把既有 `firstHit.w` 暂时改记 raw current flags，连续 44 条均为 3。结论：诊断读取改变了 flags 的活跃性/寄存器分配并偶然压住 Slang 错编，前两轮是 observer effect，不是修复；pipeline cache、GC 与 terrain 阈值仍未被这组数据证明为时间现象根因。
-- 21A/D27 把 current/outer flags 压入唯一活动字并直接从 queue `pathFlags` 解码。`codex-neoforge-21A-packed-flags-raw-stdout.log` 共 197 条，current code 恒为 1、`firstScatter>0`，terrain resident 由 38 增至 2604；删除 raw 读取并恢复普通 profile 后，`codex-neoforge-21A-final-clean-stdout.log` 共 211 条、0 异常，profile 恒为 1、散射非零，resident 至 2252。它通过了 observer-effect cleanup 闸门。
-- `diagnostics.water-medium-trace` 继续作为通用运行期仪器。每条 `RT water-medium probe` 记录 `prefixLen`、`prefixScatter`、`prefixT`、`leaf`、`composite`、`prefixFraction`、`mediumSkyRadiance`、`skyOpen`、向上 `waterHitT`、fallback depth、surface Y、首叶首段的 `firstSegmentLen/firstScatter/firstT/firstHit/escaped/mediumProfile`，以及 resident/published/desired/inFlight/missing/instances。一次性 `[DEBUG-medium-flags]` 与 raw `firstMediumCode` 已删除。证据日志包括 `codex-neoforge-{19A-prepost,20A-authoritative-stack,20B-scalar-state,20B-scalar-state-rerun,20B-final-clean,20B-clean-rawflag,21A-packed-flags-raw,21A-final-clean}-stdout.log`。
-
-### 2026-08-05 M11 体积云动工前裁决（D33–D35，§6.2 政策要求，用户逐项选定）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D33 | 云的行进挂载点 | **独立 `cloud.slang` 纯光线函数，只在射线逃逸到天空的那一段调用**（仍在 sky break 之前，所以反射里成立） | **动工前才发现的事实**：`MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT` 名为非均质，但高度雾是**闭式积分**的——云是这套框架第一个真正需要数值 march 的客户，所以「挂进去」并非零成本的复用。而 M17 实测 raygen 逐段热路径极贵（发光体 NEE 一条阴影线 +20.9 ms），把 march 放进 `integrateSegment` 会让**每条弹射段都付寄存器与 ALU**，即使它在地面附近根本碰不到云层，还要把云壳剪裁塞进共享积分器。与 D2 同构：**接口统一、估计器分派**，「统一」只到接口层是有意的 |
-| D34 | 云的光照源档位 | **太阳自阴影短行进 + 双叶 HG + phi_fwd 扩散项 + LUT 环境（`mediumSkyRadiance`）** | phi_fwd 的推导前提就是「扩散衰减＝光学厚度 × 编译期常数」，能**搭在本来就要跑的太阳自阴影行进上**，边际代价约每步 2 exp + 1 rcp。不走 M17 散射顶点：云的 τ≫1，单事件估计器方差极大——**云专用近似存在的理由正是这个区间**（D5）。不走最简档：τ=20 时 Beer 已归零而真实云心仍亮，那正是 phi_fwd 里「只有吸收才真正移除光子」要解决的 |
-| D35 | 交付切分 | **分三片各自验收**：① 噪声烘焙 + 密度场 + 行进（能看见白云）② 光照：太阳自阴影 + 相位 + phi_fwd ③ 双层 + 相机邻近淡出 + 反射策略 | 每片可单独验收与回退；且**第①片就能把成本测出来**，而成本正是 R19 点名的风险（云的开销压垮已经很重的 trace）。一次性交付会让「超支时是哪一部分贵」无从定位——这正是 M17 发光体 NEE 花了一轮判据实验才排除射线的那类问题 |
-
-### 2026-08-05 M20 粒子发光判定（D32，用户选定 A）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D32 | 粒子发光的判定机制 | **超额法**：粒子自报方块光 − 该位置世界方块光 = 自发光 | 这正是 vanilla 编码的量（它把两者相加写进 `getLightCoords`）。火焰在暗洞与火把旁都发光，飘过火把的烟雾减完为零保持不发光——**直接用方块光当发光会把火把重复计一次**，因为路径追踪已经在照亮那团烟。相对路线图原定的「类型表」：**vanilla 决定什么发光**（同 §3.1 的资格外置纪律），模组粒子自动正确，无需维护随版本失效的表。代价：每粒子一次 `level.getBrightness`（M9 实测这类查询本质是数组索引，比预期便宜） |
-
-### 2026-08-05 M17 散射顶点职责边界（D29，用户选定 B）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D29 | 散射顶点承载哪些源（用户选 B，**在我提出保留意见后仍选定**） | **顶点承载全部三项**：太阳、水天空开放度、发光体 NEE；开档时闭式/分层太阳项严格关闭防双计 | 概念最统一，未来云与非均质介质天然复用同一个事件。**我提的保留意见并已确认成立**：这是换估计器——现有分层形式保留逐层精确闭式权重、只在层内采源，方差更低；单事件带精确 `f/pdf` 是严格 Monte Carlo，逐帧更噪，且会改变刚验收通过的观感。因此做成默认关的开关，且估计器**并列**而非编织进闭式路径，使「关档＝已发布代码路径」成为结构事实而非论断。射线预算不变（同样一条阴影线 + 一条向上探测，只是从采样点问）。灰介质下两者恒等于 `albedo·(1−T)`——这是二者若差异超出噪声时第一个该查的恒等式 |
-
-### 2026-08-05 M17 默认档与发光体 NEE 处置（D30–D31，实测后用户裁决）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D30 | 散射顶点默认档 | **默认开** | 实测 **0.930×（省 2.93 ms）** 且修掉 D15 结构性缺陷——成本与质量两面都占优，与「引入新特性必然更贵」的预期相反。原因是它取代的分层估计器每段最多发 3 条阴影线而它只发 1 条（我原先「射线预算不变」的说法对水是错的，已更正）。**未做的事：噪声特征的游戏内验收**——单事件带精确 `f/pdf` 是严格 Monte Carlo，逐帧比保留逐层闭式权重的分层估计器噪。关档仍是逐位的已发布行为，观感不对可随时翻回 |
-| D31 | 发光体 NEE 处置 | **挂起，保持默认关；判据实验已跑，射线被排除** | 实测 **+20.9 ms**（另一批次复现 +22.4 ms），远超任何预算。判据实验（同构建、同批次、只翻 TOML）：**静默阴影线后不降反升 5.2 ms**（62.85 vs 57.67）。射线的「成本」为负 ⇒ 只能是 **F15 的观察者效应**（移除 trace 改变寄存器活跃范围、占用率变差）。**结论：射线不是驱动因素，针对射线的优化（距离剔除／辐照度早退／缩短 tmax）全部无效。** 成本在网格行走与该函数造成的寄存器压力上，两者指向同一条路——**减少调用次数而非降低单次成本**。候选全是结构性的：每路径一次（有偏，后续段拿不到发光体光）、仅首段（同偏差但更小）、或 ReSTIR 预采样池（D3 本就把采样侧留给了它）。**ReSTIR 形状未知之前不值得建** |
-
-### 2026-08-05 M19 实体 overlay 裁决（D28，用户选定）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D28 | 附魔 glint 方案（用户选 A，B 留档） | **近似档：`Prim.flags` 一个 bit + shader 紫色 sheen（tint 混合 + 自发光呼吸）**；完整双层滚动 UV 记入 §8.6 可选区，「后面有想法了再说」 | 零新几何、零新贴图采样、不动 ABI（`flags` lane 本就恒 0），且附魔物在反射与 GI 里也发光——vanilla 的屏幕空间 pass 在那里根本不存在。与 vanilla 的差距：没有那层斜向滑动的条纹质感，只是「在发光」。相位用 `pc.frameIndex` 是为守住「rchit 不解引用 WorldPush」的铁律，代价是速率跟随帧率 |
-
-### 2026-08-06 M11 云型 / 参数化 / 天气联动（D36–D38，用户选 A「并入切片①，现在就做」）
-
-起因：用户三问——「当前的云 3D 噪声支持积雨云吗、有留接口控制云的形状密度吗、有与原版天气系统联动吗」。核对结果**三个都是「没有」**：高度剖面是写死的 `smoothstep(0,0.12,t)*(1-smoothstep(0.45,1,t))`（一条积云/层积云曲线），140 blocks 的云壳装不下高塔；九个常数全是编译期的，只有一个开关；`grep getRainLevel|getThunderLevel|isRaining|isThundering` 在 `common/src/main/java` **零命中**。三者是同一条链（天气 → 云型 + 云量 → 高度剖面），所以并作一片做。
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D36 | 云型如何进入密度场 | **加一条 [0,1] 云型轴**（噪声 B 通道，自有周期 26000 blocks），`cloudHeightProfile(altitude, type)` 两段插值：层云 → 积云 → 积雨云，积雨云带砧状顶；云型同时抬密度 `1+type*1.6` | §6.4 的方法对比本来就写着「2D 天气图（覆盖度/类型）」，缺的正是类型那一维。**只加高不加密做不出雷暴**：积雨云与积云的差别一大半在光穿不过去，从底下看那才是「风暴」的观感。砧状顶不是装饰——上升气流撞上稳定层向侧面铺开，没有它风暴云读起来是一根柱子。云型与云量分两片噪声：「阴天」与「雷暴」是独立的两件事，共用一片就永远只能同时发生。成本：**每步多一次 3D fetch，且只在云壳内、云量非零之后才付**（见 D38） |
-| D37 | 参数暴露到哪一层 | **`WorldPush` 加 `cloudParams`/`cloudShape` 两个 float4，736 → 768 B**；九个常数全部提为配置项 + UI 滑条 + 11 份 lang | 这个 buffer 光追只读不写，**加 32 B 是每帧一次上传，逐射线零成本**；不占 128 B push-constant 上限（D19 同理由）。备选「保持编译期常数」的代价是天气永远动不了云，而风暴正是这次要的东西。留在 shader 里的两个常数是尺度不是观感，提出来只会变成误配的入口 |
-| D38 | 天气如何驱动 | **雨 → 云量 + 密度，雷暴 → 云型**，两条独立轴，**叠加**而非替换；按 partial tick 插值；`volumetrics.cloud-weather` 默认开 | 单个「风暴度」标量会把两轴绑死，做不出真正不同的两种天空（铺满地平线的阴雨 vs 晴空里一座孤立雷暴云）——**vanilla 自己就是分开的**（可以下雨不打雷，且它的 thunder level 只在下雨时才抬），所以读这一对而不是把它压成一个数。叠加而非替换：替换会让天气一变全天空的云变成同一个值，读起来是「拨了个开关」。partial tick 插值：vanilla 的 rain level 逐 tick 更新，取 tick 边界值会把慢坡量化到 20 Hz，在铺满屏幕的天空上看得见。默认开、但**滑条创作时必须关**——开着时滑条量到的是自己 + 天气，这是把开关放进 UI 而不是配置文件的理由 |
-
-### 2026-08-06 M11 二次光线路线结案（D43，用户裁决）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D43 | 非首条射线怎么拿到云 | **维持削减档真行进；§6.4 原定的「烘进 sky-view LUT 一次采样」放弃** | 真行进保住 R18 的核心性质：反射里的云由射线自己从自身起点求交同一个世界锚定的场，**湖里的云和天上的云就是同一朵**，二者不可能错位。LUT 便宜得多（一次采样 vs 40 步）但**相机锚定**——它按方向参数化、从相机位置烘，反射射线读到的是「相机在那个方向会看到的云」，只在云足够远时才成立。且落地前必须先拆两个动工时才发现的耦合：`mediumSkyRadiance` 是该 LUT 的 reduction 而**雾与水都读它**（烘云进去会一并改变水下与雾的观感），云自身的 ambient 项又读同一个量（**会与自己重复计数**）。成本待测，但 `cloud-secondary` 的 off/reduced/full 三档已就位，真贵了随时可退 |
-
-**2026-08-02 确立的硬规则**（见文档头部）：任何方向性决策必须带选项分析（物理差距+性能代价）请示用户后记入本日志。
-
-### 2026-08-07 水面真形变（D44–D49，用户逐项裁定）
-
-条目正文与依据表在 **§8.2b**，不在此重复。摘要：D44 方案二（近处形变、远处纯法线）；D45 形变距离独立成项且钳住仿真域；D46 按波长分频（**已随实测修正**，见 §8.2b）；D47 独立锚定 + 纯法线开关；**D48 先做「不细分、原位 refit」再叠加细分方案**；**D49 波场振幅做成选项、默认逐位等于现状**。
-
-### 2026-08-08 体积散射太阳项的 4π 能量误差（D61，已收口 ✅）
-
-**用户裁定**：「修物理 + 同一轮把多次散射重推到位」。实现位于 `fix/volume-sun-4pi`，不在 `main` 上直接修。
-
-**现象入口**：用户报「太阳透过云的晕影会被云过度曝光」。查下来不是云的 bug，是**雾、水、云共用的太阳源项亮了 4π ≈ 12.566 倍**。
-
-**这正是 R20 警告的那个 ~12× 误差，只是它不在参考项目里，在我们自己代码里。**
-
-#### 三条互相独立的证据
-
-| # | 证据 | 结果 |
-|---|---|---|
-| 1 | **本文档原先混写的约定**（§8.4「切片②」） | 「天空项裸用是因为 `mediumSkyRadiance` 已经是 1/(4π) 球面积分」暴露了太阳项缺失的各向同性基量；但旧表又把代码的 `E·4πp` 当成最终表达式，文档自身也不完整。现在统一写成辐亮度口径：太阳 `E·p`、天空 `J_sky` |
-| 2 | **同一份能量，两种描述** | 把太阳的辐照度 E 摊成各向同性：走天空项得 `E/4π`，走太阳项（各向同性相位）得 `E`。**差 12.566**。天空项是对的（各向同性环境辐亮度 L 给出 J = L），所以太阳项错 |
-| 3 | **厚云的隐含反照率** | 按现在的写法，被太阳照亮的厚云隐含反照率 **4.33**——反射了照到它身上的 433% 的光，对不发光的云物理上不可能。去掉 4π 后是 **0.34**，成立 |
-
-`lightRadiance` 是**辐照度**这一点由 `world.rgen.slang:395` 钉死：`albedo · INV_PI · sampledLightIrradiance · ndl` 是教科书朗伯响应。`sampleCelestialIrradiance` 的注释也自称 irradiance。而 `volumeHg` / `enclosedPhase` / `cloud.slang` 的 `hg` **全部自带 1/(4π)**（球面积分为 1），所以乘 4π 得到的是「相对各向同性的增益」，它必须乘在**各向同性答案**上——点源的各向同性答案是 `E/(4π)`，不是 `E`。
-
-#### 为什么能藏这么久
-
-默认值全是**物理系数**（σ per block：`BASE_FOG_DENSITY = 0.0016`、水散射默认由 `legacyCoefficientStrength` 推出）而**不是亮度旋钮**，所以没人围着这个误差手工调低过——这点很重要，它意味着修正后不需要重标定这些常数。而稀薄介质里 12.6× 的「很淡」还是很淡：**只有在正对太阳、相位峰值本身又是 36×（g=0.8）的地方才炸出来**，也就是用户看到的那一处。
-
-#### 五个站点（全是同一个形状）
-
-| 文件 | 行 | 介质 |
-|---|---|---|
-| `volume_source.slang` | `evaluateAmbientRadianceSource` | 雾 + froxel（两个估计器共用） |
-| `volume.slang` | 两处 `enclosedPhase` | 水（封闭单次散射） |
-| `cloud.slang` | `marchLayer` 的 `phase` | 云 |
-| `lighting.slang` | `volumeNee` 的 `phase` | 发光方块照亮介质 |
-
-#### 仅校正 4π 后的诊断数字（用户配置：g=0.8、ω=0.9804、σt=0.019/block；尚未计入下节重定标的扩散振幅）
-
-| 云的光学厚度 | 正对太阳的 in-scatter（现在） | 修正后 | 日盘辐亮度 |
-|---|---|---|---|
-| 0.1（5 m 薄云） | 69.2 | 5.5 | 24.0 |
-| 1.0（53 m） | 297.1 | 23.6 | 24.0 |
-| 3.0（158 m） | 328.7 | 26.2 | 24.0 |
-
-厚云背光时读到 26 对 24——中心因前向散射略高于日盘、同一量级，**这才是对的**。现在是 13.7 倍。
-
-#### D61 的第二半：多次散射必须补上，且这一半不是可选的
-
-**修 4π 会让云明显变暗**：隐含反照率 0.34，而真实水云是 0.7–0.9。那个 4π 一直在替**缺失的多次散射**顶账，只是顶得极其粗暴（需要 ~2.4×，它给了 12.6×，而且角度分布完全不对——它按前向相位分布，真实的多次散射是各向同性的）。
-
-诊断出模型缺在哪：现有扩散项是 `diffuse = exp(-K·τ_sun)`，**振幅被断言为 1 而非推导出来的**。在保守极限（ω→1、K→0）它给出 J = E/(4π) 均匀，沿视线积分得 L → E/(4π)，隐含反照率 **1/4**；而保守介质必须把入射能量全部还回去，即 L = E/π、反照率 → 1。**差一个因子 4，就是振幅从没被定过。**
-
-落地时按此重推（**勿翻参考代码**）：用二流/相似性理论定**厚板极限的出射反照率**，反解扩散项振幅。半无限板的两流结果 `R∞ = (1−s)/(1+s)`，`s = √((1−ω)/(1−ωg))`；ω=0.9804、g=0.8 时 R∞ = **0.537**。振幅由能量平衡反解：模型给出 `L = (A·E/4π)/(1+K)`，令 `π·L = R∞·E` 得 **`A = 4·R∞·(1+K)`**（该配置下 2.67）。ω 与 g 逐帧是常数，**这一整段可以在 CPU 上算好推进 push**，GPU 侧零新增 ALU。
-
-**实现与验收（2026-08-09）**：五个站点均改为让归一化 phase 直接消费辐照度，不再乘 `4π`。`RtCloudLighting.diffuseSourceScale` 在 CPU 每帧按上式算出 `A/(4π)=R∞(1+K)/π`，写入既有 `cloudLighting.w`；shader 热路径删掉直射的一次 `4π` 乘法、给扩散加一次尺度乘法，云路径净 ALU 数不增加，WorldPush 大小不变。`RtVolumeEnergyContractTest` 在修复前 2/2 按预期失败，修复后验证四类源项源码契约、CPU→push→shader 接线、三组 `(ω,g)` 的厚板反照率，以及 ω→1 时趋近 1 而不是 1/4；定向任务同时通过完整 Slang 编译。**2026-08-09 用户确认游戏内视觉验收通过，D61 收口。**
-
-### 2026-08-09 M13 残余 3D 噪声雾与天气联动（D62–D73，用户逐项裁定）
-
-| # | 议题 | 决策 | 物理与性能理由 |
-|---|---|---|---|
-| D62 | 噪声纹理结构 | **独立一张 128³ RGBA8；R 基础、G 细节，固定 4:1 空间频率比** | 相对旧计划的 128³+32³ 双纹理，代价是基础/细节尺度比不再能独立任意调整；收益是每个密度点只做**一次**三线性 fetch、一个 binding，且不与云的形状/运动相关。约 8MB。备选双 R8 只约 2.03MB，但每点两 fetch、两个 descriptor，还需 storage-format 能力检查与 RGBA 回退；复用云纹理虽零显存却把两种天气结构绑死，否决 |
-| D63 | 非均质积分方法 | **一致的有限步数 march**：视线、froxel、太阳/发光体路径、M17 事件都读同一密度 | 比只给 in-scatter 贴噪声贵，但后者违反 Beer 消光；比“视线数值、光源解析”贵，但后者会让浓团内部偏亮。ratio/delta tracking 理论更接近无偏，代价是可变长循环、额外方差与长尾帧时间。当前方案的物理误差是有限步长偏差，且用 canonical partition 保证同一段的透射与入散射不各采一套密度 |
-| D64 | 场的锚定与运动 | **平均为 1、世界锚定、独立慢风；“绝对风向”部分后来由 D69 修订** | `f(p)-f(p+(0.5,0,0.5))` 让 variation 在每个高度层都严格零均值；噪声只重新分布已有密度，不成为第二个密度旋钮，且不会被指数高度剖面重新加权出净密度。terrain rebase 加回后再减独立漂移，避免粘镜头/重锚跳。D69 没把近地雾与高空云绑成同一速度，只统一天气主方向并保留各层 offset |
-| D65 | 默认状态 | **strength=0，验收前不默认开启** | 现有已验收画面和热路径保留；shader 在 texture fetch 前退出。默认开会同时改变观感和性能基线，在没有 0/A/0 证据前不允许。资源仍分配/启动烘焙约 8MB，这是为无需重建资源即可游戏内 A/B 付的固定成本 |
-| D66 | march 预算 | **可调硬上限，初始 12；不可解析频段淡回均值** | 512-block 单区间最多 12 个密度样本，成本有界；细节低于 footprint 时不硬采，避免时域闪烁。代价是远距离细节被平均掉。备选按 detail/2 自适应约 40–45 步，空间更准但空气段与光源路径约 3–4×；固定 24 居中但仍是无依据的双倍默认，否决 |
-| D67 | 首次验收无明显结构 | **A：bake-time 奇对称对比度归一化；base/detail = 3.8/3.5** | fully-resolved 密度倍率标准差 0.0623→0.2363（3.79×），钳制低于 0.1%；canonical 半周期配对与互补 UNORM8 编码继续保证每高度均值 1。运行时零成本；物理差距是对比度仍为 authored 标定，不是测量所得湍流谱 |
-| D68 | 结构开关与对比度 | **A：独立 gate + 0–4 对比度；奇对称有界 remap** | 关档在 fetch/march 前退出；开档不增加 fetch/步数，只多一次有理 remap。相比线性倍率后 clamp，不会在负半边归零后让正半边继续增长、抬高平均密度。1.0 精确保留 D67；局部倍率仍在 0–2 |
-| D69 | 全局风 | **A：共享 heading，各介质保留 offset 与速度** | 雾由绝对角改为 `global + fog offset`；积云/卷云/水波沿用既有模型。GPU 成本不变。比严格同向更接近随高度转向的真实风切变，又不引入完整 3D 风矢量场 |
-| D70 | 天气架构 | **A-H：连续双轴 forcing + 可调 gain/bias** | rain/thunder 不折成离散 preset；CPU 一帧读取一次并解析到现有 lanes。密度/散射用非负 gain，coverage/type 用 signed bias，结构响应可正可负但最终 contrast 被钳入 0–4。保持可自定义天气参数且 GPU 无新增天气分支/ABI |
-| D71 | 设置分类 | **A：新增 Weather Effects；全局风只显示一处** | 基础介质参数留在 Fog/Sky/Water；时间、雨、雷暴响应集中到天气栏。各层 speed/offset 仍留本地，locality 与所有权一致；只维护 en/zh_cn/zh_tw |
-| D72 | 天气切换时水波相位跳变 | **D-1：十个固定频带 + 20 秒线性 storm 过渡；涌浪偏置默认 0.5** | 不再实时改 `k`/`ω`，所以绝对时间累计后浪峰也不会重定位；只把权重从部分短波转向现有长波。复用 lane，每频带一次权重运算，无新 fetch/ray/trig。物理差距是 authored 十频带重加权，不是由风场求解的连续海浪谱 |
-| D73 | 浓雾/厚云下水底焦散 | **A-1：Water 中单独 0–1 强度并紧邻色散；天气 load 自动衰减，未来接二维云透射率图** | 强度与色散都属于水体焦散模型，天气页不拥有它；`1+S(focus−1)` 同时收敛亮/暗区，避免把对比度滑条变成日光能量滑条。当前全局天气近似零采样成本；未来 `cloudSunTransmittance(worldPosition)` 可选体积阴影 march 或二维 Beer 图，而水底焦散固定采后者，避免昂贵逐点云 march |
-
-### 语言文件政策（2026-08-09，用户指示）
-
-**项目只保证英文 `en_us` 与中文 `zh_cn` / `zh_tw`。** 新增或修改任何设置时只维护这三份文件；`de_de` / `es_es` / `fr_fr` / `it_it` / `ja_jp` / `ko_kr` / `pt_br` / `ru_ru` 不要求同步，也不得为了键完整而写入英文占位。缺失键由 Minecraft 的 `en_us` fallback 处理。该规则同时适用于测试期与发布版本，除非用户日后明确改变语言支持范围。
-
-**`zh_tw` 另有一笔既有欠账（2026-08-07 实测）**：276 键中 **64 键含简体专用字**，即繁体文件里坐着简体正文（含上一轮 M12 水面仿真新增的那批）。上面的「与 `en_us` 逐字相同」检查抓不到它——它与 `zh_cn` 相同而非与 `en_us` 相同。补充检查：
-
-```python
-import json
-zh = json.load(open('common/src/main/resources/assets/fluorite/lang/zh_cn.json', encoding='utf-8'))
-tw = json.load(open('common/src/main/resources/assets/fluorite/lang/zh_tw.json', encoding='utf-8'))
-SIMP = set("阴云体单显强数质变观线现应时后从会边过远长开关这为")
-print([k for k, v in tw.items() if zh.get(k) == v and any(c in SIMP for c in v)])
+定向 shader/ABI：
+
+```powershell
+.\gradlew.bat generateShaderRecords compileShaders
+.\gradlew.bat :neoforge:processResources :neoforge:compileJava
 ```
 
-### 代码整体 review（用户计划，2026-08-06）
+slangc 解析顺序：Gradle `-P<name>Path` → 环境变量 → `$VULKAN_SDK/Bin` → PATH；当前独立工具链位于 `F:\MC\Shader\tools\slang-2026.14`。
 
-**写 ReSTIR 之前用户会对整个代码做一次通盘 review**，本文档里累积的「小地方」在那一轮统一收拾，不必逐个单独立项去改。当前已知会进那一轮的：
+### 5.2 运行与基准
 
-- `RtComposite.lutSampler` 从未销毁（已另开任务，见会话记录）
-- M11 三片的成本采集（R19；旋钮 `clouds` / `cloud-sun-steps` / `cloud-secondary` 都已就位）
-- M11 的游戏内验收：Perlin-Worley 云体、云上往下看的遮挡修复
+| 工具 | 用法 |
+| --- | --- |
+| `tools/bench-world.sh [name]` | 从 `run/bench-master/` 还原基准世界；`--adopt [name]` 建立主副本 |
+| Fabric | `.\gradlew.bat :fabric:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=<name>` |
+| NeoForge | `.\gradlew.bat :neoforge:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=<name>` |
+| frame stats | `-Dfluorite.rt.frameStats=true`，输出 `<gameDir>/rt-frame-stats/frame.csv` |
+| validation | `-PvkValidation`，需要 `run/vk_layer_settings.txt` |
+| JFR | `profileMinecraft.ps1 -TargetPid ... -RecordingName ...` |
+| 常规启动 | `runClient.ps1`，设置 Vulkan backend、JVM 和 ZGC 参数 |
 
-**当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M20.3 粒子 mask 成本 · **M11 切片②的天空遮蔽近似**（§8.1 三条待核查项，评审时裁决）。M11 §6.4 表中两项「请示」已由 D33/D34 结清。
+`frame.csv` 每次会话重建，下一次启动前先归档。`compare-digest.sh` 不存在；平台摘要按 `docs/PLATFORM_NOTES.md` 手工比较。
+
+### 5.3 Debug views
+
+| 编号 | 用途 |
+| --- | --- |
+| 0–7 | 关闭、normal、albedo、depth、roughness、motion、specular、specular motion |
+| 8 | 首叶体积 in-scatter，固定逐像素 seed |
+| 9 | 首叶段长度/逃逸/水介质 |
+| 10 | 体积太阳可见性 |
+| 11 | 水底焦散/色散诊断 |
+| 12–16 | transmittance、multi-scatter、sky-view、LUT vs reference march、天体染色 |
+| 17 | aerial perspective froxel |
+| 18 | 世界空间体积可见性网格 |
+| 19 | 网格与真光线可见性 profile |
+| 20 | 正常合成实际使用的相机前缀 in-scatter |
+| 21 | 完整 pre-RR 合成的前缀有/无 A/B；storage-image Y 约定使条带显示上下反向 |
+| 22 | 云链路分量探针 |
+| 23 | 水仿真原始高度场 |
+| 24 | 水面真实世界→域 reach/坡度 |
+| 25 | 雾 base/detail/resolved/final density 四阶段 |
+
+debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；删除前必须确认不再服务任何未结 Issue。
+
+### 5.4 GitHub Issues
+
+问题和长期任务使用当前仓库 Issues。创建前搜索重复项；已结束过程不继续堆在 Issue 或主文档，迁入 devlog 后关闭。状态约定见 `docs/agents/issue-tracker.md` 和 `docs/agents/triage-labels.md`。
+
+## 6. 参考项目政策
+
+`F:\MC\Shader\Reference\HPWater` 与 `HPVolumeCloud` 只用于比较实现方法和物理选择。
+
+硬规则：
+
+1. 不复制代码、表达式排列、文件结构或数值常数。
+2. 两项目含 Unity HDRP 来源且逐文件许可边界不清，必须保持净室距离。
+3. 它们是光栅/RenderGraph/屏幕空间管线，不能把成本模型直接移植到纯光线架构。
+4. HPWater 相位漏 `1/(4π)`，HPVolumeCloud 含量纲不明的强度常数；所有常数由本项目重推和标定。
+5. 参考实现含相机依赖云场等结构缺陷；Fluorite 的云必须对反射射线成立。
+
+每次准备借鉴新方法时，先向用户提交：参考做法、本项目候选做法、异同、物理差距、性能代价和推荐。用户批准后才实施。历史对比见 M9/M11 devlog。
+
+## 7. 活跃风险与危险事项
+
+| 风险 | 当前状态与要求 |
+| --- | --- |
+| 路径记录/寄存器 | 48 B segment 只余一 lane；raygen 仍可能撞 VGPR 台阶，任何新增热路径都实测 |
+| R18 云相机依赖 | 当前规则有效；未来阴影图也必须世界锚定，不能把相机位置写回云密度 |
+| R19 云成本 | 三片云和 secondary 从未正式定价；不得默认开启更贵后端 |
+| R20 参考常数 | D61 已证明 4π 错误会跨雾/水/云扩散；所有新源项先做能量契约测试 |
+| R24 Slang 错编 | D27 规避层保留；升级版本不自动删除 |
+| 水形变内存 | `deform-mode=all` 消除重建闪烁，但含水 section 放弃压缩并常驻输入；海洋场景未测 |
+| 间歇性水故障 | Issue #20 等现场；禁止视觉猜测修复，诊断不得提前删 |
+| 云天空遮蔽 | 当前 `τup` 为局部密度解析近似，可能高估塔底、低估塔顶；review 时裁决 |
+| 粒子阴影 | 成本未知、默认关；需要真实烟柱场景 |
+| BSSRDF/glint/焦散常数 | `PROVISIONAL` 或美术夸张，不得宣传为物理标定 |
+| 语言 | `zh_tw` 仍有约 64 个键含简体正文，需单独清理；不扩展其他语言维护范围 |
+| 资源生命周期 | `RtComposite.lutSampler` 已知未销毁，进入 ReSTIR 前 review 修复 |
+
+## 8. 待办与未来架构
+
+### 8.1 当前未结问题
+
+#### Issue #20：水面消失与水下曝光闪烁
+
+下一次触发时：水下朝曝光方向停留约 3 秒，再朝缺失水面停留约 3 秒，立即记录现实时间，并记录天气、区块加载、雾/水波/形变开关。用同一段日志核对 terrain water instance、CPU/GPU 起始 Medium、Radiance/segment/visibility 的 NaN 或突变。
+
+完成标准是日志或最小复现证明根因，Fabric/NeoForge 构建通过并完成视觉回归。旧“submerged 与参考水面矛盾”探针未触发，已降级为候选，不允许据此直接改代码。
+
+### 8.2 M13 验收债务
+
+- 同场景雾结构关→开→关，确认两次关档画面和 GPU plateau 一致。
+- 跨 rebase、暂停、午夜、风漂移不跳。
+- froxel/marched/both 不出现位置、色温和前缀接缝。
+- 正对太阳浓雾不恢复 D61 式自发光晕影。
+- 记录 12/24 march steps 的 `gpu.froxelBake`、`gpu.traceIndirect` 和总 GPU。
+- 复验 D72 20 秒水波天气过渡与 D73 浓云/浓雾下焦散衰减。
+
+这些是验证债务，不是未实现功能。
+
+### 8.3 M14：维度预设与配置收尾
+
+已批准的长期原则：
+
+- 完整物理大气是代码默认。
+- 下界/末地用显式 authored LUT 退出；未知模组维度自动取得完整大气，不做 `dimensionType()` 启发式降级。
+- `world.rmiss` 保持零维度分支，差异由谁填 sky-view LUT 表达。
+- `RtSkyPreset` 从 `assets/fluorite/fluorite/sky/<dimension>.json` 加载，允许资源包覆盖；加载器采用 format 版本、逐文件隔离和校验。
+- 大宗每维度数据进 JSON，用户滑条是活跃预设上的全局倍率。
+- 测试必须包含“未知模组维度 → 完整大气”。
+- 只维护三份语言文件。
+
+动工前必须重新请示的接口：现有 D70 `RtEnvironmentForcing` 已实现，旧计划“天气只留钩子不实现”已经过期；需要决定 preset 基础值、Weather Effects gain/bias 和用户倍率的组合顺序，以及哪些字段允许资源包拥有。
+
+### 8.4 M18 与 M20.4：动态光数据层
+
+目标是收集但暂不采样：
+
+- 主/副手 `BlockItem` 光。
+- 燃烧实体、发光生物等实体附着光。
+- 发光粒子按空间 cell 聚合的代表光。
+- 产出与 32 B `Light` 兼容的记录、动态标记，并为类型/区域光源留位。
+
+画面应 bit-identical；成本是每帧少量 CPU 收集和 buffer 上传。真正让它们参与 NEE/GI 等 ReSTIR。
+
+动工请示点 S3：`RtLightCollector` 目前计算后被 hierarchy 丢弃的 exact-Le UV lanes，是现在停算节省 CPU，还是保留避免 ReSTIR 重新接回。必须带 CPU 实测或明确估计裁决。
+
+### 8.5 ReSTIR 前全项目 review
+
+ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
+
+- 审阅所有 shader/Java 接线、过期注释、ABI 和关闭档。
+- 修复 `RtComposite.lutSampler` 生命周期。
+- 结算 M11 云成本与天空遮蔽近似。
+- 复核 M17 体积 MIS/default、M18 S3、M20.3 粒子 mask 成本。
+- 审阅 Issue #20 诊断；只删除已无价值的 probe，未结故障依赖的诊断必须保留。
+- 清理已结束诊断、临时 debug 和对应文档。
+- 修复能确定的 bug；不以“准备做 ReSTIR”为理由带病进入新架构。
+
+### 8.6 ReSTIR 整合
+
+硬依赖：M14 完成、M18 数据层可用、全项目 review 完成。
+
+现在不要提前做：独立面光源解析 MIS、自制 reservoir 时空复用、预采样池专项优化、过度加固可能被替换的 alias/grid。
+
+已有可复用形状：alias O(1) 选择、每顶点固定候选、幸存者一条阴影线、降维选择目标与完整幸存者求值。整合点包括动态光、exact-Le UV、`Light` 类型/区域扩展、体积发光体 NEE 和 `UNWEIGHTED_SPEC_ALPHA_FLOOR` 的移除。所有成本画像在空域复用后重新测量。
+
+### 8.7 云向地面、水面与焦散投影
+
+当前云只有云内自阴影。目标接口是概念上的 `cloudSunTransmittance(worldPosition)`，统一给地面、水面和焦散查询太阳透射率。
+
+#### 后端一：云体太阳阴影 march
+
+从世界点沿同一有限面积太阳样本穿过世界锚定 3D 云密度，积 `τ` 并返回 `T=exp(-τ)`。
+
+- 更接近当前 3D 云物理，能表达局部厚度、层高和视差。
+- 有限步数和有限太阳样本仍是近似；软阴影可能带噪声。
+- 每个表面光照查询增加一次 cloud march，成本最高，必须独立计时和质量档。
+
+#### 后端二：太阳方向二维 Beer 透射率图
+
+预先沿太阳方向积分同一 3D 云密度，生成世界/太阳空间二维 `T` 图；消费者约一次纹理采样。
+
+- 性能适合大面积地面、水面和高频焦散查询。
+- 分辨率、覆盖、更新频率和投影会损失局部视差；太阳移动时需要更新。
+- 禁止直接采 raw cloud coverage/type noise。它没有沿光线厚度，也不满足 Beer 能量关系。
+
+已批准的消费者路由：地面和水面提供精确/近似切换；水底焦散始终采二维图，避免逐焦散点嵌套 march。D73 当前天气 load 只作过渡，未来替换其云输入，不重写 `1+S(focus-1)` 焦散模型。
+
+未裁决：投影/级联、范围、分辨率、更新频率、时间滤波、面积太阳样本预算和 UI 所有权。实现前必须再次请示，不得自行选值。
+
+### 8.8 测量欠账
+
+- M11：云开关、自阴影步数、第二层、secondary 三项成本。
+- M12.5：海洋场景 refit、显存和 all/near 档。
+- M13：结构雾 0/A/0 和 12/24 步。
+- M16：默认非零太阳角半径跨日出/日落连续性与成本。
+- M17：`bench-water-top`。
+- M20.3：`bench-particles`、1024 上限和 reflection/GI 位。
+
+### 8.9 首个正式版后再评估
+
+- 粒子烟雾/爆炸尘注入统一非均质 Medium。
+- 非 `SingleQuadParticle` 捕获。
+- 完整双层滚动 glint UV。
+- `CAUSTIC_MAX` 重审。
+- 隐身穿甲、名牌 ghost。
+- NRD + FSR、LOD。
+
+## 9. 文档维护规范
+
+### 9.1 单一项目上下文
+
+本文件同时给人类开发者和 agent 阅读，不建立内容分叉的“人类版/机器版”。先解释是什么、为什么、下一步读哪里，再列符号和机器规则。
+
+文档职责：
+
+- `docs/DEVELOPMENT.md`：当前架构、文件地图、规则、危险事项、成果摘要和真实待办。
+- `docs/devlog/`：已结束里程碑、实验、决策、失败路线和验收。
+- GitHub Issues：未结束问题、需要证据或协作的任务。
+- 专题文档：`WAVEFRONT_PLAN.md`、`PLATFORM_NOTES.md`、`MATERIAL_FORMAT.md`、`developer_guide.md`。
+- 代码注释：局部不变量和最靠近实现的危险说明。
+
+不创建与本文件重复的 `CONTEXT.md` 或 ADR。若以后需要改变这一结构，先向用户说明索引与重复维护成本。
+
+### 9.2 结案时怎么更新
+
+1. 完成过程和数据写入对应 devlog。
+2. 主文档成果表只加一句摘要和链接。
+3. 仍有效的架构/铁律更新到对应章节和代码注释。
+4. 已结束待办从主文档删除；未结残余拆成明确验证债务或 GitHub Issue。
+5. 检查所有“待验收/待裁决/下一步”是否仍与 Git 历史一致。
+6. 只维护 `en_us`、`zh_cn`、`zh_tw`。
+
+代码注释中的 `M*`、`D*`、`F*`、`R*` 通过 [`docs/devlog/README.md`](devlog/README.md) 查找。外部 `.claude/plans` 已被本仓库文档取代，只允许考古，不继续追加。
