@@ -299,6 +299,11 @@ VolumeSunShadowSample traceVolumeSunShadow(float3 ro, float3 rd, float sampleT,
                                             float3 sunDir, bool useTransmittance) {
     VolumeSunShadowSample sample;
     sample.t = sampleT;
+    if (worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE) {
+        sample.transmittance = float3(1.0, 1.0, 1.0);
+        sample.waterHitT = -1.0;
+        return sample;
+    }
     VisibilityResult shadow = visibilityMasked(CULL_SHADOW_NO_SELF, ro + rd * sample.t,
                                                  sunDir, RAY_FAR);
     sample.transmittance = useTransmittance
@@ -494,6 +499,9 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
  */
 float3 sampledAmbientSunSource(float3 ro, float3 viewDir, float3 lightDir,
                                float phaseG, float3 sunSigma) {
+    if (worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE) {
+        return float3(0.0, 0.0, 0.0);
+    }
     float3 sampledIrradiance = sampleCelestialIrradiance(
             undyedCelestialIrradiance, lightDir);
     float3 localFogT = ambientTransmittanceWith(sunSigma, ro, lightDir, RAY_FAR);
@@ -718,7 +726,7 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
             }
 
             float3 source = skySource * visSample.sky;
-            if (sunRays == 0u) {
+            if (sunRays == 0u && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
                 float3 lightDir = gridRegion
                         ? sampleSquareLightDirection(worldPush.lightDir.xyz,
                                 worldPush.celestial.xyz, worldPush.lightDir.w,
@@ -781,7 +789,8 @@ void integrateNoisyAmbient(inout SegmentIntegral seg, float3 ro, float3 rd,
 
     float3 scatterAlbedo = worldPush.fogScatter.xyz;
     float phaseG = worldPush.fogScatter.w;
-    uint sunRays = (worldPush.flags >> 23u) & 7u;
+    uint sunRays = worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE
+            ? ((worldPush.flags >> 23u) & 7u) : 0u;
     bool sourceOn = ((worldPush.flags >> 16u) & 1u) == 0u;
     float3 sunSigma = multiScatterOn()
             ? volumeDiffuseAttenuation(worldPush.fogExtinction.xyz, scatterAlbedo, phaseG)
@@ -1083,7 +1092,8 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
     // the two terms have independent occlusion models, so isolating one is the only way to attribute a
     // misbehaviour to it rather than to their sum.
     uint scatterSource = (worldPush.flags >> 13u) & 3u;
-    bool sunSourceOn = scatterSource == 0u || scatterSource == 1u;
+    bool sunSourceOn = worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE
+            && (scatterSource == 0u || scatterSource == 1u);
     bool skySourceOn = scatterSource == 0u || scatterSource == 2u;
 
     // One sampled event replaces both closed forms below when the mode is on. Returning here rather than
@@ -1415,8 +1425,9 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
             float3 sunSigma = multiScatterOn()
                     ? volumeDiffuseAttenuation(worldPush.fogExtinction.xyz, scatterAlbedo, phaseG)
                     : worldPush.fogExtinction.xyz;
-            float3 sunTransmittance = ambientTransmittanceWith(sunSigma, ro,
-                                                               worldPush.lightDir.xyz, RAY_FAR);
+            float3 sunTransmittance = worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE
+                    ? ambientTransmittanceWith(sunSigma, ro, worldPush.lightDir.xyz, RAY_FAR)
+                    : float3(1.0, 1.0, 1.0);
             // The celestial buffer is irradiance E, so the normalised phase density stays normalised:
             // the directional radiance source is E*p, not E*(4*pi*p).
             // The source, split into the two halves the visibility grid answers for SEPARATELY.
@@ -1465,7 +1476,8 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
             // Bits 23-25: how many jittered shadow rays the SUN term gets. Zero keeps it on the grid.
             // The sky term stays on the grid either way — it is genuinely low frequency (a room is dark,
             // a hillside is not) and needs no edge, which is the whole reason the two are split.
-            uint sunRays = (worldPush.flags >> 23u) & 7u;
+            uint sunRays = worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE
+                    ? ((worldPush.flags >> 23u) & 7u) : 0u;
             float3 gridSunSource = sunRays > 0u ? float3(0.0, 0.0, 0.0) : sunSource;
             if (((worldPush.flags >> 16u) & 1u) == 0u) {
                 // Three regions, because the grid has a boundary and pretending otherwise is what puts a
@@ -1499,7 +1511,8 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         VolumeVisibilitySample visSample = sampleVolumeLightVisibility(
                                 ro + rd * ((tA + tB) * 0.5));
                         float3 stepSunSource = gridSunSource;
-                        if (sunRays == 0u) {
+                        if (sunRays == 0u
+                                && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
                             float3 gridLightDir = sampleSquareLightDirection(
                                     worldPush.lightDir.xyz, worldPush.celestial.xyz,
                                     worldPush.lightDir.w, visSample.lightUv);

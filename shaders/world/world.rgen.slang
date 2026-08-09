@@ -134,7 +134,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
     // Solid angle of the square NEE draws from, as a density. Zero half-angle is a delta light: NEE is
     // then the only strategy that can reach it, and no BSDF ray ever will.
-    float lightHalfAngle = worldPush.lightDir.w;
+    bool celestialOn = worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE;
+    float lightHalfAngle = celestialOn ? worldPush.lightDir.w : 0.0;
     float pdfLight = lightHalfAngle > 0.0 ? squareLightPdf(lightHalfAngle) : 0.0;
     bool misActive = sunMis && lightHalfAngle > 0.0;
     // Pass B treats every hit it sees as one indirect-depth step, regardless of material or selected
@@ -374,19 +375,29 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         if (material == MATERIAL_PARTICLE) {
             float3 albedo = payload.albedo;
 
+            // D78A's explicit non-physical readability floor. A constant isotropic radiance reflected
+            // by Lambert is exactly albedo*L; no visibility is sampled because UNOCCLUDED is the preset's
+            // declared approximation. Atmosphere providers never set this capability.
+            if ((worldPush.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u) {
+                L += throughput * albedo * worldPush.mediumSkyRadiance.xyz;
+            }
+
             // No MIS here: a billboard's only lobe is Lambertian, whose density toward the light is
             // eight orders of magnitude under the light's own, so the weight is 1 to well past float.
             float3 lightDir = worldPush.lightDir.xyz;
-            if (lightHalfAngle > 0.0) {
-                lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
+            float3 sampledLightIrradiance = float3(0.0, 0.0, 0.0);
+            if (celestialOn) {
+                if (lightHalfAngle > 0.0) {
+                    lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
+                }
+                sampledLightIrradiance = sampleCelestialIrradiance(
+                        undyedCelestialIrradiance, lightDir);
             }
-            float3 sampledLightIrradiance = sampleCelestialIrradiance(
-                    undyedCelestialIrradiance, lightDir);
             // Billboards are effectively two-sided receivers. Bias from the side facing the light; shadow
             // rays exclude particles anyway, but this keeps the origin sane when the light is behind the
             // camera side.
             float signedNdl = dot(n, lightDir);
-            float ndl = abs(signedNdl);
+            float ndl = celestialOn ? abs(signedNdl) : 0.0;
             if (ndl > 0.0) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
                 float3 vis = visibilityThroughAmbient(
@@ -474,6 +485,13 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         BsdfContext bc = makeBsdfContextAniso(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                               ext, payload.flags);
 
+        // Same D78A floor as particles. Diffuse only: inventing an all-direction specular environment
+        // response would be a second, stronger approximation and was not approved. Metals therefore
+        // still need an actual local emitter or traced environment path.
+        if ((worldPush.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u) {
+            L += throughput * diffAlb * worldPush.mediumSkyRadiance.xyz;
+        }
+
         // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
         // RIS emitter NEE: the direct-hit emission term is gated only for emitters RIS actually samples
         // (payload emitter-in-list bit) — and then only off diffuse continuation rays (showCelestial
@@ -498,15 +516,18 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // over accumulation. The same sampled direction drives ndl, the shadow ray, and the specular
         // half-vector.
         float3 lightDir = worldPush.lightDir.xyz;
-        if (lightHalfAngle > 0.0) {
-            lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
+        float3 sampledLightIrradiance = float3(0.0, 0.0, 0.0);
+        if (celestialOn) {
+            if (lightHalfAngle > 0.0) {
+                lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
+            }
+            // The emitter spans the steep atmospheric horizon gradient. Sampling only its visibility while
+            // reusing the centre's colour is biased precisely at dawn/dusk, so direction and irradiance are
+            // one sample just as direction, BRDF and shadow already are.
+            sampledLightIrradiance = sampleCelestialIrradiance(
+                    undyedCelestialIrradiance, lightDir);
         }
-        // The emitter spans the steep atmospheric horizon gradient. Sampling only its visibility while
-        // reusing the centre's colour is biased precisely at dawn/dusk, so direction and irradiance are
-        // one sample just as direction, BRDF and shadow already are.
-        float3 sampledLightIrradiance = sampleCelestialIrradiance(
-                undyedCelestialIrradiance, lightDir);
-        float ndl = max(0.0, dot(n, lightDir));
+        float ndl = celestialOn ? max(0.0, dot(n, lightDir)) : 0.0;
         if (ndl > 0.0) {
             VisibilityResult shadow = visibilityThroughAmbient(
                     currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
@@ -593,7 +614,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // path onward into the scene, the term below answers "what does the sun put through this slab
         // right now". Next-event estimation for a random walk is a research problem, and the reduced
         // estimator is exactly where a cheap approximation belongs.
-        if (sssMode != 0u && sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
+        if (celestialOn && sssMode != 0u && sss > 0.0
+                && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float backNdl = max(0.0, dot(-n, lightDir));
             if (backNdl > 0.0) {
                 VisibilityResult shadowBack = visibilityThroughAmbient(
@@ -1143,7 +1165,8 @@ float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
     if (pc.debugView == DEBUG_VIEW_WATER_CAUSTIC) {
         // Same conditions the sun NEE applies it under: an underwater receiver whose shadow ray crossed
         // a water surface. Black therefore means "no caustic here", which is itself an answer.
-        if (escaped || !mediumFlagsWater(unpackCurrentMediumFlags(packed.pathFlags))) {
+        if (worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE || escaped
+                || !mediumFlagsWater(unpackCurrentMediumFlags(packed.pathFlags))) {
             return float3(0.0, 0.0, 0.0);
         }
         float3 hitPos = seg.ro + seg.rd * segmentEnd;
@@ -1160,6 +1183,9 @@ float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
     if (pc.debugView == DEBUG_VIEW_VOLUME_SUNVIS) {
         // The shadow ray enclosedSingleScatter casts, on its own. Black here means the scattering has no
         // sun term at all, whatever the rest of the arithmetic does.
+        if (worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE) {
+            return float3(0.0, 0.0, 0.0);
+        }
         return visibilityMasked(CULL_SHADOW_NO_SELF, seg.ro,
                                 worldPush.lightDir.xyz, RAY_FAR).transmittance;
     }
@@ -1322,7 +1348,11 @@ void main() {
         } else if (pc.debugView >= DEBUG_VIEW_SKY_TRANSMITTANCE) {
             // Screen-space, not a path property, so these take the pixel rather than the queued record.
             float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
-            float3 table = pc.debugView == DEBUG_VIEW_SKY_TRANSMITTANCE
+            bool unavailableAtmosphereView = worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE
+                    && pc.debugView <= DEBUG_VIEW_LIGHT_DYE;
+            float3 table = unavailableAtmosphereView
+                    ? float3(0.0, 0.0, 0.0)
+                    : pc.debugView == DEBUG_VIEW_SKY_TRANSMITTANCE
                     ? skyTransmittanceDebug(screenUv, dispatchIndex)
                     : pc.debugView == DEBUG_VIEW_SKY_MULTISCATTER
                     ? skyMultiScatterDebug(screenUv, dispatchIndex)

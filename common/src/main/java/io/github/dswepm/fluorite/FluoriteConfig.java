@@ -60,6 +60,7 @@ public final class FluoriteConfig {
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
+            Rt.Dimensions.NETHER_FOG_ENABLED, Rt.Dimensions.NETHER_AMBIENT_SCALE,
             Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
             Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.ABSORB_OVERRIDE,
             Rt.Water.SCATTER_R,
@@ -119,6 +120,12 @@ public final class FluoriteConfig {
                 " Continuous rain/thunder/time responses over the clear-weather Fog, Sky and Water values.\n"
                         + " Positive scalar gains multiply non-negative coefficients; cloud coverage/type use\n"
                         + " signed biases. The CPU resolves these once per frame before the shader sees them.");
+        FILE.setComment("dimensions",
+                " Per-dimension player overrides applied after the resource-authored preset and global controls.\n"
+                        + " The global volumetrics switch remains the master switch; nether.fog-enabled can turn\n"
+                        + " only Nether fog off, and nether.fog-density-scale multiplies only its preset density.\n"
+                        + " nether.ambient-scale multiplies the Nether preset's unified neutral environment\n"
+                        + " radiance; it does not change lava, glowstone or other local emitter power.");
         FILE.setComment("bsdf",
                 " Surface response. sun-mis weights the two ways the sun and moon are estimated —\n"
                         + " next-event estimation toward the light, and a continuation ray landing on it —\n"
@@ -1335,6 +1342,38 @@ public final class FluoriteConfig {
             }
 
             private Volumetrics() {
+            }
+        }
+
+        /**
+         * Player controls that intentionally affect one dimension rather than every authored preset.
+         *
+         * <p>These are the final, local adjustment layer. The global Volumetrics page remains useful as
+         * a master accessibility/performance control, while this group lets a player remove or retune a
+         * dimension's character without changing the Overworld. The End section is reserved in the UI;
+         * real controls arrive with its environment provider instead of exposing settings that do nothing.
+         */
+        public static final class Dimensions {
+            /** Local gate; the global fog switches still have final authority over every dimension. */
+            public static final BooleanSetting NETHER_FOG_ENABLED =
+                    bool("fluorite.rt.dimensions.netherFogEnabled",
+                            "dimensions.nether.fog-enabled", true);
+
+            /** Multiplier over the Nether preset after the global density multiplier. */
+            public static final FloatSetting NETHER_FOG_DENSITY_SCALE =
+                    clampedFloat("fluorite.rt.dimensions.netherFogDensityScale",
+                            "dimensions.nether.fog-density-scale", 1f, 0f, 2f);
+
+            /**
+             * Multiplier over the Nether preset's neutral environment Radiance. The one scaled value is
+             * shared by the diffuse readability floor, escaped rays and participating media; local emitter
+             * power remains physically separate.
+             */
+            public static final FloatSetting NETHER_AMBIENT_SCALE =
+                    clampedFloat("fluorite.rt.dimensions.netherAmbientScale",
+                            "dimensions.nether.ambient-scale", 1f, 0f, 8f);
+
+            private Dimensions() {
             }
         }
 

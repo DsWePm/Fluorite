@@ -8,6 +8,7 @@
 
 import world_common;
 import world_core;
+import volume_source;
 
 public static const float WATER_DENSITY = 0.1;
 public static const float3 WATER_ABSORB_FLOOR = float3(0.015, 0.010, 0.008);
@@ -150,8 +151,7 @@ float mediumDensityAt(uint flags, float3 p) {
     if (!mediumFlagsAmbient(flags)) {
         return 1.0;
     }
-    float scale = max(worldPush.fogParams.y, 1.0e-3);
-    return worldPush.fogParams.x * exp(-max(p.y - worldPush.fogParams.z, 0.0) / scale);
+    return volumeFogHeightDensity(worldPush.fogParams, p);
 }
 
 /** Local total extinction sigma_t. Integrated ambient optical depth uses volume_source's exact form. */

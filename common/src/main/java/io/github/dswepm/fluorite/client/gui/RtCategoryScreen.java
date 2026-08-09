@@ -22,7 +22,9 @@ public class RtCategoryScreen extends OptionsSubScreen {
             if (!section.titleKey().isEmpty()) {
                 this.list.addHeader(Component.translatable(section.titleKey()));
             }
-            this.list.addSmall(section.options());
+            if (section.options().length > 0) {
+                this.list.addSmall(section.options());
+            }
         }
     }
 

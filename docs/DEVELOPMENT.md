@@ -13,7 +13,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - 代码包名：`io.github.dswepm.fluorite`。
 - 双加载器：Fabric + NeoForge。
 - `common/` 是两侧共同编译的源码目录，不是独立 Gradle 子项目。
-- 当前规模（2026-08-09）：131 个 Java 文件、约 35.6k 行；52 个 shader 文件、约 12.0k 行。
+- 当前规模（2026-08-09）：134 个 Java 文件、约 36.0k 行；53 个 shader 文件、约 12.3k 行。
 - 源自 Caustica，按 LGPL-3.0-or-later 延续双版权；参考来源见 `THIRD_PARTY_NOTICES.md`。
 
 ### 1.2 当前基线
@@ -45,6 +45,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | M12 | 256² 交互水体高度场、CFL、Neumann 障碍、海绵层和实体/方块冲量完成。 | [交互水体](devlog/M12-water-simulation.md#m12交互水体仿真) |
 | M12.5 | 水面顶点位移与 BLAS refit、路 3′ 形变覆盖、完整波谱重做完成；FFT 明确不实施。 | [水面真形变](devlog/M12-water-simulation.md#m125水面真形变) |
 | M13 | 世界空间可见性、随机体积阴影、3D 结构雾、统一风向和连续天气 forcing 完成并合入 PR #22。 | [雾与天气](devlog/M13-fog-weather.md) |
+| M14 | 版本化维度 Provider/preset、未知维度大气回退与地狱本地光/均匀雾完成；逐维度设置和 RR 安全边界已验收。 | [维度预设与地狱介质](devlog/M14-dimension-presets.md) |
 | M15–M17 | 水/雾共享介质接口和 Radiance 源；水下前缀、Slang 活动状态和散射顶点完成，水天空开放度跳变修复。 | [统一介质与体积光照](devlog/M15-M17-medium-lighting.md) |
 | M19 | 受伤 overlay、实体火焰和近似 glint 已进入路径追踪并通过视觉验收。 | [实体 overlay](devlog/M19-M20-entities-particles.md#m19实体-overlay) |
 | M20.1–20.3 | 粒子发光、stochastic alpha 和可选阴影完成；阴影默认关。 | [粒子](devlog/M19-M20-entities-particles.md#m20粒子) |
@@ -55,7 +56,6 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 - 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
 - M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
-- M14 维度预设和配置收尾。
 - M18 动态光源收集层与 M20.4 发光粒子聚合。
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
 - ReSTIR 整合。
@@ -86,7 +86,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | 命中 | `world.rchit.slang` / `world.rahit.slang` | 材质求值；alpha/stochastic alpha；阴影透射累积 |
 | 天空 | `world.rmiss.slang` | sky-view LUT、星空、日月盘 |
 | 公共 ABI | `world_common.slang` / `world_core.slang` | `WorldPush`、地址、材质、segment、Light、bindings、payload |
-| 材质与光照 | `bsdf.slang` / `lighting.slang` / `subsurface.slang` | Disney、RIS/NEE、BSSRDF |
+| 材质与光照 | `bsdf.slang` / `lighting.slang` / `light_sampling.slang` / `subsurface.slang` | Disney、共享 Light/alias/grid 采样、RIS/NEE、BSSRDF |
 | 介质 | `medium.slang` / `volume.slang` / `volume_source.slang` | Medium 参数、段积分、跨 compute/RT 的纯源数学 |
 | 大气 | `atmosphere*.slang` / `sky_*.comp.slang` | transmittance、multi-scatter、sky-view、reduction、froxel |
 | 可见性 | `volume_visibility*.slang` | 世界空间太阳/天顶可见性网格 |
@@ -109,6 +109,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | `rt/RtEnvironmentForcing` | 一帧一次读取天气/时间，解析为雾、云、水的最终 forcing |
 | `rt/RtCloudLighting` | D61 的云扩散源尺度，CPU 侧能量标定 |
 | `rt/sky/RtSky` | 大气 LUT 资源与唯一烘焙顺序 |
+| `rt/sky/RtSkyPreset` / `RtSkyPresets` / `RtDimensionControls` | 版本化维度 Provider/preset、资源包覆盖、未知维度回退与玩家逐维度修正 |
 | `rt/terrain/` | 地形驻留、section 构建、流体、静态发光 quad、light hierarchy/grid |
 | `rt/entity/` | 实体/粒子捕获、逐帧 BLAS/TLAS、overlay aux 数据 |
 | `rt/material/` | CPU decode-once 材质管线、LabPBR、发光资格、IOR 和 JSON overrides |
@@ -148,7 +149,8 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 ### 2.6 天空、云、天气和水
 
-- `RtSky` 是 LUT 链的唯一顺序权威：transmittance → multi-scatter → sky-view → medium-sky reduction → froxel。
+- `RtSkyPreset` 选择通用 `SkyProvider` 和介质能力；shader 只看 provider/capability，不读取或猜测维度 ID。
+- 大气 Provider 中，`RtSky` 是 LUT 链的唯一顺序权威：transmittance → multi-scatter → sky-view → medium-sky reduction → froxel；其他 Provider 不运行无意义的大气 bake/reduction。
 - `mediumSkyRadiance` 是天空 Radiance 的 `1/(4π)` 立体角平均；水、雾和 froxel 共读。
 - `lightRadiance` 历史名字实际承载天体 irradiance `E`；体积单次散射必须写 `E·phase`，禁止恢复 D61 的 `4π`。
 - 云是世界锚定纯光线函数，`cloud.slang` 禁止出现相机位置。二次光线 off/reduced/full 只改变精度，不改变云所在世界。
@@ -218,7 +220,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 - `RtSky` 内 LUT dispatch 与相邻 barrier 不得拆散。
 - sky-view 相位留在 LUT 外；Mie 前向峰不能被低分辨率方位轴烘平。
-- `world.rmiss` 保持零维度分支；M14 通过“谁填 LUT”表达维度差异。
+- `world.rmiss` 保持零“维度 ID”分支；只允许对通用 `SkyProvider` 分支。新增维度行为进 preset/provider，不把注册表名字写入 shader。
 - `cloud.slang` 禁止相机位置；密度、层序和邻近处理按每条射线自身起点。
 - 云太阳源为 `E·phase`，恢复 `4π` 会让无源云反照率超过 1。
 - 关闭 cloud multi-scatter 必须删除整项扩散源，不能只把衰减率设成 1。
@@ -435,17 +437,24 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 
 ### 8.3 M14：维度预设与配置收尾
 
-已批准的长期原则：
+当前架构合同：
 
-- 完整物理大气是代码默认。
-- 下界/末地用显式 authored LUT 退出；未知模组维度自动取得完整大气，不做 `dimensionType()` 启发式降级。
-- `world.rmiss` 保持零维度分支，差异由谁填 sky-view LUT 表达。
-- `RtSkyPreset` 从 `assets/fluorite/fluorite/sky/<dimension>.json` 加载，允许资源包覆盖；加载器采用 format 版本、逐文件隔离和校验。
-- 大宗每维度数据进 JSON，用户滑条是活跃预设上的全局倍率。
-- 测试必须包含“未知模组维度 → 完整大气”。
-- 只维护三份语言文件。
+- 完整物理大气是代码默认；未知或无效的模组维度自动取得完整大气，不做 `dimensionType()` 启发式降级。
+- `RtSkyPreset` 从 `assets/fluorite/fluorite/sky/<namespace>/<dimension>.json` 加载，允许资源包覆盖；format 版本、逐文件隔离、有限值/范围/能量校验是加载契约。
+- 参数所有权顺序固定为：preset 基础值 → 该 preset 允许时的 D70 天气/时间 forcing → 用户全局修正 → 玩家逐维度修正。资源包负责物理基线；全局开关仍有最终总门控权，逐维度页只关闭或缩放一个明确维度。
+- `WorldPush.skyProvider/environmentFlags` 花掉既有 8 B padding，不增大 944 B ABI。shader 只按能力分支；`environment` 为末地 HDRI/Kerr 保留，不得先塞假黑洞。
+- 雾 `heightScale<=0` 是明确的均匀介质编码；高度雾必须为正。关闭结构时必须在纹理 fetch 和数值 march 前退出。
+- 大气表、云噪声和雾噪声当前共用一次性静态 bake。内置地狱三者都不需要，因此完全跳过；资源包的非大气维度若开启云或结构雾，会为保证纹理已初始化而顺带烘焙暂时不用的大气表。只有实测首次加载成本值得优化时才拆生命周期。
+- `light_sampling.slang` 是 RT 与 froxel 共用的 32 B `Light`、alias、局部 grid 采样接口；维度不能复制一套光源格式。
+- 只维护 `en_us`、`zh_cn`、`zh_tw` 三份语言文件。
 
-动工前必须重新请示的接口：现有 D70 `RtEnvironmentForcing` 已实现，旧计划“天气只留钩子不实现”已经过期；需要决定 preset 基础值、Weather Effects gain/bias 和用户倍率的组合顺序，以及哪些字段允许资源包拥有。
+已批准的 Provider：
+
+- 主世界：现有 Rayleigh/Mie/臭氧大气、日月、星空、云、高度/结构雾和天气 forcing。
+- 地狱：无太阳/月亮和地球大气；本地发光体为主，froxel 用共享 Light/grid 做一次 NEE 并发阴影线；另有极低中性白保底环境光。雾为关闭噪声的均匀白雾；“维度设置”提供只影响地狱的雾开关、0–2 浓度倍率和 0–8 环境光倍率，全局体积雾仍是总开关。全局与地狱浓度倍率合并后的最终玩家增益仍夹在 2；环境光倍率统一缩放表面保底光、逃逸背景与介质环境源，不改变局部发光体功率；保底光不受遮挡是 D78A 明示的非物理可读性近似。浓度上限是当前 DLSS-RR 对高密度远景体积重建绿色的产品安全边界，不是物理介质上限。
+- 末地另开分支/PR：全方向 CC0 star HDRI；黑洞影响区由构建期固定 Kerr 参数预计算 transfer LUT，运行时弯折方向采样同一 HDRI，再按 `Tdisk·background + Ldisk` 合成默认光学厚吸积盘。关闭地球大气、日月、云和体积雾；与吸积盘对齐的有限面积遥远光源复用天体 NEE。不得用贴图假装黑洞或在 M14 临时占位。
+
+M14 已完成视觉验收；实现、裁决、RR 浓雾边界和验证过程见[开发日志](devlog/M14-dimension-presets.md)。末地 Kerr/HDRI 仍是后续独立里程碑。
 
 ### 8.4 M18 与 M20.4：动态光数据层
 
@@ -515,6 +524,7 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 
 ### 8.9 首个正式版后再评估
 
+- 可选 sky-view 全天预烘焙：先独立测量 `sky-view bake` 的 GPU 时间；仅在占用显著时评估约 128 个、在地平线附近加密的太阳高度切片，并以每帧轻量 compute 插值回现有三张 sky-view LUT，保持 miss 侧采样数不增加。是否落盘、缓存格式和失效键届时重新裁决；不属于 M14 或首发必做范围。
 - 粒子烟雾/爆炸尘注入统一非均质 Medium。
 - 非 `SingleQuadParticle` 捕获。
 - 完整双层滚动 glint UV。

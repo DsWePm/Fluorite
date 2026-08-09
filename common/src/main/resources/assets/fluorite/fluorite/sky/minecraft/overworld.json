@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "sky": {
+    "provider": "atmosphere",
+    "ambient_radiance": [0.0, 0.0, 0.0]
+  },
+  "weather": {
+    "enabled": true
+  },
+  "clouds": {
+    "enabled": true
+  },
+  "fog": {
+    "profile": "height",
+    "density": 0.0016,
+    "extinction": [0.92, 0.96, 1.0],
+    "albedo": [0.92, 0.94, 0.96],
+    "phase_g": 0.55,
+    "start_distance": 16.0,
+    "cull_distance": 512.0,
+    "height_scale": 48.0,
+    "height_base": 62.0,
+    "noise": true,
+    "ambient_visibility": "sky",
+    "local_lights": false
+  }
+}

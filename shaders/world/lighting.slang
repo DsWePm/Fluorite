@@ -8,6 +8,7 @@ import world_core;
 import bsdf;
 import math;
 import medium;
+import light_sampling;
 import trace;
 import volume;
 import water;
@@ -331,44 +332,30 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
  */
 public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, float3 rd,
                         float phaseG, inout uint seed, inout uint proposalSeed) {
-    if (pc.lightBufAddr == 0 || worldPush.lightCount == 0u || worldPush.risCandidates == 0u) {
+    LightBufferAddresses addresses;
+    addresses.light = pc.lightBufAddr;
+    addresses.globalAlias = pc.lightAliasAddr;
+    addresses.localAlias = pc.lightLocalAliasAddr;
+    addresses.gridCell = pc.lightGridCellAddr;
+    addresses.gridSpan = pc.lightGridSpanAddr;
+    EmitterSample emitter;
+    if (!sampleVolumeEmitter(worldPush, addresses, pos, seed, proposalSeed, emitter)) {
         return float3(0.0, 0.0, 0.0);
     }
-    LightGridCell gridCell;
-    int3 gridCellCoord;
-    float3 gridLookup = pos;
-    if (pc.lightGridCellAddr != 0) {
-        gridLookup += (float3(rndf(proposalSeed), rndf(proposalSeed), rndf(proposalSeed)) - 0.5)
-                * worldPush.lightGridOrigin.w;
-    }
-    bool hasGridCell = findLightGridCell(gridLookup, gridCell, gridCellCoord);
-    uint lightIndex;
-    selectLightGridLight(gridCell, hasGridCell, proposalSeed, lightIndex);
-    Light lg = ConstPtr<Light>(pc.lightBufAddr)[lightIndex];
-    // Same uniform point on the rectangle, same rebase, same pdf 1/area as the surface estimator.
-    float s = rndf(seed) * 2.0 - 1.0;
-    float t = rndf(seed) * 2.0 - 1.0;
-    float3 sp = lg.pos + worldPush.lightRebase.xyz + s * lightHalfU(lg) + t * lightHalfV(lg);
-    float3 le = lightRadiance(lg);
-    float3 toL = sp - pos;
+    float3 toL = emitter.pos - pos;
     float dist2 = max(dot(toL, toL), 1.0e-6);
     float dist = sqrt(dist2);
     float3 wi = toL / dist;
     // The emitter's own foreshortening. No receiver cosine: an isotropic point in a medium has no facing.
-    float cosL = max(0.0, dot(lightGeometricNormal(lg), -wi));
+    float cosL = max(0.0, dot(emitter.normal, -wi));
     if (cosL <= 0.0) {
-        return float3(0.0, 0.0, 0.0);
-    }
-    // localProbability is 1 when a cell was found, matching the single local proposal drawn above; the
-    // mixture reconstruction is otherwise identical to the surface path's.
-    float sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, hasGridCell ? 1.0 : 0.0);
-    if (sourcePdf <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }
     // The area sample below estimates irradiance at the event, so its directional source is E*p. hg()
     // is already the normalised phase density; multiplying it by 4*pi would create that much energy.
     float phase = hg(dot(rd, wi), phaseG);
-    float3 contrib = le * (phase * cosL * lightArea(lg) / dist2) / sourcePdf;
+    float3 contrib = emitter.radiance
+            * (phase * cosL * emitter.area / dist2) / emitter.sourcePdf;
     if (all(contrib <= 0.0)) {
         return float3(0.0, 0.0, 0.0);
     }

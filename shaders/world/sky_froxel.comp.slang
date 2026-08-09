@@ -22,6 +22,7 @@
 // here would be a second copy to keep in step — the exact debt M10.1 existed to pay off.
 
 import atmosphere;
+import light_sampling;
 import volume_source;
 import world_common;
 
@@ -41,6 +42,11 @@ public static const int FROXEL_D = 64;
 
 struct FroxelPush {
     uint64_t worldPushAddr;
+    uint64_t lightBufAddr;
+    uint64_t lightAliasAddr;
+    uint64_t lightLocalAliasAddr;
+    uint64_t lightGridCellAddr;
+    uint64_t lightGridSpanAddr;
 };
 [[vk::push_constant]] FroxelPush froxelPush;
 
@@ -127,16 +133,16 @@ float3 froxelFogTransmittance(WorldPush wp, float3 sigma, float3 ro, float3 rd, 
  * grid costs now.
  */
 float skyReachable(float3 p) {
-    return sunOccluded(p, float3(0.0, 1.0, 0.0)) ? 0.0 : 1.0;
+    return froxelOccluded(p, float3(0.0, 1.0, 0.0), 4096.0) ? 0.0 : 1.0;
 }
 
-/** One shadow ray. Opaque-only and first-hit: this asks whether the sun is blocked, not by what. */
-bool sunOccluded(float3 p, float3 sunDir) {
+/** One shadow ray. Opaque-only and first-hit: this asks whether a sampled emitter is blocked. */
+bool froxelOccluded(float3 p, float3 direction, float tMax) {
     RayDesc ray;
     ray.Origin = p;
-    ray.Direction = sunDir;
+    ray.Direction = direction;
     ray.TMin = 0.05;
-    ray.TMax = 4096.0;
+    ray.TMax = tMax;
     RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
     q.TraceRayInline(tlas, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
                      FROXEL_SHADOW_MASK, ray);
@@ -145,6 +151,41 @@ bool sunOccluded(float3 p, float3 sunDir) {
         // it and an implementation may return true once.
     }
     return q.CommittedStatus() != COMMITTED_NOTHING;
+}
+
+LightBufferAddresses froxelLightAddresses() {
+    LightBufferAddresses addresses;
+    addresses.light = froxelPush.lightBufAddr;
+    addresses.globalAlias = froxelPush.lightAliasAddr;
+    addresses.localAlias = froxelPush.lightLocalAliasAddr;
+    addresses.gridCell = froxelPush.lightGridCellAddr;
+    addresses.gridSpan = froxelPush.lightGridSpanAddr;
+    return addresses;
+}
+
+/** One shared Light/grid proposal evaluated with a volume phase function at this froxel. */
+float3 froxelLocalEmitterSource(WorldPush wp, float3 p, float3 viewDir,
+                                inout uint seed, inout uint proposalSeed) {
+    EmitterSample emitter;
+    if (!sampleVolumeEmitter(wp, froxelLightAddresses(), p, seed, proposalSeed, emitter)) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 toLight = emitter.pos - p;
+    float dist2 = dot(toLight, toLight);
+    if (dist2 <= 0.0036) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float dist = sqrt(dist2);
+    float3 wi = toLight / dist;
+    float cosLight = max(0.0, dot(emitter.normal, -wi));
+    if (cosLight <= 0.0 || froxelOccluded(p, wi, dist * 0.999)) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float phase = volumeHg(dot(viewDir, wi), wp.fogScatter.w);
+    float3 sourceT = froxelFogTransmittance(
+            wp, wp.fogExtinction.xyz, p, wi, dist);
+    return emitter.radiance * sourceT
+            * (phase * cosLight * emitter.area / dist2) / emitter.sourcePdf;
 }
 
 // ONE THREAD PER COLUMN, marching all FROXEL_D (64) slices and writing each as it passes.
@@ -160,6 +201,16 @@ void main(uint3 id: SV_DispatchThreadID) {
         return;
     }
     WorldPush wp = ConstPtr<WorldPush>(froxelPush.worldPushAddr)[0];
+
+    // A local/environment provider has no planetary aerial perspective to preserve after its authored
+    // fog is disabled. Still overwrite every slice so a dimension switch cannot leave the previous
+    // world's prefix behind, but skip all density work, emitter proposals and shadow rays.
+    if (wp.skyProvider != SKY_PROVIDER_ATMOSPHERE && wp.fogParams.x <= 0.0) {
+        for (int s = 0; s < FROXEL_D; ++s) {
+            aerialPerspective[int3(int(id.x), int(id.y), s)] = float4(0.0, 0.0, 0.0, 1.0);
+        }
+        return;
+    }
 
     // The ray through this column's centre, from the same inverse projection the primary rays use. Taking
     // it from WorldPush rather than rebuilding a frustum here is what keeps the grid aligned with the
@@ -179,6 +230,11 @@ void main(uint3 id: SV_DispatchThreadID) {
 
     uint lightSeed = id.x * 1973u ^ id.y * 9277u ^ wp.frameIndex * 2654435761u;
     lightSeed = pcg(lightSeed);
+    uint proposalSeed = lightSeed ^ 0x9E3779B9u;
+    proposalSeed = pcg(proposalSeed);
+    bool atmosphereProvider = wp.skyProvider == SKY_PROVIDER_ATMOSPHERE;
+    bool localLights = (wp.environmentFlags & ENVIRONMENT_FROXEL_LOCAL_LIGHTS) != 0u;
+    bool unoccludedAmbient = (wp.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u;
 
     // March once from the eye through the whole column, writing each prefix as it passes. A per-cell
     // dispatch would redo every earlier slice and, now that a step casts visibility rays and may march a
@@ -223,7 +279,12 @@ void main(uint3 id: SV_DispatchThreadID) {
             // open ground pick up the sky's own colour rather than only the fog's tint.
             float3 atmoSigmaS;
             float3 atmoSigmaT;
-            atmosphereMedium(ATMOS_VIEW_ALTITUDE, atmoSigmaS, atmoSigmaT);
+            if (atmosphereProvider) {
+                atmosphereMedium(ATMOS_VIEW_ALTITUDE, atmoSigmaS, atmoSigmaT);
+            } else {
+                atmoSigmaS = float3(0.0, 0.0, 0.0);
+                atmoSigmaT = float3(0.0, 0.0, 0.0);
+            }
 
             float3 sigmaT = fogSigmaT + atmoSigmaT;
             // fogScatter is single-scattering ALBEDO in both estimators. The old froxel multiplied it by
@@ -236,11 +297,14 @@ void main(uint3 id: SV_DispatchThreadID) {
             // One stochastic finite-emitter point owns atmosphere, local-fog attenuation, phase and the
             // froxel's own visibility ray together. This keeps the steep horizon colour gradient correlated
             // with the terrain test instead of switching an already-orange centre sample on as one block.
-            SquareLightSample lightSample = sampleSquareLight(
-                    wp.lightDir.xyz, wp.celestial.xyz, wp.lightDir.w, lightSeed);
-            float3 sampledLightDir = lightSample.direction;
+            float3 sampledLightDir = wp.lightDir.xyz;
+            if (atmosphereProvider) {
+                SquareLightSample lightSample = sampleSquareLight(
+                        wp.lightDir.xyz, wp.celestial.xyz, wp.lightDir.w, lightSeed);
+                sampledLightDir = lightSample.direction;
+            }
             float3 sampledIrradiance = float3(0.0, 0.0, 0.0);
-            bool celestialVisible = celestialDirectionVisible(sampledLightDir);
+            bool celestialVisible = atmosphereProvider && celestialDirectionVisible(sampledLightDir);
             if (celestialVisible) {
                 float r = PLANET_R + ATMOS_VIEW_ALTITUDE;
                 float muS = clamp(sampledLightDir.y, -1.0, 1.0);
@@ -253,12 +317,15 @@ void main(uint3 id: SV_DispatchThreadID) {
             // This compute stage reads the undyed WorldPush value, so its direct path is atmosphere LUT *
             // local fog. Raygen preserves the same undyed value before centre-dyeing its compatibility copy;
             // finite-emitter paths there perform this same per-direction LUT lookup.
-            bool multiScatter = (wp.flags & (1u << 26u)) != 0u;
-            float3 fogSunSigma = multiScatter
-                    ? volumeDiffuseAttenuation(wp.fogExtinction.xyz, fogAlbedo, wp.fogScatter.w)
-                    : wp.fogExtinction.xyz;
-            float3 localFogSunT = froxelFogTransmittance(
-                    wp, fogSunSigma, p, sampledLightDir, maxDist);
+            float3 localFogSunT = float3(1.0, 1.0, 1.0);
+            if (atmosphereProvider) {
+                bool multiScatter = (wp.flags & (1u << 26u)) != 0u;
+                float3 fogSunSigma = multiScatter
+                        ? volumeDiffuseAttenuation(wp.fogExtinction.xyz, fogAlbedo, wp.fogScatter.w)
+                        : wp.fogExtinction.xyz;
+                localFogSunT = froxelFogTransmittance(
+                        wp, fogSunSigma, p, sampledLightDir, maxDist);
+            }
 
             // M13: the visibility this grid was built to hold. One ray per CELL rather than per pixel, which
             // is the entire difference between volumetric shadows and what a path tracer can afford to do
@@ -266,18 +333,23 @@ void main(uint3 id: SV_DispatchThreadID) {
             // one coin flip near the camera applied to a whole segment, flipping the screen at once whenever
             // the camera crossed an occlusion boundary. A cell's answer is shared by every pixel that reads it
             // and interpolated between neighbours, so it varies smoothly in space and in time.
-            float sunVis = celestialVisible && !sunOccluded(p, sampledLightDir) ? 1.0 : 0.0;
+            float sunVis = celestialVisible
+                    && !froxelOccluded(p, sampledLightDir, 4096.0) ? 1.0 : 0.0;
 
             // Two occlusion tests for two different quantities: a ray at the sun for the directional
             // term, a ray at the zenith for the isotropic ones. Gating the ambient on the SUN would be
             // wrong in the other direction — a hillside shadow would drain the sky out of the fog, when
             // what removes ambient light is a roof, not a hill.
-            float skyOpen = skyReachable(p);
+            float skyOpen = unoccludedAmbient ? 1.0 : skyReachable(p);
             AmbientRadianceSource source = evaluateAmbientRadianceSource(
                     rd, sampledLightDir, wp.fogScatter.w,
                     sampledIrradiance, localFogSunT,
                     wp.mediumSkyRadiance.xyz);
             float3 visibleSource = source.sun * sunVis + source.sky * skyOpen;
+            if (localLights) {
+                visibleSource += froxelLocalEmitterSource(
+                        wp, p, rd, lightSeed, proposalSeed);
+            }
 
             // Closed form over the step, for the same reason as the other two bakes: near the ground a step
             // can span a whole optical depth, and the midpoint rule overshoots exactly there.
