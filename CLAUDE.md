@@ -22,3 +22,17 @@ Minecraft 26.2 的 Vulkan 硬件光追渲染 mod（Fabric + NeoForge，包名 `i
 - 构建硬要求：slangc ≥ 2026.14（`docs/developer_guide.md`）；`-Xss16m` 必须是直接 vmArg。
 
 语言约定：代码注释英文；`docs/DEVELOPMENT.md` 中文正文 + 英文符号名。
+
+## Agent skills
+
+### Issue tracker
+
+项目问题与 PRD 使用当前仓库的 GitHub Issues。具体约定见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+问题状态使用 `needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。具体映射见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+本仓库采用单一上下文，面向人类的项目文档同时也是 agent 的事实来源。阅读顺序与文档职责见 `docs/agents/domain.md`。

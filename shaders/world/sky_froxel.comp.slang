@@ -13,8 +13,9 @@
 // already established what a handful of shadow rays gives instead: one coin flip near the camera applied
 // to a whole segment, so any occlusion boundary the camera crosses flips the entire screen at once. A
 // froxel resolves visibility in WORLD-SPACE CELLS and interpolates, so neighbouring pixels and successive
-// frames read continuous values rather than independent binary answers. This milestone builds the grid
-// and fills it with the unshadowed integral; M13 adds the visibility term to the same cells.
+// frames read continuous values rather than independent binary answers. M13 added those rays to each
+// cell; its residual 3D-density work now feeds this same prefix integrator rather than creating a third
+// fog machine.
 //
 // Reads WorldPush through its device address rather than taking a push constant of its own. The camera
 // matrix, the fog's four parameter vectors and the sun all live there already, and restating any of them
@@ -44,7 +45,8 @@ struct FroxelPush {
 [[vk::push_constant]] FroxelPush froxelPush;
 
 [[vk::binding(0, 0)]] Sampler2D transmittanceLut;
-[[vk::binding(1, 0)]] RWTexture3D<float4> aerialPerspective;
+[[vk::binding(1, 0)]] Sampler3D fogNoise;
+[[vk::binding(2, 0)]] RWTexture3D<float4> aerialPerspective;
 // Set 1, its own ring: the TLAS handle changes almost every frame, and rewriting one set's binding while
 // an earlier frame's command buffer may still be reading it is the hazard RtPipeline.setTlas exists to
 // guard against. Reusing RtOverlayPipelines.AccelStructureSet rather than growing set 0 is what keeps
@@ -71,6 +73,42 @@ static const uint FROXEL_SHADOW_MASK = 0x01u;
  */
 float sliceDepth(int z, float maxDist) {
     return froxelSliceDepth((float(z) + 0.5) / float(FROXEL_D), maxDist);
+}
+
+float froxelFogNoiseMultiplier(WorldPush wp, float3 p, float footprint) {
+    if (!volumeFogNoiseOn(wp.fogParams, wp.fogAmbient)) {
+        return 1.0;
+    }
+    float2 packed = fogNoise.SampleLevel(volumeFogNoiseUv(wp.fogNoiseOrigin, p), 0.0).rg;
+    return volumeFogNoiseMultiplier(packed, wp.fogAmbient, wp.fogNoiseOrigin.w, footprint);
+}
+
+float froxelFogDensity(WorldPush wp, float3 p, float footprint) {
+    return volumeFogHeightDensity(wp.fogParams, p)
+            * froxelFogNoiseMultiplier(wp, p, footprint);
+}
+
+/** Same heterogeneous source-path integral as volume.slang, expressed against this compute set. */
+float3 froxelFogTransmittance(WorldPush wp, float3 sigma, float3 ro, float3 rd, float dist) {
+    if (!volumeFogNoiseOn(wp.fogParams, wp.fogAmbient)) {
+        return volumeAmbientTransmittance(wp.fogParams, wp.fogExtinction,
+                                          sigma, ro, rd, dist);
+    }
+    float start = min(wp.fogExtinction.w, dist);
+    float end = min(dist, wp.fogParams.w);
+    float span = max(end - start, 0.0);
+    int steps = volumeFogMarchSteps(span, wp.fogAmbient, wp.fogNoiseOrigin.w);
+    if (steps <= 0) {
+        return float3(1.0, 1.0, 1.0);
+    }
+    float dt = span / float(steps);
+    float tau = 0.0;
+    [loop]
+    for (int i = 0; i < steps; ++i) {
+        float t = start + (float(i) + 0.5) * dt;
+        tau += froxelFogDensity(wp, ro + rd * t, dt) * dt;
+    }
+    return exp(-sigma * tau);
 }
 
 /**
@@ -137,19 +175,14 @@ void main(uint3 id: SV_DispatchThreadID) {
     float3 rd = normalize(farP - nearP);
 
     float maxDist = max(wp.fogParams.w, 1.0);
-    float sigma0 = wp.fogParams.x;
-    float heightScale = max(wp.fogParams.y, 1.0e-3);
-    float heightBase = wp.fogParams.z;
     float startDist = wp.fogExtinction.w;
 
     uint lightSeed = id.x * 1973u ^ id.y * 9277u ^ wp.frameIndex * 2654435761u;
     lightSeed = pcg(lightSeed);
 
-    // March from the eye to this froxel's far edge, accumulating as we go. Each thread redoes the stretch
-    // its predecessors covered, which is deliberate: the alternative is a serial scan down the column with
-    // shared memory, and FROXEL_D threads each walking at most FROXEL_D steps of a cheap integrand is not worth the
-    // synchronisation or the loss of a flat dispatch. It also means every froxel is self-contained, so a
-    // future visibility term can be added per cell without a second pass to prefix-sum it.
+    // March once from the eye through the whole column, writing each prefix as it passes. A per-cell
+    // dispatch would redo every earlier slice and, now that a step casts visibility rays and may march a
+    // noisy source path, would multiply the expensive work for no new answer (D59).
     float3 transmittance = float3(1.0, 1.0, 1.0);
     float3 inScatter = float3(0.0, 0.0, 0.0);
 
@@ -182,7 +215,7 @@ void main(uint3 id: SV_DispatchThreadID) {
             // SAME air — by 1.6x at y=40 and 3.6x at y=0, growing the deeper you go. Two machines added
             // together on screen must not disagree about their inputs; that is the whole reason M10.1
             // deleted the CPU atmosphere port.
-            float fogDensity = sigma0 * exp(-max(p.y - heightBase, 0.0) / heightScale);
+            float fogDensity = froxelFogDensity(wp, p, dt);
             float3 fogSigmaT = wp.fogExtinction.xyz * max(fogDensity, 0.0);
 
             // The atmosphere, at this point's altitude. Two orders of magnitude smaller than the fog at this
@@ -224,8 +257,8 @@ void main(uint3 id: SV_DispatchThreadID) {
             float3 fogSunSigma = multiScatter
                     ? volumeDiffuseAttenuation(wp.fogExtinction.xyz, fogAlbedo, wp.fogScatter.w)
                     : wp.fogExtinction.xyz;
-            float3 localFogSunT = volumeAmbientTransmittance(wp.fogParams, wp.fogExtinction,
-                                                               fogSunSigma, p, sampledLightDir, maxDist);
+            float3 localFogSunT = froxelFogTransmittance(
+                    wp, fogSunSigma, p, sampledLightDir, maxDist);
 
             // M13: the visibility this grid was built to hold. One ray per CELL rather than per pixel, which
             // is the entire difference between volumetric shadows and what a path tracer can afford to do

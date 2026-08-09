@@ -116,6 +116,7 @@ public struct WaterWaveParams {
     public float  baseLength;  // D50
     public float  steepness;   // multiplies the authored a*k; storms are steeper, not just taller
     public float  complexity;  // 0 = shipped look, 1 = crossing swell + wider fan + more meander
+    public float  stormSwellBias; // fixed-band weather redistribution: long up, short down
     public float  gustScale;   // patch size in blocks; <= 0 disables the gusts entirely
     public float  gustStrength;
     public float  gustSpeed;
@@ -453,7 +454,13 @@ public void waterWaveSpectrum<let WITH_DT : int, let WITH_HEIGHT : int>(float2 p
                 * (1.0 - smoothstep(GUST_LAMBDA_LO, GUST_LAMBDA_HI, lambda));
         float g = lerp(1.0, gust, gustWeight);
         // a = Q/k; h = a·e^{S(sin φ−1)}; ∇h = a·S·cos φ·e^{S(sin φ−1)}·∇φ
-        float aBase = lodWeight * (Q[i] * params.steepness / k);
+        // D72: weather never changes lambda or phase. Reinterpreting k*x-w*t under a new wavelength
+        // teleports every crest, especially after the absolute wave clock has accumulated for minutes.
+        // Instead, one bounded weight transfers emphasis across the ten fixed bands. At zero this is
+        // bit-identical; at one the longest band is doubled and the shortest is silent.
+        float longBand = 1.0 - float(i) / float(WAVE_COUNT - 1);
+        float stormWeight = 1.0 + saturate(params.stormSwellBias) * (2.0 * longBand - 1.0);
+        float aBase = stormWeight * lodWeight * (Q[i] * params.steepness / k);
         float amplitude = aBase * S;
         // This component's own height, needed by the product rule below whether or not the caller wanted
         // a height back. One multiply against a sin, a cos and an exp -- it does not show.

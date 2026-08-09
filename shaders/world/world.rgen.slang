@@ -24,6 +24,7 @@ import math;
 import bsdf;
 import medium;
 import volume;
+import volume_source; // debug 25 shares D66's exact resolution and multiplier helpers
 import volume_visibility; // debug view 18 reads the grid directly
 import cloud;
 import segment;
@@ -888,6 +889,8 @@ static const uint DEBUG_VIEW_WATER_SIM = 23u;
 // 24: the same field, but sampled the way the SHADING samples it. 23 proves the field has content; this
 // proves the content reaches the surface. They fail independently, which is the whole reason for two.
 static const uint DEBUG_VIEW_WATER_SIM_REACH = 24u;
+// M13/D67: one world-space slice through every stage that can erase heterogeneous fog structure.
+static const uint DEBUG_VIEW_FOG_NOISE = 25u;
 
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
@@ -901,6 +904,38 @@ float3 froxelDebug(float2 uv) {
         return f.rgb;
     }
     return float3(f.a, f.a, f.a);
+}
+
+/**
+ * Four equal vertical bands through the actual raygen binding and runtime push values:
+ *   1. decoded base, 2. decoded detail, 3. D66 base/detail resolved weights, 4. final multiplier.
+ *
+ * A fixed world-space distance makes this a spatial slice instead of allowing scene depth to scramble
+ * the field. The footprint is the one a full camera-to-cull interval receives under the configured cap.
+ */
+float3 fogNoiseDebug(uint2 dispatchIndex, uint2 dimensions) {
+    CameraRay cam = cameraRay(dispatchIndex, dimensions);
+    float start = min(worldPush.fogExtinction.w, worldPush.fogParams.w);
+    float span = max(worldPush.fogParams.w - start, 0.0);
+    int steps = volumeFogMarchSteps(span, worldPush.fogAmbient, worldPush.fogNoiseOrigin.w);
+    float footprint = span / float(max(steps, 1));
+    float probeDist = min(max(worldPush.fogNoiseOrigin.w * 0.25, 1.0), max(span, 1.0));
+    float4 sample = ambientNoiseDebugSample(cam.origin + cam.dir * probeDist, footprint);
+
+    uint band = min(dispatchIndex.x * 4u / max(dimensions.x, 1u), 3u);
+    if (band < 1u) {
+        float v = sample.x * 0.5 + 0.5;
+        return float3(v, v, v);
+    }
+    if (band < 2u) {
+        float v = sample.y * 0.5 + 0.5;
+        return float3(v, v, v);
+    }
+    if (band < 3u) {
+        return float3(sample.z, sample.w, 0.0); // red base, green detail, yellow both
+    }
+    float multiplier = ambientNoiseDebugMultiplier(sample);
+    return float3(multiplier, multiplier, multiplier) * 0.5; // neutral density 1 -> middle grey
 }
 
 // The volumetric visibility grid (M13.2), sampled at the MIDPOINT of this pixel's camera segment.
@@ -1308,6 +1343,8 @@ void main() {
                     ? waterSimDebug(screenUv)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM_REACH
                     ? waterSimReachDebug(unpackPathSegment(queue[pixelIndex]).ro)
+                    : pc.debugView == DEBUG_VIEW_FOG_NOISE
+                    ? fogNoiseDebug(dispatchIndex, dimensions)
                     : pc.debugView == DEBUG_VIEW_CLOUD_PROBE
                     // The queued record carries the ray pass A stopped on, which for a pixel looking at
                     // sky is the camera ray itself. Taken from the queue rather than rebuilt here: a

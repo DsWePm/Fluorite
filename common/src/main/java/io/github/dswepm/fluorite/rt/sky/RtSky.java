@@ -92,9 +92,11 @@ public final class RtSky {
     private final Bake froxelBake;
     private final Bake visibilityBake;
     private final Bake cloudNoiseBake;
+    private final Bake fogNoiseBake;
     private final RtOverlayPipelines.AccelStructureSet froxelTlas;
     private final RtOverlayPipelines.AccelStructureSet visibilityTlas;
     private final long lutSampler;
+    private final long noiseSampler;
     private RtImage transmittance;
     private RtImage multiScatter;
     private RtImage skyViewRayleigh;
@@ -103,6 +105,7 @@ public final class RtSky {
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
     private RtImage cloudNoise;
+    private RtImage fogNoise;
     // The interactive water simulation's height field (M12), in metres of displacement. Three buffers
     // rotate through prev/cur/next: leapfrog needs both previous states, so writing next over prev in
     // place would corrupt neighbours a later thread still has to read.
@@ -139,13 +142,16 @@ public final class RtSky {
     /** Must equal CLOUD_NOISE_DIM in cloud_noise.comp.slang, and numthreads there. */
     private static final int CLOUD_NOISE_DIM = 128;
     private static final int CLOUD_NOISE_GROUP = 4;
+    /** Must match FOG_NOISE_DIM in fog_noise.comp.slang. */
+    private static final int FOG_NOISE_DIM = 128;
+    private static final int FOG_NOISE_GROUP = 4;
     private boolean baked;
 
     private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
                   Bake mediumSkyReduceBake, Bake froxelBake,
                   RtOverlayPipelines.AccelStructureSet froxelTlas,
                   Bake visibilityBake, RtOverlayPipelines.AccelStructureSet visibilityTlas,
-                  Bake cloudNoiseBake, long lutSampler) {
+                  Bake cloudNoiseBake, Bake fogNoiseBake, long lutSampler, long noiseSampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
         this.multiScatterBake = multiScatterBake;
@@ -155,8 +161,10 @@ public final class RtSky {
         this.froxelTlas = froxelTlas;
         this.visibilityBake = visibilityBake;
         this.cloudNoiseBake = cloudNoiseBake;
+        this.fogNoiseBake = fogNoiseBake;
         this.visibilityTlas = visibilityTlas;
         this.lutSampler = lutSampler;
+        this.noiseSampler = noiseSampler;
     }
 
     public static RtSky create(RtContext ctx) {
@@ -197,6 +205,7 @@ public final class RtSky {
                     ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "sky froxel TLAS");
             Bake froxelBake = createBake(ctx, stack, "sky_froxel.comp.spv", "sky froxel",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                            VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, FROXEL_PUSH_BYTES,
                     froxelTlas.layout);
 
@@ -215,15 +224,28 @@ public final class RtSky {
             long sampler = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, sampler, "sky LUT chain sampler");
 
+            // The two packed density fields are periodic in all three axes. The bake makes their lattice
+            // continuous at the seam; REPEAT is still needed so filtering across that seam reads the
+            // opposite face instead of clamping to the last texel.
+            sci.addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                    .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                    .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT);
+            check(VK10.vkCreateSampler(vk, sci, null, p), "vkCreateSampler(rt sky noise)");
+            long noiseSampler = p.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, noiseSampler,
+                    "sky periodic-noise sampler");
+
             // The volumetric visibility grid (M13.2). Its own TLAS ring rather than a second bind of the
             // froxel's: a ring slot is claimed per bind, and binding one ring twice a frame is exactly the
             // kind of arithmetic that works right up until the ring wraps.
-            // The cloud noise (M11.1): one storage image out, nothing in. Once-ever like the
+            // The cloud and fog noises: one storage image out apiece, nothing in. Once-ever like the
             // transmittance table, and for the same reason -- nothing in it depends on the time of day or
             // the camera. It lives on this bake chain rather than in its own object because the chain's
             // whole value is that the ORDER is settled in one place; a second owner would be a second
             // opinion about when things are ready.
             Bake cloudNoiseBake = createBake(ctx, stack, "cloud_noise.comp.spv", "cloud noise",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
+            Bake fogNoiseBake = createBake(ctx, stack, "fog_noise.comp.spv", "fog noise",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
 
             // One binding: the simulated height. Everything else the displacement needs arrives as a
@@ -265,7 +287,8 @@ public final class RtSky {
 
             RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
                     mediumSkyReduceBake, froxelBake, froxelTlas,
-                    visibilityBake, visibilityTlas, cloudNoiseBake, sampler);
+                    visibilityBake, visibilityTlas, cloudNoiseBake, fogNoiseBake,
+                    sampler, noiseSampler);
             sky.waterSimBakes = waterSimBakes;
             sky.waterDeformBake = waterDeformBake;
             sky.waterObstacleBake = waterObstacleBake;
@@ -309,6 +332,11 @@ public final class RtSky {
             sky.cloudNoise = ctx.createStorageImage3D(CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_DIM,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "cloud noise volume");
             writeStorageImage(vk, stack, cloudNoiseBake.descriptorSet(), 0, sky.cloudNoise.view);
+            // R broad variation, G detail, both signed-zero-mean after decode. One RGBA8 volume rather
+            // than the old plan's 128^3 + 32^3 pair: one filtered fetch carries both frequencies.
+            sky.fogNoise = ctx.createStorageImage3D(FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_DIM,
+                    VK10.VK_FORMAT_R8G8B8A8_UNORM, "fog noise volume");
+            writeStorageImage(vk, stack, fogNoiseBake.descriptorSet(), 0, sky.fogNoise.view);
 
             // R16F: a displacement in metres, signed, and a ripple's amplitude spans four orders of
             // magnitude between a raindrop and a boat wake -- which is what a float format buys over the
@@ -339,7 +367,8 @@ public final class RtSky {
             sky.aerialPerspective = ctx.createStorageImage3D(FROXEL_W, FROXEL_H, FROXEL_D,
                     VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "aerial perspective froxel");
             writeSampledImage(vk, stack, froxelBake.descriptorSet(), 0, sky.transmittance.view, sampler);
-            writeStorageImage(vk, stack, froxelBake.descriptorSet(), 1, sky.aerialPerspective.view);
+            writeSampledImage(vk, stack, froxelBake.descriptorSet(), 1, sky.fogNoise.view, noiseSampler);
+            writeStorageImage(vk, stack, froxelBake.descriptorSet(), 2, sky.aerialPerspective.view);
 
             // Eight bits per channel. R/G are binary visibility before filtering; B/A carry the
             // visibility-weighted unit-square coordinates of the sampled celestial point. Those moments
@@ -392,7 +421,11 @@ public final class RtSky {
         return cloudNoise == null ? 0L : cloudNoise.view;
     }
 
-    /** The height field the shading samples. Fixed; the rotation happens behind it. */
+    /** M13 packed heterogeneous fog: R broad variation, G detail, both mean-zero after decode. */
+    public long fogNoiseView() {
+        return fogNoise == null ? 0L : fogNoise.view;
+    }
+
     /**
      * Displace one section's water vertices onto the wave surface, and record the barrier that lets the
      * BLAS refit read them.
@@ -457,6 +490,7 @@ public final class RtSky {
         return (int) Math.max(-WATER_SIM_DIM, Math.min(WATER_SIM_DIM, delta));
     }
 
+    /** The height field the shading samples. Fixed; the rotation happens behind it. */
     public long waterHeightView() {
         return waterDisplay == null ? 0L : waterDisplay.view;
     }
@@ -599,10 +633,12 @@ public final class RtSky {
             VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, barrier, null, null);
             dispatch(cmd, stack, multiScatterBake, MULTISCATTER_N, MULTISCATTER_N);
-            // The cloud noise shares this once-ever pass but nothing in the chain above it: no barrier
-            // between them because neither reads what the other writes.
+            // The two noise bakes share this once-ever pass but nothing in the chain above it: no barrier
+            // between them because neither reads what another bake writes.
             dispatch3D(cmd, stack, cloudNoiseBake,
                     CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_GROUP);
+            dispatch3D(cmd, stack, fogNoiseBake,
+                    FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_GROUP);
         }
         baked = true;
         return true;
@@ -787,6 +823,10 @@ public final class RtSky {
             cloudNoise.destroy();
             cloudNoise = null;
         }
+        if (fogNoise != null) {
+            fogNoise.destroy();
+            fogNoise = null;
+        }
         if (waterHeight != null) {
             for (RtImage img : waterHeight) {
                 if (img != null) {
@@ -806,6 +846,9 @@ public final class RtSky {
         if (lutSampler != 0L) {
             VK10.vkDestroySampler(vk, lutSampler, null);
         }
+        if (noiseSampler != 0L) {
+            VK10.vkDestroySampler(vk, noiseSampler, null);
+        }
         visibilityTlas.destroy(vk);
         if (waterObstacleTlas != null) {
             waterObstacleTlas.destroy(vk);
@@ -822,6 +865,7 @@ public final class RtSky {
         }
         visibilityBake.destroy(vk);
         cloudNoiseBake.destroy(vk);
+        fogNoiseBake.destroy(vk);
         froxelTlas.destroy(vk);
         froxelBake.destroy(vk);
         mediumSkyReduceBake.destroy(vk);

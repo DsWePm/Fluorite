@@ -112,7 +112,13 @@ public final class FluoriteConfig {
                         + " to the water and glass a path enters through geometry. density-scale multiplies\n"
                         + " the active dimension's density preset; the legacy-named intensity-scale is now\n"
                         + " a 0..1 multiplier over its physical scattering albedo. cull-distance bounds how far a segment keeps\n"
-                        + " accumulating fog. scatter-tint is one of: neutral, warm, cool, green, violet.");
+                        + " accumulating fog. fog-noise-enabled gates the heterogeneous path; fog-noise-contrast\n"
+                        + " redistributes density through a world-anchored mean-one 3D field. scatter-tint is one of:\n"
+                        + " neutral, warm, cool, green, violet.");
+        FILE.setComment("weather",
+                " Continuous rain/thunder/time responses over the clear-weather Fog, Sky and Water values.\n"
+                        + " Positive scalar gains multiply non-negative coefficients; cloud coverage/type use\n"
+                        + " signed biases. The CPU resolves these once per frame before the shader sees them.");
         FILE.setComment("bsdf",
                 " Surface response. sun-mis weights the two ways the sun and moon are estimated —\n"
                         + " next-event estimation toward the light, and a continuation ray landing on it —\n"
@@ -652,6 +658,45 @@ public final class FluoriteConfig {
             /** Exponential height fog: the analytic term, evaluated per segment with no marching. */
             public static final BooleanSetting HEIGHT_FOG =
                     bool("fluorite.rt.fog.heightFog", "volumetrics.height-fog", true);
+
+            /** Exact hot-path gate. Off exits before every fog-noise texture fetch and numerical march. */
+            public static final BooleanSetting FOG_NOISE_ENABLED =
+                    bool("fluorite.rt.fog.noiseEnabled", "volumetrics.fog-noise-enabled", false);
+
+            /**
+             * Contrast of the world-anchored heterogeneous density field.
+             *
+             * <p>One is D67's calibrated field. Values above one use an odd bounded remap in the shared
+             * shader module rather than clipping negative density: paired samples still sum to two,
+             * every height keeps mean density one, and the local multiplier remains in 0..2.
+             */
+            public static final FloatSetting FOG_NOISE_CONTRAST =
+                    clampedFloat("fluorite.rt.fog.noiseContrast", "volumetrics.fog-noise-contrast",
+                            1f, 0f, 4f);
+
+            /** One repeat of the packed fog field in blocks: base features are /4, detail is /16. */
+            public static final FloatSetting FOG_NOISE_FIELD_SCALE =
+                    clampedFloat("fluorite.rt.fog.noiseFieldScale", "volumetrics.fog-noise-field-scale",
+                            384f, 64f, 2048f);
+
+            /** Advection speed of the fog density field in blocks per second. */
+            public static final FloatSetting FOG_NOISE_WIND_SPEED =
+                    clampedFloat("fluorite.rt.fog.noiseWindSpeed", "volumetrics.fog-noise-wind-speed",
+                            0.15f, 0f, 8f);
+
+            /** Degrees the near-ground fog runs off the global weather wind. */
+            public static final FloatSetting FOG_NOISE_WIND_OFFSET =
+                    clampedFloat("fluorite.rt.fog.noiseWindOffset", "volumetrics.fog-noise-wind-offset",
+                            -35f, -180f, 180f);
+
+            /** Absolute fog heading after D69's global direction plus layer offset are resolved. */
+            public static float fogNoiseWindAngle() {
+                return Rt.Composite.WIND_ANGLE.value() + FOG_NOISE_WIND_OFFSET.value();
+            }
+
+            /** Maximum numerical density samples in one contiguous ambient interval. */
+            public static final IntSetting FOG_NOISE_MARCH_STEPS =
+                    intValue("fluorite.rt.fog.noiseMarchSteps", "volumetrics.fog-noise-march-steps", 12);
 
             /**
              * How much thicker the fog gets at dawn, as a multiple of the base density.
@@ -1256,6 +1301,11 @@ public final class FluoriteConfig {
                 return Math.clamp(VISIBILITY_MAX_STEPS.value(), 1, 31);
             }
 
+            /** Runtime bound mirrored by VOLUME_FOG_MARCH_LIMIT in volume_source.slang. */
+            public static int fogNoiseMarchSteps() {
+                return Math.clamp(FOG_NOISE_MARCH_STEPS.value(), 1, 31);
+            }
+
             /** Bits 16-17 of worldPush.flags: 0 both, 1 froxel only, 2 marched only, 3 neither. */
             public static int segmentSourceId() {
                 return switch (SEGMENT_SOURCE.get()) {
@@ -1425,6 +1475,67 @@ public final class FluoriteConfig {
             }
         }
 
+        /**
+         * Continuous environment forcing authored on top of each medium's clear-weather baseline.
+         *
+         * <p>These are gains or signed biases, not a second copy of the fog, cloud and water settings.
+         * Rain and thunder remain independent vanilla axes and are resolved once per frame by
+         * {@code RtEnvironmentForcing}; the shader receives only the final physical parameters.
+         */
+        public static final class Weather {
+            /** Extra fog-density gain at full thunder, on top of the existing rain gain. */
+            public static final FloatSetting FOG_THUNDER_DENSITY_GAIN =
+                    clampedFloat("fluorite.rt.weather.fogThunderDensityGain",
+                            "weather.fog-thunder-density-gain", 0.5f, -1f, 4f);
+
+            /** Signed response of fog-structure contrast at peak radiation-fog time. */
+            public static final FloatSetting FOG_TIME_STRUCTURE_GAIN =
+                    clampedFloat("fluorite.rt.weather.fogTimeStructureGain",
+                            "weather.fog-time-structure-gain", 0f, -1f, 4f);
+            /** Signed response of fog-structure contrast at full rain. */
+            public static final FloatSetting FOG_RAIN_STRUCTURE_GAIN =
+                    clampedFloat("fluorite.rt.weather.fogRainStructureGain",
+                            "weather.fog-rain-structure-gain", 0f, -1f, 4f);
+            /** Signed response of fog-structure contrast at full thunder. */
+            public static final FloatSetting FOG_THUNDER_STRUCTURE_GAIN =
+                    clampedFloat("fluorite.rt.weather.fogThunderStructureGain",
+                            "weather.fog-thunder-structure-gain", 0f, -1f, 4f);
+
+            /** Coverage-field bias at full rain; preserves M11's former authored constant by default. */
+            public static final FloatSetting CLOUD_RAIN_COVERAGE_BIAS =
+                    clampedFloat("fluorite.rt.weather.cloudRainCoverageBias",
+                            "weather.cloud-rain-coverage-bias", 0.55f, -1f, 1f);
+            /** Multiplicative cloud-density gain at full rain. */
+            public static final FloatSetting CLOUD_RAIN_DENSITY_GAIN =
+                    clampedFloat("fluorite.rt.weather.cloudRainDensityGain",
+                            "weather.cloud-rain-density-gain", 0.8f, -1f, 4f);
+            /** Cloud-type field bias at full thunder. */
+            public static final FloatSetting CLOUD_THUNDER_TYPE_BIAS =
+                    clampedFloat("fluorite.rt.weather.cloudThunderTypeBias",
+                            "weather.cloud-thunder-type-bias", 0.75f, -1f, 1f);
+
+            /** Suspended-particle scattering gain at full rain; extinction follows because sigma_t=a+s. */
+            public static final FloatSetting WATER_RAIN_SCATTER_GAIN =
+                    clampedFloat("fluorite.rt.weather.waterRainScatterGain",
+                            "weather.water-rain-scatter-gain", 0f, -1f, 4f);
+            /** Additional water-scattering gain at full thunder. */
+            public static final FloatSetting WATER_THUNDER_SCATTER_GAIN =
+                    clampedFloat("fluorite.rt.weather.waterThunderScatterGain",
+                            "weather.water-thunder-scatter-gain", 0f, -1f, 4f);
+
+            /**
+             * How strongly storms transfer energy from short chop toward the existing long bands.
+             * Wavelengths and phases stay fixed; changing either against absolute time makes every crest
+             * jump. The resolved bias is ramped over twenty seconds before reaching the shader.
+             */
+            public static final FloatSetting WATER_STORM_SWELL_BIAS =
+                    clampedFloat("fluorite.rt.weather.waterStormSwellBias",
+                            "weather.water-storm-swell-bias", 0.5f, 0f, 1f);
+
+            private Weather() {
+            }
+        }
+
         /** Enclosed participating media: what water does besides absorb. */
         public static final class Water {
             /**
@@ -1583,6 +1694,8 @@ public final class FluoriteConfig {
              * <p>It drives THREE things, not one. A storm sea is taller, and steeper, and gustier -- and
              * of those, steepness is what actually reads as violent. Scaling only the amplitude gives a
              * bigger calm sea, which looks like the camera moved closer rather than like weather.
+             * The Weather Effects swell-bias control additionally transfers emphasis toward the existing
+             * long bands. The resolved state takes twenty seconds per unit to change.
              *
              * <p>0 leaves the sea indifferent to the sky, which is the shipped behaviour.
              */
@@ -1647,9 +1760,10 @@ public final class FluoriteConfig {
              *
              * <p>The weather does NOT act here, and that is deliberate too. In deep water a wave's speed
              * depends only on its wavelength -- c = sqrt(g/k) -- so wind does not make a given wave
-             * travel faster, it makes waves LONGER, and longer waves are faster for free. So a storm
-             * reaches the speed through WAVE_WEATHER lengthening the spectrum, not by multiplying time.
-             * Multiplying time would have looked similar and meant something false.
+             * travel faster. D72 also keeps every authored wavelength fixed: changing k against an
+             * accumulated absolute phase clock teleports crests. Storms instead make the already-long,
+             * already-faster bands more prominent over twenty seconds. Multiplying time would look
+             * similar while meaning something false.
              */
             public static final FloatSetting WAVE_SPEED =
                     clampedFloat("fluorite.rt.water.waveSpeed", "water.wave-speed", 1f, 0f, 3f);
@@ -1930,6 +2044,14 @@ public final class FluoriteConfig {
              * field does not know about colour, and all three wavelengths share the same three surface
              * normals. Only the refraction and the landing arithmetic run three times.
              */
+            /**
+             * Authored upper bound for underwater caustic contrast. This is a property of the water's
+             * focusing model, beside dispersion; weather only supplies the automatic attenuation.
+             */
+            public static final FloatSetting CAUSTIC_STRENGTH =
+                    clampedFloat("fluorite.rt.water.causticStrength",
+                            "water.caustic-strength", 1f, 0f, 1f);
+
             public static final FloatSetting CAUSTIC_DISPERSION =
                     clampedFloat("fluorite.rt.water.causticDispersion", "water.caustic-dispersion",
                             50.0f, 0.0f, 100.0f);

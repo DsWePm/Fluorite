@@ -72,6 +72,7 @@ WaterWaveParams deformWaveParams(WorldPush wp) {
     p.baseLength = wp.waterAmbient.y;
     p.complexity = wp.waterWaveShape.z;
     p.steepness = wp.waterWaveShape.w;
+    p.stormSwellBias = wp.waterSimPlane.z;
     p.gustScale = wp.waterWaveGust.x;
     p.gustStrength = wp.waterWaveGust.y;
     p.gustSpeed = wp.waterWaveGust.z;

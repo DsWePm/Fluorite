@@ -86,6 +86,7 @@ public WaterWaveParams waterWaveParams() {
     p.baseLength = worldPush.waterAmbient.y;
     p.complexity = worldPush.waterWaveShape.z;
     p.steepness = worldPush.waterWaveShape.w;
+    p.stormSwellBias = worldPush.waterSimPlane.z;
     p.gustScale = worldPush.waterWaveGust.x;
     p.gustStrength = worldPush.waterWaveGust.y;
     p.gustSpeed = worldPush.waterWaveGust.z;
@@ -299,5 +300,8 @@ public float3 waterCaustic(float3 exitPos, float3 lightDir, float waterDist) {
         // clamp bounds the fold-line spikes whose energy the surrounding darkening already paid for.
         focus[c] = min((CAUSTIC_EPS * CAUSTIC_EPS) / max(det, 1.0e-5), CAUSTIC_MAX);
     }
-    return lerp(float3(1.0, 1.0, 1.0), focus, fade);
+    // D73 fades contrast, not sunlight. Bright folds and their compensating dark regions both move
+    // toward neutral 1 under dense weather, preserving the pattern's mean irradiance.
+    float causticContrast = saturate(worldPush.waterSimPlane.w);
+    return lerp(float3(1.0, 1.0, 1.0), focus, fade * causticContrast);
 }

@@ -61,6 +61,7 @@ public final class RtVideoOptions {
         EXPOSURE("exposure"),
         MATERIAL("material"),
         SKY("sky"),
+        WEATHER("weather"),
         WATER("water"),
         FOG("fog"),
         UPSCALING("upscaling"),
@@ -105,9 +106,6 @@ public final class RtVideoOptions {
                 // reasons and nothing else: a cloud deck is a thing you look UP at, authored alongside
                 // the sun and the sky it hangs in, while the fog is the air you stand in.
                 case SKY -> List.of(
-                        // The one wind at the top of the sky screen, where what it drives -- both
-                        // cloud layers -- is exactly what you are looking at.
-                        Section.of(windAngle()),
                         Section.titled("fluorite.options.rt.section.sunArt",
                                 sunIntensity(), sunTemperature()),
                         Section.titled("fluorite.options.rt.section.skyArt",
@@ -117,7 +115,7 @@ public final class RtVideoOptions {
                         // number below has a counterpart, including its own wind, because a high ice
                         // sheet and a convective deck do not share a size, a height or a speed.
                         Section.titled("fluorite.options.rt.section.cumulus",
-                                clouds(), cloudWeather(), cloudCoverage(), cloudType(), cloudDensity(),
+                                clouds(), cloudCoverage(), cloudType(), cloudDensity(),
                                 cloudExtinction(), cloudAltitude(), cloudThickness(),
                                 cloudFieldScale(), cloudBaseScale(), cloudDetailScale(),
                                 cloudWindSpeed(), cloudWindOffset()),
@@ -134,8 +132,20 @@ public final class RtVideoOptions {
                                 cloudCirrusFieldScale(), cloudCirrusBaseScale(),
                                 cloudCirrusDetailScale(),
                                 cloudCirrusWindSpeed(), cloudCirrusWindOffset()));
+                case WEATHER -> List.of(
+                        Section.of(windAngle()),
+                        Section.titled("fluorite.options.rt.section.weatherFog",
+                                fogTimeGain(), fogWeatherGain(), fogThunderDensityGain(),
+                                fogTimeStructureGain(), fogRainStructureGain(),
+                                fogThunderStructureGain()),
+                        Section.titled("fluorite.options.rt.section.weatherCloud",
+                                cloudWeather(), cloudRainCoverageBias(), cloudRainDensityGain(),
+                                cloudThunderTypeBias()),
+                        Section.titled("fluorite.options.rt.section.weatherWater",
+                                waveWeather(), waterStormSwellBias(),
+                                waterRainScatterGain(), waterThunderScatterGain()));
                 case WATER -> List.of(
-                        Section.of(waterWaves(), waterCausticDispersion(),
+                        Section.of(waterWaves(), waterCausticDispersion(), waterCausticStrength(),
                                 waterScatterSource(),
                                 bool("fluorite.options.rt.waterSunShadow",
                                         FluoriteConfig.Rt.Water.SUN_SHADOW),
@@ -155,11 +165,11 @@ public final class RtVideoOptions {
                         // and a band-limited one at that. Filing these under it said the opposite, and
                         // would have had anyone with deformation off assume the whole group was inert.
                         Section.titled("fluorite.options.rt.section.waterWaves",
-                                windAngle(), waveWindOffset(), waveLength(), waveAmplitude(),
+                                waveWindOffset(), waveLength(), waveAmplitude(),
                                 waveSpeed(), waveComplexity(), waveCrossAngle(),
                                 waveWarp(), waveWarpScale(),
                                 waveFirst(), waveLast(), waveBandLimit(),
-                                waveGust(), waveGustScale(), waveGustSpeed(), waveWeather()),
+                                waveGust(), waveGustScale(), waveGustSpeed()),
                         // What is genuinely about moving vertices.
                         Section.titled("fluorite.options.rt.section.waterDeform",
                                 waterDeform(), waterDeformMode(), waterDeformRange(), waterDeformCell(),
@@ -169,10 +179,13 @@ public final class RtVideoOptions {
                                 waterAbsorbR(), waterAbsorbG(), waterAbsorbB()));
                 // What is left is genuinely the fog and only the fog. fogSunShadowRays stays because the
                 // water has its own sun-shadow switch under WATER and these two do not affect each other.
-                case FOG -> List.of(Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
-                        fogTimeGain(), fogWeatherGain(),
-                        fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                        fogPhaseG(), fogScatterTint(), fogSunShadowRays()));
+                case FOG -> List.of(
+                        Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
+                                fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
+                                fogPhaseG(), fogScatterTint(), fogSunShadowRays()),
+                        Section.titled("fluorite.options.rt.section.fogNoise",
+                                fogNoiseEnabled(), fogNoiseContrast(), fogNoiseFieldScale(),
+                                fogNoiseWindSpeed(), fogNoiseWindOffset(), fogNoiseMarchSteps()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
@@ -348,6 +361,12 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 1000),
             Math.clamp(Math.round(setting.value() * 10f), 0, 1000),
             v -> setting.set(v / 10.0f));
+    }
+
+    /** Caustic contrast belongs beside dispersion; weather attenuates it but does not own it. */
+    private static OptionInstance<Integer> waterCausticStrength() {
+        return unitSlider("fluorite.options.rt.waterCausticStrength",
+                FluoriteConfig.Rt.Water.CAUSTIC_STRENGTH);
     }
 
     private static OptionInstance<Boolean> waterSim() {
@@ -534,8 +553,111 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.FOG_WEATHER_GAIN);
     }
 
+    private static OptionInstance<Integer> fogThunderDensityGain() {
+        return gainSlider("fluorite.options.rt.fogThunderDensityGain",
+                FluoriteConfig.Rt.Weather.FOG_THUNDER_DENSITY_GAIN);
+    }
+
+    private static OptionInstance<Integer> fogTimeStructureGain() {
+        return gainSlider("fluorite.options.rt.fogTimeStructureGain",
+                FluoriteConfig.Rt.Weather.FOG_TIME_STRUCTURE_GAIN);
+    }
+
+    private static OptionInstance<Integer> fogRainStructureGain() {
+        return gainSlider("fluorite.options.rt.fogRainStructureGain",
+                FluoriteConfig.Rt.Weather.FOG_RAIN_STRUCTURE_GAIN);
+    }
+
+    private static OptionInstance<Integer> fogThunderStructureGain() {
+        return gainSlider("fluorite.options.rt.fogThunderStructureGain",
+                FluoriteConfig.Rt.Weather.FOG_THUNDER_STRUCTURE_GAIN);
+    }
+
+    private static OptionInstance<Integer> cloudRainCoverageBias() {
+        return biasSlider("fluorite.options.rt.cloudRainCoverageBias",
+                FluoriteConfig.Rt.Weather.CLOUD_RAIN_COVERAGE_BIAS);
+    }
+
+    private static OptionInstance<Integer> cloudRainDensityGain() {
+        return gainSlider("fluorite.options.rt.cloudRainDensityGain",
+                FluoriteConfig.Rt.Weather.CLOUD_RAIN_DENSITY_GAIN);
+    }
+
+    private static OptionInstance<Integer> cloudThunderTypeBias() {
+        return biasSlider("fluorite.options.rt.cloudThunderTypeBias",
+                FluoriteConfig.Rt.Weather.CLOUD_THUNDER_TYPE_BIAS);
+    }
+
+    private static OptionInstance<Integer> waterRainScatterGain() {
+        return gainSlider("fluorite.options.rt.waterRainScatterGain",
+                FluoriteConfig.Rt.Weather.WATER_RAIN_SCATTER_GAIN);
+    }
+
+    private static OptionInstance<Integer> waterThunderScatterGain() {
+        return gainSlider("fluorite.options.rt.waterThunderScatterGain",
+                FluoriteConfig.Rt.Weather.WATER_THUNDER_SCATTER_GAIN);
+    }
+
+    private static OptionInstance<Integer> waterStormSwellBias() {
+        return unitSlider("fluorite.options.rt.waterStormSwellBias",
+                FluoriteConfig.Rt.Weather.WATER_STORM_SWELL_BIAS);
+    }
+
     private static OptionInstance<Integer> fogDensity() {
         return scaleSlider("fluorite.options.rt.fogDensity", FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE);
+    }
+
+    private static OptionInstance<Boolean> fogNoiseEnabled() {
+        return bool("fluorite.options.rt.fogNoiseEnabled",
+                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_ENABLED);
+    }
+
+    private static OptionInstance<Integer> fogNoiseContrast() {
+        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.FOG_NOISE_CONTRAST;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogNoiseContrast",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.fogNoiseContrast.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
+            new OptionInstance.IntRange(0, 400),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 400),
+            v -> setting.set(v / 100.0f));
+    }
+
+    private static OptionInstance<Integer> fogNoiseFieldScale() {
+        return blockSlider("fluorite.options.rt.fogNoiseFieldScale",
+                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_FIELD_SCALE, 64, 2048);
+    }
+
+    private static OptionInstance<Integer> fogNoiseWindSpeed() {
+        String key = "fluorite.options.rt.fogNoiseWindSpeed";
+        FloatSetting setting = FluoriteConfig.Rt.Volumetrics.FOG_NOISE_WIND_SPEED;
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
+            new OptionInstance.IntRange(0, 800),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 800),
+            v -> setting.set(v / 100.0f));
+    }
+
+    private static OptionInstance<Integer> fogNoiseWindOffset() {
+        return windOffset("fluorite.options.rt.fogNoiseWindOffset",
+                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_WIND_OFFSET);
+    }
+
+    private static OptionInstance<Integer> fogNoiseMarchSteps() {
+        IntSetting setting = FluoriteConfig.Rt.Volumetrics.FOG_NOISE_MARCH_STEPS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogNoiseMarchSteps",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.fogNoiseMarchSteps.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(1, 31),
+            Math.clamp(setting.value(), 1, 31),
+            setting::set);
     }
 
     private static OptionInstance<Integer> fogAlbedoScale() {
@@ -674,13 +796,7 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED);
     }
 
-    /**
-     * The one wind, shown on both the sky and the water screens.
-     *
-     * <p>Deliberately the SAME setting surfaced twice rather than duplicated: whichever screen you are on
-     * while judging how the weather moves, the control is there. Each screen builds its widget from the
-     * current value when it opens, so the two cannot drift apart.
-     */
+    /** The world's one weather heading. Layer speeds and signed offsets remain in their own categories. */
     private static OptionInstance<Integer> windAngle() {
         FloatSetting setting = FluoriteConfig.Rt.Composite.WIND_ANGLE;
         return new OptionInstance<>(
@@ -980,6 +1096,18 @@ public final class RtVideoOptions {
             v -> setting.set(v / 10.0f));
     }
 
+    /** A signed weather gain in [-1, 4]. -1 can cancel a positive coefficient at full forcing. */
+    private static OptionInstance<Integer> gainSlider(String key, FloatSetting setting) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%+.2f", v / 100.0))),
+            new OptionInstance.IntRange(-100, 400),
+            Math.clamp(Math.round(setting.value() * 100.0f), -100, 400),
+            v -> setting.set(v / 100.0f));
+    }
+
     /**
      * A slider over a SIGNED bias in [-1, 1], shown in hundredths.
      *
@@ -995,6 +1123,18 @@ public final class RtVideoOptions {
                     Component.literal(String.format(Locale.ROOT, "%+.2f", v / 100.0))),
             new OptionInstance.IntRange(-100, 100),
             Math.clamp(Math.round(setting.value() * 100.0f), -100, 100),
+            v -> setting.set(v / 100.0f));
+    }
+
+    /** A unit interval shown in hundredths, for bounded strengths rather than unbounded scale gains. */
+    private static OptionInstance<Integer> unitSlider(String key, FloatSetting setting) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 100),
             v -> setting.set(v / 100.0f));
     }
 
@@ -1205,9 +1345,9 @@ public final class RtVideoOptions {
             // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
             new OptionInstance.Enum<>(
                     List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                            24),
+                            24, 25),
                     Codec.INT),
-            Math.clamp(setting.value(), 0, 24),
+            Math.clamp(setting.value(), 0, 25),
             setting::set);
     }
 

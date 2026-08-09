@@ -42,7 +42,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 | M11 | 体积云 | ✅ | 三片切片合入（PR #12–#14）：Perlin-Worley 云体 + 曲率噪声侵蚀、双层（积云甲板 + 卷云片，各自的形状/风/尺度）、太阳自阴影 + phi_fwd 多散射、debug view 22 云链路探针。**成本从未实测（R19），隔离开关 `clouds` / `cloud-sun-steps` / `cloud-secondary` 就绪** |
 | M12 | 交互水体仿真 | ✅ | PR #15–#17。显式蛙跳线性波方程、CFL 在 CPU 侧钳死、三缓冲轮换、障碍处 Neumann、边缘海绵吸收、平滑冲量。障碍掩码由 **CPU 直接问 level**（TLAS 下射线自我否定，且 cull mask 是逐实例的——石头和水共用一个实例）。debug view 23/24 |
 | M12.5 | 水面真形变 + 波场重做 | ✅ | PR #18（39 提交）。顶点位移 + 每帧 refit；**路 3′**（构建时全可形变、派发按距离剔除）消除重锚闪烁；波场加入交叉波系、域扭曲、阵风斑块、天气响应、全分量 meander、分量隔离开关。设计与裁定 §8.2b–§8.2f（D44–D58），教训 F22–F28。**FFT 已裁定不做（D56），设计留档备重启** |
-| M13 残余 | 3D 噪声雾 + froxel 线程映射 | ⛔ | §8.3 |
+| M13 残余 | 3D 噪声雾 + froxel 线程映射 | 🔄 实现完成，待游戏内/性能验收 | D59 线程映射结案；D62–D71 的 3D 场、统一数值积分、结构 gate/对比度、全局风偏转与连续天气 forcing 已落地，见 §8.3 |
 | — | **待测量欠账** | ⚠️ | M11 云成本（R19）从未采；M9 `bench-water` 两机位从未采；M12.5 形变实测仅一次小水场景（4 section / 0.27 ms），海洋场景未测；粒子阴影成本两次未测出 |
 | — | **未复现故障** | ⚠️ | 调整曝光后下水偶发过亮 + 水面丢失。介质栈矛盾探针 `[water-medium]` 已就位，见 §8.2f |
 | M14 | 维度预设 + 配置/UI/文档 | ⛔（二级设置界面已提前做） | §8.4 |
@@ -106,7 +106,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 |---|---|---|---|
 | `PackedPathSegment` | **48 B** | `RtPathSegmentLayoutTest` | std430 量化到 16B 倍数：**只剩一个空 uint lane**；再加一个字段进位到 64B = 1440p 下 **+118 MB**。`pathFlags` bits 0–13 已用（9/10 water、12/13 ambient），新 flag 永远优先用位不用 lane |
 | `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 `uint64_t` 地址 + 3 uint（M15.0 删 `skyLightAddr`：112→104）；Vulkan 保证 128B，**余量 24B**（下一个地址花 8）。每加一个 uint 由 closest-hit 每次命中付费 |
-| `WorldPushData` | **800 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；M16 从 720B 增加 16B 的唯一 `mediumSkyRadiance`（reduction 写、froxel/raygen 共读），M11 再加 64B 的 `cloudParams`/`cloudShape`/`cloudLighting`/`cloudHigh`（CPU 每帧写、raygen 只读，逐射线零成本——见 D37） |
+| `WorldPushData` | **944 B** | `RtSkyMediumLayoutTest` | 独立 GPU 数据缓冲，不受 128B push-constant 上限约束；云、水仿真与波形 authored lanes 将 M12.5 后布局带到 928B；M13 残余新增 16B `fogNoiseOrigin`（世界锚点−独立风漂移、平铺尺度）。噪声强度/细节占比/march cap 复用 M16 退役的 `fogAmbient.xyz`，没有再为三个标量扩布局 |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移全部钉死 |
 | `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney 十个标量打进三个 float4；测试断言**逐 lane 偏移** |
 | `Light` | 32 B | — | 32 整除 64B cache line（48B 时代一半记录跨行、双倍事务）；面积不存储（`4·|halfU×halfV|` 反推） |
@@ -117,7 +117,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 
 | | 封闭介质（水/玻璃/冰） | 环境介质（空气雾） |
 |---|---|---|
-| 透射率 | 闭式 `exp(-σt·t)` | 闭式（高度积分 `ambientHeightIntegral`，剖面**在基准高度以下饱和**） |
+| 透射率 | 闭式 `exp(-σt·t)` | `fog-noise-enabled=false`：解析高度积分；开启且 resolved contrast>0：D63 的统一有限步数非均质 march（高度×平均为 1 的 3D 密度），剖面仍在基准高度以下饱和 |
 | 太阳项 | `enclosedSingleScatter`：每个现有分层样本统一采有限面积天体方向→逐方向大气透射→Snell 折射→归一化相位 `p(ω)`→阴影；最多 3 条阴影线（τ=0/1.25/2.5，段内 jitter；`water.sun-shadow` 默认 false 只弃透射率，仍用射线的 `waterHitT`） | 辐照度 `E × hg`（HG 已含 `1/(4π)`）；默认 1 条抖动阴影线（`volumetrics.sun-shadow-rays=1`），同一有限天体样本驱动颜色/相位/阴影；0 = 读带天体样本一阶矩的可见性网格；太阳路径用扩散衰减 σ（multi-scatter 开时） |
 | 天空项 | 共享 `mediumSkyRadiance` × 上射线深度 × 可见性网格开阔度 × 深度衰减积分 | 同一 `mediumSkyRadiance`；天顶开阔度门控（网格 march 子步，telescoping 恒等式保证网格关闭=闭式 no-op） |
 | 多重散射近似 | `effectiveAnisotropy`（g_eff = g^(1/(1−ω))）+ `diffuseAttenuation`（K=√(3σa·σtr) 钳 [σa,σt]） | 大气 MS LUT + 扩散衰减；**局部雾自身 MS 无模型（已知 limitation）** |
@@ -162,7 +162,7 @@ Fluorite 是 Minecraft 26.2 的客户端 mod：基于 Vulkan 硬件光线追踪�
 
 (b) 更通用（任意非均质、null scattering 天然容纳），代价是**处处付拒绝采样的循环**，包括对均质水——而那里闭式解精确且免费。分野不在「现代不现代」，在**离线 vs 实时**：离线常数因子无所谓、通用性至上；实时的常数因子就是全部。
 
-**云是这条分界线上的第一个测试**：M11 之前，`MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT` 名为非均质，实际是闭式积分的高度雾。云带来了第一个真正的数值 march，未来 3D 噪声雾会共用它——那条分支届时会自然长成通用非均质行进器，也就是在**那一条分支上**向 (b) 靠拢，而闭式的水保持不变。
+**云是这条分界线上的第一个测试，M13 残余把第二个测试补齐了**：`MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT` 在 strength=0 时仍退化为闭式高度雾；打开 3D 场后，视线路径、光源路径与散射事件共同走数值密度。云仍因球壳边界与专属多散射近似保留独立光线函数，闭式水保持不变；统一的是介质契约与密度/能量口径，不是强迫三者共用一个循环。
 
 ### 对优化友好吗：有数据的一面与没数据的一面
 
@@ -464,7 +464,7 @@ phi_fwd 推导要点（落地时照此重推，勿翻参考代码）：τ≫1 �
 - 注释与行为对齐批处理：bit15 「skip the shadow ray」措辞（实际只弃透射率、射线仍发——`waterHitT` 要用）；`volume.slang` 「Character for character the froxel's source」（已不真）；`world_primary.rgen` 「this pass integrates the camera prefix segment」；froxel 各处「32 slices」陈旧数字；`world_common.slang` 「bits above 11 free」（12/13 已用）；`lighting.slang` 「Light48」；`FluoriteConfig` `Water.SUN_SHADOW` 整段陈旧文档。
 
 **15.1 Medium 采样接口 + 统一体积阴影采样器（2026-08-03 已实现，空气雾视觉验收通过）**
-- `medium.slang` 收拢为 `mediumSigmaT` / `mediumScatterAlbedo` / `mediumPhaseG` / `mediumProfile`；一个 profile 同时选择 estimator 与 source adapter，避免两组浅查询产生一致性负担。`mediumDensityAt` 留在 Implementation 内部。`integrateSegment` 仍是唯一外部 Interface：**均质封闭介质走精确闭式路径**，非均质 ambient 走解析高度 march。D27 后这些查询提供 `*Fields/*Flags` 标量入口供 active raygen 使用，`Medium` 包装保留给传输与其他 stage；二者共享同一公式，不是两套 estimator。
+- `medium.slang` 收拢为 `mediumSigmaT` / `mediumScatterAlbedo` / `mediumPhaseG` / `mediumProfile`；一个 profile 同时选择 estimator 与 source adapter，避免两组浅查询产生一致性负担。`mediumDensityAt` 留在 Implementation 内部。`integrateSegment` 仍是唯一外部 Interface：**均质封闭介质走精确闭式路径**；ambient 在噪声强度为 0 时走解析高度路径，打开后走 D63 的真实非均质 march。D27 后这些查询提供 `*Fields/*Flags` 标量入口供 active raygen 使用，`Medium` 包装保留给传输与其他 stage；二者共享同一公式，不是两套 estimator。
 - **统一体积阴影采样器**：水与雾共享固定光学深度分层（τ 步长 1.25）、段内 jitter、`CULL_SECONDARY_NO_SELF`、shadow trace 与按用途 rehash 的 seed 纪律；均质 τ→distance 与 ambient τ→distance 是两个内部 adapter。
 - D9 明确：这是分层近似，不宣称严格无偏。层内按距离均匀采样、使用闭式 view-path 权重；严格 `f/pdf` 修正留到 M17，因为它会改变亮度与噪声。ambient 边界用 8 次二分反演并复用相邻边界；默认 1 ray 不反演。
 - D12 审计结论：水的 sun-shadow 关时仍保留最多 3 条。每层的 `waterHitT` 都在测自己的 source path；压成 1 条会在不平水面、洞顶与不同水体高度下引入衰减误差，不属于中性重构。
@@ -784,7 +784,7 @@ fault[5]: type=READ_INVALID, address=0x6230c2000, precision=0x1000
 
 **等比是刻意的，也正是它安全的原因**：它同等缩放每一道波，所以波与波之间的关系得以保留——长涌浪大步走过、短碎波几乎原地抖。**按波长调速的旋钮一律不给**，那个关系正是 `water_wave.slang` 顶上称为「假水最大破绽」的东西。
 
-**天气不作用在这里，这一条同样是刻意的。** 深水中波速只取决于波长（c = √(g/k)），风不会让某个波长跑得更快——它把波**变长**，而长波本来就更快。所以风暴通过 `WAVE_WEATHER` **拉长波谱**来提速（×0.45），而不是去乘时间。乘时间会看起来相似而**含义是错的**。
+**天气不作用在这里，这一条同样是刻意的。** 深水中波速只取决于波长（c = √(g/k)），风不会让某个波长跑得更快。D72 进一步修正了旧方案：不能在绝对相位时钟已经累计后改变波长，否则 `k·x−ω·t` 会被整片重新解释，所有浪峰瞬移。现在十个频带的波长与相位固定，天气只在 20 秒内逐渐强调本来就更长、更快的频带；乘时间同样会看起来相似而**含义是错的**。
 
 **D58 形变设置改为地形加载时快照**（`clearAsync` 里刷新）。
 
@@ -792,13 +792,46 @@ fault[5]: type=READ_INVALID, address=0x6230c2000, precision=0x1000
 
 **那份即时性是闪烁的副产品，消除闪烁就消除了它。** 现在两个模式行为一致并明说：**关掉形变仍然立即生效**（停止派发永远安全且免费），**打开**需要重载世界。
 
-**未结：调整曝光后下水的间歇性渲染故障。** 现象是过亮 + 水面丢失，日志无错误，且出问题时形变根本没跑（`gpu.waterDeform=0`）。用户已尝试复现失败。
+**未结：调整曝光后下水的间歇性渲染故障。** 现象是过亮 + 水面丢失，日志无错误，且出问题时形变根本没跑（`gpu.waterDeform=0`）。用户已尝试复现失败。后续证据与状态统一记录在 [GitHub Issue #20](https://github.com/DsWePm/Fluorite/issues/20)。
 
 已加**介质栈矛盾探针**（`[water-medium]`）：关于「相机是否在水中」有三个答案——`flags` bit 0（相机光线起始介质）、参考水面（每个散射点的深度）、相机高度——它们必须自洽，因为着色把它们用在不同地方却假设描述同一个世界。**submerged 为真而水面在眼下** = 光线起于水中但所有深度为负 → 哪里都不吸收（过亮）+ 积分器从不进入界面（水面消失），恰好同时解释两个现象。探针只在矛盾时出声并退避。**下次发生时它会自己写下现场。**
 
 ### 8.3 M13 残余
 
-- **3D 噪声雾**：128³ Worley/Perlin FBM 基础 + 32³ 细节，启动一次性烘进 3D 纹理（**不要逐行进步过程噪声**——2080 上 1ms 与 6ms 的差别）。挂 M15 后的非均质 ambient march。
+- **3D 噪声雾与天气联动：🔄 代码完成，待视觉/性能验收（2026-08-09，D62–D73）。** 原计划的 128³ 基础 + 32³ 细节经用户裁决改为**一张独立 128³ RGBA8**：R=4 周期基础、G=16 周期细节，固定倍频烘入两通道，一次三线性 fetch 同取两频段；约 8MB、RT binding 19，水保持 binding 18。`fog_noise.comp.slang` 启动一次性烘焙，绝不在行进热路径现场算 Worley/Perlin FBM。
+
+  密度不是“给亮度贴噪声”：`heightDensity × noiseMultiplier` 同时驱动 froxel 视线消光/入散射、反射与 GI 段、太阳与发光体路径衰减、M17 散射顶点 τ→位置。marched 侧为每段构造一次 canonical 三段 partition（可见性网格前/内/后），总 τ、入散射与散射事件复用同一组密度样本，避免数值积分被不同 split 采出两份能量；froxel 读同一打包场与同一共享解码数学。
+
+  R/G 都由周期场 `f(p)-f(p+(0.5,0,0.5))` 构成严格零均值，再围绕 1 解码；水平半周期配对让**每个高度层**的横向平均都为 1，指数高度剖面不会偏重某一符号，所以时间/天气/密度滑条仍是唯一平均 σ 控制。D68 的 0–4 对比度不是线性放大后钳零，而是奇对称有界有理映射：正负配对仍和为 2，局部倍率仍在 0–2。低于步长可解析范围的频段淡回自己的均值，而不是混叠成相机移动时的闪烁。世界坐标为 `rebased p + (terrain origin − fog drift)`，重锚不跳；D69 后雾、两层云、水波共享全局 heading，各自保留偏转和速度。
+
+  **关档铁律**：`fog-noise-enabled=false`（默认）由 CPU 解析成 `fogAmbient.x=0`，在 texture fetch 之前退出；RT 继续走完整旧解析 estimator，froxel 的太阳路径继续走旧解析高度透射。8MB 资源仍存在并启动时 bake，换取游戏内即时 A/B，但逐帧热路径不读它。`fogAmbient.xyz` 复用为 resolved contrast / 固定 0.25 detail share / march cap；新增的唯一 WorldPush lane 仍是 16B `fogNoiseOrigin`，928→944B。
+
+  **连续天气 forcing（D70A-H）**：`RtEnvironmentForcing.capture(level)` 每帧只读取一次 partial tick、rain、thunder、`SUN_ANGLE` 与 game time。Fog / Cloud / Water 分别消费最终 density scale、signed field bias、structure contrast、wave storm 与 water scattering scale；shader 不见原始天气，不新增分支或 WorldPush lane。晴天基础物理参数仍归各介质页面，Weather Effects 只拥有 rain/thunder/time 相对响应。正系数使用非负 gain，coverage/type 使用 signed bias；水散射变化会自然进入 `sigma_t=sigma_a+sigma_s`，不是固定颜色或亮度覆盖。云/雾漂移继续用会随暂停停止的 game time；水波相位的 `System.nanoTime` 是既有运动语义，本轮未擅自合并时钟。
+
+  **设置 locality（D71）**：新增 Weather Effects 分类，唯一全局风向只在这里显示；Fog / Sky / Water 保留各自基础物理参数、风速与相对偏转。天气栏按 Fog / Cloud / Water 分节收纳时间、雨、雷暴响应。语言仍只维护 `en_us` / `zh_cn` / `zh_tw`。
+
+  **水波天气过渡（D72D-1）**：保留现有十个固定波长/相位，不增加频带；删除天气对基础波长的 ×0.45 实时修改。CPU 将水体 storm 状态按每单位 20 秒线性移向目标，默认 `storm swell bias=0.5`；GPU 只用一个有界频带权重让长波增强、部分短波减弱，晴天偏置 0 时逐位回到旧频谱。复用 `waterSimPlane.z`，无新 ABI、纹理、射线或三角函数；代价仅每个既有频带一次权重运算。它解决的是相位连续性，不声称重建真实风浪谱。
+
+  **水底焦散天气衰减（D73A-1）**：Water 页面将唯一 `0..1`「水底焦散强度」放在「焦散色散强度」旁边，默认 1；它属于水体聚焦模型，Weather Effects 只提供自动衰减。当前近似先由最终雾/云天气状态计算 `load=max(fogScale−1,0)+max(cloudDensity·(1+positiveCoverage)−1,0)`，再取 `S=strength/(1+load)`；shader 使用 `1+S·(focus−1)`，同时压低亮纹与补偿暗区，保持中性均值而非直接压暗日光。复用 `waterSimPlane.w`，不增加射线或纹理。
+
+  **D73 预留的统一云日光接口**：未来消费者统一调用 `cloudSunTransmittance(worldPosition)`。地面与水面阴影可在两种后端间切换：①次级云体积阴影 march（更物理、每查询多段密度采样）；②沿太阳方向对当前 3D 云密度积分得到的二维 Beer 透射率图（近似、便宜，不能退化为直接读原始 coverage noise）。水底焦散无论地面选择哪档都只采二维透射率图，避免为每个焦散查询追加云 march；届时只替换 D73 的 cloud-load 输入，不重写焦散模型。后端选择及预算仍须在实现前请示用户。
+
+  **预算口径必须说准确**：12 是每个连续数值积分区间的硬上限，不是整帧 fetch 总数。独立太阳/发光体路径各自最多 12 次；marched 视线为了在可见性网格边界不制造壳层，最多分成网格前/内/后三个连续区间，各自受上限约束；froxel 本身必须写 64 个前缀深度，因此每个输出 cell 仍有一次局部密度读取，并为每个 cell 的太阳路径另开一个至多 12 步的区间。D66 限制的是任一 march 的长尾，不可能把已有 64 层 froxel 压成 12 层；所以最终是否可接受必须看 `gpu.froxelBake` 与 `gpu.traceIndirect`，不能只看配置数字。
+
+  **首次视觉验收失败与 D67A 修正（2026-08-09；待二次视觉验收）**：用户报告「没有明显雾结构」。现场 Fabric 配置是 `strength=1 / field-scale=64 / march-steps=4`。独立 CPU 复刻烘焙数学并确定性抽取 8,192 个 texel 后，完整解析时旧密度倍率也只有 `std=0.0623`、`p01=0.8581`、`p99=1.1456`；同时该配置的基础/细节特征尺度仅约 16/4 blocks，长段每步 footprint 可达 128 blocks，D66 会按设计把两个不可解析频段都淡回均值 1。因此问题由两部分组成：**当前 64/4 配置主动消除了远段结构；即使完全解析，旧场的对比度也偏弱**。
+
+  用户选择 **D67A**：在一次性 bake 中分别给 paired base/detail 固定 `3.8/3.5` 奇函数增益并对称钳到 `[-1,1]`，运行时 strength、积分器与 D66 footprint 过滤不变。为了让「每高度均值 1」在 RGBA8 落盘后仍是严格契约，半周期体素复用同一个 canonical 计算并显式写互补 UNORM8 码；零值对写 `128/127`，解码为 `±1/255` 后精确抵消。相同 8,192 点抽样修正后倍率为 `std=0.2363`、`p01=0.4627`、`p99=1.5471`，波动提高 **3.79×**；base/detail 钳制率为 `0% / 0.0977%`，没有把结构压成大片平顶。新增成本只有启动烘焙的一次乘法、钳制与显式编码，逐帧/逐 march **零新增成本**。它仍是美术标定的气溶胶密度结构，而非实测湍流谱；守住的是能量与数值契约，不是假称形状本身来自测量。`64/4` 的远距离结构仍会被 D66 正确平均，二次视觉验收应先用 `384/12` 检查 fully-resolved 对比度，再单独判断是否需要更细尺度。
+
+  **二次视觉仍未通过；Debug 25 已加入（2026-08-09）**：第一轮实际落盘仍是 `strength=0.6 / scale=64 / wind=8 / steps=12`；在 `cull=515` 下 footprint≈42.9，基础/细节 16/4 blocks 的 D66 resolved 权重都严格为零，故该次没有检验到 D67A。改成精确诊断档 `1/384/0/12` 后用户仍报告「没有明显结构」，此时不得继续凭观感放大增益。Debug 25「雾密度阶段」关闭 RR/jitter，直接走 raygen binding 19 与实际 WorldPush，以四个从左到右的等宽竖带显示：原始 base、原始 detail、D66 resolved（R=base/G=detail）、最终 multiplier（0..2 映到黑..白，中灰=1）。它一次区分 bake/descriptor、采样 footprint、最终倍率与正常积分/合成四类问题；根因确认并完成回归后，按 ReSTIR 前 review 约定评估是否删除该诊断。
+
+  **待验收，不得提前写 ✅**：
+
+  1. 同场景 strength 0 → 0.6 → 0：两次 0 画面与 `gpu.traceIndirect`/`gpu.froxelBake` plateau 回到同一档；这是关档与测量可信度。
+  2. 开档后平移超过 terrain rebase 距离、原地转身、暂停/继续、跨午夜：雾团不跳、不粘镜头、不闪；风只连续平移结构。
+  3. `segment-source=froxel/marched/both` 对照反射与主视图：同一雾团的位置/综合色温一致，允许采样方差，不允许在 prefix 边界出现密度接缝。
+  4. 正对太阳看浓雾团：内部可以暗、边缘可以亮，但不应出现“密度越高反而越像自发光”的孤立白块；太阳路径也 march 同一密度正是这条的防线。
+  5. 水下调雾结构强度不应改变封闭水介质；若改变，先查 active medium 分类，禁止用调参掩盖空气/水串路。
+  6. 固定机位同会话采 0/0.6/0 三平台：至少记录 `gpu.froxelBake`、`gpu.traceIndirect`、总 GPU；12→24 步作质量/成本判据。没有这些数前不得默认开启。
 - **froxel 线程映射重审：✅ 结案（2026-08-08，D59），维持一列一线程。**
 
   前提已满足：`gpu.froxelBake` 独立计时区早已存在，实测 **0.28–0.64 ms**，对照 `gpu.visBake` 的 0.078 ms。
@@ -1115,9 +1148,26 @@ fault[5]: type=READ_INVALID, address=0x6230c2000, precision=0x1000
 
 **实现与验收（2026-08-09）**：五个站点均改为让归一化 phase 直接消费辐照度，不再乘 `4π`。`RtCloudLighting.diffuseSourceScale` 在 CPU 每帧按上式算出 `A/(4π)=R∞(1+K)/π`，写入既有 `cloudLighting.w`；shader 热路径删掉直射的一次 `4π` 乘法、给扩散加一次尺度乘法，云路径净 ALU 数不增加，WorldPush 大小不变。`RtVolumeEnergyContractTest` 在修复前 2/2 按预期失败，修复后验证四类源项源码契约、CPU→push→shader 接线、三组 `(ω,g)` 的厚板反照率，以及 ω→1 时趋近 1 而不是 1/4；定向任务同时通过完整 Slang 编译。**2026-08-09 用户确认游戏内视觉验收通过，D61 收口。**
 
-### 语言文件政策（2026-08-06，用户指示）
+### 2026-08-09 M13 残余 3D 噪声雾与天气联动（D62–D73，用户逐项裁定）
 
-**测试阶段新增选项只写 `en_us` + `zh_cn` + `zh_tw`**，其余八种语言留英文占位。理由是测试期选项名与语义还在动，八份翻译每改一次就要重写一次。
+| # | 议题 | 决策 | 物理与性能理由 |
+|---|---|---|---|
+| D62 | 噪声纹理结构 | **独立一张 128³ RGBA8；R 基础、G 细节，固定 4:1 空间频率比** | 相对旧计划的 128³+32³ 双纹理，代价是基础/细节尺度比不再能独立任意调整；收益是每个密度点只做**一次**三线性 fetch、一个 binding，且不与云的形状/运动相关。约 8MB。备选双 R8 只约 2.03MB，但每点两 fetch、两个 descriptor，还需 storage-format 能力检查与 RGBA 回退；复用云纹理虽零显存却把两种天气结构绑死，否决 |
+| D63 | 非均质积分方法 | **一致的有限步数 march**：视线、froxel、太阳/发光体路径、M17 事件都读同一密度 | 比只给 in-scatter 贴噪声贵，但后者违反 Beer 消光；比“视线数值、光源解析”贵，但后者会让浓团内部偏亮。ratio/delta tracking 理论更接近无偏，代价是可变长循环、额外方差与长尾帧时间。当前方案的物理误差是有限步长偏差，且用 canonical partition 保证同一段的透射与入散射不各采一套密度 |
+| D64 | 场的锚定与运动 | **平均为 1、世界锚定、独立慢风；“绝对风向”部分后来由 D69 修订** | `f(p)-f(p+(0.5,0,0.5))` 让 variation 在每个高度层都严格零均值；噪声只重新分布已有密度，不成为第二个密度旋钮，且不会被指数高度剖面重新加权出净密度。terrain rebase 加回后再减独立漂移，避免粘镜头/重锚跳。D69 没把近地雾与高空云绑成同一速度，只统一天气主方向并保留各层 offset |
+| D65 | 默认状态 | **strength=0，验收前不默认开启** | 现有已验收画面和热路径保留；shader 在 texture fetch 前退出。默认开会同时改变观感和性能基线，在没有 0/A/0 证据前不允许。资源仍分配/启动烘焙约 8MB，这是为无需重建资源即可游戏内 A/B 付的固定成本 |
+| D66 | march 预算 | **可调硬上限，初始 12；不可解析频段淡回均值** | 512-block 单区间最多 12 个密度样本，成本有界；细节低于 footprint 时不硬采，避免时域闪烁。代价是远距离细节被平均掉。备选按 detail/2 自适应约 40–45 步，空间更准但空气段与光源路径约 3–4×；固定 24 居中但仍是无依据的双倍默认，否决 |
+| D67 | 首次验收无明显结构 | **A：bake-time 奇对称对比度归一化；base/detail = 3.8/3.5** | fully-resolved 密度倍率标准差 0.0623→0.2363（3.79×），钳制低于 0.1%；canonical 半周期配对与互补 UNORM8 编码继续保证每高度均值 1。运行时零成本；物理差距是对比度仍为 authored 标定，不是测量所得湍流谱 |
+| D68 | 结构开关与对比度 | **A：独立 gate + 0–4 对比度；奇对称有界 remap** | 关档在 fetch/march 前退出；开档不增加 fetch/步数，只多一次有理 remap。相比线性倍率后 clamp，不会在负半边归零后让正半边继续增长、抬高平均密度。1.0 精确保留 D67；局部倍率仍在 0–2 |
+| D69 | 全局风 | **A：共享 heading，各介质保留 offset 与速度** | 雾由绝对角改为 `global + fog offset`；积云/卷云/水波沿用既有模型。GPU 成本不变。比严格同向更接近随高度转向的真实风切变，又不引入完整 3D 风矢量场 |
+| D70 | 天气架构 | **A-H：连续双轴 forcing + 可调 gain/bias** | rain/thunder 不折成离散 preset；CPU 一帧读取一次并解析到现有 lanes。密度/散射用非负 gain，coverage/type 用 signed bias，结构响应可正可负但最终 contrast 被钳入 0–4。保持可自定义天气参数且 GPU 无新增天气分支/ABI |
+| D71 | 设置分类 | **A：新增 Weather Effects；全局风只显示一处** | 基础介质参数留在 Fog/Sky/Water；时间、雨、雷暴响应集中到天气栏。各层 speed/offset 仍留本地，locality 与所有权一致；只维护 en/zh_cn/zh_tw |
+| D72 | 天气切换时水波相位跳变 | **D-1：十个固定频带 + 20 秒线性 storm 过渡；涌浪偏置默认 0.5** | 不再实时改 `k`/`ω`，所以绝对时间累计后浪峰也不会重定位；只把权重从部分短波转向现有长波。复用 lane，每频带一次权重运算，无新 fetch/ray/trig。物理差距是 authored 十频带重加权，不是由风场求解的连续海浪谱 |
+| D73 | 浓雾/厚云下水底焦散 | **A-1：Water 中单独 0–1 强度并紧邻色散；天气 load 自动衰减，未来接二维云透射率图** | 强度与色散都属于水体焦散模型，天气页不拥有它；`1+S(focus−1)` 同时收敛亮/暗区，避免把对比度滑条变成日光能量滑条。当前全局天气近似零采样成本；未来 `cloudSunTransmittance(worldPosition)` 可选体积阴影 march 或二维 Beer 图，而水底焦散固定采后者，避免昂贵逐点云 march |
+
+### 语言文件政策（2026-08-09，用户指示）
+
+**项目只保证英文 `en_us` 与中文 `zh_cn` / `zh_tw`。** 新增或修改任何设置时只维护这三份文件；`de_de` / `es_es` / `fr_fr` / `it_it` / `ja_jp` / `ko_kr` / `pt_br` / `ru_ru` 不要求同步，也不得为了键完整而写入英文占位。缺失键由 Minecraft 的 `en_us` fallback 处理。该规则同时适用于测试期与发布版本，除非用户日后明确改变语言支持范围。
 
 **`zh_tw` 另有一笔既有欠账（2026-08-07 实测）**：276 键中 **64 键含简体专用字**，即繁体文件里坐着简体正文（含上一轮 M12 水面仿真新增的那批）。上面的「与 `en_us` 逐字相同」检查抓不到它——它与 `zh_cn` 相同而非与 `en_us` 相同。补充检查：
 
@@ -1129,24 +1179,12 @@ SIMP = set("阴云体单显强数质变观线现应时后从会边过远长开�
 print([k for k, v in tw.items() if zh.get(k) == v and any(c in SIMP for c in v)])
 ```
 
-**发布前必须补全**：`de_de` / `es_es` / `fr_fr` / `it_it` / `ja_jp` / `ko_kr` / `pt_br` / `ru_ru`。核查方法——把每份与 `en_us` 逐键比对，逐字相同即未翻译（`HDR`、`DLAA`、`DLSS Ray Reconstruction`、格式串 `%s`，以及德/西/意/葡里拼写恰好相同的 `Albedo`/`Neutral`/`Absorption` 属于正常同形，不算欠账）：
-
-```python
-import json, glob, os
-base = json.load(open('common/src/main/resources/assets/fluorite/lang/en_us.json', encoding='utf-8'))
-for p in sorted(glob.glob('common/src/main/resources/assets/fluorite/lang/*.json')):
-    d = json.load(open(p, encoding='utf-8'))
-    same = [k for k, v in d.items() if base.get(k) == v]
-    print(os.path.basename(p), len(same), same[:5])
-```
-
 ### 代码整体 review（用户计划，2026-08-06）
 
 **写 ReSTIR 之前用户会对整个代码做一次通盘 review**，本文档里累积的「小地方」在那一轮统一收拾，不必逐个单独立项去改。当前已知会进那一轮的：
 
 - `RtComposite.lutSampler` 从未销毁（已另开任务，见会话记录）
 - M11 三片的成本采集（R19；旋钮 `clouds` / `cloud-sun-steps` / `cloud-secondary` 都已就位）
-- 八种非中文语言的翻译补全（见上文语言文件政策）
 - M11 的游戏内验收：Perlin-Worley 云体、云上往下看的遮挡修复
 
 **当前待请示清单**（动工时逐个触发）：M17 体积 MIS 与默认档 · M18 S3 死工作处置 · M20.3 粒子 mask 成本 · **M11 切片②的天空遮蔽近似**（§8.1 三条待核查项，评审时裁决）。M11 §6.4 表中两项「请示」已由 D33/D34 结清。
