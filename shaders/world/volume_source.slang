@@ -10,8 +10,15 @@ public bool volumeFogNoiseOn(float4 fogParams, float4 fogAmbient) {
     return fogParams.x > 0.0 && fogAmbient.x > 0.0;
 }
 
-/** Height-profile density at one point, before the authored spectral extinction. */
+/**
+ * Ambient-profile density at one point, before the authored spectral extinction.
+ * A non-positive height scale is the explicit homogeneous-profile encoding; existing height presets
+ * require a positive scale, so this does not reinterpret any formerly valid value.
+ */
 public float volumeFogHeightDensity(float4 fogParams, float3 p) {
+    if (fogParams.y <= 0.0) {
+        return fogParams.x;
+    }
     float H = max(fogParams.y, 1.0e-3);
     return fogParams.x * exp(-max(p.y - fogParams.z, 0.0) / H);
 }
@@ -115,6 +122,9 @@ public float volumeAmbientOpticalDepth(float4 fogParams, float3 ro, float3 rd,
                                        float start, float end) {
     if (fogParams.x <= 0.0 || end <= start) {
         return 0.0;
+    }
+    if (fogParams.y <= 0.0) {
+        return fogParams.x * (end - start);
     }
     float H = max(fogParams.y, 1.0e-3);
     float hA = ro.y + rd.y * start - fogParams.z;

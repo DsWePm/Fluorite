@@ -125,6 +125,25 @@ float3 stars(float3 dir, float starBrightness, float VdotS, float4 celestial) {
 [shader("miss")]
 void main(inout Payload payload) {
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+    if (worldPush.skyProvider == SKY_PROVIDER_LOCAL_AMBIENT) {
+        // Nether-style provider: no atmosphere, planet, sun, moon or procedural stars. The authored
+        // neutral floor is intentionally visible in every direction and also feeds mediumSkyRadiance;
+        // local emitters provide the structured light. ENVIRONMENT is kept separate for the later End
+        // HDRI/Kerr implementation and is not faked by this branch.
+        float3 col = max(worldPush.mediumSkyRadiance.xyz, float3(0.0, 0.0, 0.0));
+        payload.albedo = half3(clamp(col, float3(0.0, 0.0, 0.0),
+                float3(HALF_MAX, HALF_MAX, HALF_MAX)));
+        payload.hitT = -1.0;
+        payload.normal = half3(0.0h, 0.0h, 0.0h);
+        payload.motionPrev = half3(0.0h, 0.0h, 0.0h);
+        payload.f0 = half3(0.0h, 0.0h, 0.0h);
+        payload.flags = 0u;
+        payload.roughMetal = packHalf2(float2(1.0, 0.0));
+        payload.emissionSss = packHalf2(float2(0.0, 0.0));
+        payload.iorTransmission = packHalf2(float2(1.0, 0.0));
+        payload.rayCone = 0u;
+        return;
+    }
     // The analytic light below is the MIS partner of raygen's sun NEE — the same emitter reached the
     // other way — so it has to be dyed by the same atmosphere, from the same table, or the two estimators
     // disagree and the weighting stops cancelling. (This stage has its own local worldPush: it does not

@@ -69,6 +69,11 @@ public float3 sampleTransmittanceToSpace(float3 dir) {
 
 /** Atmospheric colour of one finite-emitter direction from the undyed irradiance pushed by the CPU. */
 public float3 sampleCelestialIrradiance(float3 undyedIrradiance, float3 sampledDirection) {
+    // Non-atmosphere providers publish zero celestial energy and may never initialise these LUTs. Exit
+    // before the fetch, both to save the work and to keep zero energy from multiplying undefined texels.
+    if (all(undyedIrradiance <= 0.0)) {
+        return float3(0.0, 0.0, 0.0);
+    }
     if (!celestialDirectionVisible(sampledDirection)) {
         return float3(0.0, 0.0, 0.0);
     }
@@ -153,6 +158,10 @@ public float3 sampleSkyView(float3 dir, float3 sunDir) {
  * <p>{@code lightRadiance.w} is star brightness, not radiance. Only xyz moves.
  */
 public void dyeCelestialLight(inout WorldPush push) {
+    if (push.skyProvider != SKY_PROVIDER_ATMOSPHERE) {
+        push.lightRadiance.xyz = float3(0.0, 0.0, 0.0);
+        return;
+    }
     float3 t = sampleTransmittanceToSpace(push.lightDir.xyz);
     push.lightRadiance.xyz *= t;
 }

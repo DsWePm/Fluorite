@@ -30,6 +30,11 @@ final class RtSkyMediumLayoutTest {
         // flat with no error anywhere.
         //
         // If these numbers move, the declaration order changed, and the call site needs re-checking.
+        // M14 spends the struct's existing eight padding bytes on provider/capability ids, so adding
+        // dimension architecture must not grow this upload or move any medium vector after it.
+        assertEquals(584, WorldPushData.SKY_PROVIDER_OFFSET);
+        assertEquals(588, WorldPushData.ENVIRONMENT_FLAGS_OFFSET);
+        assertEquals(592, WorldPushData.FOG_PARAMS_OFFSET);
         assertEquals(656, WorldPushData.FOG_NOISE_ORIGIN_OFFSET);
         assertEquals(864, WorldPushData.WATER_SIM_DOMAIN_OFFSET);
         assertEquals(880, WorldPushData.WATER_WAVE_SHAPE_OFFSET);

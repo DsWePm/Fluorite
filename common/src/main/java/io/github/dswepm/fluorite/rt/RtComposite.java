@@ -69,6 +69,9 @@ import io.github.dswepm.fluorite.rt.pipeline.RtSdrPresentPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
 import io.github.dswepm.fluorite.rt.sky.RtSky;
+import io.github.dswepm.fluorite.rt.sky.RtDimensionControls;
+import io.github.dswepm.fluorite.rt.sky.RtSkyPreset;
+import io.github.dswepm.fluorite.rt.sky.RtSkyPresets;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
@@ -107,30 +110,62 @@ public final class RtComposite {
     private static final long PATH_RECORD_BYTES = PackedPathSegmentData.BYTE_SIZE;
     // ---- Ambient participating medium.
     //
-    // Per-dimension presets are not here yet, so these are the overworld's numbers scaled by the player's
-    // multipliers. When presets arrive the preset supplies the base and these keep being the multipliers.
+    // The active dimension preset supplies the baseline. Weather/time forcing is applied only when that
+    // preset opts in, then these player settings act as global scale/bias controls.
 
     /** Reference density, height falloff, reference height and the distance past which fog stops. */
-    private static Float4 fogParams(RtEnvironmentForcing.Frame environment) {
+    private static Float4 fogParams(RtSkyPreset preset, RtDimensionControls dimension,
+                                    RtEnvironmentForcing.Frame environment) {
         boolean on = FluoriteConfig.Rt.Volumetrics.ENABLED.value()
-                && FluoriteConfig.Rt.Volumetrics.HEIGHT_FOG.value();
+                && FluoriteConfig.Rt.Volumetrics.HEIGHT_FOG.value()
+                && dimension.fogEnabled()
+                && preset.fog().profile() != RtSkyPreset.FogProfile.OFF;
         // A density of zero is the disable path: volume.slang returns early on it, so switching fog off
         // costs one comparison per segment rather than a shader variant.
-        float density = on ? BASE_FOG_DENSITY * FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE.value() : 0f;
+        float playerScale = dimension.resolveFogDensityScale(
+                FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE.value());
+        float density = on ? preset.fog().density() * playerScale : 0f;
         density *= environment.fogDensityScale();
-        return new Float4(density,
-                FluoriteConfig.Rt.Volumetrics.HEIGHT_SCALE.value(),
-                FluoriteConfig.Rt.Volumetrics.HEIGHT_BASE.value(),
-                FluoriteConfig.Rt.Volumetrics.CULL_DISTANCE.value());
+        float heightScale = preset.fog().profile() == RtSkyPreset.FogProfile.HOMOGENEOUS
+                ? 0f
+                : preset.fog().heightScale() * (FluoriteConfig.Rt.Volumetrics.HEIGHT_SCALE.value() / 48f);
+        float heightBase = preset.fog().heightBase()
+                + (FluoriteConfig.Rt.Volumetrics.HEIGHT_BASE.value() - 62f);
+        float cull = preset.fog().cullDistance()
+                * (FluoriteConfig.Rt.Volumetrics.CULL_DISTANCE.value() / 512f);
+        return new Float4(density, heightScale, heightBase, Math.max(cull, fogStartDistance(preset)));
     }
 
     /**
-      * Per-channel extinction tint, slightly blue-biased so thick fog cools rather than greys, plus the
-      * near cutoff in w — the distance in front of the eye that stays clear.
+      * Preset-authored per-channel extinction plus the player's globally scaled near cutoff in w.
       */
-    private static Float4 fogExtinction() {
-        return new Float4(0.92f, 0.96f, 1.0f,
-                FluoriteConfig.Rt.Volumetrics.START_DISTANCE.value());
+    private static Float4 fogExtinction(RtSkyPreset preset) {
+        RtSkyPreset.Rgb extinction = preset.fog().extinction();
+        return new Float4(extinction.r(), extinction.g(), extinction.b(), fogStartDistance(preset));
+    }
+
+    private static float fogStartDistance(RtSkyPreset preset) {
+        // Additive relative to the old 16-block default, rather than multiplicative: a dimension whose
+        // authored fog starts at the eye (Nether) must still let the player request a clear near field.
+        return Math.max(0f, preset.fog().startDistance()
+                + FluoriteConfig.Rt.Volumetrics.START_DISTANCE.value() - 16f);
+    }
+
+    private static int environmentFlags(RtSkyPreset preset, boolean fogActive) {
+        int flags = 0;
+        if (preset.fog().ambientVisibility() == RtSkyPreset.AmbientVisibility.UNOCCLUDED) {
+            flags |= 1; // ENVIRONMENT_AMBIENT_UNOCCLUDED
+        }
+        if (fogActive && preset.fog().localLights()) {
+            flags |= 1 << 1; // ENVIRONMENT_FROXEL_LOCAL_LIGHTS
+        }
+        return flags;
+    }
+
+    private static Float4 mediumSkyRadiance(RtSkyPreset preset, RtDimensionControls controls) {
+        RtSkyPreset.Rgb ambient = preset.ambientRadiance();
+        float scale = controls.ambientScale();
+        return new Float4(ambient.r() * scale, ambient.g() * scale, ambient.b() * scale, 0f);
     }
 
     /**
@@ -709,16 +744,23 @@ public final class RtComposite {
     }
 
     /** Single-scattering albedo and the sun lobe's anisotropy. */
-    private static Float4 fogScatter() {
+    private static Float4 fogScatter(RtSkyPreset preset) {
         float[] tint = FluoriteConfig.Rt.Volumetrics.scatterTintRgb();
         float scale = FluoriteConfig.Rt.Volumetrics.ALBEDO_SCALE.value();
+        RtSkyPreset.Rgb albedo = preset.fog().albedo();
+        // Named tint is a global hue shift relative to the legacy neutral choice. Dividing by that
+        // neutral means the default is exactly identity while authored per-dimension RGB remains the base.
+        float r = albedo.r() * tint[0] / 0.92f;
+        float g = albedo.g() * tint[1] / 0.94f;
+        float b = albedo.b() * tint[2] / 0.96f;
         // D13: this value is sigma_s / sigma_t, not an artistic radiance gain. Clamp at the ABI
         // boundary as well as in the setting so every shader consumer receives a conservative medium,
         // including callers assembled from a future preset whose tint accidentally exceeds one.
-        return new Float4(Math.clamp(tint[0] * scale, 0.0f, 1.0f),
-                Math.clamp(tint[1] * scale, 0.0f, 1.0f),
-                Math.clamp(tint[2] * scale, 0.0f, 1.0f),
-                FluoriteConfig.Rt.Volumetrics.PHASE_G.value());
+        return new Float4(Math.clamp(r * scale, 0.0f, 1.0f),
+                Math.clamp(g * scale, 0.0f, 1.0f),
+                Math.clamp(b * scale, 0.0f, 1.0f),
+                Math.clamp(preset.fog().phaseG()
+                        + FluoriteConfig.Rt.Volumetrics.PHASE_G.value() - 0.55f, -0.9f, 0.9f));
     }
 
     /**
@@ -985,8 +1027,9 @@ public final class RtComposite {
     }
 
     /** M13 heterogeneous controls in the retired xyz lanes; w remains thin-shell thickness. */
-    private static Float4 fogAux(RtEnvironmentForcing.Frame environment) {
-        return new Float4(environment.fogStructureContrast(),
+    private static Float4 fogAux(RtSkyPreset preset, RtEnvironmentForcing.Frame environment) {
+        float structure = preset.fog().noise() ? environment.fogStructureContrast() : 0f;
+        return new Float4(structure,
                 0.25f, FluoriteConfig.Rt.Volumetrics.fogNoiseMarchSteps(),
                 FluoriteConfig.Rt.Bsdf.SUBSURFACE_THICKNESS.value());
     }
@@ -1016,7 +1059,6 @@ public final class RtComposite {
      */
     private static final int WATER_SURFACE_SCAN_LIMIT = 512;
 
-    private static final float BASE_FOG_DENSITY = 0.0016f;   // extinction per block at the reference height
     /**
      * Shading switches the closest-hit reads. Inline in the push constant rather than in WorldPush
      * because the hit shader never dereferences that struct — one BDA load per hit to read a bit would
@@ -1391,6 +1433,9 @@ public final class RtComposite {
     private long tilingSampler;
     // The atmosphere's precomputed tables (M10). Baked once, then sampled by world.rmiss and world.rgen.
     private RtSky skyLuts;
+    // Reloaded through the same resource-manager seam as material overrides. A missing entry is not an
+    // error: RtSkyPresets deliberately resolves it to the complete atmosphere.
+    private RtSkyPresets skyPresets = RtSkyPresets.EMPTY;
     private boolean failed;
     private boolean loggedActive;
 
@@ -1711,6 +1756,7 @@ public final class RtComposite {
         // resolved samples something defined rather than an unbound (partially-bound) descriptor.
         RtBlockMaterials.INSTANCE.reset();
         RtMaterialOverrides materialOverrides = RtMaterialOverrides.load();
+        skyPresets = RtSkyPresets.load();
         RtEmissionSemantics emissionSemantics = RtEmissionSemantics.analyze();
         RtBlockMaterials.INSTANCE.prepareAll(ctx, bindlessTextureCapacity, emissionSemantics, materialOverrides);
         RtEntityTextures.INSTANCE.reset(bindlessTextureCapacity);
@@ -1995,6 +2041,11 @@ public final class RtComposite {
             // Far below any world, so the shader reads "not submerged" without a second flag to check.
             float waterSurfaceY = -1.0e9f;
             var level = Minecraft.getInstance().level;
+            Identifier dimensionId = level == null ? null : level.dimension().identifier();
+            RtSkyPreset skyPreset = dimensionId == null
+                    ? RtSkyPreset.FULL_ATMOSPHERE
+                    : skyPresets.forDimension(dimensionId);
+            RtDimensionControls dimensionControls = RtDimensionControls.forDimension(dimensionId);
             if (level != null) {
                 cameraBlockPos.set(Mth.floor(camX), Mth.floor(camY), Mth.floor(camZ));
                 // Height-aware, mirroring vanilla's own Camera.getFluidInCamera(): a plain block-granular
@@ -2095,7 +2146,7 @@ public final class RtComposite {
                 // Bit 26: the source decays at the diffusion rate rather than the beam's.
                 flags |= 1 << 26;
             }
-            if (FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
+            if (skyPreset.cloudsEnabled() && FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
                 // Bits 2-3: how much march a ray that is not the first of its path may spend. A cost
                 // dial only — every ray intersects the same world-anchored shells from its own origin,
@@ -2179,10 +2230,13 @@ public final class RtComposite {
             // not a block-atlas sprite — see ModelBakery.BREAKING_LOCATIONS/DESTROY_TYPES), so any newly
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
-            SkyPush sky = skyPush();
+            SkyPush sky = skyPush(skyPreset);
             // One immutable weather/time read for every medium. The shader receives only the resolved
             // physical values, so this does not grow WorldPush or add a weather branch to any hot path.
-            RtEnvironmentForcing.Frame environment = RtEnvironmentForcing.capture(level);
+            RtEnvironmentForcing.Frame environment = skyPreset.weatherEnabled()
+                    ? RtEnvironmentForcing.capture(level)
+                    : RtEnvironmentForcing.captureClock(level);
+            Float4 resolvedFogParams = fogParams(skyPreset, dimensionControls, environment);
             float waterStorm = smoothWaterStorm(level, environment);
             float stormSwellBias = Math.clamp(waterStorm, 0f, 1f)
                     * FluoriteConfig.Rt.Weather.WATER_STORM_SWELL_BIAS.value();
@@ -2224,14 +2278,17 @@ public final class RtComposite {
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
                     FluoriteConfig.Rt.Lights.RIS_CANDIDATES.value(),
-                    fogParams(environment),
-                    fogExtinction(),
-                    fogScatter(),
-                    fogAux(environment),
+                    skyPreset.skyProvider().shaderId(),
+                    environmentFlags(skyPreset, resolvedFogParams.x() > 0f),
+                    resolvedFogParams,
+                    fogExtinction(skyPreset),
+                    fogScatter(skyPreset),
+                    fogAux(skyPreset, environment),
                     fogNoiseOrigin(terrain, environment),
-                    // Written by sky_medium_reduce.comp later in this command buffer. Initial zero is
-                    // deliberate: it prevents a stale prior-frame source if recording stops before bake.
-                    new Float4(0f, 0f, 0f, 0f),
+                    // Atmosphere mode overwrites this via sky_medium_reduce later in the command buffer.
+                    // Other providers own it directly, so skipping that reduction preserves their
+                    // authored environment source rather than stale atmospheric state.
+                    mediumSkyRadiance(skyPreset, dimensionControls),
                     waterScatter(environment),
                     waterAbsorbOverride(),
                     waterAux(waterStorm),
@@ -2325,11 +2382,17 @@ public final class RtComposite {
             if (gpuTimers != null) {
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
             }
-            if (skyLuts.recordBakeIfNeeded(cmd)) {
-                // The sky-view bake below SAMPLES both tables the call above may have just written. On
-                // every frame after the first it is a no-op and this costs nothing; on the first frame it
-                // is the difference between reading the atmosphere and reading undefined memory, for one
-                // frame, which is exactly the kind of fault that gets attributed to the wrong milestone.
+            boolean atmosphereProvider = skyPreset.skyProvider() == RtSkyPreset.SkyProvider.ATMOSPHERE;
+            // The once-only method currently owns atmosphere tables plus both static noise fields. A
+            // local-ambient resource-pack dimension may legally request clouds or structured fog, so it
+            // must initialise those textures even though it will never sample the atmosphere tables.
+            // The built-in Nether requests neither and therefore still skips this whole bake.
+            boolean needsStaticSkyAssets = atmosphereProvider
+                    || skyPreset.cloudsEnabled() || skyPreset.fog().noise();
+            if (needsStaticSkyAssets && skyLuts.recordBakeIfNeeded(cmd)) {
+                // A later compute/trace in this command buffer samples at least one image just written.
+                // On every frame after the first this is a no-op; on the first, the barrier prevents a
+                // valid preset from reading undefined atmosphere or noise texels.
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
             }
             // The sky-view table, every frame. Its two inputs do not depend on the time of day and are
@@ -2337,16 +2400,21 @@ public final class RtComposite {
             // where it is sampled. Recorded unconditionally rather than on a change test: the sun moves
             // every tick anyway, and a test that let one stale frame through would show as the sky
             // lagging the sun, which is exactly the kind of fault nobody attributes correctly later.
-            skyLuts.recordSkyViewBake(cmd, sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(),
-                    FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value(),
-                    pushBuf.deviceAddress);
+            if (atmosphereProvider) {
+                skyLuts.recordSkyViewBake(cmd, sky.sunDir().x(), sky.sunDir().y(), sky.sunDir().z(),
+                        FluoriteConfig.Rt.Sky.skyTint(), FluoriteConfig.Rt.Sky.SKY_INTENSITY.value(),
+                        pushBuf.deviceAddress);
+            }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);
             }
             // The froxel, after the sky-view table and after the push buffer it reads has been written.
             // It follows the CAMERA as well as the sun, so per-frame is not a choice here at all.
-            skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
+            skyLuts.recordFroxelBake(cmd, pushBuf.deviceAddress,
+                    terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
+                    terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
+                    terrain.lightGridSpanBufferAddress(), frameTlas.accel.handle, graphicsUse);
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
@@ -2365,7 +2433,8 @@ public final class RtComposite {
             // cast from the degenerate origin, paid every frame to fill a grid nobody would read. The
             // timer zone stays unconditional so gpu.visBake reads ~0 rather than going stale.
             if (FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
-                    && FluoriteConfig.Rt.Volumetrics.ENABLED.value()) {
+                    && FluoriteConfig.Rt.Volumetrics.ENABLED.value()
+                    && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED) {
                 skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
             }
             if (gpuTimers != null) {
@@ -2544,6 +2613,21 @@ public final class RtComposite {
                            Float4 celestial, Float4 sunUv, Float4 moonUv) {}
 
     private record CelestialUv(Float4 sun, Float4 moon) {}
+
+    /** Providers without terrestrial celestials keep valid directions but publish zero light energy. */
+    private SkyPush skyPush(RtSkyPreset preset) {
+        if (preset.skyProvider() != RtSkyPreset.SkyProvider.ATMOSPHERE) {
+            Float4 zeroUv = new Float4(0f, 0f, 0f, 0f);
+            return new SkyPush(
+                    new Float4(0f, 1f, 0f, 0f),
+                    new Float4(0f, 1f, 0f, 0f),
+                    new Float4(0f, 0f, 0f, 0f),
+                    new Float4(0f, -1f, 0f, 0f),
+                    new Float4(0f, 1f, 0f, 0f),
+                    zeroUv, zeroUv);
+        }
+        return skyPush();
+    }
 
     /**
      * Derive the celestial light from Minecraft's time of day as typed values for {@link WorldPushData}.

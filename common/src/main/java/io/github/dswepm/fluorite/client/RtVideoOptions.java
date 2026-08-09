@@ -62,6 +62,7 @@ public final class RtVideoOptions {
         MATERIAL("material"),
         SKY("sky"),
         WEATHER("weather"),
+        DIMENSIONS("dimensions"),
         WATER("water"),
         FOG("fog"),
         UPSCALING("upscaling"),
@@ -144,6 +145,13 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.weatherWater",
                                 waveWeather(), waterStormSwellBias(),
                                 waterRainScatterGain(), waterThunderScatterGain()));
+                case DIMENSIONS -> List.of(
+                        Section.titled("fluorite.options.rt.section.dimensionNether",
+                                netherFogEnabled(), netherFogDensity(), netherAmbientBrightness()),
+                        // The heading is intentional even while empty: it reserves the human-facing
+                        // ownership boundary for the later HDRI/Kerr provider without shipping an inert
+                        // brightness slider or pretending the current atmosphere fallback is the End.
+                        Section.titled("fluorite.options.rt.section.dimensionEnd"));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterCausticStrength(),
                                 waterScatterSource(),
@@ -605,6 +613,21 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Integer> fogDensity() {
         return scaleSlider("fluorite.options.rt.fogDensity", FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE);
+    }
+
+    private static OptionInstance<Boolean> netherFogEnabled() {
+        return bool("fluorite.options.rt.netherFogEnabled",
+                FluoriteConfig.Rt.Dimensions.NETHER_FOG_ENABLED);
+    }
+
+    private static OptionInstance<Integer> netherFogDensity() {
+        return scaleSlider("fluorite.options.rt.netherFogDensity",
+                FluoriteConfig.Rt.Dimensions.NETHER_FOG_DENSITY_SCALE, 2.0f);
+    }
+
+    private static OptionInstance<Integer> netherAmbientBrightness() {
+        return intensity("fluorite.options.rt.netherAmbientBrightness",
+                FluoriteConfig.Rt.Dimensions.NETHER_AMBIENT_SCALE);
     }
 
     private static OptionInstance<Boolean> fogNoiseEnabled() {
@@ -1086,12 +1109,18 @@ public final class RtVideoOptions {
 
     /** A 0.0-10.0 multiplier, stepped in tenths. IntRange is the only slider vanilla exposes. */
     private static OptionInstance<Integer> scaleSlider(String key, FloatSetting setting) {
-        int initial = Math.clamp(Math.round(setting.value() * 10.0f), 0, 100);
+        return scaleSlider(key, setting, 10.0f);
+    }
+
+    /** A non-negative multiplier with an explicit product limit, stepped in tenths. */
+    private static OptionInstance<Integer> scaleSlider(String key, FloatSetting setting, float maximum) {
+        int maxTenths = Math.max(0, Math.round(maximum * 10.0f));
+        int initial = Math.clamp(Math.round(setting.value() * 10.0f), 0, maxTenths);
         return new OptionInstance<>(
             key,
             OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
             (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.format("%.1f", v / 10.0))),
-            new OptionInstance.IntRange(0, 100),
+            new OptionInstance.IntRange(0, maxTenths),
             initial,
             v -> setting.set(v / 10.0f));
     }

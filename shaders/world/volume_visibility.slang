@@ -56,6 +56,12 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     result.sun = 1.0;
     result.sky = 1.0;
     result.lightUv = float2(0.5, 0.5);
+    // D78A: some authored dimensions deliberately use a tiny unoccluded environment floor. It is an
+    // explicit non-physical readability light, so roofs must not gate it. Directional/local emitters
+    // still cast their own shadow rays; only the preset's isotropic floor takes this fast path.
+    if ((worldPush.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u) {
+        return result;
+    }
     float cell = worldPush.visGridOrigin.w;
     if (cell <= 0.0) {
         return result;

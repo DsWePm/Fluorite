@@ -104,11 +104,15 @@ void main(uint3 id: SV_DispatchThreadID) {
             ^ asuint(worldCell.z) * 26699u
             ^ wp.frameIndex * 2654435761u;
     lightSeed = pcg(lightSeed);
-    SquareLightSample lightSample = sampleSquareLight(
-            wp.lightDir.xyz, wp.celestial.xyz, wp.lightDir.w, lightSeed);
-    float2 lightUv = lightSample.uv;
-    float3 lightDir = lightSample.direction;
-    float sunVis = celestialDirectionVisible(lightDir) && !occluded(p, lightDir) ? 1.0 : 0.0;
+    float2 lightUv = float2(0.5, 0.5);
+    float sunVis = 0.0;
+    if (wp.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
+        SquareLightSample lightSample = sampleSquareLight(
+                wp.lightDir.xyz, wp.celestial.xyz, wp.lightDir.w, lightSeed);
+        lightUv = lightSample.uv;
+        float3 lightDir = lightSample.direction;
+        sunVis = celestialDirectionVisible(lightDir) && !occluded(p, lightDir) ? 1.0 : 0.0;
+    }
     float skyVis = occluded(p, float3(0.0, 1.0, 0.0)) ? 0.0 : 1.0;
 
     // BA preserve the VISIBILITY-WEIGHTED emitter coordinates. After trilinear filtering the consumer

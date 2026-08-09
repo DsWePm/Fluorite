@@ -31,6 +31,15 @@ final class RtEnvironmentForcing {
         return new Frame(rain, thunder, radiationFog(sunAngle), (level.getGameTime() + partial) / 20.0);
     }
 
+    /** Clock-only capture for presets that opt out of weather and terrestrial time-of-day forcing. */
+    static Frame captureClock(ClientLevel level) {
+        if (level == null) {
+            return new Frame(0f, 0f, 0f, 0.0);
+        }
+        float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+        return new Frame(0f, 0f, 0f, (level.getGameTime() + partial) / 20.0);
+    }
+
     /** Radiation-fog cycle: dawn peak, morning burn-off, clear afternoon, overnight build-up. */
     static float radiationFog(float sunAngle) {
         float hours = ((sunAngle - 270f) % 360f + 360f) % 360f / 360f * 24f;

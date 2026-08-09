@@ -10,6 +10,15 @@ module world_common;
 public typealias ConstPtr<T> = Ptr<T, Access.Read, AddressSpace.Device, Std430DataLayout>;
 public typealias DevicePtr<T> = Ptr<T, Access.ReadWrite, AddressSpace.Device, Std430DataLayout>;
 
+// Dimension-provider ABI. These are capabilities, not dimension ids: shaders never branch on
+// minecraft:the_nether or any other registry name. A resource-authored preset chooses one provider and
+// the renderer publishes only the capabilities needed by that provider.
+public static const uint SKY_PROVIDER_ATMOSPHERE = 0u;
+public static const uint SKY_PROVIDER_LOCAL_AMBIENT = 1u;
+public static const uint SKY_PROVIDER_ENVIRONMENT = 2u; // reserved for the End HDRI/Kerr provider
+public static const uint ENVIRONMENT_AMBIENT_UNOCCLUDED = 1u << 0u;
+public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
+
 // Push constant block. The hot inline lanes avoid dereferencing WorldPush for values that are read in
 // hit shaders or used for raygen control flow — every 64-bit device address lives here for exactly that
 // reason, rather than behind the worldPushAddr indirection. tableAddr/entityTableAddr/materialTableAddr
@@ -90,6 +99,8 @@ public struct WorldPush {
     public int4     lightGridDims;       // xyz dense grid dimensions, w reserved
     public uint     lightCount;       // packed Light records in pc.lightBufAddr
     public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
+    public uint     skyProvider;      // SKY_PROVIDER_*; selected by the active dimension preset
+    public uint     environmentFlags; // ENVIRONMENT_* capabilities, not dimension-specific branches
     // Ambient participating medium — the world's air. Evaluated per segment from world position rather
     // than carried on the medium stack; see volume.slang for why. Zero density disables it entirely at
     // the cost of one comparison.
