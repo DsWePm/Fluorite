@@ -365,9 +365,9 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
     if (sourcePdf <= 0.0) {
         return float3(0.0, 0.0, 0.0);
     }
-    // 4*PI undoes hg()'s sphere normalisation for the same reason the sun terms do it: what is wanted is
-    // the gain relative to isotropic, since the in-scatter weight already carries the albedo.
-    float phase = 4.0 * PI * hg(dot(rd, wi), phaseG);
+    // The area sample below estimates irradiance at the event, so its directional source is E*p. hg()
+    // is already the normalised phase density; multiplying it by 4*pi would create that much energy.
+    float phase = hg(dot(rd, wi), phaseG);
     float3 contrib = le * (phase * cosL * lightArea(lg) / dist2) / sourcePdf;
     if (all(contrib <= 0.0)) {
         return float3(0.0, 0.0, 0.0);

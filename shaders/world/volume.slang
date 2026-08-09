@@ -713,7 +713,7 @@ float3 enclosedScatterVertexInScatter(ScatterVertex vertex, float3 sigmaT, uint 
             float3 sampledIrradiance = sampleCelestialIrradiance(
                     undyedCelestialIrradiance, airLightDir);
             source += sampledIrradiance
-                    * (4.0 * PI * enclosedPhase(dot(rd, refractedLight), phaseG, albedo))
+                    * enclosedPhase(dot(rd, refractedLight), phaseG, albedo)
                     * vis * exp(-sigmaSource * sunWaterPath);
         }
     }
@@ -921,7 +921,7 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
                     ? shadow.waterHitT
                     : max(d0 - rd.y * shadow.t, 0.0) * sunPathScale;
             float3 phaseGain = sampledIrradiance
-                    * (4.0 * PI * enclosedPhase(dot(rd, refractedLight), phaseG, albedo));
+                    * enclosedPhase(dot(rd, refractedLight), phaseG, albedo);
             sunTerm += phaseGain * shadow.transmittance
                     * exp(-sigmaSource * sunWaterPath) * weight;
         }
@@ -1084,8 +1084,8 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                     : worldPush.fogExtinction.xyz;
             float3 sunTransmittance = ambientTransmittanceWith(sunSigma, ro,
                                                                worldPush.lightDir.xyz, RAY_FAR);
-            // 4*PI undoes hg()'s sphere normalisation: the phase function is a density over directions,
-            // and what is wanted here is its gain relative to isotropic.
+            // The celestial buffer is irradiance E, so the normalised phase density stays normalised:
+            // the directional radiance source is E*p, not E*(4*pi*p).
             // The source, split into the two halves the visibility grid answers for SEPARATELY.
             //
             // The sun's lobe is gated by whether the sun is reachable. The other two are gated by whether
