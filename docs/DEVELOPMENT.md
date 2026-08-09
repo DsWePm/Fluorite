@@ -60,7 +60,6 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
 - ReSTIR 整合。
 - 云向地面/水面投影阴影，以及焦散读取二维云太阳透射率图。
-- 文档重构在当前分支完成后关闭 GitHub [Issue #21](https://github.com/DsWePm/Fluorite/issues/21)。
 
 ## 2. 架构地图
 
