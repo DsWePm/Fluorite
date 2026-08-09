@@ -675,7 +675,8 @@ public final class RtComposite {
     }
 
     /**
-     * How the clouds are lit: phase asymmetry, single-scattering albedo, and the self-shadow step count.
+     * How the clouds are lit: phase asymmetry, single-scattering albedo, the self-shadow step count, and
+     * the energy-matched isotropic diffusion source scale.
      *
      * <p>The albedo is the one with physical weight — the multiple-scattering term decays at
      * {@code sqrt(3*(1-albedo))} times the optical depth, so it alone decides how deep light reaches into
@@ -683,10 +684,12 @@ public final class RtComposite {
      * multiply the expensive path rather than adding to it.
      */
     private static Float4 cloudLighting() {
-        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_PHASE_G.value(),
-                FluoriteConfig.Rt.Volumetrics.CLOUD_ALBEDO.value(),
+        float phaseG = FluoriteConfig.Rt.Volumetrics.CLOUD_PHASE_G.value();
+        float albedo = FluoriteConfig.Rt.Volumetrics.CLOUD_ALBEDO.value();
+        return new Float4(phaseG,
+                albedo,
                 FluoriteConfig.Rt.Volumetrics.CLOUD_SUN_STEPS.value(),
-                0f);
+                RtCloudLighting.diffuseSourceScale(albedo, phaseG));
     }
 
     /**

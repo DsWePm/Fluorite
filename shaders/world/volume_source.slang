@@ -96,8 +96,10 @@ public AmbientRadianceSource evaluateAmbientRadianceSource(
         float3 lightRadiance, float3 directTransmittance,
         float3 mediumSkyRadiance) {
     AmbientRadianceSource source;
+    // lightRadiance is irradiance E and volumeHg is a normalised phase density p(omega), so the
+    // directional source is E*p. Multiplying by 4*pi here would treat E as E/(4*pi) and create energy.
     source.sun = lightRadiance * directTransmittance
-            * (4.0 * VOLUME_PI * volumeHg(dot(viewDir, sunDir), phaseG));
+            * volumeHg(dot(viewDir, sunDir), phaseG);
     source.sky = mediumSkyRadiance;
     return source;
 }

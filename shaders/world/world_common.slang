@@ -72,7 +72,7 @@ public struct WorldPush {
     public uint     maxBounces;
     public float4   sunDir;           // xyz true sun direction, w dayFactor 0..1
     public float4   lightDir;         // xyz active NEE light dir, w square half-angle (rad)
-    public float4   lightRadiance;    // xyz HDR light radiance, w star brightness
+    public float4   lightRadiance;    // xyz celestial irradiance (legacy field name), w star brightness
     public float4   moonDir;          // xyz moon direction, w moonPhase (0 full .. 4 new)
     public float4   celestial;        // xyz celestial rotation axis, w star angle (rad)
     public float4   sunUv;            // vanilla sun sprite atlas rect (u0,v0,u1,v1)
@@ -158,7 +158,7 @@ public struct WorldPush {
     // Cloud LIGHTING (M11 slice two). y is the physically load-bearing one: the diffusion attenuation the
     // multiple-scattering term decays at is sqrt(3*(1-albedo)) times the ordinary optical depth, so this
     // single number is the difference between a cloud whose interior stays bright and one that goes black.
-    public float4   cloudLighting;    // x phase g, y single-scattering albedo, z sun-march steps, w reserved
+    public float4   cloudLighting;    // x phase g, y albedo, z sun-march steps, w diffuse source A/(4*pi)
     // The HIGH layer (M11 slice three): cirrus, a thin ice sheet far above the convective deck. Its own
     // lane rather than a second copy of cloudShape because almost nothing it needs is the same — it has
     // no cloud-type dimension, no self-shadowing worth marching, and a feature size an order of magnitude

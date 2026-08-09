@@ -50,7 +50,7 @@ float cloudTypeScale() { return cloudFieldScale() * 2.9; }
 // Everything else is authored per frame, from worldPush, and read into a CloudLayer below:
 //   cloudParams   = (coverage bias, density scale, type bias, extinction per block at full density)
 //   cloudShape    = (deck bottom altitude, deck thickness, base feature size, detail feature size)
-//   cloudLighting = (phase g, single-scattering albedo, sun-march steps, reserved)
+//   cloudLighting = (phase g, single-scattering albedo, sun-march steps, diffuse source A/(4*pi))
 //   cloudHigh     = (cirrus altitude, thickness, coverage bias, extinction per block)
 // Authored rather than constant because the vanilla weather system has to be able to move them — see
 // RtComposite.cloudParams, where rain drives coverage and thunder drives type.
@@ -83,6 +83,7 @@ float cloudPhase(float cosT, float g) {
 
 float cloudPhaseG() { return clamp(worldPush.cloudLighting.x, -0.95, 0.95); }
 float cloudAlbedo() { return clamp(worldPush.cloudLighting.y, 0.0, 0.9999); }
+float cloudDiffuseSourceScale() { return max(worldPush.cloudLighting.w, 0.0); }
 
 /** Bit 29: the multiple-scattering diffusion term. Off leaves single scattering exactly as it was. */
 bool cloudMultiScatterOn() {
@@ -562,11 +563,12 @@ float layerCrossingLimit(CloudLayer layer) {
 /**
  * March one layer and return what it added and what of the sky survives it.
  *
- * <p>The source is the three terms a cloud actually has, all expressed as a GAIN OVER ISOTROPIC to match
- * evaluateAmbientRadianceSource — the phase function times 4*pi, the sky source bare, because
- * mediumSkyRadiance is already the 1/(4*pi) sphere integral. Getting that convention right in one term
- * and wrong in another is a 12x error that looks like an art choice, which is exactly how the reference
- * implementation's constants came to be what they are.
+ * <p>The source is the three terms a cloud actually has, all in radiance units. The celestial buffer is
+ * irradiance E, so direct single scattering is E*p(omega), where the normalised phase already contains
+ * 1/(4*pi). The isotropic diffusion source is E*A/(4*pi), with A derived on the CPU from the approved
+ * thick-slab reflectance. mediumSkyRadiance is already a 1/(4*pi) sphere integral and is therefore used
+ * directly. Mixing E with a relative-to-isotropic 4*pi*p gain creates exactly the 12.566x error D61
+ * removed.
  *
  * <ol>
  *   <li><b>Direct sun</b>, through the self-shadow march and a two-lobe phase function. This is what
@@ -608,10 +610,10 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     float3 ambient = worldPush.mediumSkyRadiance.xyz;
     float3 lightDir = worldPush.lightDir.xyz;
     float3 lightRadiance = worldPush.lightRadiance.xyz;
-    // The phase evaluated once for the whole march: it depends on the angle between the ray and the
-    // light, and neither moves along a straight ray. 4*pi converts the phase from a density over
-    // directions into a gain over isotropic, which is the convention every source term here shares.
-    float phase = 4.0 * PI * cloudPhase(dot(rd, lightDir), cloudPhaseG());
+    // The phase is evaluated once for the whole march: it depends on the angle between the ray and the
+    // light, and neither moves along a straight ray. It stays sphere-normalised because lightRadiance is
+    // irradiance, not the E/(4*pi) isotropic base that a relative phase gain would require.
+    float phase = cloudPhase(dot(rd, lightDir), cloudPhaseG());
     // Off must reproduce single scattering exactly rather than approximately (§3, rule 8), so it does two
     // things: it removes the diffuse lobe entirely, and it puts the sky's occlusion back on the beam's
     // own extinction. Leaving the diffuse lobe in at rate 1 would not disable multiple scattering — it
@@ -680,7 +682,8 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
             // describe it has forgotten which way it came in. That is also why this term is the same for
             // every ray through a given point, and therefore consistent between a cloud and its
             // reflection without anything having to enforce it.
-            float diffuse = multiScatter ? exp(-diffusionRate * tauSun) : 0.0;
+            float diffuse = multiScatter
+                    ? cloudDiffuseSourceScale() * exp(-diffusionRate * tauSun) : 0.0;
             float3 source = ambient * exp(-diffusionRate * tauUp)
                     + lightRadiance * (exp(-tauSun) * phase + diffuse);
             // The same closed form the fog's sub-steps use: for a source taken as constant over the step,
