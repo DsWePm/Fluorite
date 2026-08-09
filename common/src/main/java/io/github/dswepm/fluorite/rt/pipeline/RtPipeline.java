@@ -53,10 +53,10 @@ import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkCreateRayTracingPipelines
 import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkGetRayTracingShaderGroupHandlesKHR;
 
 /**
- * An RT pipeline with an SBT of {raygen + N miss + triangle hit groups} and a descriptor
- * set of {binding 0 = TLAS, binding 1 = storage image}. Built from SPIR-V resources. Update the
- * bindings with {@link #setTlas}/{@link #setStorageImage}, then {@link #trace}. Reusable across
- * the triangle spike and terrain (extend the descriptor layout there as needed). Multiple miss
+ * An RT pipeline with an SBT of {raygen + N miss + triangle hit groups}. Set 0 always starts with
+ * binding 0 = TLAS and binding 1 = storage image, then appends the selected pipeline's guide images and
+ * sampled world resources. Built from SPIR-V resources. Update the bindings, then {@link #trace}.
+ * Reusable across the triangle spike and terrain (extend the descriptor layout there as needed). Multiple miss
  * shaders (e.g. a primary sky miss at index 0 plus a shadow/visibility miss at index 1) are
  * supported by passing an array; {@code traceRayEXT}'s {@code missIndex} selects among them.
  */
@@ -102,13 +102,14 @@ public final class RtPipeline {
     private final int visibilityGridBinding;
     private final int cloudNoiseBinding;
     private final int waterHeightBinding;
+    private final int fogNoiseBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
                        long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
                        int transmittanceBinding, int multiScatterBinding, int skyViewBinding,
                        int froxelBinding, int visibilityGridBinding, int cloudNoiseBinding,
-                       int waterHeightBinding) {
+                       int waterHeightBinding, int fogNoiseBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -139,6 +140,7 @@ public final class RtPipeline {
         this.visibilityGridBinding = visibilityGridBinding;
         this.cloudNoiseBinding = cloudNoiseBinding;
         this.waterHeightBinding = waterHeightBinding;
+        this.fogNoiseBinding = fogNoiseBinding;
     }
 
     /**
@@ -215,9 +217,14 @@ public final class RtPipeline {
             // and that includes the hit shader's interface normal.
             int waterHeightBinding = skyAtlas ? cloudNoiseBinding + cloudNoiseSamplers : -1;
             int waterHeightSamplers = skyAtlas ? 1 : 0;
+            // M13's packed heterogeneous fog field, binding 19. Kept after water so the published water
+            // ABI remains 18; volume.slang alone imports it, so RAYGEN is the only RT stage that pays a
+            // descriptor. R/G carry base/detail and are fetched together.
+            int fogNoiseBinding = skyAtlas ? waterHeightBinding + waterHeightSamplers : -1;
+            int fogNoiseSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers
-                    + cloudNoiseSamplers + waterHeightSamplers;
+                    + cloudNoiseSamplers + waterHeightSamplers + fogNoiseSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -258,6 +265,9 @@ public final class RtPipeline {
                 binds.get(waterHeightBinding).binding(waterHeightBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+                binds.get(fogNoiseBinding).binding(fogNoiseBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -266,7 +276,9 @@ public final class RtPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, label + " descriptor set layout");
 
             int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers + transmittanceSamplers
-                    + multiScatterSamplers + skyViewSamplers + froxelSamplers;
+                    + multiScatterSamplers + skyViewSamplers + froxelSamplers
+                    + visibilityGridSamplers + cloudNoiseSamplers + waterHeightSamplers
+                    + fogNoiseSamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -453,7 +465,7 @@ public final class RtPipeline {
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
                     bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
                     multiScatterBinding, skyViewBinding, froxelBinding, visibilityGridBinding,
-                    cloudNoiseBinding, waterHeightBinding);
+                    cloudNoiseBinding, waterHeightBinding, fogNoiseBinding);
         }
     }
 
@@ -572,13 +584,19 @@ public final class RtPipeline {
         writeAtlasBinding(visibilityGridBinding, imageView, sampler);
     }
 
-    /** Bind the baked cloud noise (M11.1), sampled by the cloud march on sky-escaping segments. */
+    /** Bind the finite water simulation field used by shading and interface displacement. */
     public void setWaterSimHeight(long imageView, long sampler) {
         writeAtlasBinding(waterHeightBinding, imageView, sampler);
     }
 
+    /** Bind the baked cloud noise (M11.1), sampled by the cloud march on sky-escaping segments. */
     public void setCloudNoise(long imageView, long sampler) {
         writeAtlasBinding(cloudNoiseBinding, imageView, sampler);
+    }
+
+    /** Bind M13's packed base/detail fog-density field. */
+    public void setFogNoise(long imageView, long sampler) {
+        writeAtlasBinding(fogNoiseBinding, imageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

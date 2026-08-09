@@ -96,7 +96,13 @@ public struct WorldPush {
     public float4   fogParams;        // x density at reference height, y height scale, z reference height, w cull distance
     public float4   fogExtinction;    // xyz per-channel extinction tint
     public float4   fogScatter;       // xyz single-scattering albedo, w Henyey-Greenstein g for the sun lobe
-    public float4   fogAmbient;       // xyz retired in M16; w thin-shell subsurface thickness (see math.slang)
+    // M13 residual spends the retired xyz lanes without growing the buffer for three scalars: x is the
+    // heterogeneous-field strength, y the fixed detail share, z the numerical-march cap. Strength zero
+    // is the exact analytic-height path. w remains owned by thin-shell subsurface.
+    public float4   fogAmbient;       // x noise strength, y detail share, z march cap, w thin-shell thickness
+    // Rebased world origin minus the fog's own accumulated wind drift. Adding this to a shader-space
+    // point recovers stable absolute field coordinates; w is the 384-block default repeat scale.
+    public float4   fogNoiseOrigin;   // xyz field origin (rebase - fog drift), w repeat scale in blocks
     // One GPU-derived source shared by every participating medium. The sky-view reduction writes xyz
     // after the CPU upload and before either froxel or ray tracing reads this buffer. It is already the
     // 1/(4*pi) upper-hemisphere integral, including Rayleigh, Mie and atmospheric multiple scattering.
@@ -204,7 +210,7 @@ public struct WorldPush {
     // Domain warp (D53): x amplitude in blocks, y scale in blocks, zw spare. Zero amplitude skips it
     // and its two noise fetches entirely, which is also the shipped field exactly.
     public float4   waterWaveWarp;   // x warp blocks, y warp scale, z first*16+last, w band-limit on
-    public float4   waterSimPlane;
+    public float4   waterSimPlane;  // x plane Y, y tolerance, z storm swell bias, w caustic contrast
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

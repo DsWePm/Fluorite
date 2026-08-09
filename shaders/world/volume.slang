@@ -6,7 +6,7 @@
 //   ENCLOSED — water, glass, ice. Entered through geometry, pushed and popped on the MediumStack, and
 //   homogeneous inside. The stack knows about these.
 //
-//   AMBIENT — the world's air: height fog now, noise fog and cloud layers later. Unbounded, with no
+//   AMBIENT — the world's air: analytic height fog or its mean-one heterogeneous form. Unbounded, with no
 //   geometry to enter, and a pure function of world position and the dimension's preset. **These never
 //   go on the stack.** That is the decision the rest of this file rests on: the stack keeps its
 //   named-field, depth-2, no-dynamic-indexing shape (see medium.slang for why that matters in a
@@ -23,10 +23,14 @@ import volume_visibility;
 import world_common;
 import world_core;
 
+// M13 packed base/detail density field. Binding 19 deliberately follows the long-lived water binding 18
+// so adding heterogeneous fog does not renumber a descriptor read by closest-hit.
+[[vk::binding(19, 0)]] Sampler3D fogNoise;
+
 // ---- Sampling primitives.
 //
-// Neither is used by the analytic fog below, which integrates a segment in closed form rather than
-// sampling within it. They are here because the random-walk subsurface work needs exactly these two and
+// Neither is used by either ambient-fog estimator below. They are here because the random-walk
+// subsurface work needs exactly these two and
 // should share them rather than grow a second copy: one estimator for distances, one for directions.
 
 /**
@@ -72,6 +76,60 @@ public float sampleFreeFlight(float sigmaT, inout uint seed, out float pdf) {
 // fogScatter    xyz single-scattering albedo, w Henyey-Greenstein g for the sun lobe
 // mediumSkyRadiance xyz shared phase-integrated sky-view source for air and enclosed media
 
+/** CPU resolves the structure switch to contrast zero: exact analytic fog, before any texture fetch. */
+bool ambientNoiseOn() {
+    return volumeFogNoiseOn(worldPush.fogParams, worldPush.fogAmbient);
+}
+
+float ambientNoiseMultiplier(float3 p, float footprint) {
+    if (!ambientNoiseOn()) {
+        return 1.0;
+    }
+    float2 packed = fogNoise.SampleLevel(
+            volumeFogNoiseUv(worldPush.fogNoiseOrigin, p), 0.0).rg;
+    return volumeFogNoiseMultiplier(packed, worldPush.fogAmbient,
+                                    worldPush.fogNoiseOrigin.w, footprint);
+}
+
+/** Debug 25: xy are the decoded signed channels; zw are D66's base/detail resolved weights. */
+public float4 ambientNoiseDebugSample(float3 p, float footprint) {
+    if (!ambientNoiseOn()) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    float2 packed = fogNoise.SampleLevel(
+            volumeFogNoiseUv(worldPush.fogNoiseOrigin, p), 0.0).rg;
+    return float4(packed * 2.0 - 1.0,
+                  volumeFogNoiseResolved(worldPush.fogNoiseOrigin.w, footprint));
+}
+
+/** Debug 25 uses the exact final multiplier function consumed by normal transport. */
+public float ambientNoiseDebugMultiplier(float4 sample) {
+    return volumeFogNoiseResolvedMultiplier(sample.xy, sample.zw, worldPush.fogAmbient);
+}
+
+float ambientNoiseDensity(float3 p, float footprint) {
+    return volumeFogHeightDensity(worldPush.fogParams, p)
+            * ambientNoiseMultiplier(p, footprint);
+}
+
+/** Numerical optical depth for a standalone ray such as a sun or emitter path. */
+float ambientNoiseOpticalDepth(float3 ro, float3 rd, float start, float end) {
+    float span = end - start;
+    if (span <= 0.0 || worldPush.fogParams.x <= 0.0) {
+        return 0.0;
+    }
+    int steps = volumeFogMarchSteps(span, worldPush.fogAmbient,
+                                    worldPush.fogNoiseOrigin.w);
+    float dt = span / float(max(steps, 1));
+    float tau = 0.0;
+    [loop]
+    for (int i = 0; i < steps; ++i) {
+        float t = start + (float(i) + 0.5) * dt;
+        tau += ambientNoiseDensity(ro + rd * t, dt) * dt;
+    }
+    return tau;
+}
+
 /**
  * Optical depth of the ambient medium over [start, end] along a ray, before the per-channel tint.
  *
@@ -98,6 +156,12 @@ public float2 ambientWindow(float tEnd) {
  * to a scattering point wants the diffusion rate.
  */
 public float3 ambientTransmittanceWith(float3 sigma, float3 ro, float3 rd, float dist) {
+    if (ambientNoiseOn()) {
+        float start = min(worldPush.fogExtinction.w, dist);
+        float end = min(dist, worldPush.fogParams.w);
+        float tau = ambientNoiseOpticalDepth(ro, rd, start, max(start, end));
+        return tau > 0.0 ? exp(-sigma * tau) : float3(1.0, 1.0, 1.0);
+    }
     return volumeAmbientTransmittance(worldPush.fogParams, worldPush.fogExtinction,
                                       sigma, ro, rd, dist);
 }
@@ -503,6 +567,266 @@ float2 visGridSpan(float3 ro, float3 rd) {
     float enter = max(max(tMin.x, tMin.y), max(tMin.z, 0.0));
     float exit = min(min(tMax.x, tMax.y), tMax.z);
     return float2(enter, exit);
+}
+
+// ---- M13 residual: one canonical numerical partition for a noisy ambient segment.
+//
+// The old height field is analytic and additive under arbitrary splits. Midpoint quadrature is not: if
+// transmittance were integrated over the whole segment while visibility split in-scatter into different
+// pieces, the two could sample different densities and violate the segment energy contract. This layout
+// is therefore built once and reused by total tau, in-scatter and the M17 event inversion. The visibility
+// box may add cells inside its own span, but both passes see the same three regions and the same samples.
+
+struct NoisyAmbientLayout {
+    float4 edge; // window start, visibility enter, visibility exit, window end
+    int3 steps;  // before, inside, after
+};
+
+int noisyRegionSteps(float span, float nominalStep) {
+    return span > 0.0 ? max(int(ceil(span / max(nominalStep, 1.0e-4))), 1) : 0;
+}
+
+NoisyAmbientLayout makeNoisyAmbientLayout(float3 ro, float3 rd, float2 window) {
+    NoisyAmbientLayout layout;
+    float totalSpan = max(window.y - window.x, 0.0);
+    int baseSteps = volumeFogMarchSteps(totalSpan, worldPush.fogAmbient,
+                                        worldPush.fogNoiseOrigin.w);
+    float nominalStep = totalSpan / float(max(baseSteps, 1));
+
+    float2 grid = visGridSpan(ro, rd);
+    bool intersectsGrid = grid.y > grid.x;
+    float enter = intersectsGrid ? clamp(grid.x, window.x, window.y) : window.x;
+    float exit = intersectsGrid ? clamp(max(grid.y, grid.x), enter, window.y) : enter;
+    layout.edge = float4(window.x, enter, exit, window.y);
+    layout.steps.x = noisyRegionSteps(enter - window.x, nominalStep);
+    layout.steps.y = noisyRegionSteps(exit - enter, nominalStep);
+    if (exit > enter) {
+        layout.steps.y = max(layout.steps.y,
+                ambientVisSteps(exit - enter, worldPush.visGridOrigin.w));
+    }
+    layout.steps.z = noisyRegionSteps(window.y - exit, nominalStep);
+    int cap = volumeFogMarchCap(worldPush.fogAmbient);
+    layout.steps = min(layout.steps, int3(cap, cap, cap));
+    return layout;
+}
+
+float noisyAmbientRegionTau(float3 ro, float3 rd, float a, float b, int steps) {
+    if (steps <= 0 || b <= a) {
+        return 0.0;
+    }
+    float dt = (b - a) / float(steps);
+    float tau = 0.0;
+    [loop]
+    for (int i = 0; i < steps; ++i) {
+        float t = a + (float(i) + 0.5) * dt;
+        tau += ambientNoiseDensity(ro + rd * t, dt) * dt;
+    }
+    return tau;
+}
+
+float noisyAmbientLayoutTau(float3 ro, float3 rd, NoisyAmbientLayout layout) {
+    return noisyAmbientRegionTau(ro, rd, layout.edge.x, layout.edge.y, layout.steps.x)
+         + noisyAmbientRegionTau(ro, rd, layout.edge.y, layout.edge.z, layout.steps.y)
+         + noisyAmbientRegionTau(ro, rd, layout.edge.z, layout.edge.w, layout.steps.z);
+}
+
+/** Find a density-integrated depth in one canonical region. */
+bool noisyDistanceInRegion(float3 ro, float3 rd, float a, float b, int steps,
+                           float targetBaseTau, inout float cumulative, out float distance) {
+    distance = b;
+    if (steps <= 0 || b <= a) {
+        return false;
+    }
+    float dt = (b - a) / float(steps);
+    [loop]
+    for (int i = 0; i < steps; ++i) {
+        float tA = a + float(i) * dt;
+        float tMid = tA + dt * 0.5;
+        float density = ambientNoiseDensity(ro + rd * tMid, dt);
+        float cellTau = density * dt;
+        if (targetBaseTau <= cumulative + cellTau && cellTau > 0.0) {
+            distance = tA + clamp((targetBaseTau - cumulative) / density, 0.0, dt);
+            return true;
+        }
+        cumulative += cellTau;
+    }
+    return false;
+}
+
+float noisyDistanceAtBaseTau(float3 ro, float3 rd, NoisyAmbientLayout layout,
+                             float targetBaseTau) {
+    float cumulative = 0.0;
+    float distance;
+    if (noisyDistanceInRegion(ro, rd, layout.edge.x, layout.edge.y, layout.steps.x,
+                              targetBaseTau, cumulative, distance)) {
+        return distance;
+    }
+    if (noisyDistanceInRegion(ro, rd, layout.edge.y, layout.edge.z, layout.steps.y,
+                              targetBaseTau, cumulative, distance)) {
+        return distance;
+    }
+    if (noisyDistanceInRegion(ro, rd, layout.edge.z, layout.edge.w, layout.steps.z,
+                              targetBaseTau, cumulative, distance)) {
+        return distance;
+    }
+    return layout.edge.w;
+}
+
+ScatterVertex sampleNoisyAmbientScatterVertex(float3 sigmaT, float3 albedo,
+                                               float3 ro, float3 rd,
+                                               NoisyAmbientLayout layout, float baseTau,
+                                               inout uint seed) {
+    float sigmaBar = max(luminance(sigmaT), 1.0e-4);
+    float tauTotal = sigmaBar * baseTau;
+    if (tauTotal <= 1.0e-6) {
+        return noScatterVertex();
+    }
+    float tauScalar = sampleScatterTau(tauTotal, seed);
+    ScatterVertex vertex;
+    vertex.pos = ro + rd * noisyDistanceAtBaseTau(
+            ro, rd, layout, tauScalar / sigmaBar);
+    vertex.weight = scatterVertexWeight(sigmaT, albedo, sigmaBar, tauScalar, tauTotal);
+    return vertex;
+}
+
+/** One region of the canonical view march; gridRegion changes visibility, never density sampling. */
+void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
+                                 float a, float b, int steps, bool gridRegion,
+                                 float3 scatterAlbedo, float3 skySource,
+                                 float phaseG, float3 sunSigma, uint sunRays,
+                                 bool sourceOn) {
+    if (steps <= 0 || b <= a) {
+        return;
+    }
+    float dt = (b - a) / float(steps);
+    [loop]
+    for (int i = 0; i < steps; ++i) {
+        float t = a + (float(i) + 0.5) * dt;
+        float3 p = ro + rd * t;
+        float tau = ambientNoiseDensity(p, dt) * dt;
+        if (tau <= 0.0) {
+            continue;
+        }
+        float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
+        if (sourceOn) {
+            VolumeVisibilitySample visSample;
+            visSample.sun = 1.0;
+            visSample.sky = 1.0;
+            visSample.lightUv = float2(0.5, 0.5);
+            if (gridRegion) {
+                visSample = sampleVolumeLightVisibility(p);
+            }
+
+            float3 source = skySource * visSample.sky;
+            if (sunRays == 0u) {
+                float3 lightDir = gridRegion
+                        ? sampleSquareLightDirection(worldPush.lightDir.xyz,
+                                worldPush.celestial.xyz, worldPush.lightDir.w,
+                                visSample.lightUv)
+                        : worldPush.lightDir.xyz;
+                // Unlike the analytic constant-source adapter, a numerical step has a position. Use it:
+                // dense pockets then attenuate the sunlight that reaches deeper pockets instead of only
+                // modulating what the camera sees.
+                source += sampledAmbientSunSource(p, rd, lightDir, phaseG, sunSigma)
+                        * visSample.sun;
+            }
+            acc.inScatter += acc.transmittance * scatterAlbedo * source
+                    * (float3(1.0, 1.0, 1.0) - stepT);
+        }
+        acc.transmittance *= stepT;
+    }
+}
+
+/** Stratified direct-sun estimator for the approved noisy field when M17's one-event mode is off. */
+float3 noisyAmbientSunInScatter(float3 ro, float3 rd, NoisyAmbientLayout layout,
+                                float baseTau, float3 scatterAlbedo,
+                                float phaseG, float3 sunSigma, int rays,
+                                inout uint seed) {
+    float3 sigmaT = worldPush.fogExtinction.xyz;
+    float sigmaBar = max(luminance(sigmaT), 1.0e-4);
+    float totalScalarTau = sigmaBar * baseTau;
+    float3 gathered = float3(0.0, 0.0, 0.0);
+    for (int i = 0; i < rays; ++i) {
+        float tauNear = SUN_VIS_TAU_STEP * float(i);
+        if (tauNear >= totalScalarTau) {
+            break;
+        }
+        float tauFar = i == rays - 1
+                ? totalScalarTau
+                : min(tauNear + SUN_VIS_TAU_STEP, totalScalarTau);
+        float sampledTau = lerp(tauNear, tauFar, rndf(seed));
+        float sampleT = noisyDistanceAtBaseTau(ro, rd, layout, sampledTau / sigmaBar);
+        float3 p = ro + rd * sampleT;
+        SquareLightSample lightSample = sampleSquareLight(
+                worldPush.lightDir.xyz, worldPush.celestial.xyz, worldPush.lightDir.w, seed);
+        float3 sunSource = sampledAmbientSunSource(
+                p, rd, lightSample.direction, phaseG, sunSigma);
+        float3 vis = visibilityMasked(CULL_SHADOW_NO_SELF, p,
+                lightSample.direction, RAY_FAR).transmittance;
+        float3 viewWeight = exp(-sigmaT * (tauNear / sigmaBar))
+                          - exp(-sigmaT * (tauFar / sigmaBar));
+        gathered += scatterAlbedo * viewWeight * sunSource * vis;
+    }
+    return gathered;
+}
+
+void integrateNoisyAmbient(inout SegmentIntegral seg, float3 ro, float3 rd,
+                           float tEnd, uint seed) {
+    float2 window = ambientWindow(tEnd);
+    NoisyAmbientLayout layout = makeNoisyAmbientLayout(ro, rd, window);
+    float baseTau = noisyAmbientLayoutTau(ro, rd, layout);
+    if (baseTau <= 0.0) {
+        return;
+    }
+
+    float3 scatterAlbedo = worldPush.fogScatter.xyz;
+    float phaseG = worldPush.fogScatter.w;
+    uint sunRays = (worldPush.flags >> 23u) & 7u;
+    bool sourceOn = ((worldPush.flags >> 16u) & 1u) == 0u;
+    float3 sunSigma = multiScatterOn()
+            ? volumeDiffuseAttenuation(worldPush.fogExtinction.xyz, scatterAlbedo, phaseG)
+            : worldPush.fogExtinction.xyz;
+
+    if (scatterVertexOn()) {
+        uint vertexSeed = seed ^ 0xC2B2AE3Du;
+        vertexSeed = pcg(vertexSeed);
+        ScatterVertex vertex = sampleNoisyAmbientScatterVertex(
+                worldPush.fogExtinction.xyz, scatterAlbedo, ro, rd,
+                layout, baseTau, vertexSeed);
+        seg.scatterPos = vertex.pos;
+        seg.scatterWeight = vertex.weight;
+    }
+
+    AmbientAccum acc;
+    acc.inScatter = float3(0.0, 0.0, 0.0);
+    acc.transmittance = float3(1.0, 1.0, 1.0);
+    float3 skySource = worldPush.mediumSkyRadiance.xyz;
+    integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.x, layout.edge.y, layout.steps.x,
+            false, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
+    integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.y, layout.edge.z, layout.steps.y,
+            true, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
+    integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.z, layout.edge.w, layout.steps.z,
+            false, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
+    seg.transmittance *= acc.transmittance;
+    seg.inScatter += acc.inScatter;
+
+    if (sourceOn && sunRays > 0u) {
+        uint fogSeed = seed ^ 0x9E3779B9u;
+        fogSeed = pcg(fogSeed);
+        if (scatterVertexOn() && any(seg.scatterWeight > 0.0)) {
+            SquareLightSample lightSample = sampleSquareLight(
+                    worldPush.lightDir.xyz, worldPush.celestial.xyz,
+                    worldPush.lightDir.w, fogSeed);
+            float3 vertexSunSource = sampledAmbientSunSource(
+                    seg.scatterPos, rd, lightSample.direction, phaseG, sunSigma);
+            float3 vis = visibilityMasked(CULL_SHADOW_NO_SELF, seg.scatterPos,
+                    lightSample.direction, RAY_FAR).transmittance;
+            seg.inScatter += seg.scatterWeight * vertexSunSource * vis;
+        } else if (!scatterVertexOn()) {
+            seg.inScatter += noisyAmbientSunInScatter(ro, rd, layout, baseTau,
+                    scatterAlbedo, phaseG, sunSigma, int(sunRays), fogSeed);
+        }
+    }
 }
 
 /**
@@ -998,8 +1322,9 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
  *     throughput *= segment.transmittance;
  *
  * The Implementation dispatches internally from mediumProfile: homogeneous enclosed media use an exact
- * closed form; the spatially varying ambient field uses its analytic-height march. Both adapters share
- * Medium parameter queries and the sun-visibility sampler. Keeping the estimator seam internal gives
+ * closed form; the ambient field selects the exact analytic height estimator or the finite heterogeneous
+ * march. Both adapters share Medium parameter queries and the sun-visibility sampler. Keeping the
+ * estimator seam internal gives
  * callers one contract without degrading a homogeneous exact solution into numerical marching.
  */
 public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFlags,
@@ -1013,8 +1338,9 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
     uint profile = mediumProfileFlags(currentFlags);
 
     // Estimator dispatch behind the one segment interface. Homogeneous enclosed media retain their
-    // exact closed form; the spatially varying ambient field retains its analytic-height march. The
-    // shared parameter queries and shadow sampler are the seam -- forcing both through one numerical
+    // exact closed form; the ambient field retains its analytic-height path at strength zero and selects
+    // the finite heterogeneous march otherwise. The shared parameter queries and shadow sampler are the
+    // seam -- forcing both through one numerical
     // method would make the homogeneous path slower and less accurate merely to look uniform.
     if (profile != MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT) {
         float3 sigmaT = mediumSigmaTFields(currentExtinction, currentFlags, ro);
@@ -1047,6 +1373,13 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
 
     // A path inside water is inside water — not inside water *and* the world's fog.
     if (profile == MEDIUM_PROFILE_HETEROGENEOUS_AMBIENT) {
+        // Strength zero never reaches this function: the entire published analytic-height estimator below
+        // stays intact as the exact A/B path. Once enabled, all view extinction, visibility-weighted
+        // in-scatter, light-path attenuation and the M17 event use one canonical numerical density field.
+        if (ambientNoiseOn()) {
+            integrateNoisyAmbient(seg, ro, rd, tEnd, seed);
+            return seg;
+        }
         float3 scatterAlbedo = mediumScatterAlbedoFields(currentExtinction, currentFlags);
         float phaseG = mediumPhaseGFlags(currentFlags);
         float2 window = ambientWindow(tEnd);

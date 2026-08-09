@@ -111,13 +111,13 @@ public final class RtComposite {
     // multipliers. When presets arrive the preset supplies the base and these keep being the multipliers.
 
     /** Reference density, height falloff, reference height and the distance past which fog stops. */
-    private static Float4 fogParams() {
-        var v = FluoriteConfig.Rt.Volumetrics.class;
+    private static Float4 fogParams(RtEnvironmentForcing.Frame environment) {
         boolean on = FluoriteConfig.Rt.Volumetrics.ENABLED.value()
                 && FluoriteConfig.Rt.Volumetrics.HEIGHT_FOG.value();
         // A density of zero is the disable path: volume.slang returns early on it, so switching fog off
         // costs one comparison per segment rather than a shader variant.
         float density = on ? BASE_FOG_DENSITY * FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE.value() : 0f;
+        density *= environment.fogDensityScale();
         return new Float4(density,
                 FluoriteConfig.Rt.Volumetrics.HEIGHT_SCALE.value(),
                 FluoriteConfig.Rt.Volumetrics.HEIGHT_BASE.value(),
@@ -196,20 +196,15 @@ public final class RtComposite {
      * already smooth; sampling it at the tick boundary instead would quantise a slow ramp to 20 Hz, which
      * is visible on a sky that covers the screen.
      *
-     * @param level the client level, or null on a title screen — the sliders then stand alone
+     * @param environment the frame's single resolved weather sample
      */
-    private static Float4 cloudParams(ClientLevel level) {
-        float coverage = FluoriteConfig.Rt.Volumetrics.CLOUD_COVERAGE.value();
-        float density = FluoriteConfig.Rt.Volumetrics.CLOUD_DENSITY.value();
-        float type = FluoriteConfig.Rt.Volumetrics.CLOUD_TYPE.value();
-        if (level != null && FluoriteConfig.Rt.Volumetrics.CLOUD_WEATHER.value()) {
-            float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
-            float rain = level.getRainLevel(partial);
-            float thunder = level.getThunderLevel(partial);
-            coverage += rain * 0.55f;
-            density *= 1.0f + rain * 0.8f;
-            type += thunder * 0.75f;
-        }
+    private static Float4 cloudParams(RtEnvironmentForcing.Frame environment) {
+        float coverage = FluoriteConfig.Rt.Volumetrics.CLOUD_COVERAGE.value()
+                + environment.cloudCoverageBias();
+        float density = FluoriteConfig.Rt.Volumetrics.CLOUD_DENSITY.value()
+                * environment.cloudDensityScale();
+        float type = FluoriteConfig.Rt.Volumetrics.CLOUD_TYPE.value()
+                + environment.cloudTypeBias();
         return new Float4(coverage, density, type,
                 FluoriteConfig.Rt.Volumetrics.CLOUD_EXTINCTION.value());
     }
@@ -243,14 +238,14 @@ public final class RtComposite {
      * last moment: game time reaches millions of ticks on an old world, and the product with the speed
      * is what a float would start losing blocks off the end of.
      */
-    private static double[] windDrift(ClientLevel level, float speed, float angleDegrees) {
-        if (level == null || speed <= 0f) {
+    private static double[] windDrift(RtEnvironmentForcing.Frame environment,
+                                      float speed, float angleDegrees) {
+        if (speed <= 0f || environment.gameSeconds() <= 0.0) {
             return new double[] {0.0, 0.0};
         }
-        double partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
-        double seconds = (level.getGameTime() + partial) / 20.0;
         double angle = Math.toRadians(angleDegrees);
-        return new double[] {Math.cos(angle) * speed * seconds, Math.sin(angle) * speed * seconds};
+        return new double[] {Math.cos(angle) * speed * environment.gameSeconds(),
+                Math.sin(angle) * speed * environment.gameSeconds()};
     }
 
     /** The cirrus layer's own shape: how big a streak is, how fine its texture, how dense the sheet. */
@@ -278,11 +273,14 @@ public final class RtComposite {
      * a lake is flat — anything a metre off it is a different body of water. Faded rather than clipped so
      * that a flowing block at a shoreline does not pop.
      */
-    private Float4 waterSimPlane() {
+    private Float4 waterSimPlane(float stormSwellBias, float causticContrast) {
         if (waterDomain.z() <= 0f || Double.isNaN(waterSurfaceY)) {
-            return new Float4(0f, 0f, 0f, 0f); // zero tolerance disables the test, as before this existed
+            // Zero tolerance disables only the simulation-plane test. zw are unrelated resolved weather
+            // values and must keep working when interactive ripples are off.
+            return new Float4(0f, 0f, stormSwellBias, causticContrast);
         }
-        return new Float4(waterPlaneRebasedY, WATER_PLANE_TOLERANCE, 0f, 0f);
+        return new Float4(waterPlaneRebasedY, WATER_PLANE_TOLERANCE,
+                stormSwellBias, causticContrast);
     }
 
     /** A lake is flat; a surface further off the plane than this is a different lake. Blocks. */
@@ -642,15 +640,16 @@ public final class RtComposite {
     }
 
     /** The cirrus layer's own field origin — its own drift — and its own field scale. */
-    private static Float4 cloudCirrusOrigin(RtTerrain terrain, ClientLevel level) {
-        double[] drift = windDrift(level, FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED.value(),
+    private static Float4 cloudCirrusOrigin(RtTerrain terrain, RtEnvironmentForcing.Frame environment) {
+        double[] drift = windDrift(environment,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED.value(),
                 FluoriteConfig.Rt.Volumetrics.cloudCirrusWindAngle());
         return new Float4((float) (terrain.blockX - drift[0]), terrain.blockY,
                 (float) (terrain.blockZ - drift[1]),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_FIELD_SCALE.value());
     }
 
-    private static Float4 cloudRebase(RtTerrain terrain, ClientLevel level) {
+    private static Float4 cloudRebase(RtTerrain terrain, RtEnvironmentForcing.Frame environment) {
         // The wind's accumulated drift, subtracted from the origin. Sampling a field at p + (origin -
         // drift) is the same thing as sampling a drifting field at p, and doing it this way means the
         // shader has no notion of wind at all: one addition it already performs to un-rebase the
@@ -659,7 +658,7 @@ public final class RtComposite {
         //
         // Only xz. The y lane is the pure rebase because cloudShellSpan measures the deck's altitude
         // from it, and a deck that drifted vertically would be a deck at the wrong height.
-        double[] drift = windDrift(level, FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value(),
+        double[] drift = windDrift(environment, FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value(),
                 FluoriteConfig.Rt.Volumetrics.cloudWindAngle());
         float driftX = (float) drift[0];
         float driftZ = (float) drift[1];
@@ -886,9 +885,11 @@ public final class RtComposite {
         return new Float4(a[0], a[1], a[2], 1f);
     }
 
-    private static Float4 waterScatter() {
+    private static Float4 waterScatter(RtEnvironmentForcing.Frame environment) {
         float[] s = FluoriteConfig.Rt.Water.scatteringRgb();
-        return new Float4(s[0], s[1], s[2], FluoriteConfig.Rt.Water.PHASE_G.value());
+        float scale = environment.waterScatterScale();
+        return new Float4(s[0] * scale, s[1] * scale, s[2] * scale,
+                FluoriteConfig.Rt.Water.PHASE_G.value());
     }
 
     /**
@@ -899,29 +900,13 @@ public final class RtComposite {
      * function — the shading normal and the displaced geometry have to describe one surface.
      */
     /**
-     * How stormy the sea is right now: 0 calm, 1 a full downpour, higher under thunder.
-     *
-     * <p>Read from the same rain and thunder levels the clouds use, so the sky and the sea are responding
-     * to one weather rather than two. Thunder counts for less than rain on its own because it arrives
-     * with rain already at full -- it is the extra on top, not a second axis.
-     */
-    private static float waterStorm(ClientLevel level) {
-        float gain = FluoriteConfig.Rt.Water.WAVE_WEATHER.value();
-        if (level == null || gain <= 0f) {
-            return 0f;
-        }
-        float partial = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
-        return (level.getRainLevel(partial) + level.getThunderLevel(partial) * 0.6f) * gain;
-    }
-
-    /**
      * The wave field's shape: the second system's heading, the complexity ramp, the steepness scale.
      *
      * <p>The cross heading is resolved HERE, folded with the complexity, so that at complexity 0 it comes
      * out exactly equal to the primary wind and the shader's select changes nothing. That is what makes
      * the off state bit-identical rather than merely similar.
      */
-    private static Float4 waterWaveShape(ClientLevel level) {
+    private static Float4 waterWaveShape(float waterStorm) {
         float complexity = FluoriteConfig.Rt.Water.WAVE_COMPLEXITY.value();
         double primary = Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle());
         double cross = primary
@@ -929,7 +914,7 @@ public final class RtComposite {
         // Steepness, not just height. A storm sea is steeper, and that is the part that reads as
         // violent -- scaling the amplitude alone gives a bigger calm sea.
         return new Float4((float) Math.cos(cross), (float) Math.sin(cross), complexity,
-                1f + waterStorm(level) * 0.6f);
+                1f + waterStorm * 0.6f);
     }
 
     /** Gust patches (D52). Zero strength disables the whole term, including its noise fetches. */
@@ -953,30 +938,73 @@ public final class RtComposite {
                 FluoriteConfig.Rt.Water.WAVE_BAND_LIMIT.value() ? 1f : 0f);
     }
 
-    private static Float4 waterWaveGust(ClientLevel level) {
+    private static Float4 waterWaveGust(float waterStorm) {
         // Storms gust harder. Saturated because the modulation is a lerp toward the patch field and
         // going past 1 would start inverting quiet patches into loud ones.
         float gust = Math.min(1f, FluoriteConfig.Rt.Water.WAVE_GUST.value()
-                * (1f + waterStorm(level) * 0.8f));
+                * (1f + waterStorm * 0.8f));
         return new Float4(FluoriteConfig.Rt.Water.WAVE_GUST_SCALE.value(), gust,
                 FluoriteConfig.Rt.Water.WAVE_GUST_SPEED.value(),
                 FluoriteConfig.Rt.Water.WAVE_SPEED.value());
     }
 
-    private static Float4 waterAux(ClientLevel level) {
+    private static Float4 waterAux(float waterStorm) {
         return new Float4(FluoriteConfig.Rt.Water.WAVE_AMPLITUDE.value()
-                        * (1f + waterStorm(level) * 0.9f),
-                // Storms lengthen the sea, and longer waves travel faster on their own through
-                // w = sqrt(g*k). That is how the weather reaches the speed -- not by winding the
-                // clock forward, which would have looked similar and meant something false.
-                FluoriteConfig.Rt.Water.WAVE_LENGTH.value() * (1f + waterStorm(level) * 0.45f),
+                        * (1f + waterStorm * 0.9f),
+                // D72: never mutate wavelength against an absolute phase clock. Weather transfers
+                // weight toward the existing long bands through waterSimPlane.z instead, so every
+                // crest keeps its position while the sea state changes.
+                FluoriteConfig.Rt.Water.WAVE_LENGTH.value(),
                 (float) Math.toRadians(FluoriteConfig.Rt.Water.waveWindAngle()),
                 FluoriteConfig.Rt.Water.CAUSTIC_DISPERSION.value());
     }
 
-    /** Legacy xyz retired by M16; w still carries thin-shell subsurface thickness. */
-    private static Float4 fogAux() {
-        return new Float4(0f, 0f, 0f, FluoriteConfig.Rt.Bsdf.SUBSURFACE_THICKNESS.value());
+    /**
+     * D72's water-only weather state. A unit clear-to-rain change takes twenty game seconds; changing
+     * world resets to that world's current state, while /time jumps cannot fast-forward or reverse the
+     * transition. Keeping this on the CPU preserves the existing shader ABI and removes a per-ray clock.
+     */
+    private float smoothWaterStorm(ClientLevel level, RtEnvironmentForcing.Frame environment) {
+        float target = Math.max(environment.waterStorm(), 0f);
+        double now = environment.gameSeconds();
+        if (level != waterWeatherLevel || !Double.isFinite(waterWeatherSeconds)) {
+            waterWeatherLevel = level;
+            waterWeatherSeconds = now;
+            smoothedWaterStorm = target;
+            return smoothedWaterStorm;
+        }
+        double elapsed = now - waterWeatherSeconds;
+        waterWeatherSeconds = now;
+        // Normal frame deltas are about 0.05 s. Larger discontinuities are time commands, world catch-up
+        // or suspension; none should teleport a visible sea state.
+        if (elapsed > 0.0 && elapsed <= 1.0) {
+            smoothedWaterStorm = RtEnvironmentForcing.moveTowards(
+                    smoothedWaterStorm, target, (float) elapsed, 20f);
+        }
+        return smoothedWaterStorm;
+    }
+
+    /** M13 heterogeneous controls in the retired xyz lanes; w remains thin-shell thickness. */
+    private static Float4 fogAux(RtEnvironmentForcing.Frame environment) {
+        return new Float4(environment.fogStructureContrast(),
+                0.25f, FluoriteConfig.Rt.Volumetrics.fogNoiseMarchSteps(),
+                FluoriteConfig.Rt.Bsdf.SUBSURFACE_THICKNESS.value());
+    }
+
+    /**
+     * Stable absolute coordinates for the fog texture. D69 shares the world's weather heading while the
+     * near-ground layer keeps its own angular offset and speed; it does not inherit either cloud layer's
+     * velocity.
+     * The shader sees terrain-rebased positions, so the terrain origin has to be added back here; without
+     * it the whole density field would jump whenever the terrain rebase followed the camera.
+     */
+    private static Float4 fogNoiseOrigin(RtTerrain terrain, RtEnvironmentForcing.Frame environment) {
+        double[] drift = windDrift(environment,
+                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_WIND_SPEED.value(),
+                FluoriteConfig.Rt.Volumetrics.fogNoiseWindAngle());
+        return new Float4((float) (terrain.blockX - drift[0]), terrain.blockY,
+                (float) (terrain.blockZ - drift[1]),
+                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_FIELD_SCALE.value());
     }
 
     /**
@@ -1355,6 +1383,9 @@ public final class RtComposite {
     private boolean mvHasPrev;
     private float previousWaterWaveTime;
     private boolean waterWaveTimeValid;
+    private ClientLevel waterWeatherLevel;
+    private double waterWeatherSeconds = Double.NaN;
+    private float smoothedWaterStorm;
     private long atlasSampler;
     private long lutSampler;
     private long tilingSampler;
@@ -1709,9 +1740,10 @@ public final class RtComposite {
             worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
             worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
             // NOT the LUT sampler. Every table above is a parameterisation over [0,1] and must clamp;
-            // the cloud noise is sampled at WORLD COORDINATES divided by a feature size, which leaves
-            // that range immediately and has to wrap. See tilingSampler.
+            // cloud and fog noise are sampled at WORLD COORDINATES divided by a feature size, which
+            // leaves that range immediately and has to wrap. See tilingSampler.
             worldPipeline.setCloudNoise(skyLuts.cloudNoiseView(), tilingSampler(ctx));
+            worldPipeline.setFogNoise(skyLuts.fogNoiseView(), tilingSampler(ctx));
             // Clamped, not repeating: the height field is a finite domain that follows the player, and
             // wrapping it would put the far shore's ripples on the near one. The sampler's clamp is a
             // backstop only -- waterSimGrad rejects out-of-domain coordinates before it reads.
@@ -2148,6 +2180,12 @@ public final class RtComposite {
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
             SkyPush sky = skyPush();
+            // One immutable weather/time read for every medium. The shader receives only the resolved
+            // physical values, so this does not grow WorldPush or add a weather branch to any hot path.
+            RtEnvironmentForcing.Frame environment = RtEnvironmentForcing.capture(level);
+            float waterStorm = smoothWaterStorm(level, environment);
+            float stormSwellBias = Math.clamp(waterStorm, 0f, 1f)
+                    * FluoriteConfig.Rt.Weather.WATER_STORM_SWELL_BIAS.value();
             // Coefficients remain CPU-visible; M16's source is reduced on the GPU later and is deliberately
             // not read back into this frame-stats diagnostic (see logWaterCoefficients).
             if (level != null) {
@@ -2186,33 +2224,34 @@ public final class RtComposite {
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
                     FluoriteConfig.Rt.Lights.RIS_CANDIDATES.value(),
-                    fogParams(),
+                    fogParams(environment),
                     fogExtinction(),
                     fogScatter(),
-                    fogAux(),
+                    fogAux(environment),
+                    fogNoiseOrigin(terrain, environment),
                     // Written by sky_medium_reduce.comp later in this command buffer. Initial zero is
                     // deliberate: it prevents a stale prior-frame source if recording stops before bake.
                     new Float4(0f, 0f, 0f, 0f),
-                    waterScatter(),
+                    waterScatter(environment),
                     waterAbsorbOverride(),
-                    waterAux(level),
+                    waterAux(waterStorm),
                     visibilityGridOrigin(camX, camY, camZ, terrain),
-                    cloudParams(level),
+                    cloudParams(environment),
                     cloudShape(),
-                    cloudRebase(terrain, level),
+                    cloudRebase(terrain, environment),
                     cloudLighting(),
                     cloudCirrus(),
                     cloudCirrusShape(),
-                    cloudCirrusOrigin(terrain, level),
+                    cloudCirrusOrigin(terrain, environment),
                     // ORDER MATTERS AND NOTHING CHECKS IT FOR YOU. WorldPushData is generated from the
                     // shader's reflection, so its constructor is POSITIONAL and follows world_common's
                     // declaration order -- waterSimDomain, then the two wave lanes, then the plane.
                     // Getting it wrong compiles, runs, and silently feeds every lane the one beside it.
                     waterSimDomain(),
-                    waterWaveShape(level),
-                    waterWaveGust(level),
+                    waterWaveShape(waterStorm),
+                    waterWaveGust(waterStorm),
                     waterWaveWarp(),
-                    waterSimPlane()
+                    waterSimPlane(stormSwellBias, environment.waterCausticContrast())
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

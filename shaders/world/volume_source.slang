@@ -3,6 +3,82 @@
 // without inheriting each other's descriptor layouts.
 
 public static const float VOLUME_PI = 3.14159265359;
+public static const int VOLUME_FOG_MARCH_LIMIT = 31;
+
+/** Heterogeneous work exists only when both authored fog and its redistribution are non-zero. */
+public bool volumeFogNoiseOn(float4 fogParams, float4 fogAmbient) {
+    return fogParams.x > 0.0 && fogAmbient.x > 0.0;
+}
+
+/** Height-profile density at one point, before the authored spectral extinction. */
+public float volumeFogHeightDensity(float4 fogParams, float3 p) {
+    float H = max(fogParams.y, 1.0e-3);
+    return fogParams.x * exp(-max(p.y - fogParams.z, 0.0) / H);
+}
+
+/** Stable world-space coordinate of the packed fog field. The sampler itself supplies periodic wrap. */
+public float3 volumeFogNoiseUv(float4 fogNoiseOrigin, float3 p) {
+    return (p + fogNoiseOrigin.xyz) / max(fogNoiseOrigin.w, 1.0);
+}
+
+/** D66's two anti-alias weights, shared by transport and debug view 25. */
+public float2 volumeFogNoiseResolved(float fieldScale, float footprint) {
+    float baseSize = max(fieldScale * 0.25, 1.0);       // four broad cells per tile
+    float detailSize = max(fieldScale * 0.0625, 0.25); // sixteen detail cells per tile
+    return float2(1.0 - smoothstep(baseSize * 0.5, baseSize, footprint),
+                  1.0 - smoothstep(detailSize * 0.5, detailSize, footprint));
+}
+
+/** Combine an already decoded sample so diagnostics cannot drift from the transport answer. */
+public float volumeFogNoiseResolvedMultiplier(float2 signedNoise, float2 resolved,
+                                               float4 fogAmbient) {
+    float contrast = max(fogAmbient.x, 0.0);
+    if (contrast <= 0.0) {
+        return 1.0;
+    }
+    float detailShare = clamp(fogAmbient.y, 0.0, 1.0);
+    float variation = clamp(signedNoise.x * resolved.x * (1.0 - detailShare)
+                          + signedNoise.y * resolved.y * detailShare, -1.0, 1.0);
+
+    // D68A: increasing a linear multiplier past one and then clipping negative density would raise the
+    // field's mean -- the positive half keeps growing after the negative half hits zero. This rational
+    // remap is odd and bounded instead: f(-x)=-f(x), f(+-1)=+-1, and contrast=1 is the old answer. The
+    // paired half-period field therefore still sums to two at every height, while 1..4 can push ordinary
+    // variations progressively nearer the physical 0..2 density limits. One reciprocal, no extra fetch.
+    float shaped = contrast <= 1.0
+            ? contrast * variation
+            : (contrast * variation) / (1.0 + (contrast - 1.0) * abs(variation));
+    return 1.0 + clamp(shaped, -1.0, 1.0);
+}
+
+/**
+ * Decode the packed zero-mean base/detail fields into a mean-one density multiplier.
+ *
+ * The footprint fades frequencies a numerical step cannot resolve back to their mean (zero variation),
+ * instead of aliasing them into camera motion. Because both signed channels and every faded term have
+ * mean zero, time/weather still control the expected physical density alone.
+ */
+public float volumeFogNoiseMultiplier(float2 packedNoise, float4 fogAmbient,
+                                      float fieldScale, float footprint) {
+    float2 signedNoise = packedNoise * 2.0 - 1.0;
+    return volumeFogNoiseResolvedMultiplier(
+            signedNoise, volumeFogNoiseResolved(fieldScale, footprint), fogAmbient);
+}
+
+/** Sanitised user-approved hard cap shared by every numerical fog interval. */
+public int volumeFogMarchCap(float4 fogAmbient) {
+    return clamp(int(fogAmbient.z + 0.5), 1, VOLUME_FOG_MARCH_LIMIT);
+}
+
+/** Samples wanted for an interval after the user-approved hard cap is applied. */
+public int volumeFogMarchSteps(float span, float4 fogAmbient, float fieldScale) {
+    if (span <= 0.0 || fogAmbient.x <= 0.0) {
+        return 0;
+    }
+    int cap = volumeFogMarchCap(fogAmbient);
+    float detailNyquist = max(fieldScale * (1.0 / 32.0), 0.25);
+    return clamp(int(ceil(span / detailNyquist)), 1, cap);
+}
 
 /** Normalised Henyey-Greenstein phase function. */
 public float volumeHg(float cosT, float g) {
