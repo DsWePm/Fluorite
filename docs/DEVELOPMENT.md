@@ -18,7 +18,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 ### 1.2 当前基线
 
-远端 `main` 的当前基线为 `20d5514`（PR #27）。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
+远端 `main` 是唯一当前基线；最近的功能基线为 M18 的 PR #27。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
 
 测试机事实：
 
