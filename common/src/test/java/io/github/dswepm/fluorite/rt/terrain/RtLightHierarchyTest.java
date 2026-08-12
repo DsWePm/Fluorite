@@ -82,6 +82,18 @@ final class RtLightHierarchyTest {
     }
 
     @Test
+    void staticRectangleRecordsNeverConsumeTheDynamicSphereTypeBit() {
+        RtLightHierarchy.Data data = RtLightHierarchy.build(List.of(
+                new RtLightHierarchy.SectionInput(0, 0, 0, 0, light(1f, 1f))),
+                0, 0, 0, () -> false);
+        int flags = Float.floatToRawIntBits(data.packedLights()[RtLightHierarchy.GPU_FLOATS_PER_LIGHT - 1]);
+        assertEquals(0, flags & 0x80000000);
+        // D100A keeps the 80-byte source record, including exact-Le UV lanes 11/15/19, even though
+        // the current 32-byte hierarchy does not publish those lanes yet.
+        assertEquals(20, RtLightCollector.FLOATS_PER_LIGHT);
+    }
+
+    @Test
     void retainedGenerationCanBeTranslatedAcrossARebase() {
         List<RtLightHierarchy.SectionInput> sections = List.of(
                 new RtLightHierarchy.SectionInput(0, 3, 0, 0, light(1f, 1f)));

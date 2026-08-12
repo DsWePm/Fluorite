@@ -1,5 +1,7 @@
 package io.github.dswepm.fluorite.rt.terrain;
 
+import io.github.dswepm.fluorite.rt.light.RtLightEncoding;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -22,17 +24,16 @@ final class RtLightHierarchy {
      * builds {@code halfU = 0.5*(aHi-aLo)*e01} and {@code rectArea = |e01 x e03|*(aHi-aLo)*(bHi-bLo)}.
      * world.rgen derives it from the cross product it already computes for the emitter normal.
      */
-    static final int GPU_FLOATS_PER_LIGHT = 8;
+    static final int GPU_FLOATS_PER_LIGHT = RtLightEncoding.RECORD_FLOATS;
     private static final int MAX_PACKED_GRID_DIM = 1024;
-    private static final int NORMAL_FLIP_BIT = 1 << 30;
+    private static final int NORMAL_FLIP_BIT = RtLightEncoding.NORMAL_FLIP_BIT;
 
     private RtLightHierarchy() {
     }
 
     /** Two halves into one float lane, low half = x — mirrors world_common.slang's unpackHalf2. */
     private static float packHalf2(float x, float y) {
-        int bits = (Float.floatToFloat16(y) << 16) | (Float.floatToFloat16(x) & 0xFFFF);
-        return Float.intBitsToFloat(bits);
+        return RtLightEncoding.packHalf2(x, y);
     }
 
     static Data build(List<SectionInput> sections, int rebaseX, int rebaseY, int rebaseZ,
@@ -265,35 +266,11 @@ final class RtLightHierarchy {
     }
 
     static int packR11G11B10(float r, float g, float b) {
-        return packUnsignedFloat(r, 6) | (packUnsignedFloat(g, 6) << 11)
-                | (packUnsignedFloat(b, 5) << 22);
-    }
-
-    private static int packUnsignedFloat(float value, int mantissaBits) {
-        if (!(value > 0.0f)) return 0;
-        if (!Float.isFinite(value)) return (30 << mantissaBits) | ((1 << mantissaBits) - 1);
-        int exponent = Math.getExponent(value);
-        int encodedExponent = exponent + 15;
-        int mantissaScale = 1 << mantissaBits;
-        if (encodedExponent <= 0) {
-            int mantissa = Math.round(Math.scalb(value, 14 + mantissaBits));
-            return Math.min(mantissa, mantissaScale - 1);
-        }
-        if (encodedExponent >= 31) return (30 << mantissaBits) | (mantissaScale - 1);
-        int mantissa = Math.round((Math.scalb(value, -exponent) - 1.0f) * mantissaScale);
-        if (mantissa == mantissaScale) {
-            mantissa = 0;
-            if (++encodedExponent >= 31) return (30 << mantissaBits) | (mantissaScale - 1);
-        }
-        return (encodedExponent << mantissaBits) | mantissa;
+        return RtLightEncoding.packR11G11B10(r, g, b);
     }
 
     static float unpackUnsignedFloat(int bits, int mantissaBits) {
-        int mantissaMask = (1 << mantissaBits) - 1;
-        int mantissa = bits & mantissaMask;
-        int exponent = (bits >>> mantissaBits) & 31;
-        if (exponent == 0) return Math.scalb((float) mantissa, 1 - 15 - mantissaBits);
-        return Math.scalb(1.0f + (float) mantissa / (1 << mantissaBits), exponent - 15);
+        return RtLightEncoding.unpackUnsignedFloat(bits, mantissaBits);
     }
 
     private static void checkCancelled(BooleanSupplier cancelled) {

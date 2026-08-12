@@ -15,6 +15,9 @@ import io.github.dswepm.fluorite.platform.RtQuadView;
 import io.github.dswepm.fluorite.platform.SpriteLookup;
 import io.github.dswepm.fluorite.rt.RtFrameStats;
 import io.github.dswepm.fluorite.rt.accel.RtAccel;
+import io.github.dswepm.fluorite.rt.light.RtDynamicLightAccumulator;
+import io.github.dswepm.fluorite.rt.light.RtDynamicSphereLight;
+import io.github.dswepm.fluorite.rt.material.RtMaterialDesc;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.font.TextRenderable;
@@ -124,6 +127,14 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     // glowing) per submitModel call — see EntityRenderer.extractCommon's outlineColor. Every submitModel
     // call for one entity carries the same value, so the last non-zero one seen this entity is enough.
     private int outlineColor;
+    // M18 dynamic-light capture is deliberately side-band: it observes the same submitted item quads but
+    // never changes their material/geometry records, so enabling collection cannot change this frame's image.
+    private final RtDynamicLightAccumulator leftHeldLight = new RtDynamicLightAccumulator();
+    private final RtDynamicLightAccumulator rightHeldLight = new RtDynamicLightAccumulator();
+    private BlockState leftHeldLightState;
+    private BlockState rightHeldLightState;
+    private BlockState activeHeldLightState;
+    private RtDynamicLightAccumulator activeHeldLight;
 
     /**
      * Point the collector at the capture buffer for the next {@code dispatcher.submit}, resetting the
@@ -136,7 +147,62 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         if (capture != null) {
             this.outlineColor = 0;
             this.pendingOrder = 0;
+        } else {
+            leftHeldLightState = null;
+            rightHeldLightState = null;
+            activeHeldLightState = null;
+            activeHeldLight = null;
         }
+    }
+
+    /** Configure the emitting default block states physically present in this entity's left/right hands. */
+    public void configureHeldBlockLights(BlockState left, BlockState right) {
+        leftHeldLightState = left;
+        rightHeldLightState = right;
+        leftHeldLight.reset();
+        rightHeldLight.reset();
+        activeHeldLightState = null;
+        activeHeldLight = null;
+    }
+
+    /** Append at most one flux-preserving sphere per hand, translated from entity-local to rebased space. */
+    public int appendHeldBlockLights(List<RtDynamicSphereLight> destination,
+                                     float offsetX, float offsetY, float offsetZ) {
+        int appended = 0;
+        RtDynamicSphereLight left = leftHeldLight.finish(offsetX, offsetY, offsetZ);
+        if (left != null) {
+            destination.add(left);
+            appended++;
+        }
+        RtDynamicSphereLight right = rightHeldLight.finish(offsetX, offsetY, offsetZ);
+        if (right != null) {
+            destination.add(right);
+            appended++;
+        }
+        return appended;
+    }
+
+    /** Select the one per-hand accumulator for a vanilla/Fabric item submission. */
+    protected final void beginSubmittedItem(ItemDisplayContext displayContext) {
+        switch (displayContext) {
+            case FIRST_PERSON_LEFT_HAND, THIRD_PERSON_LEFT_HAND -> {
+                activeHeldLightState = leftHeldLightState;
+                activeHeldLight = activeHeldLightState != null ? leftHeldLight : null;
+            }
+            case FIRST_PERSON_RIGHT_HAND, THIRD_PERSON_RIGHT_HAND -> {
+                activeHeldLightState = rightHeldLightState;
+                activeHeldLight = activeHeldLightState != null ? rightHeldLight : null;
+            }
+            default -> {
+                activeHeldLightState = null;
+                activeHeldLight = null;
+            }
+        }
+    }
+
+    protected final void endSubmittedItem() {
+        activeHeldLightState = null;
+        activeHeldLight = null;
     }
 
     /** This entity's Glowing-effect outline colour (opaque ARGB), or 0 if it isn't glowing. */
@@ -356,7 +422,51 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         setSpriteMaterial(sprite, transmissive ? RtMaterials.Profile.GLASS : RtMaterials.Profile.DEFAULT,
                 transmissive, false);
         capture.currentOrder = 0; // baked-quad paths never stack decal layers
-        capture.addBakedQuad(pose, q, tintColor(q.materialInfo().tintIndex(), tintLayers));
+        int tint = tintColor(q.materialInfo().tintIndex(), tintLayers);
+        int vertexStart = capture.verts.size();
+        capture.addBakedQuad(pose, q, tint);
+        if (activeHeldLight != null) {
+            float[] vertices = capture.verts.elements();
+            for (int i = 0; i < 4; i++) {
+                int source = vertexStart + i * 3;
+                meshX[i] = vertices[source];
+                meshY[i] = vertices[source + 1];
+                meshZ[i] = vertices[source + 2];
+            }
+            recordHeldLightQuad(sprite, transmissive, tint, meshX, meshY, meshZ);
+        }
+    }
+
+    /** Observe one submitted item quad through its stateful block material without changing capture state. */
+    private void recordHeldLightQuad(TextureAtlasSprite sprite, boolean transmissive, int tint,
+                                     float[] x, float[] y, float[] z) {
+        if (activeHeldLight == null || activeHeldLightState == null || sprite == null
+                || !TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())) {
+            return;
+        }
+        RtMaterialRegistry.Snapshot snapshot = RtMaterialRegistry.INSTANCE.requireSnapshot();
+        RtMaterialDesc desc = snapshot.material(snapshot.resolve(sprite, activeHeldLightState, transmissive));
+        RtMaterialDesc.EmissionSummary summary = desc.emissionSummary();
+        if (!summary.emissive()) {
+            return;
+        }
+        float stateEmission = activeHeldLightState.getLightEmission() / 15.0f;
+        float factor = switch (desc.emissionSource()) {
+            case LAB_PBR -> 1.0f;
+            case HEURISTIC_MASK, STATE_UNIFORM -> stateEmission;
+            case NONE -> 0.0f;
+        };
+        if (!(factor > 0.0f)) {
+            return;
+        }
+        float scale = factor * desc.emissionStrength();
+        float tintR = ((tint >>> 16) & 0xFF) * (1.0f / 255.0f);
+        float tintG = ((tint >>> 8) & 0xFF) * (1.0f / 255.0f);
+        float tintB = (tint & 0xFF) * (1.0f / 255.0f);
+        activeHeldLight.addQuad(x, y, z, summary.coverage(),
+                summary.averageR() * scale * tintR,
+                summary.averageG() * scale * tintG,
+                summary.averageB() * scale * tintB);
     }
 
     /** Resolve block-atlas geometry through the same immutable material snapshot as terrain. */
@@ -889,6 +999,9 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             }
         }
         int color = ARGB.multiply(averageQuadColor(quad), tint);
+        if (itemMesh && activeHeldLight != null) {
+            recordHeldLightQuad(sprite, transmissive, color, meshX, meshY, meshZ);
+        }
         float emission = quad.emissive() ? 1f : state != null ? state.getLightEmission() / 15f : 0f;
         capture.addDirectQuad(meshX, meshY, meshZ, meshU, meshV, 0f, 0f, 0f, color, emission);
     }
@@ -923,15 +1036,20 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         if (capture == null) {
             return;
         }
-        capture.currentOverlay = RtEntityCapture.packOverlay(overlayCoords);
-        // The foil the enchanted-item glow is drawn from. Vanilla gives it its own scrolling pass; here
-        // it becomes a flag on the item's own prims and a violet sheen in the hit shader, so an enchanted
-        // sword reads as enchanted without a second coplanar copy of its geometry.
-        capture.currentPrimFlags = foilType != ItemStackRenderState.FoilType.NONE
-                ? RtEntityCapture.ENTITY_PRIM_GLINT : 0;
-        addQuads(poseStack.last().pose(), quads, tintLayers);
-        capture.currentPrimFlags = 0;
-        capture.currentOverlay = 0;
+        beginSubmittedItem(displayContext);
+        try {
+            capture.currentOverlay = RtEntityCapture.packOverlay(overlayCoords);
+            // The foil the enchanted-item glow is drawn from. Vanilla gives it its own scrolling pass; here
+            // it becomes a flag on the item's own prims and a violet sheen in the hit shader, so an enchanted
+            // sword reads as enchanted without a second coplanar copy of its geometry.
+            capture.currentPrimFlags = foilType != ItemStackRenderState.FoilType.NONE
+                    ? RtEntityCapture.ENTITY_PRIM_GLINT : 0;
+            addQuads(poseStack.last().pose(), quads, tintLayers);
+        } finally {
+            capture.currentPrimFlags = 0;
+            capture.currentOverlay = 0;
+            endSubmittedItem();
+        }
     }
 
     @Override

@@ -60,7 +60,7 @@ public float emitterArea(Light light) {
 
 public float3 emitterNormal(Light light) {
     float3 normal = normalize(emitterCrossUV(light));
-    return (light.section & 0x40000000u) != 0u ? -normal : normal;
+    return (light.section & LIGHT_NORMAL_FLIP) != 0u ? -normal : normal;
 }
 
 int3 emitterSectionCoord(Light light) {

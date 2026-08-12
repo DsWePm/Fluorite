@@ -13,6 +13,7 @@
 | [M11：体积云](M11-clouds.md) | 云密度、光照、双层、天气、二次光线、4π 能量修复 | D33–D38、D43、D61、F18–F21、R18–R20 |
 | [M12–M12.5：水体仿真与真形变](M12-water-simulation.md) | 交互涟漪、障碍、BLAS refit、波谱、FFT 裁决 | D39–D58、F22–F28、R21–R22、F24 |
 | [M13：体积可见性、结构雾与天气](M13-fog-weather.md) | 可见性网格、随机阴影线、3D 雾、统一风向与天气 forcing、焦散天气衰减 | D59–D73、M13.2/.3 |
+| [M14：维度 Provider、地狱介质与末地环境](M14-dimension-presets.md) | 版本化 preset、地狱本地光/均匀雾、末地 HDR/Kerr 技术 Provider 与后续动态 HDRI 路线 | D74–D97 |
 | [M15–M17：统一介质与体积光照](M15-M17-medium-lighting.md) | 介质接口、Radiance 源、水下前缀、Slang 错编规避、散射顶点与 NEE | D1–D27、D29–D31、R24 |
 | [M19–M20：实体 overlay 与粒子](M19-M20-entities-particles.md) | 受伤 overlay、实体火焰、glint、粒子发光/透明/阴影 | D6、D28、D32、F16 |
 | [测量、诊断与失败经验](lessons-and-measurements.md) | 基准纪律、GPU 日志、observer effect、设备故障取证、F/R 索引 | F1–F28、R1–R24 |

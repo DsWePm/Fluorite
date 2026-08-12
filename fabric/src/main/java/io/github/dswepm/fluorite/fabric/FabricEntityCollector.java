@@ -60,8 +60,13 @@ public final class FabricEntityCollector extends RtEntityCollectorBase {
 		if (capture == null) {
 			return;
 		}
-		addQuads(poseStack.last().pose(), quads, tintLayers);
-		addMeshQuads(poseStack, mesh, tintLayers, true);
+		beginSubmittedItem(displayContext);
+		try {
+			addQuads(poseStack.last().pose(), quads, tintLayers);
+			addMeshQuads(poseStack, mesh, tintLayers, true);
+		} finally {
+			endSubmittedItem();
+		}
 	}
 
 	@Override

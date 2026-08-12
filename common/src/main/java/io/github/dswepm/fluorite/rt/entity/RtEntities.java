@@ -22,8 +22,13 @@ import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.HumanoidArm;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.HitResult;
@@ -43,6 +48,8 @@ import io.github.dswepm.fluorite.rt.RtGpuExecutor.GraphicsUseWaiter;
 import io.github.dswepm.fluorite.rt.RtGpuExecutor.TrackedGraphicsUse;
 import io.github.dswepm.fluorite.rt.accel.RtAccel;
 import io.github.dswepm.fluorite.rt.accel.RtBuffer;
+import io.github.dswepm.fluorite.rt.light.RtDynamicSphereLight;
+import io.github.dswepm.fluorite.rt.light.RtLightEncoding;
 import io.github.dswepm.fluorite.rt.material.RtMaterialRegistry;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
 
@@ -380,9 +387,13 @@ public final class RtEntities {
         long retryYawFitAfter;
     }
 
-    /** This frame's terrain and dynamic instance segments, entity BLAS builds, and geometry-table address. */
+    /**
+     * This frame's terrain/entity geometry plus the unbound M18 dynamic-light data layer. The dynamic
+     * address/count are diagnostics and future ReSTIR inputs; no current shader push record references them.
+     */
     public record FrameEntities(List<RtAccel.Instance> baseInstances, List<RtAccel.Instance> dynamicInstances,
-                                List<RtAccel.PreparedBlas> blas, long geomTableAddr, FrameUse use) {
+                                List<RtAccel.PreparedBlas> blas, long geomTableAddr,
+                                long dynamicLightAddr, int dynamicLightCount, FrameUse use) {
     }
 
     private record FrameUse(FrameLists lists, TableSlot table) {
@@ -615,6 +626,9 @@ public final class RtEntities {
         TableSlot table;
         int count;        // geometry-table entries / TLAS instances
         int logicalCount; // ordinary entities + block entities + individual particles
+        final ArrayList<RtDynamicSphereLight> dynamicLights = new ArrayList<>();
+        long dynamicLightAddr;
+        int dynamicLightCount;
 
         final GraphicsUseWaiter graphicsUseWaiter;
 
@@ -638,12 +652,12 @@ public final class RtEntities {
     public FrameEntities beginFrame(RtContext ctx, List<RtAccel.Instance> base, int rbx, int rby, int rbz,
                                     double camX, double camY, double camZ, Matrix4f projection, Matrix4f viewRotation) {
         if (!enabled()) {
-            return new FrameEntities(base, List.of(), List.of(), 0L, null);
+            return new FrameEntities(base, List.of(), List.of(), 0L, 0L, 0, null);
         }
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
         if (level == null) {
-            return new FrameEntities(base, List.of(), List.of(), 0L, null);
+            return new FrameEntities(base, List.of(), List.of(), 0L, 0L, 0, null);
         }
         float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
         setCamera(camX, camY, camZ, projection, viewRotation);
@@ -659,6 +673,9 @@ public final class RtEntities {
             try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.particles")) {
                 captureParticles(ctx, build, mc, partial, rbx, rby, rbz, projection, viewRotation);
             }
+            try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.dynamicLights")) {
+                uploadDynamicLights(ctx, build);
+            }
         } catch (RuntimeException | Error t) {
             // A partially recorded frame may already have installed unbuilt BLAS into persistent slots.
             // Quiesce old frames and drop the entity cache before propagating the original failure.
@@ -671,7 +688,7 @@ public final class RtEntities {
         RtFrameStats.FRAME.count("entityRetainedGeometryBytes", retainedGeometryBytes);
 
         if (build.instances == null) {
-            return new FrameEntities(base, List.of(), List.of(), 0L, null);
+            return new FrameEntities(base, List.of(), List.of(), 0L, 0L, 0, null);
         }
         try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.uploadFlush")) {
             build.motion.flushWrites();
@@ -681,7 +698,7 @@ public final class RtEntities {
             }
         }
         return new FrameEntities(base, build.instances, build.blas, build.geomTableAddr,
-                new FrameUse(build.lists, build.table));
+                build.dynamicLightAddr, build.dynamicLightCount, new FrameUse(build.lists, build.table));
     }
 
     /** Associate every resource returned for a successfully enqueued frame with its graphics completion. */
@@ -758,6 +775,15 @@ public final class RtEntities {
                     captureNameTag(level, state, ix, iy, iz, rbx, rby, rbz);
                 }
                 collector.begin(capture, true);
+                BlockState leftHeldLight = null;
+                BlockState rightHeldLight = null;
+                if (entity instanceof LivingEntity living) {
+                    leftHeldLight = emittingHeldBlockState(living.getItemHeldByArm(HumanoidArm.LEFT));
+                    rightHeldLight = emittingHeldBlockState(living.getItemHeldByArm(HumanoidArm.RIGHT));
+                }
+                collector.configureHeldBlockLights(leftHeldLight, rightHeldLight);
+                RtFrameStats.FRAME.count("dynamicHeldBlockCandidates",
+                        (leftHeldLight != null ? 1 : 0) + (rightHeldLight != null ? 1 : 0));
                 resetPoseStack(entityPoseStack);
                 // Capture around the entity anchor. Per-frame placement moves into the TLAS instance,
                 // so ordinary world translation no longer changes the mesh or its float precision.
@@ -767,6 +793,9 @@ public final class RtEntities {
                 } finally {
                     RtFrameStats.FRAME.endStage("entity.capture.submit", submitStart);
                 }
+                int dynamicLights = collector.appendHeldBlockLights(build.dynamicLights,
+                        ix - rbx, iy - rby, iz - rbz);
+                RtFrameStats.FRAME.count("dynamicLightsCollected", dynamicLights);
             } catch (Throwable t) {
                 // Fail loud instead of skip-and-limp: a capture throw here is almost always our bug, and
                 // swallowing it leaves the entity invisible every frame plus a per-frame MC CrashReport.
@@ -1370,6 +1399,44 @@ public final class RtEntities {
     private RtBuffer allocBuffer(RtContext ctx, long minSize, int usage, boolean hostVisible, String label) {
         RtFrameStats.FRAME.count("vmaBufferCreates", 1);
         return ctx.createBuffer(Math.max(minSize, MIN_BUFFER_SIZE), usage, hostVisible, label);
+    }
+
+    /** A held item qualifies by block semantics, never by registry name or a hard-coded colour. */
+    private static BlockState emittingHeldBlockState(ItemStack stack) {
+        if (stack == null || stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
+            return null;
+        }
+        BlockState state = blockItem.getBlock().defaultBlockState();
+        return state.getLightEmission() > 0 ? state : null;
+    }
+
+    /**
+     * Upload M18's per-frame typed records into the guarded frame-list slot. This buffer is intentionally
+     * absent from WorldPush/descriptor state: collection is measurable now, sampling waits for ReSTIR.
+     */
+    private void uploadDynamicLights(RtContext ctx, FrameBuild build) {
+        int count = build.dynamicLights.size();
+        if (count == 0) {
+            return;
+        }
+        beginBuildIfNeeded(ctx, build);
+        long bytes = Math.multiplyExact((long) count, RtLightEncoding.RECORD_BYTES);
+        int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        RtBuffer buffer = allocBuffer(ctx, bytes, storage, true, "dynamic sphere lights");
+        float[] record = new float[RtLightEncoding.RECORD_FLOATS];
+        for (int i = 0; i < count; i++) {
+            build.dynamicLights.get(i).encode(record, 0);
+            long destination = buffer.mapped + (long) i * RtLightEncoding.RECORD_BYTES;
+            for (int lane = 0; lane < RtLightEncoding.RECORD_FLOATS; lane++) {
+                MemoryUtil.memPutFloat(destination + (long) lane * Float.BYTES, record[lane]);
+            }
+        }
+        buffer.flush(0L, bytes);
+        build.buffers.add(buffer);
+        build.dynamicLightAddr = buffer.deviceAddress;
+        build.dynamicLightCount = count;
+        RtFrameStats.FRAME.count("dynamicLightUploadBytes", bytes);
+        RtFrameStats.FRAME.count("dynamicLightFlushes", 1);
     }
 
     private RtBuffer allocAlignedBuffer(RtContext ctx, long minSize, int usage, boolean hostVisible,

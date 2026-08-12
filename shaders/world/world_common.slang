@@ -244,8 +244,18 @@ public struct Light {
     public uint   halfUxy;  // half2(U.x, U.y)
     public uint   halfUzVx; // half2(U.z, V.x)
     public uint   halfVyz;  // half2(V.y, V.z)
-    public uint   section;  // 10:10:10 grid-relative section coord + bit 30 normal-flip
+    public uint   section;  // rect: 10:10:10 grid coord + bit30 flip; bit31 selects a sphere record
 };
+
+// M18 reserves bit 31 as the shared ABI's shape tag. Dynamic sphere records store radius in the low
+// half of halfUxy and currently live in a separate, deliberately unbound per-frame buffer. Existing
+// alias/grid sampling therefore sees rectangle records only until the ReSTIR integration is approved.
+public static const uint LIGHT_TYPE_SPHERE = 0x80000000u;
+public static const uint LIGHT_NORMAL_FLIP = 0x40000000u;
+
+public bool lightIsSphere(Light light) {
+    return (light.section & LIGHT_TYPE_SPHERE) != 0u;
+}
 
 // Eight-byte Vose alias-table column. PDFs are reconstructed from the selected Light.
 public struct LightAlias {
