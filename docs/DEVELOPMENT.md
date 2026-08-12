@@ -18,7 +18,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 ### 1.2 当前基线
 
-远端 `main` 的当前基线为 `bf60981`（PR #26）。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
+远端 `main` 的当前基线为 `20d5514`（PR #27）。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
 
 测试机事实：
 
@@ -57,7 +57,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
 - M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
 - M14 末地美术替换：当前 HDR/Kerr 技术 Provider 已由 PR #26 合入；后续由用户在 Blender 预渲染包含星空、透镜黑洞和动态吸积盘的循环 HDR 全天球序列，再替换当前实时黑洞。素材到位前不决定帧格式、分辨率、帧率、循环长度、插帧与照明采样方案。
-- M18 动态光源数据层：手持发光 `BlockItem` 的逐帧球灯收集/上传已实现于开发分支；燃烧实体、发光生物及 M20.4 发光粒子聚合仍待实现。真正采样统一等待 ReSTIR。
+- M18 动态光源数据层：手持发光 `BlockItem` 的逐帧球灯收集/上传已由 PR #27 合入；燃烧实体、发光生物及 M20.4 发光粒子聚合仍待实现。真正采样统一等待 ReSTIR。
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
 - ReSTIR 整合。
 - 云向地面/水面投影阴影，以及焦散读取二维云太阳透射率图。
@@ -488,7 +488,7 @@ D98A 把本阶段限定为收集、编码和上传但暂不采样：
 - 发光粒子按空间 cell 聚合的代表光。
 - 产出与 32 B `Light` 兼容的记录、动态标记，并为类型/区域光源留位。
 
-当前开发分支已经接通第一条 tracer bullet：主/副手中默认 `BlockState` 发光的 `BlockItem`。`RtEntities` 从 `LivingEntity.getItemHeldByArm` 建立资格上下文，`RtEntityCollectorBase` 在 vanilla 与 Fabric 的真实 `submitItem` 路径观察最终姿态、sprite 和 tint；不改变实体 primitive 的现有材质或几何。每只手的发光 quad 按材质 `EmissionSummary`、`emissionStrength` 和 state emission 聚为一个有限球灯：球心为发光功率重心，球面积为发光覆盖面积，球 Radiance 反算为保持 `πA·Le` 总功率。
+PR #27 已接通第一条 tracer bullet：主/副手中默认 `BlockState` 发光的 `BlockItem`。`RtEntities` 从 `LivingEntity.getItemHeldByArm` 建立资格上下文，`RtEntityCollectorBase` 在 vanilla 与 Fabric 的真实 `submitItem` 路径观察最终姿态、sprite 和 tint；不改变实体 primitive 的现有材质或几何。每只手的发光 quad 按材质 `EmissionSummary`、`emissionStrength` 和 state emission 聚为一个有限球灯：球心为发光功率重心，球面积为发光覆盖面积，球 Radiance 反算为保持 `πA·Le` 总功率。
 
 D99A 使用共享 32 B `Light` ABI：bit31 为 sphere 类型，radius 写入 `halfUxy` 低 half，`le` 继续是 R11G11B10。动态记录位于 graphics-timeline 守卫的独立逐帧 host-visible buffer；`FrameEntities.dynamicLightAddr/count` 只暴露 CPU 诊断/未来入口，当前 `WorldPush`、descriptor、alias/grid 和 shader 采样均不读取它，所以画面应 bit-identical。`RtFrameStats` 提供 `dynamicHeldBlockCandidates`、`dynamicLightsCollected`、`dynamicLightUploadBytes` 和 `dynamicLightFlushes`；候选大于零而 collected 为零说明真实 item submit 未产出可解析的发光 block-atlas quad。
 
