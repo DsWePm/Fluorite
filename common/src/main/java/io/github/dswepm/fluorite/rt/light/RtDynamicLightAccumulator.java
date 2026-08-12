@@ -16,6 +16,13 @@ public final class RtDynamicLightAccumulator {
     private double centreX;
     private double centreY;
     private double centreZ;
+    private double minX;
+    private double minY;
+    private double minZ;
+    private double maxX;
+    private double maxY;
+    private double maxZ;
+    private double maxSupportRadius;
 
     public void reset() {
         effectiveArea = 0.0;
@@ -26,6 +33,9 @@ public final class RtDynamicLightAccumulator {
         centreX = 0.0;
         centreY = 0.0;
         centreZ = 0.0;
+        minX = minY = minZ = Double.POSITIVE_INFINITY;
+        maxX = maxY = maxZ = Double.NEGATIVE_INFINITY;
+        maxSupportRadius = 0.0;
     }
 
     /** Add one transformed quad whose RGB is its texture-domain mean emitted radiance. */
@@ -65,26 +75,93 @@ public final class RtDynamicLightAccumulator {
         centreX += weight * (x[a] + x[b] + x[c]) / 3.0;
         centreY += weight * (y[a] + y[b] + y[c]) / 3.0;
         centreZ += weight * (z[a] + z[b] + z[c]) / 3.0;
+        include(x[a], y[a], z[a]);
+        include(x[b], y[b], z[b]);
+        include(x[c], y[c], z[c]);
+    }
+
+    /**
+     * Add a compact surface emitter proxy. {@code area} is its geometric emitting surface and
+     * {@code supportRadius} encloses that surface around the supplied centre. Texture means are already
+     * alpha-premultiplied, while coverage controls only the proxy's effective emitting area.
+     */
+    public void addEmitter(float x, float y, float z, float supportRadius, float area, float coverage,
+                           float leR, float leG, float leB) {
+        if (!(area > AREA_EPS) || !(coverage > 0.0f) || !(supportRadius >= 0.0f)
+                || !Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(z)
+                || !Float.isFinite(supportRadius)) {
+            return;
+        }
+        double clampedCoverage = Math.clamp(coverage, 0.0f, 1.0f);
+        double r = Math.max(0.0f, leR);
+        double g = Math.max(0.0f, leG);
+        double b = Math.max(0.0f, leB);
+        double luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if (!(luminance > 0.0)) {
+            return;
+        }
+        effectiveArea += area * clampedCoverage;
+        radianceAreaR += area * r;
+        radianceAreaG += area * g;
+        radianceAreaB += area * b;
+        double weight = area * luminance;
+        centreWeight += weight;
+        centreX += weight * x;
+        centreY += weight * y;
+        centreZ += weight * z;
+        include(x, y, z);
+        maxSupportRadius = Math.max(maxSupportRadius, supportRadius);
     }
 
     /** Finish in rebased world space; returns null for a source with no finite positive power. */
     public RtDynamicSphereLight finish(float offsetX, float offsetY, float offsetZ) {
+        return finish(offsetX, offsetY, offsetZ, 0);
+    }
+
+    public RtDynamicSphereLight finish(float offsetX, float offsetY, float offsetZ, int sourceKey) {
+        return finish(offsetX, offsetY, offsetZ, sourceKey, false);
+    }
+
+    /** Enclose a spatial cell's source distribution and lower radiance to preserve total flux. */
+    public RtDynamicSphereLight finishCluster(float offsetX, float offsetY, float offsetZ, int sourceKey) {
+        return finish(offsetX, offsetY, offsetZ, sourceKey, true);
+    }
+
+    private RtDynamicSphereLight finish(float offsetX, float offsetY, float offsetZ,
+                                        int sourceKey, boolean encloseDistribution) {
         if (!(effectiveArea > AREA_EPS) || !(centreWeight > 0.0)) {
             return null;
         }
-        float radius = (float) Math.sqrt(effectiveArea / (4.0 * Math.PI));
-        float leR = (float) (radianceAreaR / effectiveArea);
-        float leG = (float) (radianceAreaG / effectiveArea);
-        float leB = (float) (radianceAreaB / effectiveArea);
-        if (!(radius > 0.0f) || !Float.isFinite(radius)
+        double cx = centreX / centreWeight;
+        double cy = centreY / centreWeight;
+        double cz = centreZ / centreWeight;
+        double radius = Math.sqrt(effectiveArea / (4.0 * Math.PI));
+        if (encloseDistribution && minX <= maxX) {
+            double dx = Math.max(Math.abs(cx - minX), Math.abs(maxX - cx));
+            double dy = Math.max(Math.abs(cy - minY), Math.abs(maxY - cy));
+            double dz = Math.max(Math.abs(cz - minZ), Math.abs(maxZ - cz));
+            radius = Math.max(radius, Math.sqrt(dx * dx + dy * dy + dz * dz) + maxSupportRadius);
+        }
+        double sphereArea = 4.0 * Math.PI * radius * radius;
+        float leR = (float) (radianceAreaR / sphereArea);
+        float leG = (float) (radianceAreaG / sphereArea);
+        float leB = (float) (radianceAreaB / sphereArea);
+        if (!(radius > 0.0) || !Double.isFinite(radius)
                 || !finitePositive(leR, leG, leB)) {
             return null;
         }
         return new RtDynamicSphereLight(
-                (float) (centreX / centreWeight) + offsetX,
-                (float) (centreY / centreWeight) + offsetY,
-                (float) (centreZ / centreWeight) + offsetZ,
-                radius, leR, leG, leB);
+                (float) cx + offsetX, (float) cy + offsetY, (float) cz + offsetZ,
+                (float) radius, leR, leG, leB, sourceKey);
+    }
+
+    private void include(double x, double y, double z) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        minZ = Math.min(minZ, z);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        maxZ = Math.max(maxZ, z);
     }
 
     private static boolean finitePositive(float r, float g, float b) {

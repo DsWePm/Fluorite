@@ -16,7 +16,9 @@ import io.github.dswepm.fluorite.platform.SpriteLookup;
 import io.github.dswepm.fluorite.rt.RtFrameStats;
 import io.github.dswepm.fluorite.rt.accel.RtAccel;
 import io.github.dswepm.fluorite.rt.light.RtDynamicLightAccumulator;
+import io.github.dswepm.fluorite.rt.light.RtDynamicLightKey;
 import io.github.dswepm.fluorite.rt.light.RtDynamicSphereLight;
+import io.github.dswepm.fluorite.rt.material.RtAlbedoSummary;
 import io.github.dswepm.fluorite.rt.material.RtMaterialDesc;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -131,10 +133,13 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     // never changes their material/geometry records, so enabling collection cannot change this frame's image.
     private final RtDynamicLightAccumulator leftHeldLight = new RtDynamicLightAccumulator();
     private final RtDynamicLightAccumulator rightHeldLight = new RtDynamicLightAccumulator();
+    private final RtDynamicLightAccumulator flameLight = new RtDynamicLightAccumulator();
+    private final RtDynamicLightAccumulator bodyLight = new RtDynamicLightAccumulator();
     private BlockState leftHeldLightState;
     private BlockState rightHeldLightState;
     private BlockState activeHeldLightState;
     private RtDynamicLightAccumulator activeHeldLight;
+    private int entityWorldBlockLight;
 
     /**
      * Point the collector at the capture buffer for the next {@code dispatcher.submit}, resetting the
@@ -156,28 +161,47 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     }
 
     /** Configure the emitting default block states physically present in this entity's left/right hands. */
-    public void configureHeldBlockLights(BlockState left, BlockState right) {
+    public void configureDynamicLights(BlockState left, BlockState right, int worldBlockLight) {
         leftHeldLightState = left;
         rightHeldLightState = right;
         leftHeldLight.reset();
         rightHeldLight.reset();
+        flameLight.reset();
+        bodyLight.reset();
+        entityWorldBlockLight = Math.clamp(worldBlockLight, 0, 15);
         activeHeldLightState = null;
         activeHeldLight = null;
     }
 
-    /** Append at most one flux-preserving sphere per hand, translated from entity-local to rebased space. */
-    public int appendHeldBlockLights(List<RtDynamicSphereLight> destination,
-                                     float offsetX, float offsetY, float offsetZ) {
+    /** Append distinct left/right-held, flame and body spheres in the shared M18 record stream. */
+    public int appendDynamicLights(List<RtDynamicSphereLight> destination, int entityId,
+                                   float offsetX, float offsetY, float offsetZ) {
         int appended = 0;
-        RtDynamicSphereLight left = leftHeldLight.finish(offsetX, offsetY, offsetZ);
+        RtDynamicSphereLight left = leftHeldLight.finish(offsetX, offsetY, offsetZ,
+                RtDynamicLightKey.entity(entityId, RtDynamicLightKey.HELD_LEFT));
         if (left != null) {
             destination.add(left);
             appended++;
         }
-        RtDynamicSphereLight right = rightHeldLight.finish(offsetX, offsetY, offsetZ);
+        RtDynamicSphereLight right = rightHeldLight.finish(offsetX, offsetY, offsetZ,
+                RtDynamicLightKey.entity(entityId, RtDynamicLightKey.HELD_RIGHT));
         if (right != null) {
             destination.add(right);
             appended++;
+        }
+        RtDynamicSphereLight flame = flameLight.finish(offsetX, offsetY, offsetZ,
+                RtDynamicLightKey.entity(entityId, RtDynamicLightKey.ENTITY_FLAME));
+        if (flame != null) {
+            destination.add(flame);
+            appended++;
+            RtFrameStats.FRAME.count("dynamicFlameLights", 1);
+        }
+        RtDynamicSphereLight body = bodyLight.finish(offsetX, offsetY, offsetZ,
+                RtDynamicLightKey.entity(entityId, RtDynamicLightKey.ENTITY_BODY));
+        if (body != null) {
+            destination.add(body);
+            appended++;
+            RtFrameStats.FRAME.count("dynamicBodyLights", 1);
         }
         return appended;
     }
@@ -328,6 +352,15 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             }
         }
 
+        if (!glint) {
+            long dynamicLightStart = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
+            try {
+                recordBodyLight(renderType, sprite, lightCoords, color, idxStart);
+            } finally {
+                RtFrameStats.FRAME.endStage("entity.dynamicAttachedLights", dynamicLightStart);
+            }
+        }
+
         if (FluoriteConfig.Rt.Entities.CAPTURE_PARITY.value()) {
             parityCapture.reset(addedVertices);
             capture.copySubmissionStateTo(parityCapture);
@@ -345,6 +378,87 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         }
         capture.currentOverlay = 0;
         capture.currentPrimFlags = 0;
+    }
+
+    /**
+     * Observe one model submission without mutating its captured prims. Authored material emission wins;
+     * otherwise vanilla's block-light excess proves that this particular layer is externally fullbright.
+     * Glint and the Glowing outline are deliberately absent from this path.
+     */
+    private void recordBodyLight(RenderType renderType, TextureAtlasSprite sprite, int lightCoords,
+                                 int tint, int indexStart) {
+        RtMaterialDesc desc = RtMaterialRegistry.INSTANCE.description(capture.currentMaterialId);
+        RtMaterialDesc.EmissionSummary authored = desc != null
+                ? desc.emissionSummary() : RtMaterialDesc.EmissionSummary.NONE;
+        float coverage;
+        float averageR;
+        float averageG;
+        float averageB;
+        float strength;
+        if (desc != null && authored.emissive()
+                && desc.emissionSource() != RtMaterialDesc.EmissionSource.NONE) {
+            coverage = authored.coverage();
+            averageR = authored.averageR();
+            averageG = authored.averageG();
+            averageB = authored.averageB();
+            strength = desc.emissionStrength();
+            RtFrameStats.FRAME.count("dynamicBodyAuthoredCandidates", 1);
+        } else {
+            int reportedBlock = (lightCoords >>> 4) & 15;
+            int excess = reportedBlock - entityWorldBlockLight;
+            if (excess <= 0) {
+                return;
+            }
+            RtAlbedoSummary.Summary summary = sprite != null
+                    ? RtAlbedoSummary.sprite(sprite)
+                    : RtAlbedoSummary.resource(RtEntityTextures.INSTANCE.textureLocationFor(renderType));
+            if (!summary.usable()) {
+                RtFrameStats.FRAME.count("dynamicTextureSummaryMisses", 1);
+                return;
+            }
+            coverage = summary.coverage();
+            averageR = summary.averageR();
+            averageG = summary.averageG();
+            averageB = summary.averageB();
+            strength = excess / 15.0f * RtMaterialRegistry.EMISSIVE_STRENGTH;
+            RtFrameStats.FRAME.count("dynamicBodyFullbrightCandidates", 1);
+        }
+        float tintR = ((tint >>> 16) & 0xFF) * (1.0f / 255.0f);
+        float tintG = ((tint >>> 8) & 0xFF) * (1.0f / 255.0f);
+        float tintB = (tint & 0xFF) * (1.0f / 255.0f);
+        recordCapturedQuads(bodyLight, indexStart, coverage,
+                averageR * strength * tintR,
+                averageG * strength * tintG,
+                averageB * strength * tintB);
+    }
+
+    /** Feed quads appended by one model submission into a side-band finite-light accumulator. */
+    private void recordCapturedQuads(RtDynamicLightAccumulator accumulator, int indexStart, float coverage,
+                                     float leR, float leG, float leB) {
+        int[] indices = capture.idx.elements();
+        float[] vertices = capture.verts.elements();
+        for (int i = indexStart; i + 5 < capture.idx.size(); i += 6) {
+            boolean valid = true;
+            for (int corner = 0; corner < 4; corner++) {
+                int vertex = switch (corner) {
+                    case 0 -> indices[i];
+                    case 1 -> indices[i + 1];
+                    case 2 -> indices[i + 2];
+                    default -> indices[i + 5];
+                };
+                int source = vertex * 3;
+                if (source < 0 || source + 2 >= capture.verts.size()) {
+                    valid = false;
+                    break;
+                }
+                meshX[corner] = vertices[source];
+                meshY[corner] = vertices[source + 1];
+                meshZ[corner] = vertices[source + 2];
+            }
+            if (valid) {
+                accumulator.addQuad(meshX, meshY, meshZ, coverage, leR, leG, leB);
+            }
+        }
     }
 
     /**
@@ -781,11 +895,32 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             flameVertex(flamePose, 2, half, FLAME_QUAD_HEIGHT - yOff, z, u0, v0);
             flameVertex(flamePose, 3, -half, FLAME_QUAD_HEIGHT - yOff, z, u1, v0);
             capture.addDirectQuad(meshX, meshY, meshZ, meshU, meshV, 0f, 0f, 0f, -1, FLAME_EMISSION);
+            long dynamicLightStart = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
+            try {
+                recordFlameLightQuad(sprite, meshX, meshY, meshZ);
+            } finally {
+                RtFrameStats.FRAME.endStage("entity.dynamicAttachedLights", dynamicLightStart);
+            }
             remaining -= 0.45f;
             yOff -= 0.45f;
             half *= 0.9f;
             z -= 0.03f;
         }
+    }
+
+    /** Use the emitting block-state material variant for the light proxy without changing flame shading. */
+    private void recordFlameLightQuad(TextureAtlasSprite sprite, float[] x, float[] y, float[] z) {
+        RtMaterialRegistry.Snapshot snapshot = RtMaterialRegistry.INSTANCE.requireSnapshot();
+        int materialId = snapshot.resolve(sprite, RtMaterials.Profile.DEFAULT, false, true);
+        RtMaterialDesc desc = snapshot.material(materialId);
+        RtMaterialDesc.EmissionSummary summary = desc.emissionSummary();
+        if (!summary.emissive() || desc.emissionSource() == RtMaterialDesc.EmissionSource.NONE) {
+            return;
+        }
+        flameLight.addQuad(x, y, z, summary.coverage(),
+                summary.averageR() * desc.emissionStrength(),
+                summary.averageG() * desc.emissionStrength(),
+                summary.averageB() * desc.emissionStrength());
     }
 
     /** Stage one pose-transformed flame corner into the shared quad scratch. */

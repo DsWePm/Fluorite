@@ -4,6 +4,8 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import io.github.dswepm.fluorite.FluoriteConfig;
 import io.github.dswepm.fluorite.mixin.ParticleEngineAccessor;
 import io.github.dswepm.fluorite.mixin.ParticleGroupAccessor;
+import io.github.dswepm.fluorite.mixin.ParticleAccessor;
+import io.github.dswepm.fluorite.mixin.SingleQuadParticleAccessor;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -49,7 +51,10 @@ import io.github.dswepm.fluorite.rt.RtGpuExecutor.TrackedGraphicsUse;
 import io.github.dswepm.fluorite.rt.accel.RtAccel;
 import io.github.dswepm.fluorite.rt.accel.RtBuffer;
 import io.github.dswepm.fluorite.rt.light.RtDynamicSphereLight;
+import io.github.dswepm.fluorite.rt.light.RtDynamicLightAccumulator;
+import io.github.dswepm.fluorite.rt.light.RtDynamicLightKey;
 import io.github.dswepm.fluorite.rt.light.RtLightEncoding;
+import io.github.dswepm.fluorite.rt.material.RtAlbedoSummary;
 import io.github.dswepm.fluorite.rt.material.RtMaterialRegistry;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
 
@@ -57,6 +62,7 @@ import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -232,6 +238,25 @@ public final class RtEntities {
     private IdentityHashMap<Particle, ParticlePrev> particlePrev = new IdentityHashMap<>();
     private IdentityHashMap<Particle, ParticlePrev> particleCur = new IdentityHashMap<>();
     private final float[] particleCenterScratch = new float[3];
+    private final BlockPos.MutableBlockPos entityLightBlockPos = new BlockPos.MutableBlockPos();
+    private final BlockPos.MutableBlockPos particleLightBlockPos = new BlockPos.MutableBlockPos();
+    private final Long2ObjectOpenHashMap<ParticleLightCell> particleLightCells = new Long2ObjectOpenHashMap<>();
+    private final ArrayDeque<ParticleLightCell> particleLightCellPool = new ArrayDeque<>();
+
+    /** One world-anchored 1x1x1 cell; its accumulator works in this frame's rebased coordinates. */
+    private static final class ParticleLightCell {
+        final RtDynamicLightAccumulator light = new RtDynamicLightAccumulator();
+        int x;
+        int y;
+        int z;
+
+        void reset(int x, int y, int z) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            light.reset();
+        }
+    }
 
     /** Previous frame's particle center (rebase-space) + that frame's rebase origin, for the MV diff. */
     private static final class ParticlePrev {
@@ -781,7 +806,15 @@ public final class RtEntities {
                     leftHeldLight = emittingHeldBlockState(living.getItemHeldByArm(HumanoidArm.LEFT));
                     rightHeldLight = emittingHeldBlockState(living.getItemHeldByArm(HumanoidArm.RIGHT));
                 }
-                collector.configureHeldBlockLights(leftHeldLight, rightHeldLight);
+                // Match EntityRenderer.getPackedLightCoords' probe position. Burning entities are a
+                // special case there: vanilla raises the WHOLE model to block 15. Treat that as the
+                // baseline because submitFlame already owns the real source; otherwise the body would
+                // become a second, enormous emitter merely because it is lit by its attached flames.
+                Vec3 lightProbe = entity.getLightProbePosition(partial);
+                int entityWorldBlockLight = entity.isOnFire() ? 15
+                        : level.getBrightness(LightLayer.BLOCK,
+                                entityLightBlockPos.set(lightProbe.x, lightProbe.y, lightProbe.z));
+                collector.configureDynamicLights(leftHeldLight, rightHeldLight, entityWorldBlockLight);
                 RtFrameStats.FRAME.count("dynamicHeldBlockCandidates",
                         (leftHeldLight != null ? 1 : 0) + (rightHeldLight != null ? 1 : 0));
                 resetPoseStack(entityPoseStack);
@@ -793,7 +826,7 @@ public final class RtEntities {
                 } finally {
                     RtFrameStats.FRAME.endStage("entity.capture.submit", submitStart);
                 }
-                int dynamicLights = collector.appendHeldBlockLights(build.dynamicLights,
+                int dynamicLights = collector.appendDynamicLights(build.dynamicLights, id,
                         ix - rbx, iy - rby, iz - rbz);
                 RtFrameStats.FRAME.count("dynamicLightsCollected", dynamicLights);
             } catch (Throwable t) {
@@ -997,6 +1030,7 @@ public final class RtEntities {
     private void captureParticles(RtContext ctx, FrameBuild build, Minecraft mc, float partial,
                                   int rbx, int rby, int rbz, Matrix4f projection, Matrix4f viewRotation) {
         int particleLimit = maxParticles();
+        resetParticleLightCells();
         if (!particlesEnabled() || particleLimit == 0 || build.full()) {
             particlePrev.clear();
             particleCur.clear();
@@ -1027,16 +1061,30 @@ public final class RtEntities {
         IdentityHashMap<Particle, ParticlePrev> cur = particleCur;
         cur.clear();
         int particlesCaptured = 0;
+        int dynamicParticlesExamined = 0;
         try {
             particleGroups:
             for (ParticleGroup<?> group : groups.values()) {
                 Queue<? extends Particle> queue = ((ParticleGroupAccessor) group).fluorite$getParticles();
                 for (Particle p : queue) {
-                    if (build.full() || particlesCaptured >= particleLimit) {
+                    if (build.full() || (particlesCaptured >= particleLimit
+                            && dynamicParticlesExamined >= particleLimit)) {
                         break particleGroups;
                     }
                     if (!(p instanceof SingleQuadParticle sq)) {
                         continue; // item-pickup / elder-guardian particles aren't billboard quads (skip)
+                    }
+                    if (dynamicParticlesExamined < particleLimit) {
+                        dynamicParticlesExamined++;
+                        long lightStart = RtFrameStats.FRAME.startStage();
+                        try {
+                            collectParticleLight(mc, sq, partial, rbx, rby, rbz);
+                        } finally {
+                            RtFrameStats.FRAME.endStage("entity.dynamicParticleLights", lightStart);
+                        }
+                    }
+                    if (particlesCaptured >= particleLimit) {
+                        continue;
                     }
                     if (!frustum.isVisible(p.getBoundingBox())) {
                         continue;
@@ -1103,6 +1151,7 @@ public final class RtEntities {
             throw new RuntimeException("RT particle capture failed", t); // propagate to composite() (see entity path)
         }
         RtFrameStats.FRAME.count("particlesCaptured", particlesCaptured);
+        appendParticleLightCells(build.dynamicLights);
         IdentityHashMap<Particle, ParticlePrev> oldPrev = particlePrev;
         particlePrev = cur;
         particleCur = oldPrev;
@@ -1112,6 +1161,78 @@ public final class RtEntities {
         long dispAddr = uploadDisp(ctx, build, particleDisp);
         appendCapture(ctx, build, new Motion(dispAddr, 0f, 0f, 0f),
                 -1, PARTICLE_BIT, particleMask(), IDENTITY); // one combined mesh, per-particle MV
+    }
+
+    /** Collect one particle independently of camera visibility; the existing geometry path stays untouched. */
+    private void collectParticleLight(Minecraft mc, SingleQuadParticle particle, float partial,
+                                      int rbx, int rby, int rbz) {
+        ParticleAccessor position = (ParticleAccessor) (Object) particle;
+        int packedLight = position.fluorite$invokeGetLightCoords(partial);
+        double wx = position.fluorite$getPreviousX()
+                + (position.fluorite$getX() - position.fluorite$getPreviousX()) * partial;
+        double wy = position.fluorite$getPreviousY()
+                + (position.fluorite$getY() - position.fluorite$getPreviousY()) * partial;
+        double wz = position.fluorite$getPreviousZ()
+                + (position.fluorite$getZ() - position.fluorite$getPreviousZ()) * partial;
+        int cellX = (int) Math.floor(wx);
+        int cellY = (int) Math.floor(wy);
+        int cellZ = (int) Math.floor(wz);
+        int worldBlock = mc.level == null ? 0
+                : mc.level.getBrightness(LightLayer.BLOCK, particleLightBlockPos.set(cellX, cellY, cellZ));
+        int excess = ((packedLight >>> 4) & 15) - worldBlock;
+        if (excess <= 0) {
+            return;
+        }
+        SingleQuadParticleAccessor appearance = (SingleQuadParticleAccessor) (Object) particle;
+        RtAlbedoSummary.Summary summary = RtAlbedoSummary.sprite(appearance.fluorite$getSprite());
+        if (!summary.usable()) {
+            RtFrameStats.FRAME.count("dynamicTextureSummaryMisses", 1);
+            return;
+        }
+        float halfSize = particle.getQuadSize(partial);
+        if (!(halfSize > 0.0f) || !Float.isFinite(halfSize)) {
+            return;
+        }
+        long cellKey = BlockPos.asLong(cellX, cellY, cellZ);
+        ParticleLightCell cell = particleLightCells.get(cellKey);
+        if (cell == null) {
+            cell = particleLightCellPool.pollFirst();
+            if (cell == null) cell = new ParticleLightCell();
+            cell.reset(cellX, cellY, cellZ);
+            particleLightCells.put(cellKey, cell);
+        }
+        float strength = excess / 15.0f * RtMaterialRegistry.EMISSIVE_STRENGTH;
+        float alpha = Math.clamp(appearance.fluorite$getAlpha(), 0.0f, 1.0f);
+        float area = 4.0f * halfSize * halfSize;
+        float supportRadius = (float) Math.sqrt(2.0f) * halfSize;
+        cell.light.addEmitter((float) (wx - rbx), (float) (wy - rby), (float) (wz - rbz),
+                supportRadius, area, summary.coverage(),
+                summary.averageR() * Math.max(0.0f, appearance.fluorite$getRed()) * alpha * strength,
+                summary.averageG() * Math.max(0.0f, appearance.fluorite$getGreen()) * alpha * strength,
+                summary.averageB() * Math.max(0.0f, appearance.fluorite$getBlue()) * alpha * strength);
+        RtFrameStats.FRAME.count("dynamicParticleCandidates", 1);
+    }
+
+    /** Finalise one finite sphere per occupied world cell, preserving the cell's summed emitted flux. */
+    private void appendParticleLightCells(List<RtDynamicSphereLight> destination) {
+        int appended = 0;
+        for (ParticleLightCell cell : particleLightCells.values()) {
+            RtDynamicSphereLight light = cell.light.finishCluster(0.0f, 0.0f, 0.0f,
+                    RtDynamicLightKey.particleCell(cell.x, cell.y, cell.z));
+            if (light != null) {
+                destination.add(light);
+                appended++;
+            }
+        }
+        RtFrameStats.FRAME.count("dynamicParticleCells", appended);
+        RtFrameStats.FRAME.count("dynamicLightsCollected", appended);
+    }
+
+    private void resetParticleLightCells() {
+        for (ParticleLightCell cell : particleLightCells.values()) {
+            particleLightCellPool.addLast(cell);
+        }
+        particleLightCells.clear();
     }
 
     /** Average (rebase-space) position of a captured particle's verts — approximates the particle center. */
@@ -2081,6 +2202,7 @@ public final class RtEntities {
     /** Drop CPU templates that retain resource-pack-owned model trees. */
     public void onResourceReload() {
         collector.clearCaches();
+        RtAlbedoSummary.clear();
     }
 
     /** Free the geometry-table ring and entity resources (teardown; caller has idled the device). */
@@ -2115,6 +2237,8 @@ public final class RtEntities {
         particlePrev.clear();
         particleCur.clear();
         particleDisp.clear();
+        resetParticleLightCells();
+        particleLightCellPool.clear();
         glowBatches.clear();
         nameTagBatches.clear();
         resetPoseStack(blockEntityPoseStack);
@@ -2122,5 +2246,6 @@ public final class RtEntities {
         beCandidatePool.clear();
         retainedGeometryBytes = 0L;
         collector.clearCaches();
+        RtAlbedoSummary.clear();
     }
 }
