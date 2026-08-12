@@ -13,12 +13,12 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - 代码包名：`io.github.dswepm.fluorite`。
 - 双加载器：Fabric + NeoForge。
 - `common/` 是两侧共同编译的源码目录，不是独立 Gradle 子项目。
-- 当前规模（2026-08-09）：134 个 Java 文件、约 36.0k 行；53 个 shader 文件、约 12.3k 行。
+- 当前规模（2026-08-12）：166 个 Java 文件、约 36.1k 行；40 个 Slang shader 文件、约 11.2k 行。
 - 源自 Caustica，按 LGPL-3.0-or-later 延续双版权；参考来源见 `THIRD_PARTY_NOTICES.md`。
 
 ### 1.2 当前基线
 
-远端 `main` 的当前基线为 `a9e3c9e`（PR #22）。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
+远端 `main` 的当前基线为 `bf60981`（PR #26）。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
 
 测试机事实：
 
@@ -45,7 +45,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | M12 | 256² 交互水体高度场、CFL、Neumann 障碍、海绵层和实体/方块冲量完成。 | [交互水体](devlog/M12-water-simulation.md#m12交互水体仿真) |
 | M12.5 | 水面顶点位移与 BLAS refit、路 3′ 形变覆盖、完整波谱重做完成；FFT 明确不实施。 | [水面真形变](devlog/M12-water-simulation.md#m125水面真形变) |
 | M13 | 世界空间可见性、随机体积阴影、3D 结构雾、统一风向和连续天气 forcing 完成并合入 PR #22。 | [雾与天气](devlog/M13-fog-weather.md) |
-| M14 | 版本化维度 Provider/preset、未知维度大气回退与地狱本地光/均匀雾完成；逐维度设置和 RR 安全边界已验收。 | [维度预设与地狱介质](devlog/M14-dimension-presets.md) |
+| M14 | 版本化维度 Provider/preset、地狱本地光/均匀雾和末地 HDR/Kerr 技术 Provider 已合入；末地美术路线等待 Blender 动态 HDRI 素材替换。 | [维度 Provider](devlog/M14-dimension-presets.md) |
 | M15–M17 | 水/雾共享介质接口和 Radiance 源；水下前缀、Slang 活动状态和散射顶点完成，水天空开放度跳变修复。 | [统一介质与体积光照](devlog/M15-M17-medium-lighting.md) |
 | M19 | 受伤 overlay、实体火焰和近似 glint 已进入路径追踪并通过视觉验收。 | [实体 overlay](devlog/M19-M20-entities-particles.md#m19实体-overlay) |
 | M20.1–20.3 | 粒子发光、stochastic alpha 和可选阴影完成；阴影默认关。 | [粒子](devlog/M19-M20-entities-particles.md#m20粒子) |
@@ -56,8 +56,8 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 - 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
 - M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
-- M14 末地 environment Provider：当前 Kerr/HDR 与 D93A-R 运行时动态盘已完成自动验证但视觉路线暂停，尚未提交。后续由用户在 Blender 预渲染包含星空、透镜黑洞和动态吸积盘的循环 HDR 全天球序列，再替换当前实时黑洞；素材到位前不决定帧格式、分辨率、帧率、循环长度、插帧与照明采样方案。
-- M18 动态光源收集层与 M20.4 发光粒子聚合。
+- M14 末地美术替换：当前 HDR/Kerr 技术 Provider 已由 PR #26 合入；后续由用户在 Blender 预渲染包含星空、透镜黑洞和动态吸积盘的循环 HDR 全天球序列，再替换当前实时黑洞。素材到位前不决定帧格式、分辨率、帧率、循环长度、插帧与照明采样方案。
+- M18 动态光源数据层：手持发光 `BlockItem` 的逐帧球灯收集/上传已实现于开发分支；燃烧实体、发光生物及 M20.4 发光粒子聚合仍待实现。真正采样统一等待 ReSTIR。
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
 - ReSTIR 整合。
 - 云向地面/水面投影阴影，以及焦散读取二维云太阳透射率图。
@@ -114,7 +114,8 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | `rt/sky/RtEnvironmentTextures` / `RtKtx2` | resource epoch 内 KTX2 校验、环境/transfer/disk 数组上传与逐维度 layer 映射 |
 | `buildSrc/.../GenerateEndEnvironment` | 构建期把许可的 10K HDR 转为 4K KTX2，并离线生成 Cartesian Kerr-Schild transfer 与盘 `Le/T` |
 | `rt/terrain/` | 地形驻留、section 构建、流体、静态发光 quad、light hierarchy/grid |
-| `rt/entity/` | 实体/粒子捕获、逐帧 BLAS/TLAS、overlay aux 数据 |
+| `rt/entity/` | 实体/粒子捕获、逐帧 BLAS/TLAS、overlay aux 数据；从真实 item submit 变换提取手持动态光 |
+| `rt/light/` | 共享 32 B `Light` CPU 编码、动态球灯记录和功率守恒 quad→sphere 聚合 |
 | `rt/material/` | CPU decode-once 材质管线、LabPBR、发光资格、IOR 和 JSON overrides |
 | `rt/accel/` | Vulkan buffer/image、BLAS/TLAS/OMM |
 | `rt/pipeline/` | RT pipeline/SBT、DLSS-RR/FG、曝光和显示 |
@@ -130,7 +131,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | `WorldPushData` | 944 B | `RtSkyMediumLayoutTest` | 独立 GPU 数据，不受 128 B push-constant 限制；构造是 positional，Java/Slang 必须同步 |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移钉死 |
 | `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney lanes 逐位钉死 |
-| `Light` | 32 B | 未来 M18/ReSTIR 必须补充布局闸门 | 32 B 对齐 cache line；面积由 halfU/halfV 反推，不存可重算量 |
+| `Light` | 32 B | `RtDynamicLightContractTest`、`RtLightHierarchyTest` | 32 B 对齐 cache line；bit31=动态球灯，半轴/半径按类型解释；矩形面积由 halfU/halfV 反推 |
 
 `Ptr<T,...,Std430DataLayout>` 的 layout 参数承重；裸 `Ptr<T>` 会使用 natural layout 并静默错位。
 
@@ -165,9 +166,11 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 ### 2.7 光源、实体和粒子
 
-当前静态光源链是 `RtLightCollector → RtLightHierarchy → RtLightGrid/RtLightGridManager`。一块发光 quad 对应一个矩形光源；GPU `Light` 为 32 B。RIS 使用降维目标选择，幸存者用完整 Disney 求值，结构保持无偏。
+当前静态光源链是 `RtLightCollector → RtLightHierarchy → RtLightGrid/RtLightGridManager`。一块发光 quad 对应一个矩形光源；GPU `Light` 为 32 B。RIS 使用降维目标选择，幸存者用完整 Disney 求值，结构保持无偏。静态 collector 的 80 B worker 记录继续保留 exact-Le UV 三组 half2 lane；当前 hierarchy 虽不上传这些 lane，但删除它们会让 ReSTIR 接回精确纹理辐亮度时重新扫描发光 footprint。
 
-太阳/月亮走独立有限面积天体接口。实体火焰、glint 和粒子 emission 已能在直接命中、反射和偶然 GI 中发光，但不进入静态 light buffer，因此不会被 NEE 选中。M18 将只建立动态光数据层；真正采样等 ReSTIR。
+太阳/月亮走独立有限面积天体接口。实体火焰、glint 和粒子 emission 已能在直接命中、反射和偶然 GI 中发光，但不进入静态 light buffer，因此不会被 NEE 选中。
+
+M18 的已批准边界是“收集但不采样”：动态记录使用同一 32 B ABI，bit31 标记 sphere，半径放在 `halfUxy` 低 half；当前单独的逐帧 buffer 不进入 `WorldPush` 或 descriptor，因此画面结构上保持 bit-identical。手持 `BlockItem` 只在默认 `BlockState.getLightEmission()>0` 时有资格；颜色和辐亮度来自该 state 解析出的现有材质 `EmissionSummary/emissionStrength` 与实际 item tint，不允许名称白名单、固定橙色或另一套亮度表。每只手的真实 submit quads 聚成一个球，球面积等于发光覆盖面积并反算辐亮度，保持 `πA·Le` 总功率。位置来自提交姿态下的发光功率重心。真正加入 NEE/GI 等 ReSTIR。
 
 粒子目前仅完整支持 `SingleQuadParticle`。粒子阴影有独立 cull bit，默认关闭；反射/GI 不随阴影开关自动开启。
 
@@ -474,20 +477,24 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 - 预渲染序列若把星空与黑洞/盘合成在同一层，只能天然获得“整个动态环境”的统一亮度/对比度；若未来仍要分别调星空和盘，Blender 必须额外输出分层序列或 mask，不能从合成 HDRI 稳健反推。它用于照亮场景时还需在“逐帧环境重要性分布”和“与动画匹配的有限面积代理光”之间裁决：前者更一致但有逐帧数据与采样成本，后者成本接近现有天体 NEE 但只是近似。素材到位前不得擅自选路线。
 - 环境 KTX2 是构建期生成、jar 内只读资源；resource reload 时旧 image/view 在 pipeline descriptor 释放后销毁并重建。维度 preset 或任一资源无效时只让该维度回退完整大气，其他环境 layer 继续工作。
 
-M14 的地狱部分已完成视觉验收；实现、裁决和 RR 浓雾边界见[开发日志](devlog/M14-dimension-presets.md)。末地当前实时实现保留为未提交的技术原型，不再继续视觉调参；等用户提供 Blender 动态 HDRI 后恢复 M14。届时必须验收：全天球投影与循环接缝、相邻帧平滑性、直接视线与反射/折射的一致动画、亮度/对比度对可见与照明的统一作用、自动曝光下的稳定性、加载体积与 VRAM、1080p `gpu.traceIndirect` 与总 GPU。若素材只有合成层，则不再承诺独立的星空/盘参数。
+M14 的地狱部分已完成视觉验收；实现、裁决和 RR 浓雾边界见[开发日志](devlog/M14-dimension-presets.md)。末地当前实时实现已由 PR #26 合入，作为可运行的技术 Provider 保留，但不再继续视觉调参；等用户提供 Blender 动态 HDRI 后恢复美术替换。届时必须验收：全天球投影与循环接缝、相邻帧平滑性、直接视线与反射/折射的一致动画、亮度/对比度对可见与照明的统一作用、自动曝光下的稳定性、加载体积与 VRAM、1080p `gpu.traceIndirect` 与总 GPU。若素材只有合成层，则不再承诺独立的星空/盘参数。
 
 ### 8.4 M18 与 M20.4：动态光数据层
 
-目标是收集但暂不采样：
+D98A 把本阶段限定为收集、编码和上传但暂不采样：
 
 - 主/副手 `BlockItem` 光。
 - 燃烧实体、发光生物等实体附着光。
 - 发光粒子按空间 cell 聚合的代表光。
 - 产出与 32 B `Light` 兼容的记录、动态标记，并为类型/区域光源留位。
 
-画面应 bit-identical；成本是每帧少量 CPU 收集和 buffer 上传。真正让它们参与 NEE/GI 等 ReSTIR。
+当前开发分支已经接通第一条 tracer bullet：主/副手中默认 `BlockState` 发光的 `BlockItem`。`RtEntities` 从 `LivingEntity.getItemHeldByArm` 建立资格上下文，`RtEntityCollectorBase` 在 vanilla 与 Fabric 的真实 `submitItem` 路径观察最终姿态、sprite 和 tint；不改变实体 primitive 的现有材质或几何。每只手的发光 quad 按材质 `EmissionSummary`、`emissionStrength` 和 state emission 聚为一个有限球灯：球心为发光功率重心，球面积为发光覆盖面积，球 Radiance 反算为保持 `πA·Le` 总功率。
 
-动工请示点 S3：`RtLightCollector` 目前计算后被 hierarchy 丢弃的 exact-Le UV lanes，是现在停算节省 CPU，还是保留避免 ReSTIR 重新接回。必须带 CPU 实测或明确估计裁决。
+D99A 使用共享 32 B `Light` ABI：bit31 为 sphere 类型，radius 写入 `halfUxy` 低 half，`le` 继续是 R11G11B10。动态记录位于 graphics-timeline 守卫的独立逐帧 host-visible buffer；`FrameEntities.dynamicLightAddr/count` 只暴露 CPU 诊断/未来入口，当前 `WorldPush`、descriptor、alias/grid 和 shader 采样均不读取它，所以画面应 bit-identical。`RtFrameStats` 提供 `dynamicHeldBlockCandidates`、`dynamicLightsCollected`、`dynamicLightUploadBytes` 和 `dynamicLightFlushes`；候选大于零而 collected 为零说明真实 item submit 未产出可解析的发光 block-atlas quad。
+
+D100A 保留 `RtLightCollector` 的 80 B worker 记录和 exact-Le UV lanes。现有 terrain digest 为 30,940 灯；相对假设的 64 B 记录额外约 495,040 B（0.47 MiB）worker 内存。CPU 额外工作发生在每个 emitter 已完成 16×16 主扫描之后，只是约六次双线性求值和三次 half2 pack，明确估计远低于 collector CPU 的 1%，且 hierarchy 不上传这些 lane、GPU 成本为零。收益是 ReSTIR 接回纹理精确 Le 时无需重新扫描 footprint 或修改 source ABI。
+
+剩余 M18 工作：燃烧实体/发光生物的附着光、M20.4 粒子 cell 聚合、统一动态选择数据和最终性能画像。真正让动态灯参与 NEE/GI 等 ReSTIR；本阶段禁止顺手接入旧 alias/grid。
 
 ### 8.5 ReSTIR 前全项目 review
 

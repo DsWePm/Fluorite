@@ -64,6 +64,7 @@ public final class RtFrameStats {
                     "entity.capture.append.alloc",
                     "entity.capture.append.copy",
                     "entity.capture.append.blas",
+                    "entity.dynamicLights",
                     "entity.uploadFlush",
                     "entity.blockEntities",
                     "entity.particles",
@@ -115,6 +116,8 @@ public final class RtFrameStats {
                     "entityPackedBytes", "entityPackedPaddingBytes", "entityRetainedGeometryBytes",
                     "entityFrameListsWaits", "entityTableWaits", "entitySlotWaits",
                     "entityGraphicsWaitNanos", "entityMotionFlushes", "entityTableFlushes",
+                    "dynamicHeldBlockCandidates", "dynamicLightsCollected",
+                    "dynamicLightUploadBytes", "dynamicLightFlushes",
                     "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements"},
             true);
 
