@@ -5,13 +5,15 @@ package io.github.dswepm.fluorite.rt.light;
  *
  * <p>Rectangle lights use the three packed half-axis lanes and bits 0..30 of the final word. Dynamic
  * sphere lights set bit 31 and store their radius in the low half of {@code halfUxy}; the other axis
- * halves and the grid payload remain zero until the ReSTIR integration builds dynamic selection data.
+ * halves remain zero. The final word's low 30 bits carry a deterministic dynamic source key; bit 30
+ * stays reserved and bit 31 remains the sphere shape tag.
  */
 public final class RtLightEncoding {
     public static final int RECORD_FLOATS = 8;
     public static final int RECORD_BYTES = RECORD_FLOATS * Float.BYTES;
     public static final int NORMAL_FLIP_BIT = 1 << 30;
     public static final int TYPE_SPHERE_BIT = 1 << 31;
+    public static final int SOURCE_KEY_MASK = NORMAL_FLIP_BIT - 1;
 
     private RtLightEncoding() {
     }
@@ -20,13 +22,22 @@ public final class RtLightEncoding {
     public static void encodeSphere(float[] destination, int offset,
                                     float x, float y, float z, float radius,
                                     float radianceR, float radianceG, float radianceB) {
+        encodeSphere(destination, offset, x, y, z, radius, radianceR, radianceG, radianceB, 0);
+    }
+
+    /** Encode one finite sphere and its deterministic future-ReSTIR source key. */
+    public static void encodeSphere(float[] destination, int offset,
+                                    float x, float y, float z, float radius,
+                                    float radianceR, float radianceG, float radianceB,
+                                    int sourceKey) {
         if (destination == null || offset < 0 || offset + RECORD_FLOATS > destination.length) {
             throw new IllegalArgumentException("Sphere light destination is too small");
         }
         if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(z)
                 || !Float.isFinite(radius) || radius <= 0.0f
                 || !finiteNonNegative(radianceR) || !finiteNonNegative(radianceG)
-                || !finiteNonNegative(radianceB)) {
+                || !finiteNonNegative(radianceB)
+                || (sourceKey & ~SOURCE_KEY_MASK) != 0) {
             throw new IllegalArgumentException("Sphere light fields must be finite and physical");
         }
         destination[offset] = x;
@@ -36,7 +47,7 @@ public final class RtLightEncoding {
         destination[offset + 4] = packHalf2(Math.min(radius, 65504.0f), 0.0f);
         destination[offset + 5] = 0.0f;
         destination[offset + 6] = 0.0f;
-        destination[offset + 7] = Float.intBitsToFloat(TYPE_SPHERE_BIT);
+        destination[offset + 7] = Float.intBitsToFloat(TYPE_SPHERE_BIT | sourceKey);
     }
 
     /** Two binary16 values in one float lane; x occupies the low half, matching Slang unpackHalf2. */

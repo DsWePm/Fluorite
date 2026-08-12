@@ -100,6 +100,10 @@ public final class RtMaterialRegistry {
     private Map<Identifier, EntityTemplate> entityTemplates = Map.of();
     private final Map<EntitySpriteKey, Integer> entitySpriteIds = new HashMap<>();
     private final Map<Integer, Integer> stochasticAlphaIds = new HashMap<>();
+    // Parallel to every published header, including append-only runtime variants. The immutable terrain
+    // Snapshot intentionally stops at rebuild-time records; dynamic entity-light capture still needs the
+    // physical description behind a stochastic-alpha or late sprite header without reading GPU memory.
+    private List<RtMaterialDesc> runtimeDescriptions = new ArrayList<>();
     private int entityFallbackId;
     private int nextDynamicId;
     private int tableCapacity;
@@ -331,6 +335,7 @@ public final class RtMaterialRegistry {
         stochasticAlphaIds.clear();
         entityFallbackId = nextEntityFallbackId;
         nextDynamicId = headers.size();
+        runtimeDescriptions = new ArrayList<>(descriptions);
         tableCapacity = recordCapacity;
         table = nextTable;
         extensionTable = nextExtensionTable;
@@ -391,6 +396,14 @@ public final class RtMaterialRegistry {
         return stochasticAlpha ? withStochasticAlpha(entityFallbackId) : entityFallbackId;
     }
 
+    /** CPU description matching a static or append-only entity material header. */
+    public RtMaterialDesc description(int materialId) {
+        if (materialId < 0 || materialId >= runtimeDescriptions.size()) {
+            return null;
+        }
+        return runtimeDescriptions.get(materialId);
+    }
+
     /** Return an append-only material-instance variant with stochastic coverage enabled. */
     public synchronized int withStochasticAlpha(int materialId) {
         if (table == null || materialId < 0 || materialId >= nextDynamicId) {
@@ -414,6 +427,7 @@ public final class RtMaterialRegistry {
         target.putInt(4, target.getInt(4) | FEATURE_STOCHASTIC_ALPHA);
         table.flush(targetOffset, MaterialHeaderData.BYTE_SIZE);
         stochasticAlphaIds.put(materialId, id);
+        appendRuntimeDescription(id, description(materialId));
         return id;
     }
 
@@ -457,6 +471,7 @@ public final class RtMaterialRegistry {
         header.write(target);
         table.flush(offset, MaterialHeaderData.BYTE_SIZE);
         entitySpriteIds.put(key, id);
+        appendRuntimeDescription(id, template.desc());
         return stochasticAlpha ? withStochasticAlpha(id) : id;
     }
 
@@ -467,6 +482,7 @@ public final class RtMaterialRegistry {
         entityTemplates = Map.of();
         entitySpriteIds.clear();
         stochasticAlphaIds.clear();
+        runtimeDescriptions = new ArrayList<>();
         entityFallbackId = 0;
         nextDynamicId = 0;
         tableCapacity = 0;
@@ -478,6 +494,13 @@ public final class RtMaterialRegistry {
             extensionTable.destroy();
             extensionTable = null;
         }
+    }
+
+    private void appendRuntimeDescription(int id, RtMaterialDesc description) {
+        if (description == null || id != runtimeDescriptions.size()) {
+            throw new IllegalStateException("RT runtime material description is out of sequence: " + id);
+        }
+        runtimeDescriptions.add(description);
     }
 
     private static int index(RtMaterials.Profile profile, boolean glass, boolean emitting) {

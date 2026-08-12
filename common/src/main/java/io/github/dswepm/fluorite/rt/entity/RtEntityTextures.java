@@ -105,6 +105,11 @@ public final class RtEntityTextures {
         return RtMaterialRegistry.INSTANCE.resolveEntityTexture(textureLocation(renderType), stochasticAlpha);
     }
 
+    /** Texture resource behind a model submission, for the side-band dynamic-light albedo summary. */
+    public Identifier textureLocationFor(RenderType renderType) {
+        return textureLocation(renderType);
+    }
+
     /**
      * The bindless slot for a texture atlas (block/item atlas used by item + block-model quads), cached
      * per atlas location. The block atlas is pre-seeded to slot 0; other atlases (the item atlas) get

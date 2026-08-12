@@ -8,14 +8,16 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class RtDynamicLightContractTest {
     @Test
     void sphereUsesTheSharedThirtyTwoByteRecordAndReservedTypeBit() {
         float[] record = new float[RtLightEncoding.RECORD_FLOATS];
+        int sourceKey = RtDynamicLightKey.entity(42, RtDynamicLightKey.ENTITY_FLAME);
         RtLightEncoding.encodeSphere(record, 0, 1.0f, 2.0f, 3.0f, 0.125f,
-                0.25f, 5.0f, 31.5f);
+                0.25f, 5.0f, 31.5f, sourceKey);
 
         assertEquals(32, RtLightEncoding.RECORD_BYTES);
         assertEquals(1.0f, record[0]);
@@ -29,7 +31,8 @@ final class RtDynamicLightContractTest {
         assertEquals(0.125f, Float.float16ToFloat((short) (packedRadius & 0xffff)), 0.0001f);
         assertEquals(0.0f, record[5]);
         assertEquals(0.0f, record[6]);
-        assertEquals(RtLightEncoding.TYPE_SPHERE_BIT, Float.floatToRawIntBits(record[7]));
+        assertEquals(RtLightEncoding.TYPE_SPHERE_BIT | sourceKey, Float.floatToRawIntBits(record[7]));
+        assertEquals(0, Float.floatToRawIntBits(record[7]) & RtLightEncoding.NORMAL_FLIP_BIT);
     }
 
     @Test
@@ -52,6 +55,34 @@ final class RtDynamicLightContractTest {
         assertEquals(1.0f, sphereArea * light.radianceR(), 1.0e-6f);
         assertEquals(0.5f, sphereArea * light.radianceG(), 1.0e-6f);
         assertEquals(0.25f, sphereArea * light.radianceB(), 1.0e-6f);
+    }
+
+    @Test
+    void particleCellSphereEnclosesDistributionAndStillPreservesFlux() {
+        RtDynamicLightAccumulator accumulator = new RtDynamicLightAccumulator();
+        accumulator.addEmitter(0.1f, 0.5f, 0.5f, 0.05f, 0.04f, 1.0f, 2.0f, 1.0f, 0.5f);
+        accumulator.addEmitter(0.9f, 0.5f, 0.5f, 0.05f, 0.04f, 1.0f, 2.0f, 1.0f, 0.5f);
+
+        int key = RtDynamicLightKey.particleCell(10, 64, -5);
+        RtDynamicSphereLight light = accumulator.finishCluster(0.0f, 0.0f, 0.0f, key);
+        assertNotNull(light);
+        assertEquals(0.5f, light.x(), 1.0e-6f);
+        assertTrue(light.radius() >= 0.45f);
+        float sphereArea = 4.0f * (float) Math.PI * light.radius() * light.radius();
+        assertEquals(0.16f, sphereArea * light.radianceR(), 1.0e-5f);
+        assertEquals(0.08f, sphereArea * light.radianceG(), 1.0e-5f);
+        assertEquals(0.04f, sphereArea * light.radianceB(), 1.0e-5f);
+        assertEquals(key, light.sourceKey());
+    }
+
+    @Test
+    void dynamicKeysAreDeterministicAndSeparateSourceKinds() {
+        assertEquals(RtDynamicLightKey.entity(7, RtDynamicLightKey.HELD_LEFT),
+                RtDynamicLightKey.entity(7, RtDynamicLightKey.HELD_LEFT));
+        assertNotEquals(RtDynamicLightKey.entity(7, RtDynamicLightKey.HELD_LEFT),
+                RtDynamicLightKey.entity(7, RtDynamicLightKey.HELD_RIGHT));
+        assertNotEquals(RtDynamicLightKey.particleCell(0, 64, 0),
+                RtDynamicLightKey.particleCell(1, 64, 0));
     }
 
     @Test

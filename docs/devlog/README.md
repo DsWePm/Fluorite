@@ -15,6 +15,7 @@
 | [M13：体积可见性、结构雾与天气](M13-fog-weather.md) | 可见性网格、随机阴影线、3D 雾、统一风向与天气 forcing、焦散天气衰减 | D59–D73、M13.2/.3 |
 | [M14：维度 Provider、地狱介质与末地环境](M14-dimension-presets.md) | 版本化 preset、地狱本地光/均匀雾、末地 HDR/Kerr 技术 Provider 与后续动态 HDRI 路线 | D74–D97 |
 | [M15–M17：统一介质与体积光照](M15-M17-medium-lighting.md) | 介质接口、Radiance 源、水下前缀、Slang 错编规避、散射顶点与 NEE | D1–D27、D29–D31、R24 |
+| [M18：动态光源数据层](M18-dynamic-light-data.md) | 手持/火焰/发光实体球灯、粒子 cell、稳定 source key、未绑定上传 | D98–D104、M20.4 |
 | [M19–M20：实体 overlay 与粒子](M19-M20-entities-particles.md) | 受伤 overlay、实体火焰、glint、粒子发光/透明/阴影 | D6、D28、D32、F16 |
 | [测量、诊断与失败经验](lessons-and-measurements.md) | 基准纪律、GPU 日志、observer effect、设备故障取证、F/R 索引 | F1–F28、R1–R24 |
 

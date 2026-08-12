@@ -70,6 +70,6 @@ vanilla 发光粒子通过 `getLightCoords` 把自报方块光抬到世界方块
 ## 尚未完成
 
 - `bench-particles` 固定烟柱世界、`MAX_PARTICLES=1024` 上限和反射/GI 位的成本裁决。
-- M20.4：将发光粒子按空间 cell 聚合，交给 M18 动态光收集层。
 - 非 `SingleQuadParticle` 粒子仍未捕获。
-- 自发光实体和粒子目前只有直击/偶然 GI；`RtLightCollector` 只收地形 quad，它们不会被 NEE 选择。真正成为光源需要 M18 数据层和 ReSTIR 采样。
+- M20.4 已由 M18 的世界锚定 1 格 cell 数据层完成；记录仍未被 NEE 选择，真正采样等待 ReSTIR。
+- 粒子 vertex alpha 尚未进入 RT primitive；直接命中与 M18 代理的 alpha 语义需在 ReSTIR 前 review 统一。

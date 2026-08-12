@@ -47,6 +47,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | M13 | 世界空间可见性、随机体积阴影、3D 结构雾、统一风向和连续天气 forcing 完成并合入 PR #22。 | [雾与天气](devlog/M13-fog-weather.md) |
 | M14 | 版本化维度 Provider/preset、地狱本地光/均匀雾和末地 HDR/Kerr 技术 Provider 已合入；末地美术路线等待 Blender 动态 HDRI 素材替换。 | [维度 Provider](devlog/M14-dimension-presets.md) |
 | M15–M17 | 水/雾共享介质接口和 Radiance 源；水下前缀、Slang 活动状态和散射顶点完成，水天空开放度跳变修复。 | [统一介质与体积光照](devlog/M15-M17-medium-lighting.md) |
+| M18 | 手持、实体火焰、发光模型层和粒子 cell 已统一编码为未绑定的 32 B 动态球灯，并写入稳定 source key；真正采样等待 ReSTIR。 | [动态光源数据层](devlog/M18-dynamic-light-data.md) |
 | M19 | 受伤 overlay、实体火焰和近似 glint 已进入路径追踪并通过视觉验收。 | [实体 overlay](devlog/M19-M20-entities-particles.md#m19实体-overlay) |
 | M20.1–20.3 | 粒子发光、stochastic alpha 和可选阴影完成；阴影默认关。 | [粒子](devlog/M19-M20-entities-particles.md#m20粒子) |
 
@@ -57,7 +58,9 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
 - M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
 - M14 末地美术替换：当前 HDR/Kerr 技术 Provider 已由 PR #26 合入；后续由用户在 Blender 预渲染包含星空、透镜黑洞和动态吸积盘的循环 HDR 全天球序列，再替换当前实时黑洞。素材到位前不决定帧格式、分辨率、帧率、循环长度、插帧与照明采样方案。
-- M18 动态光源数据层：手持发光 `BlockItem` 的逐帧球灯收集/上传已由 PR #27 合入；燃烧实体、发光生物及 M20.4 发光粒子聚合仍待实现。真正采样统一等待 ReSTIR。
+- M21 雨天表面系统：雨滴粒子、程序化外表面水坑，以及所有暴露于降雨表面的浸湿材质响应。
+- M22 后处理与调色：景深、ACES 色调映射、屏幕黑边聚焦、屏幕色散、动态模糊，以及含白平衡和色调偏移等参数的滤镜系统。
+- M23 配置预设：用按键把当前配置保存为版本化 TOML，并可导入 TOML 以校验后的完整配置替换当前设置。
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
 - ReSTIR 整合。
 - 云向地面/水面投影阴影，以及焦散读取二维云太阳透射率图。
@@ -494,9 +497,45 @@ D99A 使用共享 32 B `Light` ABI：bit31 为 sphere 类型，radius 写入 `ha
 
 D100A 保留 `RtLightCollector` 的 80 B worker 记录和 exact-Le UV lanes。现有 terrain digest 为 30,940 灯；相对假设的 64 B 记录额外约 495,040 B（0.47 MiB）worker 内存。CPU 额外工作发生在每个 emitter 已完成 16×16 主扫描之后，只是约六次双线性求值和三次 half2 pack，明确估计远低于 collector CPU 的 1%，且 hierarchy 不上传这些 lane、GPU 成本为零。收益是 ReSTIR 接回纹理精确 Le 时无需重新扫描 footprint 或修改 source ABI。
 
-剩余 M18 工作：燃烧实体/发光生物的附着光、M20.4 粒子 cell 聚合、统一动态选择数据和最终性能画像。真正让动态灯参与 NEE/GI 等 ReSTIR；本阶段禁止顺手接入旧 alias/grid。
+D101A–D104A 完成剩余数据层：实体只接受实际火焰、submission block-light excess 或材质 emission，排除 Glowing outline 与 glint；每实体按左手、右手、火焰、身体分成最多四球；前 1024 个 `SingleQuadParticle` 进入世界锚定 1 格 cell，纹理均值、tint、alpha、billboard 面积和格内分布共同决定守恒球；sphere `section` 低 30 bit 写跨帧/跨 rebase 稳定 source key，bit30 保留。完整依据、成本上限和诊断见[开发日志](devlog/M18-dynamic-light-data.md)。
 
-### 8.5 ReSTIR 前全项目 review
+真正让动态灯参与 NEE/GI 属于 ReSTIR；本阶段禁止接入旧 alias/grid。用户明确决定跳过本轮游戏内性能画像；固定燃烧实体、发光实体和密集发光粒子场景的阶段中位数、候选/cell 数与上传字节已转入 §8.11 的 ReSTIR 前测量欠账。静态最坏上限为 5120 条、160 KiB/帧，但不能用该上限代替实际中位数。
+
+### 8.5 M21：雨天粒子、积水与浸湿表面
+
+本里程碑必须在 ReSTIR 前完成，范围由三部分组成：
+
+- 雨天新增可见雨滴粒子，并与现有粒子捕获、透明、阴影和未来动态光接口兼容。
+- 在受雨外表面生成世界锚定的程序化水坑结构；水坑不能随相机游动，也不能仅作为屏幕空间贴花假装存在于反射/折射路径中。
+- 所有真正暴露于降雨的外表面获得连续浸湿响应；至少要区分表面粗糙度/高光变化与有厚度积水，不能把“湿”和“水坑”写成同一个二值材质标记。
+
+尚未裁决：降雨暴露度来自逐点天空射线、缓存可见性场还是混合方案；湿润累积/干燥是否具有时间状态；水坑使用纯 BSDF 薄层、法线/高度近似还是真实几何；不同材质的吸水性来源；雨滴粒子的密度、碰撞和涟漪预算。实现前必须分别给出物理差距、GPU/CPU/显存成本和推荐方案，不得把这些选择藏进默认常数。
+
+### 8.6 M22：后处理与调色管线
+
+在现有 RR/曝光/display-map 链上增加以下彼此可独立关闭的能力：
+
+- 景深。
+- ACES 色调映射支持；现有映射不能被无迁移地静默替换。
+- 屏幕黑边聚焦效果。
+- 屏幕色散效果。
+- 动态模糊。
+- 可调滤镜/调色，包括白平衡、色调偏移及后续同类颜色控制。
+
+所有效果必须先明确处理顺序、工作色域、HDR/SDR 边界、是否读取运动/深度、与 DLSS-RR/自动曝光/UI overlay 的先后关系，再进入代码。景深和动态模糊可能使用物理相机/快门模型或纯艺术屏幕近似；色散和黑边聚焦属于明显非物理的镜头/构图效果；ACES 必须说明采用完整 ACES 管线、ACEScg 变换还是命名为 ACES 的 fitted curve。每一项的默认关闭/开启、质量档和参数范围都需要用户批准。
+
+### 8.7 M23：TOML 配置预设导入/导出
+
+- 提供按键把当前实际生效的配置保存为 TOML 预设。
+- 支持导入 TOML，经 schema/范围/有限值校验后替换当前配置。
+- 导入失败必须保持原配置完整，不允许部分写入；成功后需要统一触发对应的即时更新、history reset 或资源重建。
+- 预设格式必须版本化，并只承诺 `en_us`、`zh_cn`、`zh_tw` 的 UI 文案。
+
+尚未裁决：保存整个配置还是可选分类、预设目录与命名、导入通过文件选择器还是固定热键/最近文件、未知键和旧版本迁移策略、是否允许资源重建级设置在世界内立即应用。实现前请示。
+
+M18 完成后，本轮新增功能按 M21 → M22 → M23 依次推进，并在全项目 review 与 ReSTIR 前完成；它们与既有云投影等前置欠账的插入顺序仍需逐项确认。各里程碑内部按上述裁决点请示，记录顺序不等于授权某种算法。
+
+### 8.8 ReSTIR 前全项目 review
 
 ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 
@@ -508,7 +547,7 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 - 清理已结束诊断、临时 debug 和对应文档。
 - 修复能确定的 bug；不以“准备做 ReSTIR”为理由带病进入新架构。
 
-### 8.6 ReSTIR 整合
+### 8.9 ReSTIR 整合
 
 硬依赖：M14 完成、M18 数据层可用、全项目 review 完成。
 
@@ -516,7 +555,11 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 
 已有可复用形状：alias O(1) 选择、每顶点固定候选、幸存者一条阴影线、降维选择目标与完整幸存者求值。整合点包括动态光、exact-Le UV、`Light` 类型/区域扩展、体积发光体 NEE 和 `UNWEIGHTED_SPEC_ALPHA_FLOOR` 的移除。所有成本画像在空域复用后重新测量。
 
-### 8.7 云向地面、水面与焦散投影
+动态记录接入采样前必须先统一直接命中语义：vanilla external-fullbright 模型层目前只向 M18 提供 side-band 代理资格，不会因 D98A 改写 primitive emission；粒子 vertex alpha 也尚未写入 RT primitive。ReSTIR 不得制造“能被 NEE 选中但正面看不发光”或代理功率含 alpha、直击功率不含 alpha的双重口径。30-bit source key 只用于候选身份，temporal reuse 必须同时验证位置、半径和 Radiance 以拒绝哈希碰撞与 entity id 复用。
+
+全项目 review 还必须核对 `submitFlame` 的直接命中材质：当前捕获 primitive 写 emission mask 1，但可见材质通过非 emitting sprite variant 解析；没有 LabPBR `_s` 的资源包可能因此得到零材质 emission strength。M18 side-band 火焰球故意读取 emitting variant，但受 D98A 约束不能顺手改写现有 primitive。修复前先用无 PBR 资源包复现，禁止用动态灯常数补偿。
+
+### 8.10 云向地面、水面与焦散投影
 
 当前云只有云内自阴影。目标接口是概念上的 `cloudSunTransmittance(worldPosition)`，统一给地面、水面和焦散查询太阳透射率。
 
@@ -540,16 +583,17 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 
 未裁决：投影/级联、范围、分辨率、更新频率、时间滤波、面积太阳样本预算和 UI 所有权。实现前必须再次请示，不得自行选值。
 
-### 8.8 测量欠账
+### 8.11 测量欠账
 
 - M11：云开关、自阴影步数、第二层、secondary 三项成本。
 - M12.5：海洋场景 refit、显存和 all/near 档。
 - M13：结构雾 0/A/0 和 12/24 步。
 - M16：默认非零太阳角半径跨日出/日落连续性与成本。
 - M17：`bench-water-top`。
+- M18：固定燃烧实体、external-fullbright/材质发光实体和密集发光粒子场景，记录动态附着光、粒子 cell、上传阶段中位数及条目/字节上限。
 - M20.3：`bench-particles`、1024 上限和 reflection/GI 位。
 
-### 8.9 首个正式版后再评估
+### 8.12 首个正式版后再评估
 
 - 可选 sky-view 全天预烘焙：先独立测量 `sky-view bake` 的 GPU 时间；仅在占用显著时评估约 128 个、在地平线附近加密的太阳高度切片，并以每帧轻量 compute 插值回现有三张 sky-view LUT，保持 miss 侧采样数不增加。是否落盘、缓存格式和失效键届时重新裁决；不属于 M14 或首发必做范围。
 - 粒子烟雾/爆炸尘注入统一非均质 Medium。
