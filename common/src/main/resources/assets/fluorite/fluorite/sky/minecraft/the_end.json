@@ -1,0 +1,36 @@
+{
+  "format": 2,
+  "sky": {
+    "provider": "environment",
+    "ambient_radiance": [0.0, 0.0, 0.0],
+    "environment": {
+      "radiance_texture": "fluorite:fluorite/environment/end_stars.ktx2",
+      "transfer_texture": "fluorite:fluorite/environment/end_kerr.ktx2",
+      "disk_entry_texture": "fluorite:fluorite/environment/end_disk_entry.ktx2",
+      "disk_exit_texture": "fluorite:fluorite/environment/end_disk_exit.ktx2",
+      "direction": [0.34, 0.28, -0.90],
+      "up": [0.0, 1.0, 0.0],
+      "light_half_angle": 0.36
+    }
+  },
+  "weather": {
+    "enabled": false
+  },
+  "clouds": {
+    "enabled": false
+  },
+  "fog": {
+    "profile": "off",
+    "density": 0.0,
+    "extinction": [0.0, 0.0, 0.0],
+    "albedo": [0.0, 0.0, 0.0],
+    "phase_g": 0.0,
+    "start_distance": 0.0,
+    "cull_distance": 0.0,
+    "height_scale": 0.0,
+    "height_base": 0.0,
+    "noise": false,
+    "ambient_visibility": "sky",
+    "local_lights": false
+  }
+}

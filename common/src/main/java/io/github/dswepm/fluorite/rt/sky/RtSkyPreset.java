@@ -1,5 +1,7 @@
 package io.github.dswepm.fluorite.rt.sky;
 
+import net.minecraft.resources.Identifier;
+
 /**
  * Resource-authored base state for one dimension's sky and ambient participating medium.
  *
@@ -13,7 +15,8 @@ public record RtSkyPreset(
         Rgb ambientRadiance,
         boolean weatherEnabled,
         boolean cloudsEnabled,
-        Fog fog) {
+        Fog fog,
+        Environment environment) {
 
     /** Safe fallback for every unknown or invalid dimension: the existing complete atmosphere. */
     public static final RtSkyPreset FULL_ATMOSPHERE = new RtSkyPreset(
@@ -25,7 +28,8 @@ public record RtSkyPreset(
                     new Rgb(0.92f, 0.96f, 1.0f),
                     new Rgb(0.92f, 0.94f, 0.96f),
                     0.55f, 16f, 512f, 48f, 62f,
-                    true, AmbientVisibility.SKY, false));
+                    true, AmbientVisibility.SKY, false),
+            null);
 
     /** Stable shader ABI ids. Add new providers; never reinterpret an existing id. */
     public enum SkyProvider {
@@ -57,6 +61,20 @@ public record RtSkyPreset(
 
     public record Rgb(float r, float g, float b) {
         public static final Rgb BLACK = new Rgb(0f, 0f, 0f);
+    }
+
+    /** Static environment resources and their world orientation. Kerr parameters live in the LUT. */
+    public record Environment(
+            Identifier radianceTexture,
+            Identifier transferTexture,
+            Identifier diskEntryTexture,
+            Identifier diskExitTexture,
+            Vec3 direction,
+            Vec3 up,
+            float lightHalfAngle) {
+    }
+
+    public record Vec3(float x, float y, float z) {
     }
 
     public record Fog(

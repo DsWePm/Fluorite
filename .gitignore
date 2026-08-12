@@ -1,8 +1,9 @@
 .gradle/
 .idea/
-# Any module's build output. Was /build/ + /buildSrc/build/ when this was a single project; the
-# fabric/ and neoforge/ modules have their own, and more loaders would too.
-build/
+# Root and immediate Gradle-module build outputs. Keep the slashes anchored: a bare `build/` also
+# ignores source packages named `...fluorite.build`, which hid buildSrc generators from Git status.
+/build/
+/*/build/
 native/ngx_shim/build/
 run/
 run-neoforge/

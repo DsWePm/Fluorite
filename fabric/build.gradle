@@ -124,6 +124,7 @@ sourceSets.main.java.srcDir(files(rootProject.ext.fluoriteShaderRecordsDir).buil
 // same /fluorite/rt/ path the loader (RtPipeline) reads.
 sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteShaderSpirvDir).builtBy(":compileShaders"))
 sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteNgxNativesDir).builtBy(":bundleNgxNatives"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteEndEnvironmentDir).builtBy(":generateEndEnvironment"))
 
 processResources {
 	inputs.property "version", project.version

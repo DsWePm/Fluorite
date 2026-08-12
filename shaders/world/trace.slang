@@ -89,8 +89,11 @@ public Payload makeRadiancePayload(uint flags, uint rayCone) {
 // Ordinary radiance trace for latency-sensitive, coherent work such as Pass A. It invokes hit/miss
 // shaders directly and therefore requires no invocation-reorder capability.
 public void traceRadiance(uint cullMask, float3 ro, float tmin, float3 rd, float tmax,
-                    bool showCelestial, float rayConeWidth, float rayConeSpread) {
-    payload = makeRadiancePayload(showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u,
+                    bool showCelestial, bool directView,
+                    float rayConeWidth, float rayConeSpread) {
+    uint flags = (showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u)
+            | (directView ? PAYLOAD_DIRECT_VIEW : 0u);
+    payload = makeRadiancePayload(flags,
             packHalf2(float2(rayConeWidth, rayConeSpread)));
     TraceRay(topLevelAS, RAY_FLAG_NONE, cullMask,
             SBT_RADIANCE, SBT_STRIDE_BUCKET, MISS_RADIANCE,

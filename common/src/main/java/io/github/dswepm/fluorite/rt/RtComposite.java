@@ -70,6 +70,7 @@ import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
 import io.github.dswepm.fluorite.rt.sky.RtSky;
 import io.github.dswepm.fluorite.rt.sky.RtDimensionControls;
+import io.github.dswepm.fluorite.rt.sky.RtEnvironmentTextures;
 import io.github.dswepm.fluorite.rt.sky.RtSkyPreset;
 import io.github.dswepm.fluorite.rt.sky.RtSkyPresets;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrain;
@@ -151,7 +152,8 @@ public final class RtComposite {
                 + FluoriteConfig.Rt.Volumetrics.START_DISTANCE.value() - 16f);
     }
 
-    private static int environmentFlags(RtSkyPreset preset, boolean fogActive) {
+    private static int environmentFlags(RtSkyPreset preset, boolean fogActive,
+                                        RtEnvironmentTextures.Entry environment) {
         int flags = 0;
         if (preset.fog().ambientVisibility() == RtSkyPreset.AmbientVisibility.UNOCCLUDED) {
             flags |= 1; // ENVIRONMENT_AMBIENT_UNOCCLUDED
@@ -159,10 +161,19 @@ public final class RtComposite {
         if (fogActive && preset.fog().localLights()) {
             flags |= 1 << 1; // ENVIRONMENT_FROXEL_LOCAL_LIGHTS
         }
+        if (environment != null) {
+            flags |= (environment.layer() & 0xff) << 8;
+        }
         return flags;
     }
 
-    private static Float4 mediumSkyRadiance(RtSkyPreset preset, RtDimensionControls controls) {
+    private static Float4 mediumSkyRadiance(RtSkyPreset preset, RtDimensionControls controls,
+                                            RtEnvironmentTextures.Entry environment) {
+        if (preset.skyProvider() == RtSkyPreset.SkyProvider.ENVIRONMENT && environment != null) {
+            RtSkyPreset.Rgb mean = environment.meanRadiance();
+            float scale = controls.environmentScale();
+            return new Float4(mean.r() * scale, mean.g() * scale, mean.b() * scale, scale);
+        }
         RtSkyPreset.Rgb ambient = preset.ambientRadiance();
         float scale = controls.ambientScale();
         return new Float4(ambient.r() * scale, ambient.g() * scale, ambient.b() * scale, 0f);
@@ -1431,11 +1442,14 @@ public final class RtComposite {
     private long atlasSampler;
     private long lutSampler;
     private long tilingSampler;
+    private long environmentSampler;
+    private long environmentTransferSampler;
     // The atmosphere's precomputed tables (M10). Baked once, then sampled by world.rmiss and world.rgen.
     private RtSky skyLuts;
     // Reloaded through the same resource-manager seam as material overrides. A missing entry is not an
     // error: RtSkyPresets deliberately resolves it to the complete atmosphere.
     private RtSkyPresets skyPresets = RtSkyPresets.EMPTY;
+    private RtEnvironmentTextures environmentTextures;
     private boolean failed;
     private boolean loggedActive;
 
@@ -1757,6 +1771,10 @@ public final class RtComposite {
         RtBlockMaterials.INSTANCE.reset();
         RtMaterialOverrides materialOverrides = RtMaterialOverrides.load();
         skyPresets = RtSkyPresets.load();
+        if (environmentTextures != null) {
+            environmentTextures.destroy();
+        }
+        environmentTextures = RtEnvironmentTextures.load(ctx, skyPresets);
         RtEmissionSemantics emissionSemantics = RtEmissionSemantics.analyze();
         RtBlockMaterials.INSTANCE.prepareAll(ctx, bindlessTextureCapacity, emissionSemantics, materialOverrides);
         RtEntityTextures.INSTANCE.reset(bindlessTextureCapacity);
@@ -1794,6 +1812,14 @@ public final class RtComposite {
             // wrapping it would put the far shore's ripples on the near one. The sampler's clamp is a
             // backstop only -- waterSimGrad rejects out-of-domain coordinates before it reads.
             worldPipeline.setWaterSimHeight(skyLuts.waterHeightView(), lutSampler(ctx));
+            worldPipeline.setEnvironmentRadiance(
+                    environmentTextures.radianceView(), environmentSampler(ctx));
+            worldPipeline.setEnvironmentTransfer(
+                    environmentTextures.transferView(), environmentTransferSampler(ctx));
+            worldPipeline.setEnvironmentDiskEntry(
+                    environmentTextures.diskEntryView(), environmentTransferSampler(ctx));
+            worldPipeline.setEnvironmentDiskExit(
+                    environmentTextures.diskExitView(), environmentTransferSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -1844,6 +1870,10 @@ public final class RtComposite {
                 worldPipeline.destroy();
                 worldPipeline = null;
                 bindlessTextureCapacity = 0;
+            }
+            if (environmentTextures != null) {
+                environmentTextures.destroy();
+                environmentTextures = null;
             }
             RtMaterialRegistry.INSTANCE.destroy();
         }
@@ -2046,6 +2076,15 @@ public final class RtComposite {
                     ? RtSkyPreset.FULL_ATMOSPHERE
                     : skyPresets.forDimension(dimensionId);
             RtDimensionControls dimensionControls = RtDimensionControls.forDimension(dimensionId);
+            RtEnvironmentTextures.Entry environmentEntry = environmentTextures == null
+                    ? null : environmentTextures.entry(skyPreset);
+            if (skyPreset.skyProvider() == RtSkyPreset.SkyProvider.ENVIRONMENT
+                    && environmentEntry == null) {
+                // A malformed or missing resource disables only its own dimension. The complete
+                // atmosphere is the established safe fallback and must not inherit End-only controls.
+                skyPreset = RtSkyPreset.FULL_ATMOSPHERE;
+                dimensionControls = RtDimensionControls.DEFAULT;
+            }
             if (level != null) {
                 cameraBlockPos.set(Mth.floor(camX), Mth.floor(camY), Mth.floor(camZ));
                 // Height-aware, mirroring vanilla's own Camera.getFluidInCamera(): a plain block-granular
@@ -2230,12 +2269,12 @@ public final class RtComposite {
             // not a block-atlas sprite — see ModelBakery.BREAKING_LOCATIONS/DESTROY_TYPES), so any newly
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
-            SkyPush sky = skyPush(skyPreset);
             // One immutable weather/time read for every medium. The shader receives only the resolved
             // physical values, so this does not grow WorldPush or add a weather branch to any hot path.
             RtEnvironmentForcing.Frame environment = skyPreset.weatherEnabled()
                     ? RtEnvironmentForcing.capture(level)
                     : RtEnvironmentForcing.captureClock(level);
+            SkyPush sky = skyPush(skyPreset, dimensionControls, environment.gameSeconds());
             Float4 resolvedFogParams = fogParams(skyPreset, dimensionControls, environment);
             float waterStorm = smoothWaterStorm(level, environment);
             float stormSwellBias = Math.clamp(waterStorm, 0f, 1f)
@@ -2279,7 +2318,7 @@ public final class RtComposite {
                     terrain.lightCount(),
                     FluoriteConfig.Rt.Lights.RIS_CANDIDATES.value(),
                     skyPreset.skyProvider().shaderId(),
-                    environmentFlags(skyPreset, resolvedFogParams.x() > 0f),
+                    environmentFlags(skyPreset, resolvedFogParams.x() > 0f, environmentEntry),
                     resolvedFogParams,
                     fogExtinction(skyPreset),
                     fogScatter(skyPreset),
@@ -2288,7 +2327,7 @@ public final class RtComposite {
                     // Atmosphere mode overwrites this via sky_medium_reduce later in the command buffer.
                     // Other providers own it directly, so skipping that reduction preserves their
                     // authored environment source rather than stale atmospheric state.
-                    mediumSkyRadiance(skyPreset, dimensionControls),
+                    mediumSkyRadiance(skyPreset, dimensionControls, environmentEntry),
                     waterScatter(environment),
                     waterAbsorbOverride(),
                     waterAux(waterStorm),
@@ -2614,9 +2653,26 @@ public final class RtComposite {
 
     private record CelestialUv(Float4 sun, Float4 moon) {}
 
-    /** Providers without terrestrial celestials keep valid directions but publish zero light energy. */
-    private SkyPush skyPush(RtSkyPreset preset) {
-        if (preset.skyProvider() != RtSkyPreset.SkyProvider.ATMOSPHERE) {
+    /** Provider-specific celestial/environment source encoded in the shared WorldPush lanes. */
+    private SkyPush skyPush(RtSkyPreset preset, RtDimensionControls controls, double gameSeconds) {
+        if (preset.skyProvider() == RtSkyPreset.SkyProvider.ENVIRONMENT) {
+            RtSkyPreset.Environment environment = preset.environment();
+            RtSkyPreset.Vec3 direction = environment.direction();
+            RtSkyPreset.Vec3 up = environment.up();
+            Float4 zeroUv = new Float4(0f, 0f, 0f, 0f);
+            float diskScale = controls.diskScale();
+            float diskPhase = wrappedRadians(gameSeconds * 0.5);
+            float environmentAngle = wrappedRadians(gameSeconds
+                    * Math.toRadians(controls.environmentRotationSpeed()));
+            return new SkyPush(
+                    new Float4(direction.x(), direction.y(), direction.z(), diskPhase),
+                    new Float4(direction.x(), direction.y(), direction.z(), environment.lightHalfAngle()),
+                    new Float4(diskScale, diskScale, diskScale, controls.diskOuterRadius()),
+                    new Float4(-direction.x(), -direction.y(), -direction.z(), controls.diskThickness()),
+                    new Float4(up.x(), up.y(), up.z(), environmentAngle),
+                    zeroUv, zeroUv);
+        }
+        if (preset.skyProvider() == RtSkyPreset.SkyProvider.LOCAL_AMBIENT) {
             Float4 zeroUv = new Float4(0f, 0f, 0f, 0f);
             return new SkyPush(
                     new Float4(0f, 1f, 0f, 0f),
@@ -2627,6 +2683,12 @@ public final class RtComposite {
                     zeroUv, zeroUv);
         }
         return skyPush();
+    }
+
+    private static float wrappedRadians(double angle) {
+        double wrapped = angle % (Math.PI * 2.0);
+        if (wrapped < 0.0) wrapped += Math.PI * 2.0;
+        return (float) wrapped;
     }
 
     /**
@@ -2833,6 +2895,10 @@ public final class RtComposite {
             worldPipeline.destroy();
             worldPipeline = null;
         }
+        if (environmentTextures != null) {
+            environmentTextures.destroy();
+            environmentTextures = null;
+        }
         bindlessTextureCapacity = 0;
         materialBindingsReady = false;
         materialEpochTraceGate = false;
@@ -2860,6 +2926,66 @@ public final class RtComposite {
             }
             tilingSampler = 0L;
         }
+        if (environmentSampler != 0L) {
+            RtContext ctx = RtContext.currentOrNull();
+            if (ctx != null) {
+                VK10.vkDestroySampler(ctx.vk(), environmentSampler, null);
+            }
+            environmentSampler = 0L;
+        }
+        if (environmentTransferSampler != 0L) {
+            RtContext ctx = RtContext.currentOrNull();
+            if (ctx != null) {
+                VK10.vkDestroySampler(ctx.vk(), environmentTransferSampler, null);
+            }
+            environmentTransferSampler = 0L;
+        }
+    }
+
+    /** Equirectangular U wraps; polar V clamps. Linear mip filtering antialiases star reflections. */
+    private long environmentSampler(RtContext ctx) {
+        if (environmentSampler == 0L) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
+                        .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_LINEAR)
+                        .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .minLod(0f).maxLod(12f);
+                LongBuffer p = stack.mallocLong(1);
+                if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                    throw new IllegalStateException("vkCreateSampler(environment) failed");
+                }
+                environmentSampler = p.get(0);
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, environmentSampler,
+                        "environment sampler");
+            }
+        }
+        return environmentSampler;
+    }
+
+    /** Nearest classification preserves escape/disk/capture topology in the packed Kerr transfer map. */
+    private long environmentTransferSampler(RtContext ctx) {
+        if (environmentTransferSampler == 0L) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK10.VK_FILTER_NEAREST).minFilter(VK10.VK_FILTER_NEAREST)
+                        .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                        .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .minLod(0f).maxLod(0f);
+                LongBuffer p = stack.mallocLong(1);
+                if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                    throw new IllegalStateException("vkCreateSampler(environment transfer) failed");
+                }
+                environmentTransferSampler = p.get(0);
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, environmentTransferSampler,
+                        "environment transfer sampler");
+            }
+        }
+        return environmentTransferSampler;
     }
 
     /**

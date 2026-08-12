@@ -103,13 +103,19 @@ public final class RtPipeline {
     private final int cloudNoiseBinding;
     private final int waterHeightBinding;
     private final int fogNoiseBinding;
+    private final int environmentRadianceBinding;
+    private final int environmentTransferBinding;
+    private final int environmentDiskEntryBinding;
+    private final int environmentDiskExitBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
                        long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
                        int transmittanceBinding, int multiScatterBinding, int skyViewBinding,
                        int froxelBinding, int visibilityGridBinding, int cloudNoiseBinding,
-                       int waterHeightBinding, int fogNoiseBinding) {
+                       int waterHeightBinding, int fogNoiseBinding, int environmentRadianceBinding,
+                        int environmentTransferBinding, int environmentDiskEntryBinding,
+                        int environmentDiskExitBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -141,6 +147,10 @@ public final class RtPipeline {
         this.cloudNoiseBinding = cloudNoiseBinding;
         this.waterHeightBinding = waterHeightBinding;
         this.fogNoiseBinding = fogNoiseBinding;
+        this.environmentRadianceBinding = environmentRadianceBinding;
+        this.environmentTransferBinding = environmentTransferBinding;
+        this.environmentDiskEntryBinding = environmentDiskEntryBinding;
+        this.environmentDiskExitBinding = environmentDiskExitBinding;
     }
 
     /**
@@ -222,9 +232,24 @@ public final class RtPipeline {
             // descriptor. R/G carry base/detail and are fetched together.
             int fogNoiseBinding = skyAtlas ? waterHeightBinding + waterHeightSamplers : -1;
             int fogNoiseSamplers = skyAtlas ? 1 : 0;
+            // M14's full-sphere HDR environment, nearest Kerr transfer and the two endpoints of a local
+            // Kerr disk chord, bindings 20/21/22/23. Runtime Le/T is shared by visible and NEE paths.
+            int environmentRadianceBinding = skyAtlas ? fogNoiseBinding + fogNoiseSamplers : -1;
+            int environmentRadianceSamplers = skyAtlas ? 1 : 0;
+            int environmentTransferBinding = skyAtlas
+                    ? environmentRadianceBinding + environmentRadianceSamplers : -1;
+            int environmentTransferSamplers = skyAtlas ? 1 : 0;
+            int environmentDiskEntryBinding = skyAtlas
+                    ? environmentTransferBinding + environmentTransferSamplers : -1;
+            int environmentDiskEntrySamplers = skyAtlas ? 1 : 0;
+            int environmentDiskExitBinding = skyAtlas
+                    ? environmentDiskEntryBinding + environmentDiskEntrySamplers : -1;
+            int environmentDiskExitSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers
-                    + cloudNoiseSamplers + waterHeightSamplers + fogNoiseSamplers;
+                    + cloudNoiseSamplers + waterHeightSamplers + fogNoiseSamplers
+                    + environmentRadianceSamplers + environmentTransferSamplers
+                    + environmentDiskEntrySamplers + environmentDiskExitSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -268,6 +293,19 @@ public final class RtPipeline {
                 binds.get(fogNoiseBinding).binding(fogNoiseBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                int environmentStages = VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+                binds.get(environmentRadianceBinding).binding(environmentRadianceBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(environmentStages);
+                binds.get(environmentTransferBinding).binding(environmentTransferBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(environmentStages);
+                binds.get(environmentDiskEntryBinding).binding(environmentDiskEntryBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(environmentStages);
+                binds.get(environmentDiskExitBinding).binding(environmentDiskExitBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(environmentStages);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -278,7 +316,8 @@ public final class RtPipeline {
             int combinedSamplers = (withBlockAlbedoAtlas ? 1 : 0) + skySamplers + transmittanceSamplers
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers
                     + visibilityGridSamplers + cloudNoiseSamplers + waterHeightSamplers
-                    + fogNoiseSamplers;
+                    + fogNoiseSamplers + environmentRadianceSamplers + environmentTransferSamplers
+                    + environmentDiskEntrySamplers + environmentDiskExitSamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -465,7 +504,9 @@ public final class RtPipeline {
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
                     bindlessLayout, bindlessPool, bindlessSet, skyBinding, transmittanceBinding,
                     multiScatterBinding, skyViewBinding, froxelBinding, visibilityGridBinding,
-                    cloudNoiseBinding, waterHeightBinding, fogNoiseBinding);
+                    cloudNoiseBinding, waterHeightBinding, fogNoiseBinding,
+                    environmentRadianceBinding, environmentTransferBinding,
+                    environmentDiskEntryBinding, environmentDiskExitBinding);
         }
     }
 
@@ -597,6 +638,26 @@ public final class RtPipeline {
     /** Bind M13's packed base/detail fog-density field. */
     public void setFogNoise(long imageView, long sampler) {
         writeAtlasBinding(fogNoiseBinding, imageView, sampler);
+    }
+
+    /** Bind M14's mipmapped full-sphere HDR radiance array. */
+    public void setEnvironmentRadiance(long imageView, long sampler) {
+        writeAtlasBinding(environmentRadianceBinding, imageView, sampler);
+    }
+
+    /** Bind M14's full-sphere Kerr transfer array. */
+    public void setEnvironmentTransfer(long imageView, long sampler) {
+        writeAtlasBinding(environmentTransferBinding, imageView, sampler);
+    }
+
+    /** Bind the first endpoint of M14's local Kerr disk chord. */
+    public void setEnvironmentDiskEntry(long imageView, long sampler) {
+        writeAtlasBinding(environmentDiskEntryBinding, imageView, sampler);
+    }
+
+    /** Bind the second endpoint of M14's local Kerr disk chord. */
+    public void setEnvironmentDiskExit(long imageView, long sampler) {
+        writeAtlasBinding(environmentDiskExitBinding, imageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

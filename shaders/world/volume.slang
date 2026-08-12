@@ -18,6 +18,7 @@ import math;
 import medium;
 import trace;
 import atmosphere_lut;
+import environment;
 import volume_source;
 import volume_visibility;
 import world_common;
@@ -502,8 +503,8 @@ float3 sampledAmbientSunSource(float3 ro, float3 viewDir, float3 lightDir,
     if (worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE) {
         return float3(0.0, 0.0, 0.0);
     }
-    float3 sampledIrradiance = sampleCelestialIrradiance(
-            undyedCelestialIrradiance, lightDir);
+    float3 sampledIrradiance = sampleProviderCelestialIrradiance(
+            worldPush, undyedCelestialIrradiance, lightDir);
     float3 localFogT = ambientTransmittanceWith(sunSigma, ro, lightDir, RAY_FAR);
     return evaluateAmbientRadianceSource(
             viewDir, lightDir, phaseG, sampledIrradiance,
@@ -1043,8 +1044,8 @@ float3 enclosedScatterVertexInScatter(ScatterVertex vertex, float3 sigmaT, uint 
             float sunWaterPath = shadow.waterHitT > 0.0
                     ? shadow.waterHitT
                     : vertexDepth * sunPathScale;
-            float3 sampledIrradiance = sampleCelestialIrradiance(
-                    undyedCelestialIrradiance, airLightDir);
+            float3 sampledIrradiance = sampleProviderCelestialIrradiance(
+                    worldPush, undyedCelestialIrradiance, airLightDir);
             source += sampledIrradiance
                     * enclosedPhase(dot(rd, refractedLight), phaseG, albedo)
                     * vis * exp(-sigmaSource * sunWaterPath);
@@ -1206,8 +1207,8 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
             float horizLen = max(length(lightHoriz), 1.0e-6);
             float3 refractedLight = (lightHoriz / horizLen) * sinWater
                     + float3(0.0, cosWater, 0.0);
-            float3 sampledIrradiance = sampleCelestialIrradiance(
-                    undyedCelestialIrradiance, airLightDir);
+            float3 sampledIrradiance = sampleProviderCelestialIrradiance(
+                    worldPush, undyedCelestialIrradiance, airLightDir);
             // Bit 15: DISCARD the shadow ray's transmittance and take the sun as unoccluded. The ray is
             // still traced for every above-horizon emitter sample — shadow.waterHitT below measures the
             // sun's real water column, and the depth integral needs it even when occlusion is disabled.

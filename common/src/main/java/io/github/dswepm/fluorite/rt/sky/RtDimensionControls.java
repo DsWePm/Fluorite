@@ -5,10 +5,15 @@ import net.minecraft.resources.Identifier;
 
 /** Final player-authored adjustment layer for one active dimension. */
 public record RtDimensionControls(boolean fogEnabled, float fogDensityScale,
-                                  float fogDensityScaleLimit, float ambientScale) {
+                                  float fogDensityScaleLimit, float ambientScale,
+                                  float environmentScale, float diskScale,
+                                  float diskOuterRadius, float diskThickness,
+                                  float environmentRotationSpeed) {
     public static final RtDimensionControls DEFAULT =
-            new RtDimensionControls(true, 1f, Float.POSITIVE_INFINITY, 1f);
+            new RtDimensionControls(true, 1f, Float.POSITIVE_INFINITY, 1f,
+                    1f, 1f, 12f, 1f, 0f);
     private static final Identifier NETHER = Identifier.withDefaultNamespace("the_nether");
+    private static final Identifier END = Identifier.withDefaultNamespace("the_end");
 
     /**
      * Resolve only explicit per-dimension controls. Unknown and modded dimensions retain their preset;
@@ -20,7 +25,16 @@ public record RtDimensionControls(boolean fogEnabled, float fogDensityScale,
                     FluoriteConfig.Rt.Dimensions.NETHER_FOG_ENABLED.value(),
                     FluoriteConfig.Rt.Dimensions.NETHER_FOG_DENSITY_SCALE.value(),
                     2f,
-                    FluoriteConfig.Rt.Dimensions.NETHER_AMBIENT_SCALE.value());
+                    FluoriteConfig.Rt.Dimensions.NETHER_AMBIENT_SCALE.value(),
+                    1f, 1f, 12f, 1f, 0f);
+        }
+        if (END.equals(dimension)) {
+            return new RtDimensionControls(true, 1f, Float.POSITIVE_INFINITY, 1f,
+                    FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_SCALE.value(),
+                    FluoriteConfig.Rt.Dimensions.END_DISK_SCALE.value(),
+                    FluoriteConfig.Rt.Dimensions.END_DISK_OUTER_RADIUS.value(),
+                    FluoriteConfig.Rt.Dimensions.END_DISK_THICKNESS.value(),
+                    FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_ROTATION_SPEED.value());
         }
         return DEFAULT;
     }

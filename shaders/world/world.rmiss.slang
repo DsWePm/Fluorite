@@ -11,6 +11,7 @@
 import world_common;
 import atmosphere;
 import atmosphere_lut;
+import environment;
 
 [[vk::push_constant]] WorldPushConstants pc;
 
@@ -125,6 +126,55 @@ float3 stars(float3 dir, float starBrightness, float VdotS, float4 celestial) {
 [shader("miss")]
 void main(inout Payload payload) {
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+    if (worldPush.skyProvider == SKY_PROVIDER_ENVIRONMENT) {
+        float3 dir = normalize(WorldRayDirection());
+        float coneSpread = max(unpackHalf2(payload.rayCone).y, 0.0);
+        float lod = log2(max(coneSpread * 4096.0 / (2.0 * PI), 1.0));
+        // D91A: RR quality 3 traces the accepted 1600x900 view at 533x300. Strict cone filtering then
+        // reads this 4K HDRI around mip 1.4, reducing the directly visible authored sky to roughly 1.5K.
+        // Reconstruct one extra mip only for the camera ray. Reflections, refractions and diffuse misses
+        // keep the unmodified cone LOD so bright source texels do not crawl through broad secondary lobes.
+        if ((payload.flags & PAYLOAD_DIRECT_VIEW) != 0u) {
+            lod = max(lod - 1.0, 0.0);
+        }
+        bool showCelestial = (payload.flags & PAYLOAD_SHOW_CELESTIAL) != 0u;
+        EnvironmentSample environment = sampleEnvironment(
+                worldPush, dir, lod, worldPush.lightRadiance.x);
+        float3 col = environment.radiance;
+        float3 analytic = float3(0.0, 0.0, 0.0);
+        if (environment.disk) {
+            bool proposalSupportsDirection = environmentLightSupportsDirection(worldPush, dir);
+            if (proposalSupportsDirection) {
+                if (!showCelestial) {
+                    // A diffuse continuation suppresses only disk Le; attenuated HDRI behind a
+                    // finite-thickness disk remains an ordinary environment continuation.
+                    col = max(col - environment.diskRadiance, float3(0.0, 0.0, 0.0));
+                } else {
+                    // Keep the exact disk Le out of the scenery lane when NEE can also sample it. Raygen
+                    // reconstructs Le from this Le/pdf proposal and applies the continuation MIS weight.
+                    float pdf = squareLightDirectionalPdf(
+                            worldPush.lightDir.xyz, worldPush.lightDir.w, dir);
+                    analytic = environment.diskRadiance / max(pdf, 1.0e-20);
+                    col = max(col - environment.diskRadiance, float3(0.0, 0.0, 0.0));
+                }
+            }
+            // Outside proposal support there is no competing NEE sample. Leave Le in the ordinary
+            // continuation lane even after a diffuse bounce; hiding it would bias away high-order images.
+        }
+        payload.albedo = half3(clamp(col, float3(0.0, 0.0, 0.0),
+                float3(HALF_MAX, HALF_MAX, HALF_MAX)));
+        payload.hitT = -1.0;
+        payload.normal = half3(0.0h, 0.0h, 0.0h);
+        payload.motionPrev = half3(0.0h, 0.0h, 0.0h);
+        payload.f0 = half3(clamp(analytic, float3(0.0, 0.0, 0.0),
+                float3(HALF_MAX, HALF_MAX, HALF_MAX)));
+        payload.flags = any(analytic > 0.0) ? PAYLOAD_ANALYTIC_LIGHT : 0u;
+        payload.roughMetal = packHalf2(float2(1.0, 0.0));
+        payload.emissionSss = packHalf2(float2(0.0, 0.0));
+        payload.iorTransmission = packHalf2(float2(1.0, 0.0));
+        payload.rayCone = 0u;
+        return;
+    }
     if (worldPush.skyProvider == SKY_PROVIDER_LOCAL_AMBIENT) {
         // Nether-style provider: no atmosphere, planet, sun, moon or procedural stars. The authored
         // neutral floor is intentionally visible in every direction and also feeds mediumSkyRadiance;

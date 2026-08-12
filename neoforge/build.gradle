@@ -29,6 +29,7 @@ sourceSets {
 sourceSets.main.java.srcDir(files(rootProject.ext.fluoriteShaderRecordsDir).builtBy(":generateShaderRecords"))
 sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteShaderSpirvDir).builtBy(":compileShaders"))
 sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteNgxNativesDir).builtBy(":bundleNgxNatives"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteEndEnvironmentDir).builtBy(":generateEndEnvironment"))
 
 neoForge {
 	version = rootProject.neoforge_version

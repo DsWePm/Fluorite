@@ -56,6 +56,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 - 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
 - M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
+- M14 末地 environment Provider：当前 Kerr/HDR 与 D93A-R 运行时动态盘已完成自动验证但视觉路线暂停，尚未提交。后续由用户在 Blender 预渲染包含星空、透镜黑洞和动态吸积盘的循环 HDR 全天球序列，再替换当前实时黑洞；素材到位前不决定帧格式、分辨率、帧率、循环长度、插帧与照明采样方案。
 - M18 动态光源收集层与 M20.4 发光粒子聚合。
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
 - ReSTIR 整合。
@@ -83,7 +84,8 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | 入口 | `world_primary.rgen.slang` | Pass A、guides、队列写入 |
 | 入口 | `world.rgen.slang` | Pass B、弹射、体积、debug views |
 | 命中 | `world.rchit.slang` / `world.rahit.slang` | 材质求值；alpha/stochastic alpha；阴影透射累积 |
-| 天空 | `world.rmiss.slang` | sky-view LUT、星空、日月盘 |
+| 天空 | `world.rmiss.slang` | 大气 sky-view/日月，或末地 HDR 环境/Kerr 盘面 miss |
+| 末地环境 | `environment.slang` | 全天球坐标、Kerr transfer/穿盘路径解码、运行时动态盘有界 `Le/T` 积分、HDRI 旋转、环境天体 NEE |
 | 公共 ABI | `world_common.slang` / `world_core.slang` | `WorldPush`、地址、材质、segment、Light、bindings、payload |
 | 材质与光照 | `bsdf.slang` / `lighting.slang` / `light_sampling.slang` / `subsurface.slang` | Disney、共享 Light/alias/grid 采样、RIS/NEE、BSSRDF |
 | 介质 | `medium.slang` / `volume.slang` / `volume_source.slang` | Medium 参数、段积分、跨 compute/RT 的纯源数学 |
@@ -109,6 +111,8 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | `rt/RtCloudLighting` | D61 的云扩散源尺度，CPU 侧能量标定 |
 | `rt/sky/RtSky` | 大气 LUT 资源与唯一烘焙顺序 |
 | `rt/sky/RtSkyPreset` / `RtSkyPresets` / `RtDimensionControls` | 版本化维度 Provider/preset、资源包覆盖、未知维度回退与玩家逐维度修正 |
+| `rt/sky/RtEnvironmentTextures` / `RtKtx2` | resource epoch 内 KTX2 校验、环境/transfer/disk 数组上传与逐维度 layer 映射 |
+| `buildSrc/.../GenerateEndEnvironment` | 构建期把许可的 10K HDR 转为 4K KTX2，并离线生成 Cartesian Kerr-Schild transfer 与盘 `Le/T` |
 | `rt/terrain/` | 地形驻留、section 构建、流体、静态发光 quad、light hierarchy/grid |
 | `rt/entity/` | 实体/粒子捕获、逐帧 BLAS/TLAS、overlay aux 数据 |
 | `rt/material/` | CPU decode-once 材质管线、LabPBR、发光资格、IOR 和 JSON overrides |
@@ -151,7 +155,8 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - `RtSkyPreset` 选择通用 `SkyProvider` 和介质能力；shader 只看 provider/capability，不读取或猜测维度 ID。
 - 大气 Provider 中，`RtSky` 是 LUT 链的唯一顺序权威：transmittance → multi-scatter → sky-view → medium-sky reduction → froxel；其他 Provider 不运行无意义的大气 bake/reduction。
 - `mediumSkyRadiance` 是天空 Radiance 的 `1/(4π)` 立体角平均；水、雾和 froxel 共读。
-- `lightRadiance` 历史名字实际承载天体 irradiance `E`；体积单次散射必须写 `E·phase`，禁止恢复 D61 的 `4π`。
+- 大气 Provider 的 `lightRadiance.xyz` 历史名字实际承载天体 irradiance `E`；体积单次散射必须写 `E·phase`，禁止恢复 D61 的 `4π`。Environment Provider 复用该 lane 传盘面倍率，读取前必须先按 provider 分支。
+- Environment Provider 的可见盘面、BSDF 命中与直接光都调用同一个 `Le(direction)`。方形天体只作方向 proposal；NEE 使用 `Le/pdf`，空方向贡献零，不能再放一份独立颜色或功率的假面积光。
 - 云是世界锚定纯光线函数，`cloud.slang` 禁止出现相机位置。二次光线 off/reduced/full 只改变精度，不改变云所在世界。
 - `RtEnvironmentForcing` 一帧一次读取时间、rain、thunder。GPU 只看到最终 density/coverage/type/scatter/contrast/wave state，不读取原始天气。
 - Weather Effects 拥有全局风 heading 和天气响应；雾、低云、高云、水波保留速度和相对偏转。
@@ -337,10 +342,14 @@ Windows：
 
 ```powershell
 .\gradlew.bat generateShaderRecords compileShaders
+.\gradlew.bat fetchEndHdr
+.\gradlew.bat generateEndEnvironment
 .\gradlew.bat :neoforge:processResources :neoforge:compileJava
 ```
 
 slangc 解析顺序：Gradle `-P<name>Path` → 环境变量 → `$VULKAN_SDK/Bin` → PATH；当前独立工具链位于 `F:\MC\Shader\tools\slang-2026.14`。
+
+当前 D93A-R `generateEndEnvironment` 冷生成实测约 8 分 32 秒，输入未变时由 Gradle 增量缓存跳过。D87C 裁决为不把 89 MiB 母版放进 Git/LFS：默认由 `fetchEndHdr` 下载到已忽略且不受 `clean` 影响的 `.gradle/fluorite-assets/`，并严格校验 SHA-256 `dad11594…fd393d90`；来源不可用时可用 `-PendHdrSource=<path>` 提供同一哈希的本地副本。生成物进入 loader 的资源 classpath/jar，运行时只校验和上传，不重新追踪 Kerr，也没有“首次进游戏后落盘的 LUT 缓存”。旧生成器耗时与被替换路线见 M14 开发日志。
 
 ### 5.2 运行与基准
 
@@ -412,6 +421,9 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 | BSSRDF/glint/焦散常数 | `PROVISIONAL` 或美术夸张，不得宣传为物理标定 |
 | 语言 | `zh_tw` 仍有约 64 个键含简体正文，需单独清理；不扩展其他语言维护范围 |
 | 资源生命周期 | `RtComposite.lutSampler` 已知未销毁，进入 ReSTIR 前 review 修复 |
+| 末地环境成本 | 三张 KTX2 原始载荷/GPU 常驻约 74.7 MiB；Fabric jar 内 DEFLATE 实测合计约 24.2 MiB（HDRI 15.0、transfer 9.1、稀疏 disk 0.15 MiB）。可见 miss 读取 transfer、disk，并仅在逃逸时读 HDRI，环境 NEE 读取同一 disk `Le`；1080p GPU 时间待验收实测，未测前不宣称成本接近太阳 |
+| 末地资源兼容 | 只接受 4096×2048 R11G11B10 13 mip HDRI，以及 2048×1024 RGBA16F transfer 与 disk；任一资源失败只回退该维度到完整大气，不能留下未绑定 descriptor |
+| 末地母版可用性 | D87C 不跟踪 10K 母版；首次干净构建依赖外部 URL。下载必须匹配固定 SHA，禁止网站替换后静默更新；来源失效时只能提供已归档的同哈希副本，不得擅自接受新素材 |
 
 ## 8. 待办与未来架构
 
@@ -441,7 +453,7 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 - 完整物理大气是代码默认；未知或无效的模组维度自动取得完整大气，不做 `dimensionType()` 启发式降级。
 - `RtSkyPreset` 从 `assets/fluorite/fluorite/sky/<namespace>/<dimension>.json` 加载，允许资源包覆盖；format 版本、逐文件隔离、有限值/范围/能量校验是加载契约。
 - 参数所有权顺序固定为：preset 基础值 → 该 preset 允许时的 D70 天气/时间 forcing → 用户全局修正 → 玩家逐维度修正。资源包负责物理基线；全局开关仍有最终总门控权，逐维度页只关闭或缩放一个明确维度。
-- `WorldPush.skyProvider/environmentFlags` 花掉既有 8 B padding，不增大 944 B ABI。shader 只按能力分支；`environment` 为末地 HDRI/Kerr 保留，不得先塞假黑洞。
+- `WorldPush.skyProvider/environmentFlags` 花掉既有 8 B padding，不增大 944 B ABI。shader 只按能力分支；`environmentFlags[8..15]` 是 resource-epoch 环境数组 layer，低位仍是介质能力。
 - 雾 `heightScale<=0` 是明确的均匀介质编码；高度雾必须为正。关闭结构时必须在纹理 fetch 和数值 march 前退出。
 - 大气表、云噪声和雾噪声当前共用一次性静态 bake。内置地狱三者都不需要，因此完全跳过；资源包的非大气维度若开启云或结构雾，会为保证纹理已初始化而顺带烘焙暂时不用的大气表。只有实测首次加载成本值得优化时才拆生命周期。
 - `light_sampling.slang` 是 RT 与 froxel 共用的 32 B `Light`、alias、局部 grid 采样接口；维度不能复制一套光源格式。
@@ -451,9 +463,18 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 
 - 主世界：现有 Rayleigh/Mie/臭氧大气、日月、星空、云、高度/结构雾和天气 forcing。
 - 地狱：无太阳/月亮和地球大气；本地发光体为主，froxel 用共享 Light/grid 做一次 NEE 并发阴影线；另有极低中性白保底环境光。雾为关闭噪声的均匀白雾；“维度设置”提供只影响地狱的雾开关、0–2 浓度倍率和 0–8 环境光倍率，全局体积雾仍是总开关。全局与地狱浓度倍率合并后的最终玩家增益仍夹在 2；环境光倍率统一缩放表面保底光、逃逸背景与介质环境源，不改变局部发光体功率；保底光不受遮挡是 D78A 明示的非物理可读性近似。浓度上限是当前 DLSS-RR 对高密度远景体积重建绿色的产品安全边界，不是物理介质上限。
-- 末地另开分支/PR：全方向 CC0 star HDRI；黑洞影响区由构建期固定 Kerr 参数预计算 transfer LUT，运行时弯折方向采样同一 HDRI，再按 `Tdisk·background + Ldisk` 合成默认光学厚吸积盘。关闭地球大气、日月、云和体积雾；与吸积盘对齐的有限面积遥远光源复用天体 NEE。不得用贴图假装黑洞或在 M14 临时占位。
+- 末地：format 2 `environment` preset 关闭地球大气、日月、云、天气和体积雾；全天球纹理覆盖岛屿上下全部方向。D87A 使用 TonyS / Space Spheremaps 的 CC BY 4.0 **HDR Multi Nebulae 1**：10K RGBE 只作离线母版，构建期按球面立体角做面积缩放，输出 4096×2048 R11G11B10 HDRI 与 13 级能量保持 mip；运行时不读取 10K 母版。D87C 决定母版不进 Git/LFS，构建只接受固定 URL 或本地覆盖中 SHA-256 为 `dad11594…fd393d90` 的精确字节。README 与第三方声明必须保留来源、许可和变换说明，禁止把素材用于 AI 训练/抓取。
+- D90A 用无极轴坐标奇点的 Cartesian Kerr-Schild 3+1 Hamiltonian 与解析导数离线积分，替换会在自旋轴产生竖缝的 Boyer–Lindquist RK4。固定参数为 `a*=0.9`、观测倾角 60°、观测半径 50M、顺行 ISCO≈2.32M；离线盘捕获上限为外半径 12M。2048×1024 RGBA16F transfer 只存逃逸后的三维方向或捕获类别；另外两张同尺寸 RGBA16F 图分别存第一段局部穿盘 chord 的 entry/energy 与 exit/angular-momentum，不再烘焙静态盘颜色。最终半精度 KTX 的旧接缝两侧五组回归探针均小于 2°。
+- D93A-R 在运行时沿 Kerr chord 做固定 12 点、五层动态噪声的有限厚度盘积分，使用有界 `Le/T`，并保留 Novikov–Thorne 径向次序和 Kerr `g⁴`。可见 miss、BSDF 路径和盘面 NEE 调用同一个盘求值器；方形天体接口只提出方向并计算 `Le/pdf`，不能另设代理功率。实现只借鉴公开参考项目的思路、公式和参数比例，全部代码与噪声独立编写，不复制其无许可证源码或资产；不加入 bloom，也不声称是字面准确的天体光谱模拟。
+- D85A 的盘 proposal 半角保持 `0.36 rad`；当前生成得到 19,169 条有效 chord，全部落在 proposal 支持内，最大 chord 长 6.99M。方形切平面采样仍必须使用逐方向 `1/cos³` Jacobian 的精确 solid-angle pdf；普通 BSDF continuation 保留，未来参数若产生 proposal 外高阶像也不能被 diffuse 防重计门控隐藏。
+- D86A 固定 Kerr transfer 与 disk chord 为最近邻采样：一次 fetch 保持 escape/capture 和路径有效性拓扑严格。4096×2048 HDRI 使用 U 重复、V clamp 的线性 mip 过滤；若将来实测约 `0.176°` transfer 离散导致可见锯齿，再单独裁决同类别四点插值，不能直接恢复裸线性过滤。D91A 只给直接相机 miss `-1 mip` 的重建偏置；反射、折射、漫反射和 debug 射线继续使用原 ray-cone LOD。该偏置提高低内部渲染分辨率下的 HDRI 清晰度，但不是严格像素积分，验收必须检查移动时的星点闪烁。
+- 末地控制彼此独立：星空亮度和吸积盘亮度均为 `0–8×`、默认 `1×`；盘外半径为 `4–12M`、默认 `8M`；盘厚度为基准半厚度 `0.55M` 的 `0.25–2×`、默认 `1×`；HDRI 绕真实 Kerr 自旋轴的连续游戏时间旋转为 `0–1°/s`、默认 `0.02°/s`。旋转只变换逃逸后的 HDRI 方向，不带动黑洞或盘；任何控制都不能通过暗改另一项来补偿。
+- 已批准的后续美术路线是用 Blender 预渲染的循环动态 HDR 全天球序列替换当前实时 Kerr/盘面组合。输入必须是完整 `2:1` 等距柱状、线性 scene-referred HDR、首尾可循环的逐帧全天球；不能把经过显示映射、曝光钳位或 SDR 编码的结果当辐亮度。用户提供素材后再根据实际帧数和体积，在 GPU 纹理数组、相邻帧流式上传或 HDR 视频解码之间裁决，不能预先默认其中一种。
+- 动态 HDRI 必须暴露相互独立的亮度与对比度参数。亮度是线性辐亮度倍率；推荐的对比度是在正值 luminance 的 log2 域围绕明确 pivot 调整，再按亮度比例恢复 RGB，以保持色相、非负值和 HDR 高光层次。对比度会改变总能量，因此可见天空、反射/折射、环境平均值和 NEE 必须读取同一变换，禁止只做显示后处理。具体范围、pivot 和默认值等素材到位后由用户批准。
+- 预渲染序列若把星空与黑洞/盘合成在同一层，只能天然获得“整个动态环境”的统一亮度/对比度；若未来仍要分别调星空和盘，Blender 必须额外输出分层序列或 mask，不能从合成 HDRI 稳健反推。它用于照亮场景时还需在“逐帧环境重要性分布”和“与动画匹配的有限面积代理光”之间裁决：前者更一致但有逐帧数据与采样成本，后者成本接近现有天体 NEE 但只是近似。素材到位前不得擅自选路线。
+- 环境 KTX2 是构建期生成、jar 内只读资源；resource reload 时旧 image/view 在 pipeline descriptor 释放后销毁并重建。维度 preset 或任一资源无效时只让该维度回退完整大气，其他环境 layer 继续工作。
 
-M14 已完成视觉验收；实现、裁决、RR 浓雾边界和验证过程见[开发日志](devlog/M14-dimension-presets.md)。末地 Kerr/HDRI 仍是后续独立里程碑。
+M14 的地狱部分已完成视觉验收；实现、裁决和 RR 浓雾边界见[开发日志](devlog/M14-dimension-presets.md)。末地当前实时实现保留为未提交的技术原型，不再继续视觉调参；等用户提供 Blender 动态 HDRI 后恢复 M14。届时必须验收：全天球投影与循环接缝、相邻帧平滑性、直接视线与反射/折射的一致动画、亮度/对比度对可见与照明的统一作用、自动曝光下的稳定性、加载体积与 VRAM、1080p `gpu.traceIndirect` 与总 GPU。若素材只有合成层，则不再承诺独立的星空/盘参数。
 
 ### 8.4 M18 与 M20.4：动态光数据层
 

@@ -33,14 +33,46 @@ final class RtDimensionControlsTest {
             assertSame(RtDimensionControls.DEFAULT, RtDimensionControls.forDimension(
                     Identifier.parse("minecraft:overworld")));
             assertSame(RtDimensionControls.DEFAULT, RtDimensionControls.forDimension(
-                    Identifier.parse("minecraft:the_end")));
-            assertSame(RtDimensionControls.DEFAULT, RtDimensionControls.forDimension(
                     Identifier.parse("some_mod:nether_like")));
             assertEquals(8.0f, RtDimensionControls.DEFAULT.resolveFogDensityScale(8.0f));
         } finally {
             FluoriteConfig.Rt.Dimensions.NETHER_FOG_ENABLED.set(oldEnabled);
             FluoriteConfig.Rt.Dimensions.NETHER_FOG_DENSITY_SCALE.set(oldDensity);
             FluoriteConfig.Rt.Dimensions.NETHER_AMBIENT_SCALE.set(oldAmbient);
+        }
+    }
+
+    @Test
+    void endBrightnessControlsAreIndependentAndClampedToZeroThroughEight() {
+        float oldEnvironment = FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_SCALE.value();
+        float oldDisk = FluoriteConfig.Rt.Dimensions.END_DISK_SCALE.value();
+        float oldOuterRadius = FluoriteConfig.Rt.Dimensions.END_DISK_OUTER_RADIUS.value();
+        float oldThickness = FluoriteConfig.Rt.Dimensions.END_DISK_THICKNESS.value();
+        float oldRotation = FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_ROTATION_SPEED.value();
+        try {
+            FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_SCALE.set(9f);
+            FluoriteConfig.Rt.Dimensions.END_DISK_SCALE.set(4.25f);
+            FluoriteConfig.Rt.Dimensions.END_DISK_OUTER_RADIUS.set(20f);
+            FluoriteConfig.Rt.Dimensions.END_DISK_THICKNESS.set(0f);
+            FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_ROTATION_SPEED.set(2f);
+            RtDimensionControls end = RtDimensionControls.forDimension(
+                    Identifier.parse("minecraft:the_end"));
+            assertEquals(8f, end.environmentScale());
+            assertEquals(4.25f, end.diskScale());
+            assertEquals(12f, end.diskOuterRadius());
+            assertEquals(0.25f, end.diskThickness());
+            assertEquals(1f, end.environmentRotationSpeed());
+            assertEquals(1f, end.ambientScale());
+
+            FluoriteConfig.Rt.Dimensions.END_DISK_SCALE.set(-1f);
+            assertEquals(0f, RtDimensionControls.forDimension(
+                    Identifier.parse("minecraft:the_end")).diskScale());
+        } finally {
+            FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_SCALE.set(oldEnvironment);
+            FluoriteConfig.Rt.Dimensions.END_DISK_SCALE.set(oldDisk);
+            FluoriteConfig.Rt.Dimensions.END_DISK_OUTER_RADIUS.set(oldOuterRadius);
+            FluoriteConfig.Rt.Dimensions.END_DISK_THICKNESS.set(oldThickness);
+            FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_ROTATION_SPEED.set(oldRotation);
         }
     }
 }

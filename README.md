@@ -88,6 +88,13 @@ license terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 Fluorite exists because of [Caustica](https://modrinth.com/mod/caustica) by
 ComfyFluffy and its contributors, who wrote the renderer this fork is built on.
 
+The End sky uses **HDR Multi Nebulae 1** by TonyS / [Space
+Spheremaps](https://www.spacespheremaps.com/hdr-spheremaps/), released under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Fluorite converts the
+10K Radiance source to an energy-preserving 4K KTX2 environment and mip chain;
+thank you for making this space artwork available. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+
 Parts of the work in this fork were written with the assistance of Anthropic's
 Claude. Copyright in those contributions rests with the project's authors, not
 with the tool.

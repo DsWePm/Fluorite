@@ -15,9 +15,11 @@ public typealias DevicePtr<T> = Ptr<T, Access.ReadWrite, AddressSpace.Device, St
 // the renderer publishes only the capabilities needed by that provider.
 public static const uint SKY_PROVIDER_ATMOSPHERE = 0u;
 public static const uint SKY_PROVIDER_LOCAL_AMBIENT = 1u;
-public static const uint SKY_PROVIDER_ENVIRONMENT = 2u; // reserved for the End HDRI/Kerr provider
+public static const uint SKY_PROVIDER_ENVIRONMENT = 2u;
 public static const uint ENVIRONMENT_AMBIENT_UNOCCLUDED = 1u << 0u;
 public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
+public static const uint ENVIRONMENT_LAYER_SHIFT = 8u;
+public static const uint ENVIRONMENT_LAYER_MASK = 0xFFu;
 
 // Push constant block. The hot inline lanes avoid dereferencing WorldPush for values that are read in
 // hit shaders or used for raygen control flow — every 64-bit device address lives here for exactly that
@@ -79,11 +81,11 @@ public struct WorldPush {
     public float2   jitter;
     public uint     flags;            // bit0 submerged, bit4 waves, bit5 sun MIS (bit1 was PBR-toggle, now unconditional)
     public uint     maxBounces;
-    public float4   sunDir;           // xyz true sun direction, w dayFactor 0..1
+    public float4   sunDir;           // atmosphere: xyz sun, w dayFactor; environment: xyz heading, w disk phase
     public float4   lightDir;         // xyz active NEE light dir, w square half-angle (rad)
-    public float4   lightRadiance;    // xyz celestial irradiance (legacy field name), w star brightness
-    public float4   moonDir;          // xyz moon direction, w moonPhase (0 full .. 4 new)
-    public float4   celestial;        // xyz celestial rotation axis, w star angle (rad)
+    public float4   lightRadiance;    // atmosphere: xyz celestial E, w stars; environment: xyz disk scale, w outer R/M
+    public float4   moonDir;          // atmosphere: xyz moon, w phase; environment: xyz opposite heading, w thickness
+    public float4   celestial;        // xyz celestial/projected-spin axis; w atmosphere star / environment HDRI angle
     public float4   sunUv;            // vanilla sun sprite atlas rect (u0,v0,u1,v1)
     public float4   moonUv;           // vanilla current-moon-phase sprite atlas rect
     public float4   waterParams;      // xyz camera-biome water tint, w wave time (s)
@@ -117,7 +119,7 @@ public struct WorldPush {
     // One GPU-derived source shared by every participating medium. The sky-view reduction writes xyz
     // after the CPU upload and before either froxel or ray tracing reads this buffer. It is already the
     // 1/(4*pi) upper-hemisphere integral, including Rayleigh, Mie and atmospheric multiple scattering.
-    public float4   mediumSkyRadiance; // xyz phase-integrated sky source; w reserved
+    public float4   mediumSkyRadiance; // xyz phase-integrated source; w environment-radiance scale
     // Enclosed media. Absorption and scattering are TWO INDEPENDENTLY AUTHORED spectral coefficients,
     // not one derived from the other. A single "turbidity" scalar that only raised sigma_s was tried and
     // is the reason this comment is here: the deep-water limit of the single-scattering integral is
@@ -287,7 +289,7 @@ public struct Payload {
     public float  hitT;        // >= 0 on hit, < 0 on miss.
     public half3  motionPrev;  // per-vertex world displacement since last frame.
     public half3  f0;          // specular F0.
-    public uint   flags;       // bits 0..1 material, bit 2 celestial, bit 3 water-entering, bits 4..6 emission source.
+    public uint   flags;       // bits 0..1 material, bit 2 celestial, bit 3 direct-view input / entering output.
     public uint   roughMetal;  // packHalf2x16(roughness, metalness)
     public uint   emissionSss; // packHalf2x16(emission, sss)
     public uint   iorTransmission; // packHalf2x16(IOR, transmission factor)
@@ -295,15 +297,20 @@ public struct Payload {
 };
 
 public static const uint PAYLOAD_SHOW_CELESTIAL = 4u;
+// Trace-input meaning of bit 3. A miss reads it before replacing flags with its output classification;
+// a hit replaces flags outright and may then reuse the same bit as PAYLOAD_DIELECTRIC_ENTERING. Keeping
+// this in the existing word lets the directly visible environment choose its camera-only reconstruction
+// filter without growing the already pressure-sensitive payload.
+public static const uint PAYLOAD_DIRECT_VIEW = 8u;
 // Set by world.rchit on a terrain hit whose prim carries TERRAIN_PRIM_IN_LIGHT_BUFFER: this emitter is
 // RIS-sampled, so raygen gates its direct-hit emission on diffuse continuation rays (no double count).
 public static const uint PAYLOAD_EMITTER_IN_LIST = 128u;
 // Set by world.rchit on any dielectric hit (water or glass/ice): true when the incoming ray travels
 // against the prim's outward face normal (entering the volume), false when it exits. Derived from face
 // orientation rather than toggled, so a stray or missing face cannot corrupt the medium for the rest of
-// the path — each crossing re-derives which side it is on. Bit 2 (PAYLOAD_SHOW_CELESTIAL) is only
-// meaningful on a miss and this bit only on a hit, so they never need to be read together, but they get
-// distinct bits anyway to keep the two concerns unambiguous.
+// the path — each crossing re-derives which side it is on. Bit 3's direct-view trace input shares this
+// value, but the hit shader overwrites flags before setting this output, so the two meanings cannot leak
+// into one another.
 public static const uint PAYLOAD_DIELECTRIC_ENTERING = 8u;
 public static const uint PAYLOAD_EMISSION_SOURCE_SHIFT = 4u;
 public static const uint PAYLOAD_EMISSION_SOURCE_MASK = 7u;
@@ -433,6 +440,13 @@ public SquareLightSample sampleSquareLight(float3 axis, float3 celestialAxis, fl
 public float squareLightPdf(float halfAngle) {
     float t = tan(halfAngle);
     return 1.0 / max(4.0 * t * t, 1.0e-20);
+}
+
+/** Exact solid-angle density for the tangent-plane square at one sampled/landed direction. */
+public float squareLightDirectionalPdf(float3 axis, float halfAngle, float3 direction) {
+    float projectedPdf = squareLightPdf(halfAngle);
+    float cosine = max(dot(normalize(axis), normalize(direction)), 1.0e-6);
+    return projectedPdf / max(cosine * cosine * cosine, 1.0e-20);
 }
 
 /** Power heuristic (Veach, beta = 2) for combining two sampling strategies for the same integral. */
