@@ -1,6 +1,9 @@
 import javax.inject.Inject
 import org.gradle.process.ExecOperations
 import io.github.dswepm.fluorite.build.GenerateShaderRecords
+import io.github.dswepm.fluorite.build.GenerateEndEnvironment
+import io.github.dswepm.fluorite.build.EndEnvironmentAsset
+import io.github.dswepm.fluorite.build.FetchVerifiedAsset
 
 // Root project. Owns the three build steps that are identical for every mod loader — SPIR-V
 // compilation, the Slang-reflection Java record generator, and the NGX native bundle — and applies no
@@ -161,6 +164,27 @@ def generateShaderRecords = tasks.register("generateShaderRecords", GenerateShad
 	slangc = resolveVulkanTool("slangc")
 	spirvVal = resolveVulkanTool("spirv-val")
 	outDir = layout.buildDirectory.dir("generated/sources/shaderRecords")
+}
+
+def endEnvironmentGenRoot = layout.buildDirectory.dir("generated/end-environment")
+def fetchEndHdr = tasks.register("fetchEndHdr", FetchVerifiedAsset) {
+	group = "build setup"
+	description = "Downloads the externally hosted End HDR source and verifies its pinned SHA-256."
+	sourceUrl = EndEnvironmentAsset.SOURCE_URL
+	sha256 = EndEnvironmentAsset.SHA256
+	outputFile = layout.projectDirectory.file(".gradle/fluorite-assets/${EndEnvironmentAsset.FILE_NAME}")
+}
+def generateEndEnvironment = tasks.register("generateEndEnvironment", GenerateEndEnvironment) {
+	group = "build"
+	description = "Converts the licensed End HDR and generates fixed Kerr-Schild transfer/disk KTX2 assets."
+	def configuredHdr = findProperty("endHdrSource")
+	if (configuredHdr != null) {
+		sourceHdr = file(configuredHdr.toString())
+	} else {
+		sourceHdr = fetchEndHdr.flatMap { it.outputFile }
+		dependsOn(fetchEndHdr)
+	}
+	outDir = endEnvironmentGenRoot
 }
 
 def ngxNativeGenRoot = layout.buildDirectory.dir("generated/ngx-natives")
@@ -340,4 +364,5 @@ ext {
 	fluoriteShaderSpirvDir = shaderGenRoot
 	fluoriteShaderRecordsDir = layout.buildDirectory.dir("generated/sources/shaderRecords")
 	fluoriteNgxNativesDir = ngxNativeGenRoot
+	fluoriteEndEnvironmentDir = endEnvironmentGenRoot
 }

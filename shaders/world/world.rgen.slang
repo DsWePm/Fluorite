@@ -39,6 +39,7 @@ import lighting;
 // are next in line for it — and debugView 12 reads it here.
 import atmosphere;
 import atmosphere_lut;
+import environment;
 
 public struct FirstSegmentTrace {
     public float3 inScatter;
@@ -134,7 +135,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
     // Solid angle of the square NEE draws from, as a density. Zero half-angle is a delta light: NEE is
     // then the only strategy that can reach it, and no BSDF ray ever will.
-    bool celestialOn = worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE;
+    bool celestialOn = worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE
+            || worldPush.skyProvider == SKY_PROVIDER_ENVIRONMENT;
     float lightHalfAngle = celestialOn ? worldPush.lightDir.w : 0.0;
     float pdfLight = lightHalfAngle > 0.0 ? squareLightPdf(lightHalfAngle) : 0.0;
     bool misActive = sunMis && lightHalfAngle > 0.0;
@@ -155,10 +157,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // roulette, and paths guaranteed to end at the bounce cap in separate coherence groups.
         uint pathPhaseHint = bounce >= maxBounces ? 2u : (bounce >= rrStart ? 1u : 0u);
         traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
-                               showCelestial, rayConeWidth, rayConeSpread, pathPhaseHint);
+                               showCelestial, bounce == 0,
+                               rayConeWidth, rayConeSpread, pathPhaseHint);
 #else
         traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
-                      showCelestial, rayConeWidth, rayConeSpread);
+                      showCelestial, bounce == 0, rayConeWidth, rayConeSpread);
 #endif
 
         // Beer-Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
@@ -238,8 +241,20 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // The celestial light, if this ray landed inside it and its lobe had a density to weigh.
             // payload.f0 carries the light's irradiance; the solid angle is what turns it into the
             // radiance a ray arriving from that direction actually sees.
-            if (misActive && bsdfPdf >= 0.0 && (payload.flags & PAYLOAD_ANALYTIC_LIGHT) != 0u) {
-                sky += float3(payload.f0) * pdfLight * powerHeuristic(bsdfPdf, pdfLight);
+            if ((payload.flags & PAYLOAD_ANALYTIC_LIGHT) != 0u) {
+                float landedLightPdf = worldPush.skyProvider == SKY_PROVIDER_ENVIRONMENT
+                        ? squareLightDirectionalPdf(worldPush.lightDir.xyz, lightHalfAngle, rd)
+                        : pdfLight;
+                float3 analyticLe = float3(payload.f0) * landedLightPdf;
+                if (worldPush.skyProvider == SKY_PROVIDER_ENVIRONMENT) {
+                    // Environment miss excludes disk Le from payload.albedo whenever the NEE proposal
+                    // supports it. Primary/delta paths take Le once; finite glossy paths MIS-weight it.
+                    sky += misActive && bsdfPdf >= 0.0
+                            ? analyticLe * powerHeuristic(bsdfPdf, landedLightPdf)
+                            : analyticLe;
+                } else if (misActive && bsdfPdf >= 0.0) {
+                    sky += analyticLe * powerHeuristic(bsdfPdf, pdfLight);
+                }
             }
             // The throughput already carries what the clouds let through.
             L += throughput * sky; // escaped to sky
@@ -390,8 +405,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 if (lightHalfAngle > 0.0) {
                     lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
                 }
-                sampledLightIrradiance = sampleCelestialIrradiance(
-                        undyedCelestialIrradiance, lightDir);
+                sampledLightIrradiance = sampleProviderCelestialIrradiance(
+                        worldPush, undyedCelestialIrradiance, lightDir);
             }
             // Billboards are effectively two-sided receivers. Bias from the side facing the light; shadow
             // rays exclude particles anyway, but this keeps the origin sane when the light is behind the
@@ -524,8 +539,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // The emitter spans the steep atmospheric horizon gradient. Sampling only its visibility while
             // reusing the centre's colour is biased precisely at dawn/dusk, so direction and irradiance are
             // one sample just as direction, BRDF and shadow already are.
-            sampledLightIrradiance = sampleCelestialIrradiance(
-                    undyedCelestialIrradiance, lightDir);
+            sampledLightIrradiance = sampleProviderCelestialIrradiance(
+                    worldPush, undyedCelestialIrradiance, lightDir);
         }
         float ndl = celestialOn ? max(0.0, dot(n, lightDir)) : 0.0;
         if (ndl > 0.0) {
@@ -1150,8 +1165,8 @@ float3 skyTransmittanceDebug(float2 uv, uint2 pix) {
 float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
     PathSegment seg = unpackPathSegment(packed);
     traceRadiance(seg.bounce == 0 ? CULL_PRIMARY : secondaryCullMask(),
-                  seg.ro, 0.0, seg.rd, RAY_FAR, seg.showCelestial,
-                  seg.rayConeWidth, seg.rayConeSpread);
+                   seg.ro, 0.0, seg.rd, RAY_FAR, seg.showCelestial, false,
+                   seg.rayConeWidth, seg.rayConeSpread);
     bool escaped = payload.hitT < 0.0;
     float segmentEnd = escaped ? RAY_FAR : payload.hitT;
 

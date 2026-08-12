@@ -61,6 +61,9 @@ public final class FluoriteConfig {
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
             Rt.Dimensions.NETHER_FOG_ENABLED, Rt.Dimensions.NETHER_AMBIENT_SCALE,
+            Rt.Dimensions.END_ENVIRONMENT_SCALE, Rt.Dimensions.END_DISK_SCALE,
+            Rt.Dimensions.END_DISK_OUTER_RADIUS, Rt.Dimensions.END_DISK_THICKNESS,
+            Rt.Dimensions.END_ENVIRONMENT_ROTATION_SPEED,
             Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
             Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.ABSORB_OVERRIDE,
             Rt.Water.SCATTER_R,
@@ -125,7 +128,10 @@ public final class FluoriteConfig {
                         + " The global volumetrics switch remains the master switch; nether.fog-enabled can turn\n"
                         + " only Nether fog off, and nether.fog-density-scale multiplies only its preset density.\n"
                         + " nether.ambient-scale multiplies the Nether preset's unified neutral environment\n"
-                        + " radiance; it does not change lava, glowstone or other local emitter power.");
+                        + " radiance; it does not change lava, glowstone or other local emitter power.\n"
+                        + " end.environment-scale and end.disk-scale independently multiply the star HDRI\n"
+                        + " and Kerr accretion-disk emission. Disk outer radius/thickness alter the runtime\n"
+                        + " volume itself; environment-rotation-deg-per-second rotates only the escaped HDRI.");
         FILE.setComment("bsdf",
                 " Surface response. sun-mis weights the two ways the sun and moon are estimated —\n"
                         + " next-event estimation toward the light, and a continuation ray landing on it —\n"
@@ -1350,8 +1356,8 @@ public final class FluoriteConfig {
          *
          * <p>These are the final, local adjustment layer. The global Volumetrics page remains useful as
          * a master accessibility/performance control, while this group lets a player remove or retune a
-         * dimension's character without changing the Overworld. The End section is reserved in the UI;
-         * real controls arrive with its environment provider instead of exposing settings that do nothing.
+         * dimension's character without changing the Overworld. End environment and disk emission remain
+         * separate so visibility and direct-light energy cannot silently compensate for one another.
          */
         public static final class Dimensions {
             /** Local gate; the global fog switches still have final authority over every dimension. */
@@ -1372,6 +1378,31 @@ public final class FluoriteConfig {
             public static final FloatSetting NETHER_AMBIENT_SCALE =
                     clampedFloat("fluorite.rt.dimensions.netherAmbientScale",
                             "dimensions.nether.ambient-scale", 1f, 0f, 8f);
+
+            /** Multiplier over the End's full-sphere star environment and its solid-angle mean. */
+            public static final FloatSetting END_ENVIRONMENT_SCALE =
+                    clampedFloat("fluorite.rt.dimensions.endEnvironmentScale",
+                            "dimensions.end.environment-scale", 1f, 0f, 8f);
+
+            /** Multiplier over visible Kerr disk emission and the matching Le/pdf light proposal. */
+            public static final FloatSetting END_DISK_SCALE =
+                    clampedFloat("fluorite.rt.dimensions.endDiskScale",
+                            "dimensions.end.disk-scale", 1f, 0f, 8f);
+
+            /** Runtime outer edge in gravitational radii; the path LUT retains the complete 12M domain. */
+            public static final FloatSetting END_DISK_OUTER_RADIUS =
+                    clampedFloat("fluorite.rt.dimensions.endDiskOuterRadius",
+                            "dimensions.end.disk-outer-radius", 8f, 4f, 12f);
+
+            /** Multiplier over the independently authored 0.55M disk half-height. */
+            public static final FloatSetting END_DISK_THICKNESS =
+                    clampedFloat("fluorite.rt.dimensions.endDiskThickness",
+                            "dimensions.end.disk-thickness", 1f, 0.25f, 2f);
+
+            /** Rotation of escaped HDRI only, around the Kerr spin axis, in degrees per game second. */
+            public static final FloatSetting END_ENVIRONMENT_ROTATION_SPEED =
+                    clampedFloat("fluorite.rt.dimensions.endEnvironmentRotationSpeed",
+                            "dimensions.end.environment-rotation-deg-per-second", 0.02f, 0f, 1f);
 
             private Dimensions() {
             }

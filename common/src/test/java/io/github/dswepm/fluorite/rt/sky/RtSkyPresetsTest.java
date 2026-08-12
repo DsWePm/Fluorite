@@ -97,10 +97,36 @@ final class RtSkyPresetsTest {
     }
 
     @Test
-    void reservedEnvironmentProviderCannotPretendToBeImplemented() {
+    void formatOneCannotClaimTheFormatTwoEnvironmentProvider() {
         String environment = netherJson().replace("local_ambient", "environment");
         assertThrows(IllegalArgumentException.class, () -> RtSkyPresets.parse(
                 JsonParser.parseString(environment).getAsJsonObject(), SOURCE));
+    }
+
+    @Test
+    void authoredEndUsesTheKerrEnvironmentProvider() throws Exception {
+        var stream = RtSkyPresetsTest.class.getResourceAsStream(
+                "/assets/fluorite/fluorite/sky/minecraft/the_end.json");
+        assertNotNull(stream);
+        try (var reader = new InputStreamReader(stream, StandardCharsets.UTF_8)) {
+            RtSkyPreset preset = RtSkyPresets.parse(
+                    JsonParser.parseReader(reader).getAsJsonObject(),
+                    Identifier.parse("fluorite:fluorite/sky/minecraft/the_end.json"));
+            assertEquals(RtSkyPreset.SkyProvider.ENVIRONMENT, preset.skyProvider());
+            assertNotNull(preset.environment());
+            assertEquals(Identifier.parse("fluorite:fluorite/environment/end_stars.ktx2"),
+                    preset.environment().radianceTexture());
+            assertEquals(Identifier.parse("fluorite:fluorite/environment/end_kerr.ktx2"),
+                    preset.environment().transferTexture());
+            assertEquals(Identifier.parse("fluorite:fluorite/environment/end_disk_entry.ktx2"),
+                    preset.environment().diskEntryTexture());
+            assertEquals(Identifier.parse("fluorite:fluorite/environment/end_disk_exit.ktx2"),
+                    preset.environment().diskExitTexture());
+            assertEquals(0.36f, preset.environment().lightHalfAngle());
+            assertFalse(preset.weatherEnabled());
+            assertFalse(preset.cloudsEnabled());
+            assertEquals(RtSkyPreset.FogProfile.OFF, preset.fog().profile());
+        }
     }
 
     @Test

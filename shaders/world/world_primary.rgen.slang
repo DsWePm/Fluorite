@@ -47,7 +47,7 @@ public PathSegment tracePrimary(PathSegment seg,
                                                rayConeWidth, rayConeSpread, seed, bounce,
                                                showCelestial);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, RAY_FAR,
-                      showCelestial, rayConeWidth, rayConeSpread);
+                      showCelestial, bounce == 0, rayConeWidth, rayConeSpread);
 
         if (payload.hitT < 0.0) {
             if (bounce == 0) {

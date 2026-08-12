@@ -26,8 +26,13 @@ final class RtFogNoiseContractTest {
         assertFalse(bake.contains("float3(0.5, 0.5, 0.5)"));
         assertTrue(bake.contains("FOG_NOISE_DIM = 128"));
 
-        // Water's long-lived binding remains 18; M13 appends its raygen-only field at 19.
+        // Water's long-lived binding remains 18; M13 appends its raygen-only field at 19. M14 then
+        // appends environment radiance/transfer/disk at 20/21/22 without reinterpreting prior slots.
         assertTrue(volume.contains("[[vk::binding(19, 0)]] Sampler3D fogNoise"));
+        String environment = shader("environment.slang");
+        assertTrue(environment.contains("[[vk::binding(20, 0)]] public Sampler2DArray environmentRadiance"));
+        assertTrue(environment.contains("[[vk::binding(21, 0)]] public Sampler2DArray environmentTransfer"));
+        assertTrue(environment.contains("[[vk::binding(22, 0)]] public Sampler2DArray environmentDisk"));
         assertTrue(world.contains("public float4   fogNoiseOrigin"));
     }
 

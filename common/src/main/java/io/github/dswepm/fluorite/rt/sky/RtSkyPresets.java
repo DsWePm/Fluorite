@@ -12,12 +12,13 @@ import net.minecraft.server.packs.resources.Resource;
 
 import java.io.Reader;
 import java.util.Comparator;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
 /** Versioned, resource-pack-overridable dimension sky presets. */
 public final class RtSkyPresets {
-    public static final int FORMAT = 1;
+    public static final int FORMAT = 2;
     public static final RtSkyPresets EMPTY = new RtSkyPresets(Map.of());
     private static final String RESOURCE_ROOT = "fluorite/sky/";
 
@@ -52,6 +53,15 @@ public final class RtSkyPresets {
         return presets.getOrDefault(dimension, RtSkyPreset.FULL_ATMOSPHERE);
     }
 
+    /** Distinct environment resources that must be uploaded for this resource epoch. */
+    public Collection<RtSkyPreset.Environment> environments() {
+        return presets.values().stream()
+                .map(RtSkyPreset::environment)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+    }
+
     static RtSkyPresets of(Map<Identifier, RtSkyPreset> presets) {
         return new RtSkyPresets(presets);
     }
@@ -82,14 +92,17 @@ public final class RtSkyPresets {
         RtSkyPreset.SkyProvider provider = switch (requiredString(sky, "provider")) {
             case "atmosphere" -> RtSkyPreset.SkyProvider.ATMOSPHERE;
             case "local_ambient" -> RtSkyPreset.SkyProvider.LOCAL_AMBIENT;
-            // ABI id 2 is reserved now so the later End branch does not churn WorldPush, but format 1
-            // cannot author it before the HDRI/Kerr backend exists. Rejecting is safer than silently
-            // rendering a terrestrial atmosphere under a provider name that promises otherwise.
-            case "environment" -> throw new IllegalArgumentException(
-                    "The environment provider is reserved but not implemented in format 1");
+            case "environment" -> {
+                if (format < 2) {
+                    throw new IllegalArgumentException("The environment provider requires sky preset format 2");
+                }
+                yield RtSkyPreset.SkyProvider.ENVIRONMENT;
+            }
             default -> throw new IllegalArgumentException("Unknown sky provider in " + source);
         };
         RtSkyPreset.Rgb ambient = rgb(sky, "ambient_radiance", 0f, Float.MAX_VALUE);
+        RtSkyPreset.Environment environment = provider == RtSkyPreset.SkyProvider.ENVIRONMENT
+                ? environment(requiredObject(sky, "environment"), source) : null;
 
         boolean weather = requiredBoolean(requiredObject(root, "weather"), "enabled");
         boolean clouds = requiredBoolean(requiredObject(root, "clouds"), "enabled");
@@ -122,9 +135,52 @@ public final class RtSkyPresets {
         };
         boolean localLights = requiredBoolean(fogObject, "local_lights");
 
+        if (provider == RtSkyPreset.SkyProvider.ENVIRONMENT
+                && (weather || clouds || profile != RtSkyPreset.FogProfile.OFF || density != 0f)) {
+            throw new IllegalArgumentException("Environment providers require weather, clouds and fog off in " + source);
+        }
         return new RtSkyPreset(provider, ambient, weather, clouds,
                 new RtSkyPreset.Fog(profile, density, extinction, albedo, phaseG,
-                        start, cull, heightScale, heightBase, noise, ambientVisibility, localLights));
+                        start, cull, heightScale, heightBase, noise, ambientVisibility, localLights),
+                environment);
+    }
+
+    private static RtSkyPreset.Environment environment(JsonObject object, Identifier source) {
+        Identifier radiance = identifier(object, "radiance_texture", source);
+        Identifier transfer = identifier(object, "transfer_texture", source);
+        Identifier diskEntry = identifier(object, "disk_entry_texture", source);
+        Identifier diskExit = identifier(object, "disk_exit_texture", source);
+        RtSkyPreset.Vec3 direction = normalizedVec3(object, "direction", source);
+        RtSkyPreset.Vec3 up = normalizedVec3(object, "up", source);
+        float dot = direction.x() * up.x() + direction.y() * up.y() + direction.z() * up.z();
+        if (Math.abs(dot) > 0.999f) {
+            throw new IllegalArgumentException("Environment direction and up are parallel in " + source);
+        }
+        float halfAngle = finiteFloat(object, "light_half_angle", 0.001f, 1.2f);
+        return new RtSkyPreset.Environment(radiance, transfer, diskEntry, diskExit,
+                direction, up, halfAngle);
+    }
+
+    private static Identifier identifier(JsonObject object, String name, Identifier source) {
+        try {
+            return Identifier.parse(requiredString(object, name));
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("Invalid resource identifier " + name + " in " + source, exception);
+        }
+    }
+
+    private static RtSkyPreset.Vec3 normalizedVec3(JsonObject root, String name, Identifier source) {
+        if (!root.has(name) || !root.get(name).isJsonArray()) {
+            throw new IllegalArgumentException("Missing vector " + name + " in " + source);
+        }
+        JsonArray value = root.getAsJsonArray(name);
+        if (value.size() != 3) throw new IllegalArgumentException(name + " must have three components");
+        float x = finiteFloat(value.get(0), name, -1f, 1f);
+        float y = finiteFloat(value.get(1), name, -1f, 1f);
+        float z = finiteFloat(value.get(2), name, -1f, 1f);
+        float length = (float) Math.sqrt(x * x + y * y + z * z);
+        if (length < 1.0e-4f) throw new IllegalArgumentException(name + " is zero in " + source);
+        return new RtSkyPreset.Vec3(x / length, y / length, z / length);
     }
 
     private static RtSkyPreset.Rgb rgb(JsonObject root, String name, float min, float max) {

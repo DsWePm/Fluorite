@@ -148,10 +148,9 @@ public final class RtVideoOptions {
                 case DIMENSIONS -> List.of(
                         Section.titled("fluorite.options.rt.section.dimensionNether",
                                 netherFogEnabled(), netherFogDensity(), netherAmbientBrightness()),
-                        // The heading is intentional even while empty: it reserves the human-facing
-                        // ownership boundary for the later HDRI/Kerr provider without shipping an inert
-                        // brightness slider or pretending the current atmosphere fallback is the End.
-                        Section.titled("fluorite.options.rt.section.dimensionEnd"));
+                        Section.titled("fluorite.options.rt.section.dimensionEnd",
+                                endEnvironmentBrightness(), endEnvironmentRotationSpeed(),
+                                endDiskBrightness(), endDiskOuterRadius(), endDiskThickness()));
                 case WATER -> List.of(
                         Section.of(waterWaves(), waterCausticDispersion(), waterCausticStrength(),
                                 waterScatterSource(),
@@ -628,6 +627,54 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> netherAmbientBrightness() {
         return intensity("fluorite.options.rt.netherAmbientBrightness",
                 FluoriteConfig.Rt.Dimensions.NETHER_AMBIENT_SCALE);
+    }
+
+    private static OptionInstance<Integer> endEnvironmentBrightness() {
+        return intensity("fluorite.options.rt.endEnvironmentBrightness",
+                FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_SCALE);
+    }
+
+    private static OptionInstance<Integer> endDiskBrightness() {
+        return intensity("fluorite.options.rt.endDiskBrightness",
+                FluoriteConfig.Rt.Dimensions.END_DISK_SCALE);
+    }
+
+    private static OptionInstance<Integer> endDiskOuterRadius() {
+        FloatSetting setting = FluoriteConfig.Rt.Dimensions.END_DISK_OUTER_RADIUS;
+        return new OptionInstance<>(
+                "fluorite.options.rt.endDiskOuterRadius",
+                OptionInstance.cachedConstantTooltip(Component.translatable(
+                        "fluorite.options.rt.endDiskOuterRadius.tooltip")),
+                (caption, value) -> Options.genericValueLabel(caption, Component.literal(value + " M")),
+                new OptionInstance.IntRange(4, 12),
+                Math.clamp(Math.round(setting.value()), 4, 12),
+                value -> setting.set((float) value));
+    }
+
+    private static OptionInstance<Integer> endDiskThickness() {
+        FloatSetting setting = FluoriteConfig.Rt.Dimensions.END_DISK_THICKNESS;
+        return new OptionInstance<>(
+                "fluorite.options.rt.endDiskThickness",
+                OptionInstance.cachedConstantTooltip(Component.translatable(
+                        "fluorite.options.rt.endDiskThickness.tooltip")),
+                (caption, hundredths) -> Options.genericValueLabel(caption,
+                        Component.literal(String.format(Locale.ROOT, "%.2fx", hundredths / 100.0f))),
+                new OptionInstance.IntRange(25, 200),
+                Math.clamp(Math.round(setting.value() * 100.0f), 25, 200),
+                hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    private static OptionInstance<Integer> endEnvironmentRotationSpeed() {
+        FloatSetting setting = FluoriteConfig.Rt.Dimensions.END_ENVIRONMENT_ROTATION_SPEED;
+        return new OptionInstance<>(
+                "fluorite.options.rt.endEnvironmentRotationSpeed",
+                OptionInstance.cachedConstantTooltip(Component.translatable(
+                        "fluorite.options.rt.endEnvironmentRotationSpeed.tooltip")),
+                (caption, hundredths) -> Options.genericValueLabel(caption,
+                        Component.literal(String.format(Locale.ROOT, "%.2f deg/s", hundredths / 100.0f))),
+                new OptionInstance.IntRange(0, 100),
+                Math.clamp(Math.round(setting.value() * 100.0f), 0, 100),
+                hundredths -> setting.set(hundredths / 100.0f));
     }
 
     private static OptionInstance<Boolean> fogNoiseEnabled() {
