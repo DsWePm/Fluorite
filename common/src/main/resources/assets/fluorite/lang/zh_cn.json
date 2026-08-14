@@ -636,5 +636,22 @@
   "fluorite.options.rt.fogNoiseWindOffset": "雾场风向偏转",
   "fluorite.options.rt.fogNoiseWindOffset.tooltip": "近地雾相对全局风向偏转多少。雾速仍与两层云各自独立。",
   "fluorite.options.rt.fogNoiseMarchSteps": "雾步进上限",
-  "fluorite.options.rt.fogNoiseMarchSteps.tooltip": "一个连续数值区间最多读取多少次密度。提高它能解析更远光线中的结构，但会增加 froxel、反射与 GI 成本。"
+  "fluorite.options.rt.fogNoiseMarchSteps.tooltip": "一个连续数值区间最多读取多少次密度。提高它能解析更远光线中的结构，但会增加 froxel、反射与 GI 成本。",
+  "fluorite.options.rt.preset.export": "导出预设",
+  "fluorite.options.rt.preset.export.tooltip": "将全部可移植的 Fluorite 设置导出为带版本的 TOML 预设；不会包含本机路径和诊断项。",
+  "fluorite.options.rt.preset.import": "导入预设",
+  "fluorite.options.rt.preset.import.tooltip": "严格校验并替换可移植配置；安全设置立即生效，资源设置等待重启。",
+  "fluorite.options.rt.preset.export.dialog": "导出 Fluorite 预设",
+  "fluorite.options.rt.preset.import.dialog": "导入 Fluorite 预设",
+  "fluorite.options.rt.preset.filter": "Fluorite TOML 预设 (*.toml)",
+  "fluorite.options.rt.preset.export.success.title": "预设已导出",
+  "fluorite.options.rt.preset.export.success": "已将 %s 项可移植设置导出到：\n%s",
+  "fluorite.options.rt.preset.import.success.title": "预设已导入",
+  "fluorite.options.rt.preset.import.success": "已立即应用 %s 项设置变化。\n%s 项设置变化将在重启后生效。\n%s 项系统属性覆盖仍然有效。\n备份：%s",
+  "fluorite.options.rt.preset.backup.none": "无——此前不存在配置文件",
+  "fluorite.options.rt.preset.error.title": "预设操作失败",
+  "fluorite.options.rt.preset.error": "没有任何配置被部分应用。\n%s",
+  "fluorite.options.rt.resetDefaults.confirm.title": "恢复全部默认值？",
+  "fluorite.options.rt.resetDefaults.confirm.message": "这会替换全部 Fluorite 设置并清除等待重启的选择。除非已提前导出预设，否则无法撤销。",
+  "fluorite.options.rt.resetDefaults.confirm.accept": "恢复默认值"
 }

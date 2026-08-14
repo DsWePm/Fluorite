@@ -6,6 +6,8 @@ import com.electronwill.nightconfig.core.file.FileNotFoundAction;
 import com.electronwill.nightconfig.toml.TomlFormat;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.DoubleUnaryOperator;
 import java.util.function.IntUnaryOperator;
@@ -27,6 +29,12 @@ import org.slf4j.LoggerFactory;
 public final class FluoriteConfig {
     private static final Logger LOGGER = LoggerFactory.getLogger("Fluorite");
     private static final List<RuntimeSetting<?>> SETTINGS = new CopyOnWriteArrayList<>();
+    /**
+     * Values selected by a preset that are safe to persist now but cannot replace the objects currently
+     * owned by the renderer. They deliberately live beside the central registry: every ordinary save
+     * must preserve them until the next process start reads them from disk.
+     */
+    private static final Map<String, Object> PENDING_RESTART_EXTERNAL = new ConcurrentHashMap<>();
 
     private static final Path CONFIG_PATH = resolveConfigPath();
     private static final CommentedFileConfig FILE = loadFile(CONFIG_PATH);
@@ -83,29 +91,34 @@ public final class FluoriteConfig {
     /** Serializes all registered settings to the TOML config file. */
     public static synchronized void save() {
         ensureRegistered();
-        writeComments();
-        for (RuntimeSetting<?> setting : SETTINGS) {
-            setting.writeToFile(FILE);
-        }
+        writeSettingsSnapshot(FILE);
         FILE.save();
     }
 
-    private static void writeComments() {
-        FILE.setComment("enabled",
+    static void writeSettingsSnapshot(CommentedConfig config) {
+        writeComments(config);
+        for (RuntimeSetting<?> setting : SETTINGS) {
+            setting.writeToFile(config);
+        }
+        PENDING_RESTART_EXTERNAL.forEach(config::set);
+    }
+
+    static void writeComments(CommentedConfig config) {
+        config.setComment("enabled",
                 " Fluorite RT renderer configuration.\n"
                         + " A matching -Dfluorite.* system property overrides the value below.");
-        FILE.setComment("terrain",
+        config.setComment("terrain",
                 " Render-thread terrain work is bounded by dispatch/result counts per streaming pass.\n"
                         + " Buffer fill and BLAS/OMM preparation run on workers. max-inflight-sections bounds\n"
                         + " the complete snapshot -> worker -> GPU build -> publication lifecycle.");
-        FILE.setComment("frame-generation",
+        config.setComment("frame-generation",
                 " DLSS Frame Generation. Default off; gated additionally by hardware/driver availability.\n"
                         + " multi-frame-count: frames generated per rendered frame (1 = 2x, 2 = 3x, ...), clamped\n"
                         + " at runtime to the driver's reported DLSSG.MultiFrameCountMax.");
-        FILE.setComment("reflex",
+        config.setComment("reflex",
                 " NVIDIA Reflex (VK_NV_low_latency2). Default off; gated additionally by device support.\n"
                         + " minimum-interval-us: 0 = no framerate cap (Reflex just paces submission).");
-        FILE.setComment("lights",
+        config.setComment("lights",
                 " RIS direct lighting from block emitters (torches, glowstone, lava, ...): per diffuse\n"
                         + " vertex, resample ris-candidates power-weighted proposals and spend one shadow ray on\n"
                         + " the survivor. ris-candidates = 0 disables it entirely (emitters just gather on direct\n"
@@ -113,7 +126,7 @@ public final class FluoriteConfig {
                         + " grid are always active whenever RIS is on. min-fill-ratio drops emissive footprints\n"
                         + " below that fraction of their bounding rectangle (speckle/sparse crossed planes), so\n"
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
-        FILE.setComment("volumetrics",
+        config.setComment("volumetrics",
                 " The world's ambient participating medium — the fog every path is inside, as opposed\n"
                         + " to the water and glass a path enters through geometry. density-scale multiplies\n"
                         + " the active dimension's density preset; the legacy-named intensity-scale is now\n"
@@ -121,11 +134,11 @@ public final class FluoriteConfig {
                         + " accumulating fog. fog-noise-enabled gates the heterogeneous path; fog-noise-contrast\n"
                         + " redistributes density through a world-anchored mean-one 3D field. scatter-tint is one of:\n"
                         + " neutral, warm, cool, green, violet.");
-        FILE.setComment("weather",
+        config.setComment("weather",
                 " Continuous rain/thunder/time responses over the clear-weather Fog, Sky and Water values.\n"
                         + " Positive scalar gains multiply non-negative coefficients; cloud coverage/type use\n"
                         + " signed biases. The CPU resolves these once per frame before the shader sees them.");
-        FILE.setComment("dimensions",
+        config.setComment("dimensions",
                 " Per-dimension player overrides applied after the resource-authored preset and global controls.\n"
                         + " The global volumetrics switch remains the master switch; nether.fog-enabled can turn\n"
                         + " only Nether fog off, and nether.fog-density-scale multiplies only its preset density.\n"
@@ -134,7 +147,7 @@ public final class FluoriteConfig {
                         + " end.environment-scale and end.disk-scale independently multiply the star HDRI\n"
                         + " and Kerr accretion-disk emission. Disk outer radius/thickness alter the runtime\n"
                         + " volume itself; environment-rotation-deg-per-second rotates only the escaped HDRI.");
-        FILE.setComment("bsdf",
+        config.setComment("bsdf",
                 " Surface response. sun-mis weights the two ways the sun and moon are estimated —\n"
                         + " next-event estimation toward the light, and a continuation ray landing on it —\n"
                         + " against each other instead of summing them. Only materials smoother than\n"
@@ -147,22 +160,22 @@ public final class FluoriteConfig {
                         + " approximation; random-walk actually walks the photon through the medium and\n"
                         + " costs one traversal per scattering event. subsurface-max-events bounds that\n"
                         + " walk — running out falls back to a diffuse bounce rather than losing energy.");
-        FILE.setComment("water",
+        config.setComment("water",
                 " Enclosed participating media. Scattering and optional absorption overrides each have\n"
                         + " a strength (the arithmetic-mean coefficient per block) and an RGB colour shape;\n"
                         + " changing colour does not change strength. phase-g is forward-scattering\n"
                         + " anisotropy: positive puts a halo around the sun seen from underwater.");
-        FILE.setComment("hdr",
+        config.setComment("hdr",
                 " Display signal: false is Rec.709/sRGB SDR; true requests Rec.2020/ST.2084-PQ HDR10.\n"
                         + " HDR requires restart and falls back to SDR if the surface doesn't advertise it.\n"
                         + " paper-white-nits / peak-nits\n"
                         + " drive only the compatibility AgX HDR mapping; ACES 2 uses its fixed preset.");
-        FILE.setComment("exposure",
+        config.setComment("exposure",
                 " Automatic mode meters the 50th-95th percentile of a 256-bin log2 histogram.\n"
                         + " auto-ev-bias is compensation applied to that target; manual-ev is instead the absolute\n"
                         + " EV used only in manual mode. Bright/dark adaptation values are exponential EV-domain\n"
                         + " time constants in seconds: one constant completes about 63% of a transition.");
-        FILE.setComment("post-processing",
+        config.setComment("post-processing",
                 " Display output and scene-referred creative grading. output-transform accepts agx (default),\n"
                         + " aces2-lut (fast 65-cube approximation), or aces2-exact (analytic reference).\n"
                         + " aces-hdr-preset accepts only 500, 1000, 2000, or 4000 nit. The colour grade is a\n"
@@ -225,7 +238,38 @@ public final class FluoriteConfig {
     }
 
     private static <T> void resetOne(RuntimeSetting<T> setting) {
-        setting.set(setting.defaultValue());
+        clearPendingRestart(setting.tomlPath());
+        setting.applyExternalValue(setting.externalDefaultValue());
+    }
+
+    static void clearPendingRestart(String tomlPath) {
+        PENDING_RESTART_EXTERNAL.remove(tomlPath);
+    }
+
+    static synchronized void installPendingRestart(Map<String, Object> values) {
+        PENDING_RESTART_EXTERNAL.clear();
+        PENDING_RESTART_EXTERNAL.putAll(values);
+    }
+
+    /** Values that are already persisted but intentionally do not describe this process's live renderer. */
+    public static Map<String, Object> pendingRestartValues() {
+        return Map.copyOf(PENDING_RESTART_EXTERNAL);
+    }
+
+    /** Synchronizes NightConfig's long-lived file object after a preset atomically replaces its path. */
+    static synchronized void synchronizeBackingFile(CommentedConfig replacement) {
+        FILE.clear();
+        FILE.clearComments();
+        FILE.putAll(replacement);
+        FILE.putAllComments(replacement);
+    }
+
+    static synchronized boolean backingFileContains(String tomlPath) {
+        return FILE.contains(tomlPath);
+    }
+
+    static synchronized Object backingFileValue(String tomlPath) {
+        return FILE.get(tomlPath);
     }
 
     public interface RuntimeSetting<T> {
@@ -245,6 +289,35 @@ public final class FluoriteConfig {
 
         /** Writes this setting's current value into the given config at {@link #tomlPath()}. */
         void writeToFile(CommentedConfig config);
+
+        /** Canonical TOML-domain value, before transforms such as degrees to radians. */
+        Object externalValue();
+
+        /** Canonical TOML-domain default, before transforms such as degrees to radians. */
+        Object externalDefaultValue();
+
+        /**
+         * Validates without mutation and returns a canonical TOML-domain value. Implementations reject
+         * wrong types, non-finite numbers, values that would be clamped, and unknown enum spellings.
+         */
+        Object validateExternalValue(Object raw);
+
+        /** Applies a value already accepted by {@link #validateExternalValue(Object)} without clearing pending state. */
+        void applyExternalValue(Object canonical);
+
+        /** Writes one canonical external value without consulting the current runtime holder. */
+        default void writeExternalValue(CommentedConfig config, Object canonical) {
+            config.set(tomlPath(), canonical);
+        }
+
+        /** Same operation under an exchange-format prefix such as {@code settings.}. */
+        default void writeExternalValue(CommentedConfig config, String path, Object canonical) {
+            config.set(path, canonical);
+        }
+
+        default boolean hasSystemPropertyOverride() {
+            return System.getProperty(key()) != null;
+        }
     }
 
     public static final class BooleanSetting implements RuntimeSetting<Boolean> {
@@ -288,16 +361,40 @@ public final class FluoriteConfig {
         @Override
         public void set(Boolean value) {
             this.value = value != null ? value : defaultValue;
+            clearPendingRestart(tomlPath);
         }
 
         @Override
         public void reloadFromSystemProperties() {
-            set(Boolean.parseBoolean(System.getProperty(key, Boolean.toString(defaultValue))));
+            this.value = Boolean.parseBoolean(System.getProperty(key, Boolean.toString(defaultValue)));
         }
 
         @Override
         public void writeToFile(CommentedConfig config) {
             config.set(tomlPath, value);
+        }
+
+        @Override
+        public Object externalValue() {
+            return value;
+        }
+
+        @Override
+        public Object externalDefaultValue() {
+            return defaultValue;
+        }
+
+        @Override
+        public Object validateExternalValue(Object raw) {
+            if (!(raw instanceof Boolean)) {
+                throw new IllegalArgumentException(tomlPath + " must be a boolean");
+            }
+            return raw;
+        }
+
+        @Override
+        public void applyExternalValue(Object canonical) {
+            this.value = (Boolean) canonical;
         }
 
         private boolean resolveInitial() {
@@ -353,6 +450,7 @@ public final class FluoriteConfig {
         @Override
         public void set(Integer value) {
             this.value = sanitize.applyAsInt(value != null ? value : defaultValue);
+            clearPendingRestart(tomlPath);
         }
 
         @Override
@@ -372,6 +470,38 @@ public final class FluoriteConfig {
         @Override
         public void writeToFile(CommentedConfig config) {
             config.set(tomlPath, value);
+        }
+
+        @Override
+        public Object externalValue() {
+            return value;
+        }
+
+        @Override
+        public Object externalDefaultValue() {
+            return defaultValue;
+        }
+
+        @Override
+        public Object validateExternalValue(Object raw) {
+            if (!(raw instanceof Number number)) {
+                throw new IllegalArgumentException(tomlPath + " must be an integer");
+            }
+            double numberValue = number.doubleValue();
+            if (!Double.isFinite(numberValue) || Math.rint(numberValue) != numberValue
+                    || numberValue < Integer.MIN_VALUE || numberValue > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(tomlPath + " must be a finite 32-bit integer");
+            }
+            int candidate = (int) numberValue;
+            if (sanitize.applyAsInt(candidate) != candidate) {
+                throw new IllegalArgumentException(tomlPath + " is outside its accepted range");
+            }
+            return candidate;
+        }
+
+        @Override
+        public void applyExternalValue(Object canonical) {
+            this.value = (Integer) canonical;
         }
 
         private int resolveInitial() {
@@ -446,6 +576,7 @@ public final class FluoriteConfig {
             } else {
                 this.value = (float) valueClamp.applyAsDouble(inputTransform.applyAsDouble(value));
             }
+            clearPendingRestart(tomlPath);
         }
 
         @Override
@@ -469,6 +600,51 @@ public final class FluoriteConfig {
             // out to 17 digits (e.g. 0.6000000487130328).
             float raw = (float) outputTransform.applyAsDouble(value);
             config.set(tomlPath, Double.parseDouble(Float.toString(raw)));
+        }
+
+        @Override
+        public Object externalValue() {
+            return canonicalExternal(value);
+        }
+
+        @Override
+        public Object externalDefaultValue() {
+            return canonicalExternal(defaultValue);
+        }
+
+        @Override
+        public Object validateExternalValue(Object raw) {
+            if (!(raw instanceof Number number)) {
+                throw new IllegalArgumentException(tomlPath + " must be a number");
+            }
+            double external = number.doubleValue();
+            if (!Double.isFinite(external)) {
+                throw new IllegalArgumentException(tomlPath + " must be finite");
+            }
+            double transformed = inputTransform.applyAsDouble(external);
+            // The holder stores a float, so range closure must be tested in that same domain. In
+            // particular, an authored decimal lower bound such as 0.002 is emitted by Float.toString()
+            // but 0.002f promotes back to 0.002000000094... as a double. Comparing those doubles made an
+            // exported minimum fail its own importer. A genuinely out-of-range decimal still rounds to
+            // an out-of-range float and is changed by valueClamp, so strict rejection remains intact.
+            float stored = (float) transformed;
+            double accepted = valueClamp.applyAsDouble(stored);
+            if (!Double.isFinite(transformed) || !Float.isFinite(stored) || !Double.isFinite(accepted)
+                    || Float.compare(stored, (float) accepted) != 0) {
+                throw new IllegalArgumentException(tomlPath + " is outside its accepted range");
+            }
+            return canonicalExternal((float) accepted);
+        }
+
+        @Override
+        public void applyExternalValue(Object canonical) {
+            double transformed = inputTransform.applyAsDouble(((Number) canonical).doubleValue());
+            this.value = (float) valueClamp.applyAsDouble(transformed);
+        }
+
+        private double canonicalExternal(float stored) {
+            float raw = (float) outputTransform.applyAsDouble(stored);
+            return Double.parseDouble(Float.toString(raw));
         }
 
         private float resolveInitial() {
@@ -527,16 +703,45 @@ public final class FluoriteConfig {
         @Override
         public void set(String value) {
             this.value = sanitize.apply(value != null ? value : defaultValue);
+            clearPendingRestart(tomlPath);
         }
 
         @Override
         public void reloadFromSystemProperties() {
-            set(System.getProperty(key, defaultValue));
+            this.value = sanitize.apply(System.getProperty(key, defaultValue));
         }
 
         @Override
         public void writeToFile(CommentedConfig config) {
             config.set(tomlPath, value);
+        }
+
+        @Override
+        public Object externalValue() {
+            return value;
+        }
+
+        @Override
+        public Object externalDefaultValue() {
+            return defaultValue;
+        }
+
+        @Override
+        public Object validateExternalValue(Object raw) {
+            if (!(raw instanceof String text)) {
+                throw new IllegalArgumentException(tomlPath + " must be a string");
+            }
+            String canonical = sanitize.apply(text);
+            String normalizedInput = text.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!canonical.equals(normalizedInput)) {
+                throw new IllegalArgumentException(tomlPath + " has an unknown value");
+            }
+            return canonical;
+        }
+
+        @Override
+        public void applyExternalValue(Object canonical) {
+            this.value = (String) canonical;
         }
 
         private String resolveInitial() {
@@ -584,6 +789,7 @@ public final class FluoriteConfig {
         @Override
         public void set(String value) {
             this.value = value;
+            clearPendingRestart(tomlPath);
         }
 
         @Override
@@ -598,6 +804,29 @@ public final class FluoriteConfig {
             } else {
                 config.remove(tomlPath);
             }
+        }
+
+        @Override
+        public Object externalValue() {
+            return value;
+        }
+
+        @Override
+        public Object externalDefaultValue() {
+            return null;
+        }
+
+        @Override
+        public Object validateExternalValue(Object raw) {
+            if (!(raw instanceof String)) {
+                throw new IllegalArgumentException(tomlPath + " must be a string");
+            }
+            return raw;
+        }
+
+        @Override
+        public void applyExternalValue(Object canonical) {
+            this.value = (String) canonical;
         }
 
         private String resolveInitial() {

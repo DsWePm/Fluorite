@@ -18,7 +18,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 ### 1.2 当前基线
 
-远端 `main` 是唯一当前基线；最近的功能基线为 M18 的 PR #27。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
+远端 `main` 是唯一当前基线；最近完成验收的功能基线为 M23。Fabric 与 NeoForge 共用渲染实现；未跟踪的 `.vscode/` 和 `neoforge/.eclipse/` 属本地 IDE 状态，不应被清理或提交。
 
 测试机事实：
 
@@ -52,6 +52,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | M20.1–20.3 | 粒子发光、stochastic alpha 和可选阴影完成；阴影默认关。 | [粒子](devlog/M19-M20-entities-particles.md#m20粒子) |
 | M21 | 世界锚定降雨暴露、连续湿润历史、程序化水坑/涟漪、RT 水花与受统一光源照明的 HDR 雨丝完成并通过功能视觉验收。 | [雨天表面系统](devlog/M21-rain.md) |
 | M22 | ACES 2、分区调色、镜头效果、RGB 颗粒、Bloom/Flare 与 EV 域自动曝光完成并通过功能视觉验收。 | [后处理与镜头效果](devlog/M22-post-processing.md) |
+| M23 | 完整可移植 TOML 预设、严格事务导入、LIVE/RESTART 分层和原生文件交互完成并通过功能验收。 | [配置预设](devlog/M23-config-presets.md) |
 
 ### 1.4 尚未完成的主线
 
@@ -60,7 +61,6 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
 - M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
 - M14 末地美术替换：当前 HDR/Kerr 技术 Provider 已由 PR #26 合入；后续由用户在 Blender 预渲染包含星空、透镜黑洞和动态吸积盘的循环 HDR 全天球序列，再替换当前实时黑洞。素材到位前不决定帧格式、分辨率、帧率、循环长度、插帧与照明采样方案。
-- M23 配置预设：用按键把当前配置保存为版本化 TOML，并可导入 TOML 以校验后的完整配置替换当前设置。
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
 - ReSTIR 整合。
 - 云向地面/水面投影阴影，以及焦散读取二维云太阳透射率图。
@@ -107,7 +107,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 | 路径 | 职责 |
 | --- | --- |
-| `FluoriteConfig` | `-Dfluorite.*` → TOML → 默认值三层配置；物理参数和资源重建设置 |
+| `FluoriteConfig` / `FluoritePresetService` | `-Dfluorite.*` → TOML → 默认值三层配置；外部值编解码、版本化可移植预设、事务替换与待重启值保护 |
 | `client/RtVideoOptions`, `client/gui/` | 每帧可读设置与二级分类 UI |
 | `platform/` | 唯一 loader 抽象表面：paths、quads、sprite lookup |
 | `rt/RtComposite` | 帧编排、WorldPush、资源生命周期、Pass/compute 顺序 |
@@ -579,14 +579,11 @@ AgX 保留为兼容默认项；ACES 2 LUT 与精确模式实现固定版本的�
 
 ### 8.7 M23：TOML 配置预设导入/导出
 
-- 提供按键把当前实际生效的配置保存为 TOML 预设。
-- 支持导入 TOML，经 schema/范围/有限值校验后替换当前配置。
-- 导入失败必须保持原配置完整，不允许部分写入；成功后需要统一触发对应的即时更新、history reset 或资源重建。
-- 预设格式必须版本化，并只承诺 `en_us`、`zh_cn` 的 UI 文案。
+M23 已于 2026-08-14 完成功能验收；D156–D159、失败路线和验证记录见[开发日志](devlog/M23-config-presets.md)。当前 format 1 是完整可移植配置而非 merge：未知、错误类型、越界、非有限值和版本不符均整单拒绝；本机路径与诊断项不进入预设。活动文件通过同目录临时文件、`.bak` 和原子 rename 替换。
 
-尚未裁决：保存整个配置还是可选分类、预设目录与命名、导入通过文件选择器还是固定热键/最近文件、未知键和旧版本迁移策略、是否允许资源重建级设置在世界内立即应用。实现前请示。
+应用策略默认 `RESTART`，只有显式 allow-list 为 `LIVE`。pending 值必须覆盖以后普通保存写出的旧运行值；`-Dfluorite.*` 始终拥有最高优先级。设置中心底部的导出、导入和恢复默认均横跨两栏；恢复默认必须二次确认。UI 只维护 `en_us` 与 `zh_cn`。
 
-M18 完成后，本轮新增功能按 M21 → M22 → M23 依次推进，并在全项目 review 与 ReSTIR 前完成；它们与既有云投影等前置欠账的插入顺序仍需逐项确认。各里程碑内部按上述裁决点请示，记录顺序不等于授权某种算法。
+危险事项：浮点范围必须在设置真正存储的 float 域判断 clamp，再转回 TOML 外部域。禁止把 TOML double 与 float 边界提升后的 double 做精确比较，否则 `0.002f` 这类合法边界无法通过自身导出→导入。闸门必须同时覆盖“精确边界可往返”和“明确越界仍拒绝”。
 
 ### 8.8 ReSTIR 前全项目 review
 
