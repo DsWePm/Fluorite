@@ -89,8 +89,7 @@ public final class RtExposure {
         }
     }
 
-    // Manual mode's exposure scale, also used as the auto-history seed (resetAutoHistory) so the very
-    // first auto-exposure frame starts from the dialed-in EV bias instead of a bare 1.0.
+    // Manual mode is an absolute EV. Automatic mode has its own compensation setting and never reads this.
     private float manualExposureScale() {
         return FluoriteConfig.Rt.Exposure.clampScale((float) Math.pow(2.0, manualEv()));
     }
@@ -121,7 +120,7 @@ public final class RtExposure {
         if (state == null || state.mapped == 0L) {
             return;
         }
-        MemoryUtil.memPutFloat(state.mapped, manualExposureScale());
+        MemoryUtil.memPutFloat(state.mapped, 0.0f);
         MemoryUtil.memPutInt(state.mapped + 4, 0);
         state.flush(0L, 2L * Integer.BYTES);
         lastFrameNanos = 0L;
@@ -136,7 +135,8 @@ public final class RtExposure {
         AutoConfig autoConfig = autoConfig();
         String exposureText = mode == Mode.AUTO
                 ? "auto(key=" + autoConfig.key + ", minEv=" + autoConfig.minEv + ", maxEv=" + autoConfig.maxEv
-                + ", adaptUp=" + autoConfig.adaptUp + ", adaptDown=" + autoConfig.adaptDown
+                + ", brightAdaptSeconds=" + autoConfig.brightAdaptSeconds
+                + ", darkAdaptSeconds=" + autoConfig.darkAdaptSeconds
                 + ", evBias=" + autoConfig.evBias + ")"
                 : Float.toString(manualExposureScale());
         FluoriteMod.LOGGER.info("RT display exposure: mode={}, exposure={}, tonemap=agx, DLSS-RR exposure=NGX auto",
@@ -156,12 +156,13 @@ public final class RtExposure {
                 FluoriteConfig.Rt.Exposure.KEY.value(),
                 FluoriteConfig.Rt.Exposure.minEv(),
                 FluoriteConfig.Rt.Exposure.maxEv(),
-                FluoriteConfig.Rt.Exposure.ADAPT_UP.value(),
-                FluoriteConfig.Rt.Exposure.ADAPT_DOWN.value(),
-                manualEv());
+                FluoriteConfig.Rt.Exposure.BRIGHT_ADAPT_SECONDS.value(),
+                FluoriteConfig.Rt.Exposure.DARK_ADAPT_SECONDS.value(),
+                FluoriteConfig.Rt.Exposure.AUTO_EV_BIAS.value());
     }
 
-    record AutoConfig(float key, float minEv, float maxEv, float adaptUp, float adaptDown, float evBias) {
+    record AutoConfig(float key, float minEv, float maxEv,
+                      float brightAdaptSeconds, float darkAdaptSeconds, float evBias) {
     }
 
     private enum Mode {

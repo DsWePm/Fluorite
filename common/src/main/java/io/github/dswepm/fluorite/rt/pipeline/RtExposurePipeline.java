@@ -186,8 +186,8 @@ final class RtExposurePipeline {
             push.putFloat(4, config.key());
             push.putFloat(8, config.minEv());
             push.putFloat(12, config.maxEv());
-            push.putFloat(16, config.adaptUp());
-            push.putFloat(20, config.adaptDown());
+            push.putFloat(16, config.brightAdaptSeconds());
+            push.putFloat(20, config.darkAdaptSeconds());
             push.putFloat(24, frameTimeSeconds);
             push.putFloat(28, config.evBias());
             VK10.vkCmdPushConstants(cmd, resolvePipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);

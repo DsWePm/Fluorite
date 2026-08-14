@@ -1,5 +1,5 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
-#define FLUORITE_ACES_EXACT 0
+#define FLUORITE_ACES_EXACT 1
 #include "display_common.glsl"

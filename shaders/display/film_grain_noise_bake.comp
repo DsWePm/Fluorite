@@ -1,0 +1,43 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(binding = 0, set = 0, r16f) uniform writeonly image2D outputNoise;
+
+// Reuse the renderer's reviewed progressive blue-noise-style rank cell, transformed and phase-shifted
+// per tile into a 64x64 resident texture. Runtime animation changes only addressing/phase.
+const float RANK_8X8[64] = {
+    0.281250, 0.968750, 0.375000, 0.859375, 0.250000, 0.937500, 0.406250, 0.812500,
+    0.593750, 0.187500, 0.734375, 0.046875, 0.578125, 0.218750, 0.703125, 0.015625,
+    0.453125, 0.765625, 0.328125, 0.921875, 0.484375, 0.796875, 0.343750, 0.890625,
+    0.640625, 0.093750, 0.546875, 0.156250, 0.671875, 0.078125, 0.515625, 0.125000,
+    0.265625, 0.953125, 0.421875, 0.828125, 0.296875, 0.984375, 0.390625, 0.843750,
+    0.562500, 0.234375, 0.687500, 0.000000, 0.609375, 0.203125, 0.718750, 0.031250,
+    0.468750, 0.781250, 0.359375, 0.875000, 0.437500, 0.750000, 0.312500, 0.906250,
+    0.656250, 0.062500, 0.500000, 0.140625, 0.625000, 0.109375, 0.531250, 0.171875
+};
+
+uint hashTile(uvec2 p) {
+    uint v = p.x * 0x9e3779b9u ^ p.y * 0x85ebca6bu;
+    v ^= v >> 16;
+    v *= 0x7feb352du;
+    v ^= v >> 15;
+    return v;
+}
+
+ivec2 transformCell(ivec2 p, uint transform) {
+    if ((transform & 1u) != 0u) p.x = 7 - p.x;
+    if ((transform & 2u) != 0u) p.y = 7 - p.y;
+    if ((transform & 4u) != 0u) p = p.yx;
+    return p;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(64)))) return;
+    uvec2 tile = uvec2(pixel >> 3);
+    uint hash = hashTile(tile);
+    ivec2 local = transformCell(pixel & 7, hash & 7u);
+    float rank = RANK_8X8[local.y * 8 + local.x];
+    float tilePhase = float((hash >> 3) & 63u) / 64.0;
+    imageStore(outputNoise, pixel, vec4(fract(rank + tilePhase), 0.0, 0.0, 1.0));
+}

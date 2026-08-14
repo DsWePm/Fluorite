@@ -104,9 +104,17 @@ public final class RtFrameStats {
                     "gpu.tlasBuild",
                     "gpu.rainExposure",
                     "gpu.rainStreak",
+                    // Display-resolution lens work. These names are consumed several frames later by
+                    // RtGpuTimers.resolve(), so omitting one appears as a delayed composite failure rather
+                    // than at the dispatch that records the timestamps.
+                    "gpu.lensSpatial",
+                    "gpu.bloomFlare",
+                    "gpu.displayMap",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",
+                    "frame.lensSpatial",
+                    "frame.bloomFlare",
                     "frame.displayMap",
                     "frame.copyOutput"
             },

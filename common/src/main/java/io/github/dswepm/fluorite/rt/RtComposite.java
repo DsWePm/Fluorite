@@ -60,12 +60,15 @@ import io.github.dswepm.fluorite.rt.material.RtBlockMaterials;
 import io.github.dswepm.fluorite.rt.material.RtEmissionSemantics;
 import io.github.dswepm.fluorite.rt.material.RtMaterialOverrides;
 import io.github.dswepm.fluorite.rt.material.RtMaterialRegistry;
+import io.github.dswepm.fluorite.rt.pipeline.RtBloomFlarePipeline;
+import io.github.dswepm.fluorite.rt.pipeline.RtDepthOfFieldPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtDisplayPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssFg;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssRr;
 import io.github.dswepm.fluorite.rt.overlay.RtWorldOverlay;
 import io.github.dswepm.fluorite.rt.overlay.RtRainStreaks;
 import io.github.dswepm.fluorite.rt.pipeline.RtHdrCompositePipeline;
+import io.github.dswepm.fluorite.rt.pipeline.RtLensPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtSdrPresentPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
@@ -1388,8 +1391,25 @@ public final class RtComposite {
     /** D105's directional exposure map: comparable ray count to the high visibility grid, separate cost. */
     private static final int GPU_ZONE_RAIN_EXPOSURE = 9;
     private static final int GPU_ZONE_RAIN_STREAK = 10;
+    private static final int GPU_ZONE_LENS_SPATIAL = 11;
+    private static final int GPU_ZONE_DISPLAY_MAP = 12;
+    private static final int GPU_ZONE_BLOOM_FLARE = 13;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
+    private RtLensPipeline lensPipeline;
+    private RtDepthOfFieldPipeline depthOfFieldPipeline;
+    private RtBloomFlarePipeline bloomFlarePipeline;
+    private RtImage lensScratch;
+    private RtImage lensFocus;
+    private RtImage depthOfFieldCoc;
+    private RtImage depthOfFieldNear;
+    private RtImage depthOfFieldFar;
+    private RtImage depthOfFieldTiles;
+    private RtImage depthOfFieldDilatedTiles;
+    private final RtImage[] bloomBright = new RtImage[RtBloomFlarePipeline.LEVEL_COUNT];
+    private final RtImage[] bloomPyramid = new RtImage[RtBloomFlarePipeline.LEVEL_COUNT];
+    private RtImage flareBokeh;
+    private boolean lensFinalScratch;
     private final RtRainStreaks rainStreaks = new RtRainStreaks();
     private RtImage output;
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
@@ -1531,8 +1551,8 @@ public final class RtComposite {
     private final Matrix4f fgClipToPrev = new Matrix4f();
     private final Matrix4f fgPrevToClip = new Matrix4f();
     private final Matrix4f fgMatTmp = new Matrix4f();
-    // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, depth, motion,
-    // specular albedo, and reflection motion.
+    // Guide buffers (first-hit attributes for DLSS-RR): normal+roughness, albedo, hardware reversed-Z
+    // depth, motion, specular albedo, and reflection motion.
     private RtImage gNormal;
     private RtImage gAlbedo;
     private RtImage gDepth;
@@ -1560,6 +1580,7 @@ public final class RtComposite {
     private final Matrix4f mvCurProjView = new Matrix4f();
     private final Matrix4f mvPushMatrix = new Matrix4f();
     private final Matrix4f frameInvViewProj = new Matrix4f();
+    private final Matrix4f frameInvProjection = new Matrix4f();
     private final BlockPos.MutableBlockPos cameraBlockPos = new BlockPos.MutableBlockPos();
     /** Scratch for the reference-surface walk; never escapes the frame that uses it. */
     private final BlockPos.MutableBlockPos surfaceScan = new BlockPos.MutableBlockPos();
@@ -1802,6 +1823,7 @@ public final class RtComposite {
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
             exposure.ensureResources(ctx);
+            ensureLensResources(ctx);
             refreshPipelineShapeIfNeeded(ctx);
             RtPipeline active = ensureWorld(ctx);
             if (materialEpochTraceGate) {
@@ -1871,7 +1893,8 @@ public final class RtComposite {
                 gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect",
                         "gpu.skyBake", "gpu.visBake", "gpu.froxelBake",
                         "gpu.waterSim", "gpu.waterDeform",
-                        "gpu.entityBlas", "gpu.tlasBuild", "gpu.rainExposure", "gpu.rainStreak");
+                        "gpu.entityBlas", "gpu.tlasBuild", "gpu.rainExposure", "gpu.rainStreak",
+                        "gpu.lensSpatial", "gpu.displayMap", "gpu.bloomFlare");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -2081,6 +2104,7 @@ public final class RtComposite {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
+        destroyLensImages();
         if (displayImage != null) {
             displayImage.destroy();
         }
@@ -2125,7 +2149,8 @@ public final class RtComposite {
         // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
         gNormal = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
         gAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
-        gDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT, "guide linear depth " + renderW + "x" + renderH);
+        gDepth = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R32_SFLOAT,
+                "guide reversed-Z depth " + renderW + "x" + renderH);
         gMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide motion " + renderW + "x" + renderH);
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
@@ -2141,6 +2166,245 @@ public final class RtComposite {
             bindGuideImages();
         }
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view);
+    }
+
+    /**
+     * Lazily own the one full-resolution post-RR ping-pong target plus effect-specific compact images.
+     * Switching between an odd and even number of scene-linear writes changes which image the display
+     * descriptor reads, so that rare setting transition waits for old frames before updating it.
+     */
+    private void ensureLensResources(RtContext ctx) {
+        boolean diagnosticsBypass = debugView() != 0;
+        boolean motion = !diagnosticsBypass
+                && FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_ENABLED.value();
+        boolean depthOfField = !diagnosticsBypass
+                && FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_ENABLED.value();
+        boolean bloom = !diagnosticsBypass
+                && FluoriteConfig.Rt.PostProcessing.BLOOM_ENABLED.value();
+        boolean lensFlare = !diagnosticsBypass
+                && FluoriteConfig.Rt.PostProcessing.LENS_FLARE_ENABLED.value();
+        boolean opticalHighlights = bloom || lensFlare;
+        boolean sceneLinearPost = motion || depthOfField || opticalHighlights;
+        if (!sceneLinearPost) {
+            if (lensScratch != null) {
+                ctx.waitIdle();
+                destroyLensImages();
+            }
+            displayPipeline.setImages(displayImage.view, rrOutput.view,
+                    exposure.image().view, hdrDisplayImage.view);
+            lensFinalScratch = false;
+            return;
+        }
+
+        int sceneLinearWrites = (motion ? 1 : 0) + (depthOfField ? 1 : 0)
+                + (opticalHighlights ? 1 : 0);
+        boolean desiredFinalScratch = (sceneLinearWrites & 1) != 0;
+        if (lensScratch == null) {
+            ctx.waitIdle();
+            lensScratch = ctx.createStorageImage(displayW, displayH,
+                    VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "lens scene-linear scratch " + displayW + "x" + displayH);
+        } else if (lensFinalScratch != desiredFinalScratch) {
+            ctx.waitIdle();
+        }
+
+        if ((motion || depthOfField) && lensFocus == null) {
+            ctx.waitIdle();
+            if (lensPipeline == null) lensPipeline = RtLensPipeline.create(ctx);
+            lensFocus = ctx.createStorageImage(1, 1, VK10.VK_FORMAT_R32_SFLOAT,
+                    "lens auto-focus history");
+            lensPipeline.setImages(rrOutput.view, lensScratch.view, gDepth.view, gMotion.view, lensFocus.view);
+        }
+
+        if (depthOfField && depthOfFieldCoc == null) {
+            ctx.waitIdle();
+            if (depthOfFieldPipeline == null) depthOfFieldPipeline = RtDepthOfFieldPipeline.create(ctx);
+            int halfWidth = (displayW + 1) / 2;
+            int halfHeight = (displayH + 1) / 2;
+            int tileWidth = (displayW + 15) / 16;
+            int tileHeight = (displayH + 15) / 16;
+            depthOfFieldCoc = ctx.createStorageImage(displayW, displayH,
+                    VK10.VK_FORMAT_R16_SFLOAT,
+                    "depth of field signed CoC " + displayW + "x" + displayH);
+            depthOfFieldNear = ctx.createStorageImage(halfWidth, halfHeight,
+                    VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "depth of field near layer " + halfWidth + "x" + halfHeight);
+            depthOfFieldFar = ctx.createStorageImage(halfWidth, halfHeight,
+                    VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "depth of field far layer " + halfWidth + "x" + halfHeight);
+            depthOfFieldTiles = ctx.createStorageImage(tileWidth, tileHeight,
+                    VK10.VK_FORMAT_R16G16_SFLOAT,
+                    "depth of field tile extrema " + tileWidth + "x" + tileHeight);
+            depthOfFieldDilatedTiles = ctx.createStorageImage(tileWidth, tileHeight,
+                    VK10.VK_FORMAT_R16G16_SFLOAT,
+                    "depth of field dilated tile extrema " + tileWidth + "x" + tileHeight);
+            depthOfFieldPipeline.setImages(rrOutput.view, lensScratch.view, gDepth.view, lensFocus.view,
+                    depthOfFieldCoc.view, depthOfFieldNear.view, depthOfFieldFar.view,
+                    depthOfFieldTiles.view, depthOfFieldDilatedTiles.view);
+        } else if (!depthOfField && depthOfFieldCoc != null) {
+            ctx.waitIdle();
+            destroyDepthOfFieldImages();
+        }
+
+        boolean bloomFlareRebind = false;
+        if (opticalHighlights && bloomBright[0] == null) {
+            ctx.waitIdle();
+            if (bloomFlarePipeline == null) bloomFlarePipeline = RtBloomFlarePipeline.create(ctx);
+            for (int level = 0; level < RtBloomFlarePipeline.LEVEL_COUNT; level++) {
+                int levelWidth = RtBloomFlarePipeline.levelSize(displayW, level);
+                int levelHeight = RtBloomFlarePipeline.levelSize(displayH, level);
+                bloomBright[level] = ctx.createStorageImage(levelWidth, levelHeight,
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                        "HDR bright pyramid " + level + " " + levelWidth + "x" + levelHeight);
+                bloomPyramid[level] = ctx.createStorageImage(levelWidth, levelHeight,
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                        "bloom accumulation " + level + " " + levelWidth + "x" + levelHeight);
+            }
+            bloomFlareRebind = true;
+        } else if (!opticalHighlights && bloomBright[0] != null) {
+            ctx.waitIdle();
+            destroyBloomFlareImages();
+        }
+
+        if (lensFlare && flareBokeh == null) {
+            ctx.waitIdle();
+            int width = RtBloomFlarePipeline.levelSize(displayW, 1);
+            int height = RtBloomFlarePipeline.levelSize(displayH, 1);
+            flareBokeh = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "pentagonal lens flare bokeh " + width + "x" + height);
+            bloomFlareRebind = true;
+        } else if (!lensFlare && flareBokeh != null) {
+            ctx.waitIdle();
+            if (bloomFlarePipeline != null) bloomFlarePipeline.invalidateImages();
+            flareBokeh.destroy();
+            flareBokeh = null;
+            bloomFlareRebind = true;
+        }
+
+        if (opticalHighlights && bloomFlareRebind) {
+            long[] brightViews = new long[RtBloomFlarePipeline.LEVEL_COUNT];
+            long[] pyramidViews = new long[RtBloomFlarePipeline.LEVEL_COUNT];
+            for (int level = 0; level < RtBloomFlarePipeline.LEVEL_COUNT; level++) {
+                brightViews[level] = bloomBright[level].view;
+                pyramidViews[level] = bloomPyramid[level].view;
+            }
+            // Bloom-only still needs every statically declared descriptor valid; its quarter-resolution
+            // accumulation image is a legal unused fallback for the absent flare-only target.
+            long flareView = flareBokeh != null ? flareBokeh.view : bloomPyramid[1].view;
+            bloomFlarePipeline.setImages(rrOutput.view, lensScratch.view, exposure.image().view,
+                    brightViews, pyramidViews, flareView);
+        }
+
+        RtImage finalScene = desiredFinalScratch ? lensScratch : rrOutput;
+        displayPipeline.setImages(displayImage.view, finalScene.view,
+                exposure.image().view, hdrDisplayImage.view);
+        lensFinalScratch = desiredFinalScratch;
+    }
+
+    private void destroyLensImages() {
+        destroyDepthOfFieldImages();
+        destroyBloomFlareImages();
+        if (lensScratch != null) {
+            lensScratch.destroy();
+            lensScratch = null;
+        }
+        if (lensFocus != null) {
+            lensFocus.destroy();
+            lensFocus = null;
+        }
+        lensFinalScratch = false;
+    }
+
+    private void destroyBloomFlareImages() {
+        if (bloomFlarePipeline != null) bloomFlarePipeline.invalidateImages();
+        if (flareBokeh != null) {
+            flareBokeh.destroy();
+            flareBokeh = null;
+        }
+        for (int level = 0; level < RtBloomFlarePipeline.LEVEL_COUNT; level++) {
+            if (bloomBright[level] != null) {
+                bloomBright[level].destroy();
+                bloomBright[level] = null;
+            }
+            if (bloomPyramid[level] != null) {
+                bloomPyramid[level].destroy();
+                bloomPyramid[level] = null;
+            }
+        }
+    }
+
+    private void destroyDepthOfFieldImages() {
+        if (depthOfFieldCoc != null) {
+            depthOfFieldCoc.destroy();
+            depthOfFieldCoc = null;
+        }
+        if (depthOfFieldNear != null) {
+            depthOfFieldNear.destroy();
+            depthOfFieldNear = null;
+        }
+        if (depthOfFieldFar != null) {
+            depthOfFieldFar.destroy();
+            depthOfFieldFar = null;
+        }
+        if (depthOfFieldTiles != null) {
+            depthOfFieldTiles.destroy();
+            depthOfFieldTiles = null;
+        }
+        if (depthOfFieldDilatedTiles != null) {
+            depthOfFieldDilatedTiles.destroy();
+            depthOfFieldDilatedTiles = null;
+        }
+    }
+
+    private static RtDisplayPipeline.CreativeGrade creativeGradeSettings() {
+        return new RtDisplayPipeline.CreativeGrade(
+                FluoriteConfig.Rt.PostProcessing.COLOR_GRADING_ENABLED.value(),
+                FluoriteConfig.Rt.PostProcessing.TEMPERATURE_K.value(),
+                FluoriteConfig.Rt.PostProcessing.TINT.value(),
+                FluoriteConfig.Rt.PostProcessing.CONTRAST.value(),
+                FluoriteConfig.Rt.PostProcessing.SATURATION.value(),
+                FluoriteConfig.Rt.PostProcessing.HUE_DEGREES.value(),
+                tonalGrade(FluoriteConfig.Rt.PostProcessing.SHADOW_EXPOSURE_EV,
+                        FluoriteConfig.Rt.PostProcessing.SHADOW_RED_EV,
+                        FluoriteConfig.Rt.PostProcessing.SHADOW_GREEN_EV,
+                        FluoriteConfig.Rt.PostProcessing.SHADOW_BLUE_EV,
+                        FluoriteConfig.Rt.PostProcessing.SHADOW_SATURATION,
+                        FluoriteConfig.Rt.PostProcessing.SHADOW_CONTRAST),
+                tonalGrade(FluoriteConfig.Rt.PostProcessing.MID_EXPOSURE_EV,
+                        FluoriteConfig.Rt.PostProcessing.MID_RED_EV,
+                        FluoriteConfig.Rt.PostProcessing.MID_GREEN_EV,
+                        FluoriteConfig.Rt.PostProcessing.MID_BLUE_EV,
+                        FluoriteConfig.Rt.PostProcessing.MID_SATURATION,
+                        FluoriteConfig.Rt.PostProcessing.MID_CONTRAST),
+                tonalGrade(FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_EXPOSURE_EV,
+                        FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_RED_EV,
+                        FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_GREEN_EV,
+                        FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_BLUE_EV,
+                        FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_SATURATION,
+                        FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_CONTRAST),
+                FluoriteConfig.Rt.PostProcessing.SHADOW_BOUNDARY_EV.value(),
+                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_BOUNDARY_EV.value());
+    }
+
+    private static RtDisplayPipeline.TonalGrade tonalGrade(FluoriteConfig.FloatSetting exposure,
+                                                            FluoriteConfig.FloatSetting red,
+                                                            FluoriteConfig.FloatSetting green,
+                                                            FluoriteConfig.FloatSetting blue,
+                                                            FluoriteConfig.FloatSetting saturation,
+                                                            FluoriteConfig.FloatSetting contrast) {
+        return new RtDisplayPipeline.TonalGrade(exposure.value(), red.value(), green.value(), blue.value(),
+                saturation.value(), contrast.value());
+    }
+
+    private static RtDisplayPipeline.FilmGrain filmGrainSettings() {
+        return new RtDisplayPipeline.FilmGrain(
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_ENABLED.value(),
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_INTENSITY.value(),
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_SIZE.value(),
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_CHROMATIC.value(),
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_SHADOWS.value(),
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_MIDTONES.value(),
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_HIGHLIGHTS.value());
     }
 
     /**
@@ -2211,6 +2475,7 @@ public final class RtComposite {
             RtBuffer pushBuf = selectedPushSlot.buffer;
             ByteBuffer push = MemoryUtil.memByteBuffer(pushBuf.mapped, WORLD_PUSH_SIZE);
             frameInvViewProj.set(frameProjection).mul(frameViewRotation).invert();
+            frameInvProjection.set(frameProjection).invert();
             // flags: camera-in-water (so the path tracer starts in the water medium when the eye is
             // submerged, fixing the air→water first-segment orientation) + W1 wave normals. Bit 1 used to
             // gate a Lambertian fallback BRDF that nothing ever turned off; the GGX path is unconditional
@@ -2804,10 +3069,108 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
 
+            boolean lensDiagnosticsBypass = debugView != 0;
+            boolean motionBlur = !lensDiagnosticsBypass
+                    && FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_ENABLED.value();
+            boolean depthOfField = !lensDiagnosticsBypass
+                    && FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_ENABLED.value();
+            boolean bloom = !lensDiagnosticsBypass
+                    && FluoriteConfig.Rt.PostProcessing.BLOOM_ENABLED.value();
+            boolean lensFlare = !lensDiagnosticsBypass
+                    && FluoriteConfig.Rt.PostProcessing.LENS_FLARE_ENABLED.value();
+            boolean sourceIsScratch = false;
+            if (motionBlur || depthOfField) {
+                if (lensPipeline == null || lensScratch == null || lensFocus == null) {
+                    throw new IllegalStateException("spatial lens effects enabled without resources");
+                }
+                if (depthOfField && (depthOfFieldPipeline == null || depthOfFieldCoc == null
+                        || depthOfFieldNear == null || depthOfFieldFar == null
+                        || depthOfFieldTiles == null || depthOfFieldDilatedTiles == null)) {
+                    throw new IllegalStateException("depth of field enabled without split-layer resources");
+                }
+                if (gpuTimers != null) gpuTimers.begin(cmd, pushSlot, GPU_ZONE_LENS_SPATIAL);
+                try (RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.lensSpatial")) {
+                    float focalLengthMm = Math.max(1.0f, 18.0f * Math.abs(frameProjection.m00()));
+                    if (motionBlur) {
+                        lensPipeline.motionBlur(cmd, RtLensPipeline.RR_TO_SCRATCH,
+                                frameInvProjection, displayW, displayH, renderW, renderH,
+                                FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_SAMPLES.value(),
+                                FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_SHUTTER_ANGLE.value(),
+                                FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_MAX_RADIUS.value(),
+                                focalLengthMm);
+                        sourceIsScratch = true;
+                        VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                    }
+                    boolean autoFocus = FluoriteConfig.Rt.PostProcessing.automaticFocus();
+                    if (depthOfField) {
+                        if (autoFocus) {
+                            lensPipeline.updateAutoFocus(cmd, frameInvProjection,
+                                    displayW, displayH, renderW, renderH, focalLengthMm);
+                            VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                        }
+                        depthOfFieldPipeline.record(cmd,
+                                sourceIsScratch ? RtLensPipeline.SCRATCH_TO_RR
+                                        : RtLensPipeline.RR_TO_SCRATCH,
+                                frameInvProjection, displayW, displayH, renderW, renderH,
+                                autoFocus,
+                                FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_FOCUS_DISTANCE.value(),
+                                FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_F_STOP.value(),
+                                FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_MAX_RADIUS.value(),
+                                focalLengthMm,
+                                FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_APERTURE_BLADES.value());
+                        sourceIsScratch = !sourceIsScratch;
+                        VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                    }
+                }
+                if (gpuTimers != null) gpuTimers.end(cmd, pushSlot, GPU_ZONE_LENS_SPATIAL);
+            }
+
+            if (bloom || lensFlare) {
+                if (bloomFlarePipeline == null || lensScratch == null || bloomBright[0] == null
+                        || bloomPyramid[0] == null) {
+                    throw new IllegalStateException("bloom/lens flare enabled without HDR pyramid resources");
+                }
+                if (gpuTimers != null) gpuTimers.begin(cmd, pushSlot, GPU_ZONE_BLOOM_FLARE);
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "HDR bloom and lens flare");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.bloomFlare")) {
+                    bloomFlarePipeline.record(cmd,
+                            sourceIsScratch ? RtLensPipeline.SCRATCH_TO_RR : RtLensPipeline.RR_TO_SCRATCH,
+                            displayW, displayH, bloom, lensFlare,
+                            FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_FILTER_THRESHOLD.value(),
+                            FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_FILTER_SOFT_KNEE.value(),
+                            FluoriteConfig.Rt.PostProcessing.BLOOM_INTENSITY.value(),
+                            FluoriteConfig.Rt.PostProcessing.BLOOM_RADIUS.value(),
+                            FluoriteConfig.Rt.PostProcessing.LENS_FLARE_INTENSITY.value(),
+                            FluoriteConfig.Rt.PostProcessing.LENS_FLARE_GHOSTS.value(),
+                            FluoriteConfig.Rt.PostProcessing.LENS_FLARE_HALO.value(),
+                            FluoriteConfig.Rt.PostProcessing.LENS_FLARE_STREAKS.value(),
+                            FluoriteConfig.Rt.PostProcessing.LENS_FLARE_THRESHOLD.value(),
+                            FluoriteConfig.Rt.PostProcessing.LENS_FLARE_BOKEH_SIZE.value());
+                    sourceIsScratch = !sourceIsScratch;
+                }
+                if (gpuTimers != null) gpuTimers.end(cmd, pushSlot, GPU_ZONE_BLOOM_FLARE);
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
+
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
+                if (gpuTimers != null) gpuTimers.begin(cmd, pushSlot, GPU_ZONE_DISPLAY_MAP);
                 displayPipeline.dispatch(cmd, displayW, displayH, FluoriteConfig.Rt.Hdr.enabled(),
-                        FluoriteConfig.Rt.Hdr.paperWhiteNits(), FluoriteConfig.Rt.Hdr.headroom());
+                        FluoriteConfig.Rt.PostProcessing.outputTransformMode(),
+                        FluoriteConfig.Rt.PostProcessing.acesHdrPresetNits(),
+                        FluoriteConfig.Rt.Hdr.paperWhiteNits(), FluoriteConfig.Rt.Hdr.headroom(),
+                        creativeGradeSettings(), filmGrainSettings(), (int) frameCounter,
+                        !lensDiagnosticsBypass
+                                && FluoriteConfig.Rt.PostProcessing.LENS_DISTORTION_ENABLED.value(),
+                        FluoriteConfig.Rt.PostProcessing.LENS_DISTORTION_STRENGTH.value(),
+                        !lensDiagnosticsBypass
+                                && FluoriteConfig.Rt.PostProcessing.CHROMATIC_ABERRATION_ENABLED.value(),
+                        FluoriteConfig.Rt.PostProcessing.CHROMATIC_ABERRATION_STRENGTH.value(),
+                        !lensDiagnosticsBypass && FluoriteConfig.Rt.PostProcessing.VIGNETTE_ENABLED.value(),
+                        FluoriteConfig.Rt.PostProcessing.VIGNETTE_INTENSITY.value(),
+                        FluoriteConfig.Rt.PostProcessing.VIGNETTE_START.value(),
+                        FluoriteConfig.Rt.PostProcessing.VIGNETTE_SOFTNESS.value());
+                if (gpuTimers != null) gpuTimers.end(cmd, pushSlot, GPU_ZONE_DISPLAY_MAP);
             }
             hdrWrittenThisFrame = FluoriteConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
@@ -3046,6 +3409,19 @@ public final class RtComposite {
         }
         if (RtDlssRr.enabled()) {
             RtDlssRr.INSTANCE.destroy();
+        }
+        destroyLensImages();
+        if (lensPipeline != null) {
+            lensPipeline.destroy();
+            lensPipeline = null;
+        }
+        if (depthOfFieldPipeline != null) {
+            depthOfFieldPipeline.destroy();
+            depthOfFieldPipeline = null;
+        }
+        if (bloomFlarePipeline != null) {
+            bloomFlarePipeline.destroy();
+            bloomFlarePipeline = null;
         }
         if (displayImage != null) {
             displayImage.destroy();

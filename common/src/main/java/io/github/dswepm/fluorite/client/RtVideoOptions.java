@@ -58,7 +58,6 @@ public final class RtVideoOptions {
      */
     public enum Category {
         TRACING("tracing"),
-        EXPOSURE("exposure"),
         MATERIAL("material"),
         SKY("sky"),
         WEATHER("weather"),
@@ -66,7 +65,7 @@ public final class RtVideoOptions {
         WATER("water"),
         FOG("fog"),
         UPSCALING("upscaling"),
-        HDR("hdr"),
+        POST_PROCESSING("postProcessing"),
         DIAGNOSTICS("diagnostics");
 
         private final String key;
@@ -98,7 +97,6 @@ public final class RtVideoOptions {
                                 particleShadows()),
                         Section.titled("fluorite.options.rt.section.media",
                                 volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
-                case EXPOSURE -> List.of(Section.of(exposureMode(), manualEv()));
                 case MATERIAL -> List.of(
                         Section.of(sunMis(), anisotropy()),
                         Section.titled("fluorite.options.rt.section.subsurface",
@@ -211,12 +209,98 @@ public final class RtVideoOptions {
                                 fogNoiseEnabled(), fogNoiseContrast(), fogNoiseFieldScale(),
                                 fogNoiseWindSpeed(), fogNoiseWindOffset(), fogNoiseMarchSteps()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
-                case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
+                case POST_PROCESSING -> List.of(
+                        Section.titled("fluorite.options.rt.section.exposure",
+                                exposureMode(), autoExposureCompensation(), manualExposureEv(),
+                                brightAdaptationTime(), darkAdaptationTime()),
+                        Section.titled("fluorite.options.rt.section.outputTransform",
+                                outputTransform(), hdrEnabled(), acesHdrPreset(),
+                                hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE)));
             };
         }
+    }
+
+    /** D154A's classified lens/camera submenu; the post-processing root keeps only global output state. */
+    public static List<Section> lensEffectsSections() {
+        return List.of(
+                        Section.titled("fluorite.options.rt.section.filmGrain",
+                                filmGrainEnabled(), filmGrainIntensity(), filmGrainSize(),
+                                filmGrainChromatic(), filmGrainShadows(), filmGrainMidtones(),
+                                filmGrainHighlights()),
+                        Section.titled("fluorite.options.rt.section.hdrHighlights",
+                                highlightThreshold(), highlightSoftKnee()),
+                        Section.titled("fluorite.options.rt.section.bloom",
+                                bloomEnabled(), bloomIntensity(), bloomRadius()),
+                        Section.titled("fluorite.options.rt.section.lensFlare",
+                                lensFlareEnabled(), lensFlareIntensity(), lensFlareGhosts(),
+                                lensFlareHalo(), lensFlareStreaks(), lensFlareThreshold(),
+                                lensFlareBokehSize()),
+                        Section.titled("fluorite.options.rt.section.depthOfField",
+                                depthOfFieldEnabled(), depthOfFieldFocusMode(), depthOfFieldFocusDistance(),
+                                depthOfFieldFStop(), depthOfFieldMaxRadius(), depthOfFieldApertureBlades()),
+                        Section.titled("fluorite.options.rt.section.motionBlur",
+                                motionBlurEnabled(), motionBlurShutterAngle(), motionBlurSamples(),
+                                motionBlurMaxRadius()),
+                        Section.titled("fluorite.options.rt.section.lensGeometry",
+                                lensDistortionEnabled(), lensDistortionStrength(),
+                                chromaticAberrationEnabled(), chromaticAberrationStrength()),
+                        Section.titled("fluorite.options.rt.section.framing",
+                                vignetteEnabled(), vignetteIntensity(), vignetteStart(), vignetteSoftness()));
+    }
+
+    /** The D147A nested UE-style artistic grading page, built fresh each time it is opened. */
+    public static List<Section> artisticGradingSections() {
+        return List.of(
+                Section.of(colorGradingEnabled()),
+                Section.titled("fluorite.options.rt.section.gradingGlobal",
+                        colorTemperature(), colorTint(), colorContrast(), colorSaturation(), colorHue()),
+                Section.titled("fluorite.options.rt.section.gradingShadows",
+                        gradeEv("fluorite.options.rt.shadowExposure",
+                                FluoriteConfig.Rt.PostProcessing.SHADOW_EXPOSURE_EV, -4.0f, 4.0f),
+                        gradeEv("fluorite.options.rt.shadowRed",
+                                FluoriteConfig.Rt.PostProcessing.SHADOW_RED_EV, -2.0f, 2.0f),
+                        gradeEv("fluorite.options.rt.shadowGreen",
+                                FluoriteConfig.Rt.PostProcessing.SHADOW_GREEN_EV, -2.0f, 2.0f),
+                        gradeEv("fluorite.options.rt.shadowBlue",
+                                FluoriteConfig.Rt.PostProcessing.SHADOW_BLUE_EV, -2.0f, 2.0f),
+                        gradeScale("fluorite.options.rt.shadowSaturation",
+                                FluoriteConfig.Rt.PostProcessing.SHADOW_SATURATION),
+                        gradeScale("fluorite.options.rt.shadowContrast",
+                                FluoriteConfig.Rt.PostProcessing.SHADOW_CONTRAST)),
+                Section.titled("fluorite.options.rt.section.gradingMidtones",
+                        gradeEv("fluorite.options.rt.midExposure",
+                                FluoriteConfig.Rt.PostProcessing.MID_EXPOSURE_EV, -4.0f, 4.0f),
+                        gradeEv("fluorite.options.rt.midRed",
+                                FluoriteConfig.Rt.PostProcessing.MID_RED_EV, -2.0f, 2.0f),
+                        gradeEv("fluorite.options.rt.midGreen",
+                                FluoriteConfig.Rt.PostProcessing.MID_GREEN_EV, -2.0f, 2.0f),
+                        gradeEv("fluorite.options.rt.midBlue",
+                                FluoriteConfig.Rt.PostProcessing.MID_BLUE_EV, -2.0f, 2.0f),
+                        gradeScale("fluorite.options.rt.midSaturation",
+                                FluoriteConfig.Rt.PostProcessing.MID_SATURATION),
+                        gradeScale("fluorite.options.rt.midContrast",
+                                FluoriteConfig.Rt.PostProcessing.MID_CONTRAST)),
+                Section.titled("fluorite.options.rt.section.gradingHighlights",
+                        gradeEv("fluorite.options.rt.highlightExposure",
+                                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_EXPOSURE_EV, -4.0f, 4.0f),
+                        gradeEv("fluorite.options.rt.highlightRed",
+                                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_RED_EV, -2.0f, 2.0f),
+                        gradeEv("fluorite.options.rt.highlightGreen",
+                                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_GREEN_EV, -2.0f, 2.0f),
+                        gradeEv("fluorite.options.rt.highlightBlue",
+                                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_BLUE_EV, -2.0f, 2.0f),
+                        gradeScale("fluorite.options.rt.highlightSaturation",
+                                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_SATURATION),
+                        gradeScale("fluorite.options.rt.highlightContrast",
+                                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_CONTRAST)),
+                Section.titled("fluorite.options.rt.section.gradingRanges",
+                        gradeEv("fluorite.options.rt.shadowBoundary",
+                                FluoriteConfig.Rt.PostProcessing.SHADOW_BOUNDARY_EV, -8.0f, 0.0f),
+                        gradeEv("fluorite.options.rt.highlightBoundary",
+                                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_BOUNDARY_EV, 0.0f, 8.0f)));
     }
 
     /**
@@ -241,11 +325,20 @@ public final class RtVideoOptions {
             setting::set);
     }
 
-    private static OptionInstance<Integer> manualEv() {
-        FloatSetting setting = FluoriteConfig.Rt.Exposure.MANUAL_EV;
+    private static OptionInstance<Integer> autoExposureCompensation() {
+        return exposureEvSlider("fluorite.options.rt.autoExposureCompensation",
+                FluoriteConfig.Rt.Exposure.AUTO_EV_BIAS);
+    }
+
+    private static OptionInstance<Integer> manualExposureEv() {
+        return exposureEvSlider("fluorite.options.rt.manualExposureEv",
+                FluoriteConfig.Rt.Exposure.MANUAL_EV);
+    }
+
+    private static OptionInstance<Integer> exposureEvSlider(String key, FloatSetting setting) {
         return new OptionInstance<>(
-            "fluorite.options.rt.manualEv",
-            OptionInstance.cachedConstantTooltip(Component.translatable("fluorite.options.rt.manualEv.tooltip")),
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
             (caption, tenths) -> {
                 float ev = tenths / 10.0f;
                 String sign = ev > 0.0f ? "+" : "";
@@ -255,6 +348,355 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(-50, 50),
             Math.clamp(Math.round(setting.value() * 10.0f), -50, 50),
             tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<Integer> brightAdaptationTime() {
+        return floatRangeSlider("fluorite.options.rt.brightAdaptationTime",
+                FluoriteConfig.Rt.Exposure.BRIGHT_ADAPT_SECONDS, 1, 100, 0.05f, " s");
+    }
+
+    private static OptionInstance<Integer> darkAdaptationTime() {
+        return floatRangeSlider("fluorite.options.rt.darkAdaptationTime",
+                FluoriteConfig.Rt.Exposure.DARK_ADAPT_SECONDS, 1, 100, 0.1f, " s");
+    }
+
+    private static OptionInstance<String> outputTransform() {
+        StringSetting setting = FluoriteConfig.Rt.PostProcessing.OUTPUT_TRANSFORM;
+        return new OptionInstance<>(
+            "fluorite.options.rt.outputTransform",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.outputTransform.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.outputTransform." + value),
+            new OptionInstance.Enum<>(List.of("agx", "aces2-lut", "aces2-exact"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> acesHdrPreset() {
+        IntSetting setting = FluoriteConfig.Rt.PostProcessing.ACES_HDR_PRESET;
+        return new OptionInstance<>(
+            "fluorite.options.rt.acesHdrPreset",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.acesHdrPreset.tooltip")),
+            (caption, nits) -> Options.genericValueLabel(caption, Component.literal(nits + " nits")),
+            new OptionInstance.Enum<>(List.of(500, 1000, 2000, 4000), Codec.INT),
+            FluoriteConfig.Rt.PostProcessing.acesHdrPresetNits(),
+            setting::set);
+    }
+
+    private static OptionInstance<Boolean> colorGradingEnabled() {
+        return bool("fluorite.options.rt.colorGrading",
+                FluoriteConfig.Rt.PostProcessing.COLOR_GRADING_ENABLED);
+    }
+
+    private static OptionInstance<Integer> colorTemperature() {
+        IntSetting setting = FluoriteConfig.Rt.PostProcessing.TEMPERATURE_K;
+        return new OptionInstance<>(
+            "fluorite.options.rt.colorTemperature",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.colorTemperature.tooltip")),
+            (caption, hundreds) -> Options.genericValueLabel(caption,
+                    Component.literal((hundreds * 100) + " K")),
+            new OptionInstance.IntRange(20, 120),
+            Math.clamp(Math.round(setting.value() / 100.0f), 20, 120),
+            hundreds -> setting.set(hundreds * 100));
+    }
+
+    private static OptionInstance<Integer> colorTint() {
+        FloatSetting setting = FluoriteConfig.Rt.PostProcessing.TINT;
+        return signedIntegerSlider("fluorite.options.rt.colorTint", setting, -100, 100);
+    }
+
+    private static OptionInstance<Integer> colorContrast() {
+        return gradeScale("fluorite.options.rt.colorContrast",
+                FluoriteConfig.Rt.PostProcessing.CONTRAST);
+    }
+
+    private static OptionInstance<Integer> colorSaturation() {
+        return gradeScale("fluorite.options.rt.colorSaturation",
+                FluoriteConfig.Rt.PostProcessing.SATURATION);
+    }
+
+    private static OptionInstance<Integer> colorHue() {
+        FloatSetting setting = FluoriteConfig.Rt.PostProcessing.HUE_DEGREES;
+        return new OptionInstance<>(
+            "fluorite.options.rt.colorHue",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.colorHue.tooltip")),
+            (caption, degrees) -> Options.genericValueLabel(caption,
+                    Component.literal((degrees > 0 ? "+" : "") + degrees + " deg")),
+            new OptionInstance.IntRange(-180, 180),
+            Math.clamp(Math.round(setting.value()), -180, 180),
+            degrees -> setting.set(degrees.floatValue()));
+    }
+
+    private static OptionInstance<Integer> gradeEv(String captionKey, FloatSetting setting,
+                                                    float minimum, float maximum) {
+        int minTenths = Math.round(minimum * 10.0f);
+        int maxTenths = Math.round(maximum * 10.0f);
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%+.1f EV", tenths / 10.0f))),
+            new OptionInstance.IntRange(minTenths, maxTenths),
+            Math.clamp(Math.round(setting.value() * 10.0f), minTenths, maxTenths),
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<Boolean> filmGrainEnabled() {
+        return bool("fluorite.options.rt.filmGrain",
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_ENABLED);
+    }
+
+    private static OptionInstance<Integer> filmGrainIntensity() {
+        return unitSlider("fluorite.options.rt.filmGrainIntensity",
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_INTENSITY);
+    }
+
+    private static OptionInstance<Integer> filmGrainSize() {
+        return floatRangeSlider("fluorite.options.rt.filmGrainSize",
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_SIZE, 5, 40, 0.1f, " px");
+    }
+
+    private static OptionInstance<Integer> filmGrainChromatic() {
+        return unitSlider("fluorite.options.rt.filmGrainChromatic",
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_CHROMATIC);
+    }
+
+    private static OptionInstance<Integer> filmGrainShadows() {
+        return gradeScale("fluorite.options.rt.filmGrainShadows",
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_SHADOWS);
+    }
+
+    private static OptionInstance<Integer> filmGrainMidtones() {
+        return gradeScale("fluorite.options.rt.filmGrainMidtones",
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_MIDTONES);
+    }
+
+    private static OptionInstance<Integer> filmGrainHighlights() {
+        return gradeScale("fluorite.options.rt.filmGrainHighlights",
+                FluoriteConfig.Rt.PostProcessing.FILM_GRAIN_HIGHLIGHTS);
+    }
+
+    private static OptionInstance<Integer> highlightThreshold() {
+        return floatRangeSlider("fluorite.options.rt.highlightThreshold",
+                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_FILTER_THRESHOLD, 0, 160, 0.1f, "");
+    }
+
+    private static OptionInstance<Integer> highlightSoftKnee() {
+        return unitSlider("fluorite.options.rt.highlightSoftKnee",
+                FluoriteConfig.Rt.PostProcessing.HIGHLIGHT_FILTER_SOFT_KNEE);
+    }
+
+    private static OptionInstance<Boolean> bloomEnabled() {
+        return bool("fluorite.options.rt.bloom", FluoriteConfig.Rt.PostProcessing.BLOOM_ENABLED);
+    }
+
+    private static OptionInstance<Integer> bloomIntensity() {
+        return gradeScale("fluorite.options.rt.bloomIntensity",
+                FluoriteConfig.Rt.PostProcessing.BLOOM_INTENSITY);
+    }
+
+    private static OptionInstance<Integer> bloomRadius() {
+        return unitSlider("fluorite.options.rt.bloomRadius",
+                FluoriteConfig.Rt.PostProcessing.BLOOM_RADIUS);
+    }
+
+    private static OptionInstance<Boolean> lensFlareEnabled() {
+        return bool("fluorite.options.rt.lensFlare",
+                FluoriteConfig.Rt.PostProcessing.LENS_FLARE_ENABLED);
+    }
+
+    private static OptionInstance<Integer> lensFlareIntensity() {
+        return gradeScale("fluorite.options.rt.lensFlareIntensity",
+                FluoriteConfig.Rt.PostProcessing.LENS_FLARE_INTENSITY);
+    }
+
+    private static OptionInstance<Integer> lensFlareGhosts() {
+        return gradeScale("fluorite.options.rt.lensFlareGhosts",
+                FluoriteConfig.Rt.PostProcessing.LENS_FLARE_GHOSTS);
+    }
+
+    private static OptionInstance<Integer> lensFlareHalo() {
+        return gradeScale("fluorite.options.rt.lensFlareHalo",
+                FluoriteConfig.Rt.PostProcessing.LENS_FLARE_HALO);
+    }
+
+    private static OptionInstance<Integer> lensFlareStreaks() {
+        return gradeScale("fluorite.options.rt.lensFlareStreaks",
+                FluoriteConfig.Rt.PostProcessing.LENS_FLARE_STREAKS);
+    }
+
+    private static OptionInstance<Integer> lensFlareThreshold() {
+        return floatRangeSlider("fluorite.options.rt.lensFlareThreshold",
+                FluoriteConfig.Rt.PostProcessing.LENS_FLARE_THRESHOLD, 0, 320, 0.1f, "");
+    }
+
+    private static OptionInstance<Integer> lensFlareBokehSize() {
+        return floatRangeSlider("fluorite.options.rt.lensFlareBokehSize",
+                FluoriteConfig.Rt.PostProcessing.LENS_FLARE_BOKEH_SIZE, 2, 32, 1.0f, " px");
+    }
+
+    private static OptionInstance<Boolean> depthOfFieldEnabled() {
+        return bool("fluorite.options.rt.depthOfField",
+                FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_ENABLED);
+    }
+
+    private static OptionInstance<String> depthOfFieldFocusMode() {
+        return enumString("fluorite.options.rt.depthOfFieldFocusMode",
+                FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_FOCUS_MODE,
+                List.of("auto", "manual"));
+    }
+
+    /** Logarithmic travel keeps the approved 0.5-block near focus usable across a 256-block range. */
+    private static OptionInstance<Integer> depthOfFieldFocusDistance() {
+        FloatSetting setting = FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_FOCUS_DISTANCE;
+        final double minimum = 0.5;
+        final double maximum = 256.0;
+        final int steps = 900;
+        int initial = Math.clamp((int) Math.round(
+                Math.log(setting.value() / minimum) / Math.log(maximum / minimum) * steps), 0, steps);
+        return new OptionInstance<>(
+            "fluorite.options.rt.depthOfFieldFocusDistance",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.depthOfFieldFocusDistance.tooltip")),
+            (caption, tick) -> {
+                double value = minimum * Math.pow(maximum / minimum, tick / (double) steps);
+                String text = value < 10.0
+                        ? String.format(Locale.ROOT, "%.1f blocks", value)
+                        : String.format(Locale.ROOT, "%.0f blocks", value);
+                return Options.genericValueLabel(caption, Component.literal(text));
+            },
+            new OptionInstance.IntRange(0, steps),
+            initial,
+            tick -> setting.set((float) (minimum * Math.pow(maximum / minimum, tick / (double) steps))));
+    }
+
+    private static OptionInstance<Integer> depthOfFieldFStop() {
+        return floatRangeSlider("fluorite.options.rt.depthOfFieldFStop",
+                FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_F_STOP, 7, 320, 0.1f, "");
+    }
+
+    private static OptionInstance<Integer> depthOfFieldMaxRadius() {
+        return floatRangeSlider("fluorite.options.rt.depthOfFieldMaxRadius",
+                FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_MAX_RADIUS, 0, 64, 1.0f, " px");
+    }
+
+    private static OptionInstance<Integer> depthOfFieldApertureBlades() {
+        IntSetting setting = FluoriteConfig.Rt.PostProcessing.DEPTH_OF_FIELD_APERTURE_BLADES;
+        List<Integer> values = List.of(0, 5, 6, 7, 8, 9);
+        return new OptionInstance<>(
+            "fluorite.options.rt.depthOfFieldApertureBlades",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.depthOfFieldApertureBlades.tooltip")),
+            (caption, value) -> Component.translatable(
+                    value == 0 ? "fluorite.options.rt.depthOfFieldApertureBlades.circular"
+                            : "fluorite.options.rt.depthOfFieldApertureBlades.blades", value),
+            new OptionInstance.Enum<>(values, Codec.INT),
+            values.contains(setting.value()) ? setting.value() : 0,
+            setting::set);
+    }
+
+    private static OptionInstance<Boolean> motionBlurEnabled() {
+        return bool("fluorite.options.rt.motionBlur",
+                FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_ENABLED);
+    }
+
+    private static OptionInstance<Integer> motionBlurShutterAngle() {
+        return floatRangeSlider("fluorite.options.rt.motionBlurShutterAngle",
+                FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_SHUTTER_ANGLE, 0, 360, 1.0f, "°");
+    }
+
+    private static OptionInstance<Integer> motionBlurSamples() {
+        IntSetting setting = FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_SAMPLES;
+        return new OptionInstance<>(
+            "fluorite.options.rt.motionBlurSamples",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.motionBlurSamples.tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption, Component.literal(Integer.toString(value))),
+            new OptionInstance.Enum<>(List.of(8, 16), Codec.INT),
+            setting.value(),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> motionBlurMaxRadius() {
+        return floatRangeSlider("fluorite.options.rt.motionBlurMaxRadius",
+                FluoriteConfig.Rt.PostProcessing.MOTION_BLUR_MAX_RADIUS, 0, 64, 1.0f, " px");
+    }
+
+    private static OptionInstance<Boolean> lensDistortionEnabled() {
+        return bool("fluorite.options.rt.lensDistortion",
+                FluoriteConfig.Rt.PostProcessing.LENS_DISTORTION_ENABLED);
+    }
+
+    private static OptionInstance<Integer> lensDistortionStrength() {
+        FloatSetting setting = FluoriteConfig.Rt.PostProcessing.LENS_DISTORTION_STRENGTH;
+        String key = "fluorite.options.rt.lensDistortionStrength";
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, hundredths) -> {
+                String value = hundredths == 0 ? "0.00"
+                        : String.format(Locale.ROOT, "%+.2f", hundredths / 100.0f);
+                String shape = hundredths < 0 ? ".barrel" : hundredths > 0 ? ".pincushion" : ".neutral";
+                return Options.genericValueLabel(caption, Component.translatable(key + shape, value));
+            },
+            new OptionInstance.IntRange(-100, 100),
+            Math.clamp(Math.round(setting.value() * 100.0f), -100, 100),
+            hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    private static OptionInstance<Boolean> chromaticAberrationEnabled() {
+        return bool("fluorite.options.rt.chromaticAberration",
+                FluoriteConfig.Rt.PostProcessing.CHROMATIC_ABERRATION_ENABLED);
+    }
+
+    private static OptionInstance<Integer> chromaticAberrationStrength() {
+        return floatRangeSlider("fluorite.options.rt.chromaticAberrationStrength",
+                FluoriteConfig.Rt.PostProcessing.CHROMATIC_ABERRATION_STRENGTH, 0, 80, 0.1f, " px");
+    }
+
+    private static OptionInstance<Boolean> vignetteEnabled() {
+        return bool("fluorite.options.rt.vignette", FluoriteConfig.Rt.PostProcessing.VIGNETTE_ENABLED);
+    }
+
+    private static OptionInstance<Integer> vignetteIntensity() {
+        return unitSlider("fluorite.options.rt.vignetteIntensity",
+                FluoriteConfig.Rt.PostProcessing.VIGNETTE_INTENSITY);
+    }
+
+    private static OptionInstance<Integer> vignetteStart() {
+        return unitSlider("fluorite.options.rt.vignetteStart",
+                FluoriteConfig.Rt.PostProcessing.VIGNETTE_START);
+    }
+
+    private static OptionInstance<Integer> vignetteSoftness() {
+        return floatRangeSlider("fluorite.options.rt.vignetteSoftness",
+                FluoriteConfig.Rt.PostProcessing.VIGNETTE_SOFTNESS, 5, 100, 0.01f, "");
+    }
+
+    private static OptionInstance<Integer> gradeScale(String captionKey, FloatSetting setting) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2fx", hundredths / 100.0f))),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    private static OptionInstance<Integer> signedIntegerSlider(String captionKey, FloatSetting setting,
+                                                                int min, int max) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.literal((value > 0 ? "+" : "") + value)),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value()), min, max),
+            value -> setting.set(value.floatValue()));
     }
 
     private static OptionInstance<Integer> spp() {
@@ -1551,8 +1993,15 @@ public final class RtVideoOptions {
             position -> setting.set(DLSS_QUALITY_ORDER.get(position)));
     }
 
-    private static OptionInstance<Boolean> hdrEnabled() {
-        return bool("fluorite.options.rt.hdr", FluoriteConfig.Rt.Hdr.ENABLED);
+    private static OptionInstance<String> hdrEnabled() {
+        BooleanSetting setting = FluoriteConfig.Rt.Hdr.ENABLED;
+        return new OptionInstance<>(
+            "fluorite.options.rt.hdr",
+            OptionInstance.cachedConstantTooltip(Component.translatable("fluorite.options.rt.hdr.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.hdr." + value),
+            new OptionInstance.Enum<>(List.of("sdr", "hdr10"), Codec.STRING),
+            setting.value() ? "hdr10" : "sdr",
+            value -> setting.set("hdr10".equals(value)));
     }
 
     private static OptionInstance<Integer> hdrPaperWhite() {

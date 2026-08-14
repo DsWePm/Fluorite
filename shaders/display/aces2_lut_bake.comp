@@ -1,0 +1,85 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "aces2_sdr100.glsl"
+#include "aces2_hdr500.glsl"
+#include "aces2_hdr1000.glsl"
+#include "aces2_hdr2000.glsl"
+#include "aces2_hdr4000.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(binding = 0, set = 0, rgba16f) uniform writeonly image3D outputLut;
+
+layout(push_constant) uniform Push {
+    int preset; // 0 = SDR100, 1..4 = HDR 500/1000/2000/4000 nit
+} pc;
+
+const int LUT_SIZE = 65;
+const float SHAPER_MIN_EV = -16.0;
+const float SHAPER_MAX_EV = 16.0;
+
+const mat3 XYZ_D65_TO_BT709 = mat3(
+     3.2409699419, -0.9692436363,  0.0556300797,
+    -1.5373831776,  1.8759675015, -0.2039769589,
+    -0.4986107603,  0.0415550574,  1.0569715142
+);
+
+const mat3 XYZ_D65_TO_BT2020 = mat3(
+     1.7166511880, -0.6666843518,  0.0176398574,
+    -0.3556707838,  1.6164812366, -0.0427706133,
+    -0.2533662814,  0.0157685458,  0.9421031212
+);
+
+const float PQ_M1 = 0.1593017578125;
+const float PQ_M2 = 78.84375;
+const float PQ_C1 = 0.8359375;
+const float PQ_C2 = 18.8515625;
+const float PQ_C3 = 18.6875;
+
+float pqEncode(float nits) {
+    float y = pow(max(nits, 0.0) / 10000.0, PQ_M1);
+    return pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), PQ_M2);
+}
+
+float srgbEncode(float linearValue) {
+    float x = max(linearValue, 0.0);
+    return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+
+float unshape(int index) {
+    if (index == 0) return 0.0;
+    float t = float(index - 1) / float(LUT_SIZE - 2);
+    return exp2(mix(SHAPER_MIN_EV, SHAPER_MAX_EV, t));
+}
+
+vec3 encodeSdr(vec3 xyzD65) {
+    vec3 linear709 = max(XYZ_D65_TO_BT709 * xyzD65, vec3(0.0));
+    return clamp(vec3(srgbEncode(linear709.r), srgbEncode(linear709.g),
+            srgbEncode(linear709.b)), 0.0, 1.0);
+}
+
+vec3 encodeHdr(vec3 xyzD65) {
+    vec3 nits2020 = max(XYZ_D65_TO_BT2020 * xyzD65, vec3(0.0)) * 100.0;
+    return clamp(vec3(pqEncode(nits2020.r), pqEncode(nits2020.g),
+            pqEncode(nits2020.b)), 0.0, 1.0);
+}
+
+void main() {
+    ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
+    if (any(greaterThanEqual(voxel, ivec3(LUT_SIZE)))) return;
+
+    vec3 sceneLinear709 = vec3(unshape(voxel.x), unshape(voxel.y), unshape(voxel.z));
+    vec3 encoded;
+    if (pc.preset == 0) {
+        encoded = encodeSdr(fluoriteAces2Sdr100(vec4(sceneLinear709, 1.0)).rgb);
+    } else if (pc.preset == 1) {
+        encoded = encodeHdr(fluoriteAces2Hdr500(vec4(sceneLinear709, 1.0)).rgb);
+    } else if (pc.preset == 3) {
+        encoded = encodeHdr(fluoriteAces2Hdr2000(vec4(sceneLinear709, 1.0)).rgb);
+    } else if (pc.preset == 4) {
+        encoded = encodeHdr(fluoriteAces2Hdr4000(vec4(sceneLinear709, 1.0)).rgb);
+    } else {
+        encoded = encodeHdr(fluoriteAces2Hdr1000(vec4(sceneLinear709, 1.0)).rgb);
+    }
+    imageStore(outputLut, voxel, vec4(encoded, 1.0));
+}
