@@ -59,7 +59,8 @@ public final class FluoriteConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
-            Rt.Hdr.ENABLED, Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
+            Rt.Hdr.ENABLED, Rt.PostProcessing.OUTPUT_TRANSFORM, Rt.PostProcessing.COLOR_GRADING_ENABLED,
+            Ngx.PATH, Rt.Diagnostics.TERRAIN_DIGEST, Rt.Volumetrics.ENABLED,
             Rt.Dimensions.NETHER_FOG_ENABLED, Rt.Dimensions.NETHER_AMBIENT_SCALE,
             Rt.Dimensions.END_ENVIRONMENT_SCALE, Rt.Dimensions.END_DISK_SCALE,
             Rt.Dimensions.END_DISK_OUTER_RADIUS, Rt.Dimensions.END_DISK_THICKNESS,
@@ -154,7 +155,12 @@ public final class FluoriteConfig {
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
-                        + " drive the scene-HDR -> display mapping.");
+                        + " drive only the compatibility AgX HDR mapping; ACES 2 uses its fixed preset.");
+        FILE.setComment("post-processing",
+                " Display output and scene-referred creative grading. output-transform accepts agx (default),\n"
+                        + " aces2-lut (fast 65-cube approximation), or aces2-exact (analytic reference).\n"
+                        + " aces-hdr-preset accepts only 500, 1000, 2000, or 4000 nit. The colour grade is a\n"
+                        + " complete bypass while enabled=false.");
     }
 
     private static Path resolveConfigPath() {
@@ -2754,7 +2760,8 @@ public final class FluoriteConfig {
          * encoding both HDR10 swapchains and DLSS Frame Generation require; whatever pixel format the surface
          * pairs with that color space, commonly a 10-bit UNORM), falling back to SDR if the surface doesn't
          * advertise it. The nit values drive the scene-HDR → display mapping: SDR paper white maps to
-         * {@code paperWhiteNits}, and highlights roll off toward {@code peakNits}.
+         * In compatibility AgX mode {@code paperWhiteNits} is SDR paper white and highlights roll off
+         * toward {@code peakNits}. ACES 2 instead uses the fixed peak preset in {@link PostProcessing}.
          */
         public static final class Hdr {
             public static final BooleanSetting ENABLED = bool("fluorite.rt.hdr", "hdr.enabled", false);
@@ -2791,6 +2798,72 @@ public final class FluoriteConfig {
             /** Highlight headroom above paper white, in paper-white-referred units ({@code >= 1}). */
             public static float headroom() {
                 return Math.max(1.0f, PEAK_NITS.value() / Math.max(1.0f, PAPER_WHITE_NITS.value()));
+            }
+        }
+
+        /**
+         * Display-referred output and scene-referred creative grading. Exposure remains in
+         * {@link Exposure} because it owns the metering state, but its player-facing controls are grouped
+         * with this class on the Post Processing screen.
+         *
+         * <p>AgX is deliberately the compatibility default. The optional ACES path is the fixed ACES 2.0
+         * Output Transform and accepts only the official 500/1000/2000/4000-nit HDR presets; arbitrary
+         * peak values would no longer be the published transform. Creative controls are identity by
+         * default and are bypassed as one branch when disabled.
+         */
+        public static final class PostProcessing {
+            public static final StringSetting OUTPUT_TRANSFORM = string(
+                    "fluorite.rt.postProcessing.outputTransform", "post-processing.output-transform",
+                    "agx", PostProcessing::sanitizeOutputTransform);
+            public static final IntSetting ACES_HDR_PRESET = new IntSetting(
+                    "fluorite.rt.postProcessing.acesHdrPreset", "post-processing.aces-hdr-preset",
+                    1000, PostProcessing::sanitizeAcesHdrPreset);
+            public static final BooleanSetting COLOR_GRADING_ENABLED = bool(
+                    "fluorite.rt.postProcessing.colorGrading", "post-processing.color-grading.enabled", false);
+            public static final IntSetting TEMPERATURE_K = clampedInt(
+                    "fluorite.rt.postProcessing.temperature", "post-processing.color-grading.temperature-k",
+                    6500, 2000, 12000);
+            public static final FloatSetting TINT = clampedFloat(
+                    "fluorite.rt.postProcessing.tint", "post-processing.color-grading.tint",
+                    0.0f, -100.0f, 100.0f);
+            public static final FloatSetting CONTRAST = clampedFloat(
+                    "fluorite.rt.postProcessing.contrast", "post-processing.color-grading.contrast",
+                    1.0f, 0.0f, 2.0f);
+            public static final FloatSetting SATURATION = clampedFloat(
+                    "fluorite.rt.postProcessing.saturation", "post-processing.color-grading.saturation",
+                    1.0f, 0.0f, 2.0f);
+            public static final FloatSetting HUE_DEGREES = clampedFloat(
+                    "fluorite.rt.postProcessing.hue", "post-processing.color-grading.hue-degrees",
+                    0.0f, -180.0f, 180.0f);
+
+            private PostProcessing() {
+            }
+
+            /** Maps an approved peak to the compact shader selector: 500, 1000, 2000, or 4000 nit. */
+            public static int acesHdrPresetNits() {
+                return ACES_HDR_PRESET.value();
+            }
+
+            /** 0 = AgX, 1 = sampled 65^3 ACES 2 LUT, 2 = exact analytic ACES 2. */
+            public static int outputTransformMode() {
+                return switch (OUTPUT_TRANSFORM.get()) {
+                    case "aces2-lut" -> 1;
+                    case "aces2-exact" -> 2;
+                    default -> 0;
+                };
+            }
+
+            private static String sanitizeOutputTransform(String value) {
+                if ("aces2-lut".equalsIgnoreCase(value)) return "aces2-lut";
+                // Migrate the short-lived D134 value without changing what an existing selection meant.
+                if ("aces2".equalsIgnoreCase(value) || "aces2-exact".equalsIgnoreCase(value)) {
+                    return "aces2-exact";
+                }
+                return "agx";
+            }
+
+            private static int sanitizeAcesHdrPreset(int value) {
+                return value == 500 || value == 1000 || value == 2000 || value == 4000 ? value : 1000;
             }
         }
     }

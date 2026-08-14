@@ -58,7 +58,6 @@ public final class RtVideoOptions {
      */
     public enum Category {
         TRACING("tracing"),
-        EXPOSURE("exposure"),
         MATERIAL("material"),
         SKY("sky"),
         WEATHER("weather"),
@@ -66,7 +65,7 @@ public final class RtVideoOptions {
         WATER("water"),
         FOG("fog"),
         UPSCALING("upscaling"),
-        HDR("hdr"),
+        POST_PROCESSING("postProcessing"),
         DIAGNOSTICS("diagnostics");
 
         private final String key;
@@ -98,7 +97,6 @@ public final class RtVideoOptions {
                                 particleShadows()),
                         Section.titled("fluorite.options.rt.section.media",
                                 volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
-                case EXPOSURE -> List.of(Section.of(exposureMode(), manualEv()));
                 case MATERIAL -> List.of(
                         Section.of(sunMis(), anisotropy()),
                         Section.titled("fluorite.options.rt.section.subsurface",
@@ -211,7 +209,19 @@ public final class RtVideoOptions {
                                 fogNoiseEnabled(), fogNoiseContrast(), fogNoiseFieldScale(),
                                 fogNoiseWindSpeed(), fogNoiseWindOffset(), fogNoiseMarchSteps()));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
-                case HDR -> List.of(Section.of(hdrEnabled(), hdrPaperWhite(), hdrPeak()));
+                case POST_PROCESSING -> List.of(
+                        Section.titled("fluorite.options.rt.section.exposure",
+                                exposureMode(), manualEv()),
+                        Section.titled("fluorite.options.rt.section.outputTransform",
+                                outputTransform(), hdrEnabled(), acesHdrPreset(),
+                                hdrPaperWhite(), hdrPeak()),
+                        Section.titled("fluorite.options.rt.section.colorGrading",
+                                colorGradingEnabled(), colorTemperature(), colorTint(),
+                                colorContrast(), colorSaturation(), colorHue()),
+                        // D137 reserves one stable home for the spatial effects. Their controls arrive
+                        // only after their algorithms/ranges are approved; an empty heading is preferable
+                        // to inventing a temporary setting ABI.
+                        Section.titled("fluorite.options.rt.section.lensEffects"));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE)));
@@ -255,6 +265,99 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(-50, 50),
             Math.clamp(Math.round(setting.value() * 10.0f), -50, 50),
             tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<String> outputTransform() {
+        StringSetting setting = FluoriteConfig.Rt.PostProcessing.OUTPUT_TRANSFORM;
+        return new OptionInstance<>(
+            "fluorite.options.rt.outputTransform",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.outputTransform.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.outputTransform." + value),
+            new OptionInstance.Enum<>(List.of("agx", "aces2-lut", "aces2-exact"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> acesHdrPreset() {
+        IntSetting setting = FluoriteConfig.Rt.PostProcessing.ACES_HDR_PRESET;
+        return new OptionInstance<>(
+            "fluorite.options.rt.acesHdrPreset",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.acesHdrPreset.tooltip")),
+            (caption, nits) -> Options.genericValueLabel(caption, Component.literal(nits + " nits")),
+            new OptionInstance.Enum<>(List.of(500, 1000, 2000, 4000), Codec.INT),
+            FluoriteConfig.Rt.PostProcessing.acesHdrPresetNits(),
+            setting::set);
+    }
+
+    private static OptionInstance<Boolean> colorGradingEnabled() {
+        return bool("fluorite.options.rt.colorGrading",
+                FluoriteConfig.Rt.PostProcessing.COLOR_GRADING_ENABLED);
+    }
+
+    private static OptionInstance<Integer> colorTemperature() {
+        IntSetting setting = FluoriteConfig.Rt.PostProcessing.TEMPERATURE_K;
+        return new OptionInstance<>(
+            "fluorite.options.rt.colorTemperature",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.colorTemperature.tooltip")),
+            (caption, hundreds) -> Options.genericValueLabel(caption,
+                    Component.literal((hundreds * 100) + " K")),
+            new OptionInstance.IntRange(20, 120),
+            Math.clamp(Math.round(setting.value() / 100.0f), 20, 120),
+            hundreds -> setting.set(hundreds * 100));
+    }
+
+    private static OptionInstance<Integer> colorTint() {
+        FloatSetting setting = FluoriteConfig.Rt.PostProcessing.TINT;
+        return signedIntegerSlider("fluorite.options.rt.colorTint", setting, -100, 100);
+    }
+
+    private static OptionInstance<Integer> colorContrast() {
+        return gradeScale("fluorite.options.rt.colorContrast",
+                FluoriteConfig.Rt.PostProcessing.CONTRAST);
+    }
+
+    private static OptionInstance<Integer> colorSaturation() {
+        return gradeScale("fluorite.options.rt.colorSaturation",
+                FluoriteConfig.Rt.PostProcessing.SATURATION);
+    }
+
+    private static OptionInstance<Integer> colorHue() {
+        FloatSetting setting = FluoriteConfig.Rt.PostProcessing.HUE_DEGREES;
+        return new OptionInstance<>(
+            "fluorite.options.rt.colorHue",
+            OptionInstance.cachedConstantTooltip(Component.translatable(
+                    "fluorite.options.rt.colorHue.tooltip")),
+            (caption, degrees) -> Options.genericValueLabel(caption,
+                    Component.literal((degrees > 0 ? "+" : "") + degrees + " deg")),
+            new OptionInstance.IntRange(-180, 180),
+            Math.clamp(Math.round(setting.value()), -180, 180),
+            degrees -> setting.set(degrees.floatValue()));
+    }
+
+    private static OptionInstance<Integer> gradeScale(String captionKey, FloatSetting setting) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2fx", hundredths / 100.0f))),
+            new OptionInstance.IntRange(0, 200),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 200),
+            hundredths -> setting.set(hundredths / 100.0f));
+    }
+
+    private static OptionInstance<Integer> signedIntegerSlider(String captionKey, FloatSetting setting,
+                                                                int min, int max) {
+        return new OptionInstance<>(
+            captionKey,
+            OptionInstance.cachedConstantTooltip(Component.translatable(captionKey + ".tooltip")),
+            (caption, value) -> Options.genericValueLabel(caption,
+                    Component.literal((value > 0 ? "+" : "") + value)),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value()), min, max),
+            value -> setting.set(value.floatValue()));
     }
 
     private static OptionInstance<Integer> spp() {

@@ -2807,7 +2807,15 @@ public final class RtComposite {
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, FluoriteConfig.Rt.Hdr.enabled(),
-                        FluoriteConfig.Rt.Hdr.paperWhiteNits(), FluoriteConfig.Rt.Hdr.headroom());
+                        FluoriteConfig.Rt.PostProcessing.outputTransformMode(),
+                        FluoriteConfig.Rt.PostProcessing.acesHdrPresetNits(),
+                        FluoriteConfig.Rt.Hdr.paperWhiteNits(), FluoriteConfig.Rt.Hdr.headroom(),
+                        FluoriteConfig.Rt.PostProcessing.COLOR_GRADING_ENABLED.value(),
+                        FluoriteConfig.Rt.PostProcessing.TEMPERATURE_K.value(),
+                        FluoriteConfig.Rt.PostProcessing.TINT.value(),
+                        FluoriteConfig.Rt.PostProcessing.CONTRAST.value(),
+                        FluoriteConfig.Rt.PostProcessing.SATURATION.value(),
+                        FluoriteConfig.Rt.PostProcessing.HUE_DEGREES.value());
             }
             hdrWrittenThisFrame = FluoriteConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
