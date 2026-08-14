@@ -51,6 +51,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | M19 | 受伤 overlay、实体火焰和近似 glint 已进入路径追踪并通过视觉验收。 | [实体 overlay](devlog/M19-M20-entities-particles.md#m19实体-overlay) |
 | M20.1–20.3 | 粒子发光、stochastic alpha 和可选阴影完成；阴影默认关。 | [粒子](devlog/M19-M20-entities-particles.md#m20粒子) |
 | M21 | 世界锚定降雨暴露、连续湿润历史、程序化水坑/涟漪、RT 水花与受统一光源照明的 HDR 雨丝完成并通过功能视觉验收。 | [雨天表面系统](devlog/M21-rain.md) |
+| M22 | ACES 2、分区调色、镜头效果、RGB 颗粒、Bloom/Flare 与 EV 域自动曝光完成并通过功能视觉验收。 | [后处理与镜头效果](devlog/M22-post-processing.md) |
 
 ### 1.4 尚未完成的主线
 
@@ -59,7 +60,6 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
 - M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
 - M14 末地美术替换：当前 HDR/Kerr 技术 Provider 已由 PR #26 合入；后续由用户在 Blender 预渲染包含星空、透镜黑洞和动态吸积盘的循环 HDR 全天球序列，再替换当前实时黑洞。素材到位前不决定帧格式、分辨率、帧率、循环长度、插帧与照明采样方案。
-- M22 后处理与调色：景深、ACES 色调映射、屏幕黑边聚焦、屏幕色散、动态模糊，以及含白平衡和色调偏移等参数的滤镜系统。
 - M23 配置预设：用按键把当前配置保存为版本化 TOML，并可导入 TOML 以校验后的完整配置替换当前设置。
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
 - ReSTIR 整合。
@@ -125,6 +125,12 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | `rt/pipeline/` | RT pipeline/SBT、DLSS-RR/FG、曝光和显示 |
 | `rt/overlay/` | display-resolution 共享 overlay buffer、既有 feature，以及独立 HDR 雨丝 pass |
 | `rt/RtGpuTimers`, `RtFrameStats` | GPU timestamp 与 CSV；性能结论的唯一数据源 |
+
+计时名称是运行期 ABI：每个 `RtFrameStats.FRAME.stage("…")` 的 CPU scope，以及
+`RtGpuTimers.create(...)` 中每个 `gpu.*` zone，都必须同时出现在 `RtFrameStats.FRAME` 的 stage 注册表。
+漏掉 CPU 名称会在对应条件分支首次执行时立即触发 RT failure latch；漏掉 GPU 名称则会等帧环异步回读
+timestamp 时才触发，二者都会回退原版。`RtPostProcessingContractTest` 会扫描全部直接 CPU 调用点并跨文件
+核对 GPU zone；新增、删除或重排计时区时必须运行该测试，不能只以 shader 编译或首帧成功作为通过标准。
 
 ### 2.4 ABI 锚点
 
@@ -555,28 +561,21 @@ D115A–D120A 把首版的全图逐帧 RayQuery 和单一全局储量改为分�
 
 ### 8.6 M22：后处理与调色管线
 
-在现有 RR/曝光/display-map 链上增加以下彼此可独立关闭的能力：
-
-- 景深。
-- ACES 色调映射支持；现有映射不能被无迁移地静默替换。
-- 屏幕黑边聚焦效果。
-- 屏幕色散效果。
-- 动态模糊。
-- 可调滤镜/调色，包括白平衡、色调偏移及后续同类颜色控制。
-
-所有效果必须先明确处理顺序、工作色域、HDR/SDR 边界、是否读取运动/深度、与 DLSS-RR/自动曝光/UI overlay 的先后关系，再进入代码。景深和动态模糊可能使用物理相机/快门模型或纯艺术屏幕近似；色散和黑边聚焦属于明显非物理的镜头/构图效果；ACES 必须说明采用完整 ACES 管线、ACEScg 变换还是命名为 ACES 的 fitted curve。每一项的默认关闭/开启、质量档和参数范围都需要用户批准。
+M22 已于 2026-08-14 完成功能视觉验收：实现 ACES 2、scene-linear 分区调色、景深、动态模糊、畸变、色散、暗角、RGB 颗粒、Bloom、五边形 Lens Flare 与 EV 域自动曝光。完整 D130–D155 决策、失败路线和验收记录见[开发日志：M22 后处理、输出变换与镜头效果](devlog/M22-post-processing.md)。以下只保留当前架构和长期风险。
 
 D130A–D133A 已批准 M22 的公共边界。顺序固定为 `RR/雨丝 → 自动曝光测光 → scene-linear HDR 镜头效果 → 曝光/调色/Output Transform → UI`；测光不读取暗角或创意调色后的结果，UI 不参与景深、动态模糊、色散或暗角，DLSS-FG 接收已完成后处理的 hudless 画面。空间效果按需分配一个 display-resolution `RGBA16F` scratch，全部关闭时不分配、不 dispatch；深度和速度优先从现有 render-resolution guides 局部重建，只允许在证据表明边界质量不足后增加紧凑辅助缓冲，禁止预先常驻第二张全分辨率 ping-pong 图。
 
-现有 AgX/Fluorite HDR 映射必须作为兼容模式保留。新增 ACES 模式必须基于固定版本的完整 ACES 2 Output Transform，而不是 ACES fitted curve：当前 scene-linear BT.709/D65 辐亮度先进入 ACES 输入约定，白平衡使用色适应变换，创意调色在 scene-referred 对数工作空间进行，再分别输出 Rec.709 SDR 与 Rec.2100/Rec.2020 PQ HDR。实现引用的官方版本、许可证、预计算参数表来源和逐像素对照测试必须记录；Minecraft 纹理与光源不是光谱测量数据，因此该模式只承诺符合所实现的 ACES 输出变换，不得声称恢复绝对物理色度。
+AgX 保留为兼容默认项；ACES 2 LUT 与精确模式实现固定版本的完整 Output Transform，不使用 fitted curve。scene-linear BT.709/D65 分别输出 Rec.709/sRGB SDR 或 Rec.2020/PQ HDR；官方版本、许可证、预计算参数和逐像素对照测试必须保持可追溯。65³ LUT 在极端饱和色域压缩边界存在已知误差，升级 LUT 或插值方法仍需新的质量/显存/性能批准。
 
-D134A–D137A 固定产品表面：AgX 继续作为默认输出变换，ACES 2 只作为可选项；ACES HDR 只提供官方 500/1000/2000/4000 nit 四个固定预设，默认 1000 nit，不把任意峰值旋钮伪装成官方变换。调色总开关默认关闭，色温 2000–12000 K（默认 6500 K）、tint -100–100（默认 0）、对比度与饱和度 0–2（默认 1）、色相 -180–180°（默认 0），不新增第二个曝光旋钮。设置界面把旧“曝光”和“HDR”分类合并为“后处理”，内部固定为“曝光 / 输出变换 / 调色 / 镜头效果”；旧 AgX HDR 纸白/峰值仍作为兼容参数保留，ACES 模式读取固定预设。曝光算法和 TOML 键暂不改名，避免无意义配置迁移，但其全部玩家入口已经归入“后处理”。镜头效果标题先占据稳定位置，具体控件只在各算法、范围与默认值逐项批准后加入。
+镜头效果全部默认关闭，诊断视图完整旁路。动态模糊、景深与光学高亮按需复用唯一 full-resolution `RGBA16F` scratch；分层景深另按需分配 signed CoC、tile 和半分辨率 near/far 图。固定 descriptor set 代表两个合法 ping-pong 方向，禁止在已录制 command buffer 内重写。所有镜头效果都是屏幕空间近似：不能恢复画外或被遮挡辐亮度，也不等同于路径追踪薄透镜、光谱色散或物理镜片组。
 
-ACES 实现固定到 ACES `v2.0.0+2025.04.04`（`aces-core` `2d7af39344725aaa8ac3bf1746693c9a1d6c4792`、`aces-output` `aab74723f76728c37345ed01e51ebb24fb1f2f1f`），由 OpenColorIO 2.5.2 提取解析 GPU 形式。五个解析基准 shader 模块内嵌官方 363 项 reach/cusp 参数表，自身不依赖 3D LUT；`tools/verify_aces2_output.py` 会按固定版本重新生成并检查代表性 Rec.709/sRGB 与 Rec.2020/PQ 像素，JUnit 另以规范化源码 SHA-256 和独立显示编码计算阻止参数表或 100-nit 标度被静默改写。许可证边界见 `THIRD_PARTY_NOTICES.md`。
+艺术调色按全局、暗部、中间调、亮部和明度范围组织，烘入 dirty-rebaked 65³ scene-linear LUT；稳定帧只读取一次。自动曝光使用 256-bin log2 直方图、50%–95% 测光窗口和 EV 域指数适应；自动补偿与手动绝对 EV 是独立设置。
 
-D138A 将玩家可选项拆成 `AgX（默认）/ ACES 2 LUT（快速）/ ACES 2 精确`。快速模式在 RT 初始化时以同一组固定解析模块在 GPU 上烘焙 SDR 100 nit 和 HDR 500/1000/2000/4000 nit 五张 `65³ RGBA16F` 3D LUT（合计 10.48 MiB），全程常驻并使用硬件三线性过滤，因此切换模式或 HDR 预设不重新烘焙。输入 shaper 为每通道 log2 EV `[-16,+16]`，第 0 个 texel 专门表示精确黑色；LUT 保存最终 sRGB 或 Rec.2020/PQ 编码值。快速与精确模式使用独立 compute pipeline，避免解析 ACES 模块的体积和寄存器压力污染日常路径；精确模式仍是画质对照基准，不把 LUT 宣称为逐像素等价。
+胶片颗粒、Bloom 与 Lens Flare 彼此独立且默认关闭。Bloom 和 Flare 使用独立阈值；Bloom 最粗层必须保持连续滤波核，禁止重新用稀疏 tap 间距表达半径。Lens Flare 的局部峰值、五边形 bokeh、固定鬼影/光环/streak 是 image-based 美术模型，不符合严格镜片物理，也不参与路径追踪能量守恒。
 
-`tools/verify_aces2_lut.py` 会在 CPU 上复现 GPU 烘焙、半精度量化、shaper 与三线性采样。固定种子的 65,543 个输入中，各预设 99% 编码通道误差不超过 0.005，常见 `0–16` scene-linear 样本的最坏通道误差不超过 0.033；但 ACES 2 饱和色域压缩边界本身很陡，极端近纯色在少量强度区间会被三线性插值提前跨过边界，压力样本最坏可达 0.478（HDR 4000 的强蓝色）。这是 65³ 单次硬件采样的已知近似边界，必须在游戏内重点检查高饱和发光材质与末地蓝色高光；若肉眼可见，升级 129³、改多采样/四面体插值或保留 65³ 并接受误差属于新的质量/显存/性能方向，未经用户批准不得替换。
+后处理根菜单只保留曝光、输出变换，以及同一行的艺术调色/镜头效果入口；子菜单文案只维护 `en_us` 和 `zh_cn`。已结束参数范围与 D155 九宫格修复详见 M22 开发日志。
+
+深度语义警示：`gDepth` 从来都是 Vulkan 硬件 reversed-Z（near=1、far=0），不是线性深度；旧 Java 资源标签“guide linear depth”已经改正。镜头 shader 必须通过当前逆投影矩阵重建距离。`gMotion` 仍以 render-resolution 像素为单位；任何显示分辨率 pass 必须乘 `displaySize/guideSize`，不能直接把它当 UV 或 display-pixel 位移。
 
 ### 8.7 M23：TOML 配置预设导入/导出
 

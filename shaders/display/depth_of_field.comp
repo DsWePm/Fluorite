@@ -1,0 +1,251 @@
+#version 460
+
+// D145A cinematic screen-space depth of field.  The signed full-resolution CoC and dilated tile
+// extrema keep near/far ownership explicit.  The expensive gather runs at half resolution; its 2x2
+// source reads are the prefilter, and the full-resolution recombine performs a light cross filter.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0, set = 0) uniform sampler2D sourceImage;
+layout(binding = 1, set = 0, rgba16f) uniform image2D targetImage;
+layout(binding = 2, set = 0, r32f) uniform readonly image2D depthImage;
+layout(binding = 3, set = 0, r32f) uniform readonly image2D focusImage;
+layout(binding = 4, set = 0, r16f) uniform image2D cocImage;
+layout(binding = 5, set = 0, rgba16f) uniform image2D nearImage;
+layout(binding = 6, set = 0, rgba16f) uniform image2D farImage;
+layout(binding = 7, set = 0, rg16f) uniform image2D tileImage;
+layout(binding = 8, set = 0, rg16f) uniform image2D dilatedTileImage;
+
+layout(push_constant) uniform Push {
+    mat4 inverseProjection;
+    ivec2 displaySize;
+    ivec2 guideSize;
+    ivec2 halfSize;
+    ivec2 tileSize;
+    int mode;
+    int autoFocus;
+    int apertureBlades; // 0 = circular, otherwise 5..9
+    int _pad0;
+    float focusDistance;
+    float fStop;
+    float maxRadius;
+    float focalLengthMm;
+} pc;
+
+const float SENSOR_WIDTH_MM = 36.0;
+const float GOLDEN_ANGLE = 2.39996322972865332;
+const float PI = 3.14159265358979324;
+const int GATHER_SAMPLES = 24;
+
+ivec2 clampDisplay(ivec2 pixel) {
+    return clamp(pixel, ivec2(0), pc.displaySize - 1);
+}
+
+ivec2 guidePixel(vec2 uv) {
+    return clamp(ivec2(uv * vec2(pc.guideSize)), ivec2(0), pc.guideSize - 1);
+}
+
+float reconstructViewDepth(vec2 uv, float hardwareDepth) {
+    if (hardwareDepth <= 1.0e-7) return 1.0e6;
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 viewH = pc.inverseProjection * vec4(ndc, hardwareDepth, 1.0);
+    if (abs(viewH.w) <= 1.0e-7) return 1.0e6;
+    return clamp(abs(viewH.z / viewH.w), 1.0e-3, 1.0e6);
+}
+
+float depthAtDisplayPixel(ivec2 pixel) {
+    vec2 uv = (vec2(clampDisplay(pixel)) + 0.5) / vec2(pc.displaySize);
+    ivec2 guide = guidePixel(uv);
+    vec2 guideUv = (vec2(guide) + 0.5) / vec2(pc.guideSize);
+    return reconstructViewDepth(guideUv, imageLoad(depthImage, guide).r);
+}
+
+float signedCircleOfConfusion(float viewDepth, float focusDistance) {
+    float focal = clamp(pc.focalLengthMm, 1.0, 200.0);
+    float apertureDiameter = focal / max(pc.fStop, 0.7);
+    float objectMm = max(viewDepth * 1000.0, focal + 1.0);
+    float focusMm = max(focusDistance * 1000.0, focal + 1.0);
+    float diameterMm = apertureDiameter * focal * abs(focusMm - objectMm)
+            / (objectMm * max(focusMm - focal, 1.0));
+    float radiusPixels = 0.5 * diameterMm * float(pc.displaySize.x) / SENSOR_WIDTH_MM;
+    float side = objectMm < focusMm ? -1.0 : 1.0;
+    return side * clamp(radiusPixels, 0.0, clamp(pc.maxRadius, 0.0, 64.0));
+}
+
+float focusDistance() {
+    return pc.autoFocus != 0
+            ? clamp(imageLoad(focusImage, ivec2(0)).r, 0.5, 256.0)
+            : clamp(pc.focusDistance, 0.5, 256.0);
+}
+
+void writeCoc(ivec2 pixel) {
+    if (any(greaterThanEqual(pixel, pc.displaySize))) return;
+    float coc = signedCircleOfConfusion(depthAtDisplayPixel(pixel), focusDistance());
+    imageStore(cocImage, pixel, vec4(coc, 0.0, 0.0, 1.0));
+}
+
+void classifyTile(ivec2 tile) {
+    if (any(greaterThanEqual(tile, pc.tileSize))) return;
+    ivec2 first = tile * 16;
+    float minimum = 0.0;
+    float maximum = 0.0;
+    for (int y = 0; y < 16; ++y) {
+        for (int x = 0; x < 16; ++x) {
+            ivec2 pixel = first + ivec2(x, y);
+            if (any(greaterThanEqual(pixel, pc.displaySize))) continue;
+            float coc = imageLoad(cocImage, pixel).r;
+            minimum = min(minimum, coc);
+            maximum = max(maximum, coc);
+        }
+    }
+    imageStore(tileImage, tile, vec4(minimum, maximum, 0.0, 1.0));
+}
+
+void dilateTile(ivec2 tile) {
+    if (any(greaterThanEqual(tile, pc.tileSize))) return;
+    float minimum = 0.0;
+    float maximum = 0.0;
+    // A 64-pixel maximum CoC reaches four 16-pixel tiles.  Extrema are deliberately conservative;
+    // per-sample circle coverage in the gather is the final ownership test.
+    for (int y = -4; y <= 4; ++y) {
+        for (int x = -4; x <= 4; ++x) {
+            ivec2 neighbour = clamp(tile + ivec2(x, y), ivec2(0), pc.tileSize - 1);
+            vec2 extrema = imageLoad(tileImage, neighbour).rg;
+            minimum = min(minimum, extrema.x);
+            maximum = max(maximum, extrema.y);
+        }
+    }
+    imageStore(dilatedTileImage, tile, vec4(minimum, maximum, 0.0, 1.0));
+}
+
+struct PrefilterSample {
+    vec3 nearColor;
+    float nearCoverage;
+    vec3 farColor;
+    float farCoc;
+};
+
+PrefilterSample prefilter2x2(ivec2 centre) {
+    PrefilterSample result;
+    result.nearColor = vec3(0.0);
+    result.nearCoverage = 0.0;
+    result.farColor = vec3(0.0);
+    result.farCoc = 0.0;
+    float nearWeight = 0.0;
+    float farWeight = 0.0;
+    ivec2 first = centre - ivec2(1);
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            ivec2 pixel = clampDisplay(first + ivec2(x, y));
+            vec3 color = texelFetch(sourceImage, pixel, 0).rgb;
+            float coc = imageLoad(cocImage, pixel).r;
+            float nearAlpha = smoothstep(0.0, 1.0, -coc);
+            float farAlpha = 1.0 - nearAlpha;
+            result.nearColor += color * nearAlpha;
+            nearWeight += nearAlpha;
+            result.nearCoverage = max(result.nearCoverage, nearAlpha);
+            result.farColor += color * farAlpha;
+            farWeight += farAlpha;
+            result.farCoc = max(result.farCoc, coc);
+        }
+    }
+    vec3 fallback = texelFetch(sourceImage, clampDisplay(centre), 0).rgb;
+    result.nearColor = nearWeight > 1.0e-5 ? result.nearColor / nearWeight : fallback;
+    result.farColor = farWeight > 1.0e-5 ? result.farColor / farWeight : fallback;
+    return result;
+}
+
+float apertureBoundary(float angle) {
+    int blades = pc.apertureBlades;
+    if (blades < 3) return 1.0;
+    float sector = 2.0 * PI / float(blades);
+    float localAngle = mod(angle + 0.5 * sector, sector) - 0.5 * sector;
+    return cos(PI / float(blades)) / max(cos(localAngle), 1.0e-4);
+}
+
+float diskCoverage(float reach, float distancePixels) {
+    return 1.0 - smoothstep(reach - 1.0, reach + 1.0, distancePixels);
+}
+
+void gatherHalf(ivec2 halfPixel) {
+    if (any(greaterThanEqual(halfPixel, pc.halfSize))) return;
+    ivec2 centre = clampDisplay(halfPixel * 2 + ivec2(1));
+    ivec2 tile = clamp(centre / 16, ivec2(0), pc.tileSize - 1);
+    vec2 extrema = imageLoad(dilatedTileImage, tile).rg;
+    float gatherRadius = max(-extrema.x, extrema.y);
+    PrefilterSample centreSample = prefilter2x2(centre);
+    if (gatherRadius < 0.35) {
+        imageStore(nearImage, halfPixel, vec4(centreSample.nearColor, 0.0));
+        imageStore(farImage, halfPixel, vec4(centreSample.farColor, 0.0));
+        return;
+    }
+
+    float centreCoc = imageLoad(cocImage, centre).r;
+    vec3 nearSum = vec3(0.0);
+    float nearWeight = 0.0;
+    float nearAlpha = 0.0;
+    vec3 farSum = vec3(0.0);
+    float farWeight = 0.0;
+    for (int i = 0; i < GATHER_SAMPLES; ++i) {
+        float unitRadius = sqrt((float(i) + 0.5) / float(GATHER_SAMPLES));
+        float angle = (float(i) + 0.5) * GOLDEN_ANGLE;
+        float radius = gatherRadius * unitRadius * apertureBoundary(angle);
+        vec2 offset = vec2(cos(angle), sin(angle)) * radius;
+        PrefilterSample sampleValue = prefilter2x2(centre + ivec2(round(offset)));
+        float distancePixels = length(offset);
+
+        float farReach = max(max(centreCoc, 0.0), sampleValue.farCoc);
+        float farSampleWeight = diskCoverage(farReach, distancePixels);
+        farSum += sampleValue.farColor * farSampleWeight;
+        farWeight += farSampleWeight;
+
+        // Foreground is scatter-as-gather: only a near sample whose own circle reaches this output
+        // contributes.  The accumulated alpha later lets it occlude the far layer continuously.
+        float nearReach = max(-imageLoad(cocImage,
+                clampDisplay(centre + ivec2(round(offset)))).r, 0.0);
+        float nearSampleWeight = sampleValue.nearCoverage * diskCoverage(nearReach, distancePixels);
+        nearSum += sampleValue.nearColor * nearSampleWeight;
+        nearWeight += nearSampleWeight;
+        nearAlpha = max(nearAlpha, nearSampleWeight);
+    }
+    vec3 nearColor = nearWeight > 1.0e-5 ? nearSum / nearWeight : centreSample.nearColor;
+    vec3 farColor = farWeight > 1.0e-5 ? farSum / farWeight : centreSample.farColor;
+    imageStore(nearImage, halfPixel, vec4(nearColor, clamp(nearAlpha, 0.0, 1.0)));
+    imageStore(farImage, halfPixel, vec4(farColor, max(centreCoc, 0.0)));
+}
+
+vec4 halfLayerLoad(int layer, ivec2 pixel) {
+    return layer == 0 ? imageLoad(nearImage, pixel) : imageLoad(farImage, pixel);
+}
+
+vec4 crossFilter(int layer, ivec2 centre) {
+    ivec2 maximum = pc.halfSize - 1;
+    vec4 sum = halfLayerLoad(layer, clamp(centre, ivec2(0), maximum)) * 4.0;
+    sum += halfLayerLoad(layer, clamp(centre + ivec2(1, 0), ivec2(0), maximum));
+    sum += halfLayerLoad(layer, clamp(centre + ivec2(-1, 0), ivec2(0), maximum));
+    sum += halfLayerLoad(layer, clamp(centre + ivec2(0, 1), ivec2(0), maximum));
+    sum += halfLayerLoad(layer, clamp(centre + ivec2(0, -1), ivec2(0), maximum));
+    return sum * 0.125;
+}
+
+void recombine(ivec2 pixel) {
+    if (any(greaterThanEqual(pixel, pc.displaySize))) return;
+    vec3 base = texelFetch(sourceImage, pixel, 0).rgb;
+    float coc = imageLoad(cocImage, pixel).r;
+    ivec2 halfPixel = clamp(pixel / 2, ivec2(0), pc.halfSize - 1);
+    vec4 farLayer = crossFilter(1, halfPixel);
+    vec4 nearLayer = crossFilter(0, halfPixel);
+    float farBlend = smoothstep(0.35, 1.5, coc);
+    vec3 color = mix(base, farLayer.rgb, farBlend);
+    color = mix(color, nearLayer.rgb, clamp(nearLayer.a, 0.0, 1.0));
+    imageStore(targetImage, pixel, vec4(color, 1.0));
+}
+
+void main() {
+    ivec2 invocation = ivec2(gl_GlobalInvocationID.xy);
+    if (pc.mode == 0) writeCoc(invocation);
+    else if (pc.mode == 1) classifyTile(invocation);
+    else if (pc.mode == 2) dilateTile(invocation);
+    else if (pc.mode == 3) gatherHalf(invocation);
+    else recombine(invocation);
+}

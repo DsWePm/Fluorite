@@ -7,7 +7,7 @@ layout(std430, binding = 0, set = 0) readonly buffer Histogram {
 } hist;
 layout(binding = 1, set = 0, r32f) uniform image2D exposureImage;
 layout(std430, binding = 2, set = 0) buffer ExposureState {
-    float previous;
+    float previousEv;
     uint initialized;
 } stateBuf;
 
@@ -16,8 +16,8 @@ layout(push_constant) uniform Push {
     float key;
     float minEv;
     float maxEv;
-    float adaptUp;
-    float adaptDown;
+    float brightAdaptSeconds;
+    float darkAdaptSeconds;
     float frameTimeSeconds;
     float evBias;
 } pc;
@@ -53,15 +53,19 @@ void main() {
     }
 
     float avgLogLum = weightedCount > 0u ? weightedLogLum / float(weightedCount) : 0.0;
-    float target = pc.key * exp2(pc.evBias - avgLogLum);
-    target = clamp(target, exp2(pc.minEv), exp2(pc.maxEv));
+    float targetEv = log2(max(pc.key, 1.0e-6)) + pc.evBias - avgLogLum;
+    targetEv = clamp(targetEv, pc.minEv, pc.maxEv);
 
-    float prev = stateBuf.initialized == 0u ? target : max(stateBuf.previous, 1.0e-4);
-    float rate = target > prev ? pc.adaptUp : pc.adaptDown;
-    float alpha = stateBuf.initialized == 0u ? 1.0 : 1.0 - exp(-pc.frameTimeSeconds / max(rate, 1.0e-4));
-    float exposure = mix(prev, target, clamp(alpha, 0.0, 1.0));
+    float previousEv = stateBuf.initialized == 0u ? targetEv : stateBuf.previousEv;
+    // Lower exposure means the eye entered a brighter environment and should adapt quickly. Higher
+    // exposure means entering darkness and uses the deliberately slower dark-adaptation time constant.
+    float timeConstant = targetEv < previousEv ? pc.brightAdaptSeconds : pc.darkAdaptSeconds;
+    float alpha = stateBuf.initialized == 0u ? 1.0
+            : 1.0 - exp(-pc.frameTimeSeconds / max(timeConstant, 1.0e-4));
+    float exposureEv = mix(previousEv, targetEv, clamp(alpha, 0.0, 1.0));
+    float exposure = exp2(exposureEv);
 
-    stateBuf.previous = exposure;
+    stateBuf.previousEv = exposureEv;
     stateBuf.initialized = 1u;
     imageStore(exposureImage, ivec2(0), vec4(exposure, 0.0, 0.0, 0.0));
 }

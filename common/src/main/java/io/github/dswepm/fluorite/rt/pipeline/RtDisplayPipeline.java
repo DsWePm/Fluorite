@@ -1,5 +1,6 @@
 package io.github.dswepm.fluorite.rt.pipeline;
 
+import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
@@ -31,8 +32,22 @@ import static io.github.dswepm.fluorite.rt.RtContext.check;
 /** Compute pass that grades display-res scene-linear HDR and applies the selected SDR/HDR output transform. */
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/fluorite/rt/";
-    /** Four ints followed by eight floats; layout mirrored by {@code shaders/display/display.comp}. */
-    private static final int PUSH_BYTES = 12 * Integer.BYTES;
+    /** Output, lens and grain fields mirrored by display_common.glsl. */
+    private static final int PUSH_BYTES = 32 * Integer.BYTES;
+
+    public record TonalGrade(float exposureEv, float redEv, float greenEv, float blueEv,
+                             float saturation, float contrast) {
+    }
+
+    public record CreativeGrade(boolean enabled, float temperatureK, float tint,
+                                float globalContrast, float globalSaturation, float hueDegrees,
+                                TonalGrade shadows, TonalGrade midtones, TonalGrade highlights,
+                                float shadowBoundaryEv, float highlightBoundaryEv) {
+    }
+
+    public record FilmGrain(boolean enabled, float intensity, float size, float chromaticSeparation,
+                            float shadows, float midtones, float highlights) {
+    }
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -42,6 +57,8 @@ public final class RtDisplayPipeline {
     private final long fastPipeline;
     private final long exactPipeline;
     private final RtAces2Luts acesLuts;
+    private final RtCreativeGradingLut creativeGradingLut;
+    private final RtFilmGrainNoise filmGrainNoise;
     private long boundOutputView;
     private long boundRtView;
     private long boundExposureView;
@@ -49,7 +66,9 @@ public final class RtDisplayPipeline {
     private boolean destroyed;
 
     private RtDisplayPipeline(RtContext ctx, long dsl, long pool, long set, long layout,
-                              long fastPipeline, long exactPipeline, RtAces2Luts acesLuts) {
+                              long fastPipeline, long exactPipeline, RtAces2Luts acesLuts,
+                              RtCreativeGradingLut creativeGradingLut,
+                              RtFilmGrainNoise filmGrainNoise) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -58,23 +77,36 @@ public final class RtDisplayPipeline {
         this.fastPipeline = fastPipeline;
         this.exactPipeline = exactPipeline;
         this.acesLuts = acesLuts;
+        this.creativeGradingLut = creativeGradingLut;
+        this.filmGrainNoise = filmGrainNoise;
     }
 
     public static RtDisplayPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         RtAces2Luts acesLuts = RtAces2Luts.create(ctx);
+        RtCreativeGradingLut creativeGradingLut = null;
+        RtFilmGrainNoise filmGrainNoise = null;
+        try {
+            creativeGradingLut = RtCreativeGradingLut.create(ctx);
+            filmGrainNoise = RtFilmGrainNoise.create(ctx);
+        } catch (Throwable t) {
+            if (filmGrainNoise != null) filmGrainNoise.destroy();
+            if (creativeGradingLut != null) creativeGradingLut.destroy();
+            acesLuts.destroy();
+            throw t;
+        }
         long dsl = 0L;
         long pool = 0L;
         long layout = 0L;
         long fastPipeline = 0L;
         long exactPipeline = 0L;
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(9, stack);
+            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(12, stack);
             for (int i = 0; i < 4; i++) {
                 binds.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             }
-            for (int i = 4; i < 9; i++) {
+            for (int i = 4; i < 12; i++) {
                 binds.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                         .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             }
@@ -87,7 +119,7 @@ public final class RtDisplayPipeline {
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(2, stack);
             poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(4);
-            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(5);
+            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(8);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt display)");
             pool = p.get(0);
@@ -112,13 +144,15 @@ public final class RtDisplayPipeline {
             exactPipeline = createComputePipeline(ctx, stack, layout,
                     "display_aces_exact.comp.spv", "display ACES 2 exact");
             return new RtDisplayPipeline(ctx, dsl, pool, set, layout,
-                    fastPipeline, exactPipeline, acesLuts);
+                    fastPipeline, exactPipeline, acesLuts, creativeGradingLut, filmGrainNoise);
         } catch (Throwable t) {
             if (exactPipeline != 0L) VK10.vkDestroyPipeline(vk, exactPipeline, null);
             if (fastPipeline != 0L) VK10.vkDestroyPipeline(vk, fastPipeline, null);
             if (layout != 0L) VK10.vkDestroyPipelineLayout(vk, layout, null);
             if (pool != 0L) VK10.vkDestroyDescriptorPool(vk, pool, null);
             if (dsl != 0L) VK10.vkDestroyDescriptorSetLayout(vk, dsl, null);
+            filmGrainNoise.destroy();
+            creativeGradingLut.destroy();
             acesLuts.destroy();
             throw t;
         }
@@ -145,7 +179,17 @@ public final class RtDisplayPipeline {
                         .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             }
 
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(9, stack);
+            VkDescriptorImageInfo.Buffer rtLinearInfo = VkDescriptorImageInfo.calloc(1, stack);
+            rtLinearInfo.get(0).sampler(acesLuts.sampler()).imageView(rtImageView)
+                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer gradingInfo = VkDescriptorImageInfo.calloc(1, stack);
+            gradingInfo.get(0).sampler(creativeGradingLut.sampler()).imageView(creativeGradingLut.view())
+                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer grainInfo = VkDescriptorImageInfo.calloc(1, stack);
+            grainInfo.get(0).sampler(filmGrainNoise.sampler()).imageView(filmGrainNoise.view())
+                    .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(12, stack);
             writes.get(0).sType$Default().dstSet(descriptorSet).dstBinding(0)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
             writes.get(1).sType$Default().dstSet(descriptorSet).dstBinding(1)
@@ -159,6 +203,15 @@ public final class RtDisplayPipeline {
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                         .pImageInfo(lutInfo[i]);
             }
+            writes.get(9).sType$Default().dstSet(descriptorSet).dstBinding(9)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .pImageInfo(rtLinearInfo);
+            writes.get(10).sType$Default().dstSet(descriptorSet).dstBinding(10)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .pImageInfo(gradingInfo);
+            writes.get(11).sType$Default().dstSet(descriptorSet).dstBinding(11)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .pImageInfo(grainInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundOutputView = outputImageView;
@@ -175,10 +228,16 @@ public final class RtDisplayPipeline {
     public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled,
                          int outputTransformMode, int acesHdrPresetNits,
                          float paperWhiteNits, float headroom,
-                         boolean gradingEnabled, float temperatureK, float tint,
-                         float contrast, float saturation, float hueDegrees) {
+                         CreativeGrade grade, FilmGrain filmGrain, int frameIndex,
+                         boolean lensDistortionEnabled, float lensDistortionStrength,
+                         boolean chromaticAberrationEnabled, float chromaticAberrationStrength,
+                         boolean vignetteEnabled, float vignetteIntensity,
+                         float vignetteStart, float vignetteSoftness) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd,
                 outputTransformMode == 2 ? "display ACES 2 exact" : "display AgX/LUT")) {
+            if (creativeGradingLut.recordIfDirty(cmd, grade)) {
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+            }
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
                     outputTransformMode == 2 ? exactPipeline : fastPipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
@@ -186,15 +245,35 @@ public final class RtDisplayPipeline {
             push.putInt(0, hdrEnabled ? 1 : 0);
             push.putInt(4, outputTransformMode);
             push.putInt(8, acesPresetIndex(acesHdrPresetNits));
-            push.putInt(12, gradingEnabled ? 1 : 0);
+            push.putInt(12, grade.enabled() ? 1 : 0);
             push.putFloat(16, paperWhiteNits);
             push.putFloat(20, headroom);
-            push.putFloat(24, temperatureK);
-            push.putFloat(28, tint);
-            push.putFloat(32, contrast);
-            push.putFloat(36, saturation);
-            push.putFloat(40, hueDegrees);
+            push.putFloat(24, grade.temperatureK());
+            push.putFloat(28, grade.tint());
+            push.putFloat(32, grade.globalContrast());
+            push.putFloat(36, grade.globalSaturation());
+            push.putFloat(40, grade.hueDegrees());
             push.putFloat(44, 0.0f);
+            push.putInt(48, chromaticAberrationEnabled ? 1 : 0);
+            push.putInt(52, vignetteEnabled ? 1 : 0);
+            push.putFloat(56, chromaticAberrationStrength);
+            push.putFloat(60, vignetteIntensity);
+            push.putFloat(64, vignetteStart);
+            push.putFloat(68, vignetteSoftness);
+            push.putInt(72, lensDistortionEnabled ? 1 : 0);
+            push.putFloat(76, lensDistortionStrength);
+            push.putInt(80, filmGrain.enabled() ? 1 : 0);
+            push.putInt(84, frameIndex);
+            push.putFloat(88, filmGrain.intensity());
+            push.putFloat(92, filmGrain.size());
+            push.putFloat(96, filmGrain.shadows());
+            push.putFloat(100, filmGrain.midtones());
+            push.putFloat(104, filmGrain.highlights());
+            push.putFloat(108, grade.shadowBoundaryEv());
+            push.putFloat(112, grade.highlightBoundaryEv());
+            push.putFloat(116, filmGrain.chromaticSeparation());
+            push.putFloat(120, 0.0f);
+            push.putFloat(124, 0.0f);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }
@@ -238,6 +317,8 @@ public final class RtDisplayPipeline {
         VK10.vkDestroyPipelineLayout(vk, pipelineLayout, null);
         VK10.vkDestroyDescriptorPool(vk, descriptorPool, null);
         VK10.vkDestroyDescriptorSetLayout(vk, descriptorSetLayout, null);
+        filmGrainNoise.destroy();
+        creativeGradingLut.destroy();
         acesLuts.destroy();
         destroyed = true;
     }

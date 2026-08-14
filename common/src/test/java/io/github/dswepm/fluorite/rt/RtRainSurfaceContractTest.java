@@ -118,7 +118,8 @@ final class RtRainSurfaceContractTest {
         String options = source(
                 "common/src/main/java/io/github/dswepm/fluorite/client/RtVideoOptions.java");
 
-        assertTrue(primary.contains("material == MATERIAL_OPAQUE\n                    ? evaluateRainSurface"));
+        assertTrue(primary.contains("RainSurface rain = material == MATERIAL_OPAQUE"));
+        assertTrue(primary.contains("? evaluateRainSurface(hitPos, ext"));
         assertTrue(indirect.contains("n = applyRainImpactRipples(hitPos, n, openWaterRainImpact"));
         assertTrue(primary.contains("pc.debugView == 26u"));
         assertTrue(primary.contains("rainSurfaceDebug"));

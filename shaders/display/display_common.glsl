@@ -20,6 +20,9 @@ layout(binding = 5, set = 0) uniform sampler3D acesHdr500Lut;
 layout(binding = 6, set = 0) uniform sampler3D acesHdr1000Lut;
 layout(binding = 7, set = 0) uniform sampler3D acesHdr2000Lut;
 layout(binding = 8, set = 0) uniform sampler3D acesHdr4000Lut;
+layout(binding = 9, set = 0) uniform sampler2D rtLinear;
+layout(binding = 10, set = 0) uniform sampler3D creativeGradingLut;
+layout(binding = 11, set = 0) uniform sampler2D filmGrainNoise;
 
 // Display-map parameters. The SDR world target always receives the selected output transform because
 // vanilla presentation consumes it even while the parallel HDR/PQ image is active.
@@ -36,6 +39,26 @@ layout(push_constant) uniform Push {
     float saturation;        // opponent-space chroma scale
     float hueDegrees;        // opponent-space hue rotation
     float _pad0;
+    int chromaticAberrationEnabled;
+    int vignetteEnabled;
+    float chromaticAberrationStrength; // maximum red/blue separation at the screen edge, in pixels
+    float vignetteIntensity;
+    float vignetteStart;
+    float vignetteSoftness;
+    int lensDistortionEnabled;
+    float lensDistortionStrength; // -1 barrel, 0 bypass, +1 pincushion
+    int filmGrainEnabled;
+    int frameIndex;
+    float filmGrainIntensity;
+    float filmGrainSize;
+    float filmGrainShadows;
+    float filmGrainMidtones;
+    float filmGrainHighlights;
+    float shadowBoundaryEv;
+    float highlightBoundaryEv;
+    float filmGrainChromatic;
+    float _pad2;
+    float _pad3;
 } pc;
 
 // Tonemap seam: map HDR RT radiance to displayable LDR before copying back to the main target.
@@ -262,6 +285,104 @@ vec3 aces2HdrLutSample(vec3 sceneLinear709) {
     return texture(acesHdr1000Lut, uvw).rgb;
 }
 
+vec2 lensDistortionUv(vec2 uv, ivec2 size) {
+    if (pc.lensDistortionEnabled == 0 || abs(pc.lensDistortionStrength) < 1.0e-5) return uv;
+
+    // Work in equal display-pixel units so the radial curve remains circular at non-square aspects.
+    // The linked k1+k2 curve is deliberately bounded: its corner scale remains in [0.80, 1.20]
+    // and the inverse lookup stays monotonic throughout the approved slider range.
+    float aspect = float(size.x) / max(float(size.y), 1.0);
+    vec2 sensor = (uv - 0.5) * vec2(aspect, 1.0);
+    float cornerRadius = 0.5 * length(vec2(aspect, 1.0));
+    vec2 p = sensor / cornerRadius;
+    float r2 = dot(p, p);
+    float strength = clamp(pc.lensDistortionStrength, -1.0, 1.0);
+    float k1 = -0.15 * strength;
+    float k2 = -0.05 * strength;
+    float radialScale = 1.0 + k1 * r2 + k2 * r2 * r2;
+
+    // Negative UI strength is barrel distortion. Its inverse lookup expands toward the source border,
+    // so divide by the maximum corner expansion to crop automatically instead of exposing black edges.
+    float cropScale = max(1.0, 1.0 + k1 + k2);
+    vec2 sourceSensor = sensor * (radialScale / cropScale);
+    return sourceSensor / vec2(aspect, 1.0) + 0.5;
+}
+
+vec3 sceneLinearWithLensEffects(ivec2 pixel, ivec2 size) {
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 sceneUv = lensDistortionUv(uv, size);
+    bool distortionActive = pc.lensDistortionEnabled != 0
+            && abs(pc.lensDistortionStrength) >= 1.0e-5;
+    vec3 color;
+    if (pc.chromaticAberrationEnabled != 0 && pc.chromaticAberrationStrength > 0.0) {
+        vec2 fromCentrePixels = (uv - 0.5) * vec2(size);
+        float radial = clamp(length((uv - 0.5) * 2.0), 0.0, 1.0);
+        vec2 direction = length(fromCentrePixels) > 1.0e-4
+                ? normalize(fromCentrePixels) : vec2(0.0);
+        vec2 offset = direction * (pc.chromaticAberrationStrength * radial * radial) / vec2(size);
+        vec3 centre = textureLod(rtLinear, sceneUv, 0.0).rgb;
+        color = vec3(textureLod(rtLinear, sceneUv + offset, 0.0).r,
+                centre.g, textureLod(rtLinear, sceneUv - offset, 0.0).b);
+    } else if (distortionActive) {
+        color = textureLod(rtLinear, sceneUv, 0.0).rgb;
+    } else {
+        color = imageLoad(rtImage, pixel).rgb;
+    }
+
+    if (pc.vignetteEnabled != 0 && pc.vignetteIntensity > 0.0) {
+        // Screen-normalised elliptical radius: side midpoints are 0.707 and corners are 1.0. This is an
+        // artistic composition control, not the cos^4 falloff of a measured optical system.
+        float radius = length((uv - 0.5) * 2.0) * 0.70710678118;
+        float start = clamp(pc.vignetteStart, 0.0, 1.0);
+        float end = min(start + max(pc.vignetteSoftness, 0.05), 1.41421356237);
+        float edge = smoothstep(start, end, radius);
+        color *= 1.0 - clamp(pc.vignetteIntensity, 0.0, 1.0) * edge;
+    }
+    return color;
+}
+
+vec3 applyFilmGrain(vec3 color, ivec2 pixel) {
+    if (pc.filmGrainEnabled == 0 || pc.filmGrainIntensity <= 0.0) return color;
+    float grainSize = clamp(pc.filmGrainSize, 0.5, 4.0);
+    ivec2 grainPixel = ivec2(floor(vec2(pixel) / grainSize));
+    // Prime frame offsets prevent short axis-aligned cycles; the irrational phase changes the rank
+    // threshold each frame. D150A keeps this shared component, then mixes in independently shifted
+    // channel ranks so low separation remains film-like while high separation approaches analogue TV noise.
+    grainPixel += ivec2(pc.frameIndex * 17, pc.frameIndex * 29);
+    vec2 noiseUv = (vec2(grainPixel & 63) + 0.5) / 64.0;
+    float rank = textureLod(filmGrainNoise, noiseUv, 0.0).r;
+    float framePhase = float(pc.frameIndex & 255) * 0.61803398875;
+    float sharedNoise = fract(rank + framePhase) - 0.5;
+    vec3 grainNoise = vec3(sharedNoise);
+    float chromatic = clamp(pc.filmGrainChromatic, 0.0, 1.0);
+    if (chromatic > 0.0) {
+        ivec2 redPixel = grainPixel + ivec2(1, 11);
+        ivec2 bluePixel = grainPixel + ivec2(-7, 19);
+        vec3 ranks = vec3(
+                textureLod(filmGrainNoise, (vec2(redPixel & 63) + 0.5) / 64.0, 0.0).r,
+                rank,
+                textureLod(filmGrainNoise, (vec2(bluePixel & 63) + 0.5) / 64.0, 0.0).r);
+        vec3 channelNoise = fract(ranks + framePhase * vec3(1.071, 1.137, 1.193)) - 0.5;
+        grainNoise = mix(grainNoise, channelNoise, chromatic);
+    }
+
+    float ev = log2(max(dot(color, vec3(0.2126, 0.7152, 0.0722)), 1.0e-6) / 0.18);
+    const float transitionEv = 1.0;
+    float shadowWeight = 1.0 - smoothstep(pc.shadowBoundaryEv - transitionEv,
+            pc.shadowBoundaryEv + transitionEv, ev);
+    float highlightWeight = smoothstep(pc.highlightBoundaryEv - transitionEv,
+            pc.highlightBoundaryEv + transitionEv, ev);
+    float midWeight = max(1.0 - shadowWeight - highlightWeight, 0.0);
+    float tonalStrength = shadowWeight * pc.filmGrainShadows
+            + midWeight * pc.filmGrainMidtones + highlightWeight * pc.filmGrainHighlights;
+    // Multiplicative log-light modulation is zero-centred, cannot make radiance negative, and behaves
+    // consistently before either the SDR or HDR output transform.  This is synthetic grain, not an
+    // emulation of a measured film stock.
+    vec3 grainEv = grainNoise * clamp(pc.filmGrainIntensity, 0.0, 1.0)
+            * clamp(tonalStrength, 0.0, 2.0) * 0.5;
+    return color * exp2(grainEv);
+}
+
 #if FLUORITE_ACES_EXACT
 vec3 aces2SdrExact(vec3 sceneLinear709) {
     vec3 xyzD65 = fluoriteAces2Sdr100(vec4(sceneLinear709, 1.0)).rgb;
@@ -294,12 +415,12 @@ void main() {
         return;
     }
 
-    vec4 rt = imageLoad(rtImage, pix);
     float exposure = max(imageLoad(exposureImage, ivec2(0)).r, 0.0);
-    vec3 exposed = max(rt.rgb * exposure, vec3(0.0));
+    vec3 exposed = max(sceneLinearWithLensEffects(pix, size) * exposure, vec3(0.0));
     if (pc.gradingEnabled != 0) {
-        exposed = creativeGrade(exposed);
+        exposed = texture(creativeGradingLut, aces2LutCoord(exposed)).rgb;
     }
+    exposed = applyFilmGrain(exposed, pix);
 
 #if FLUORITE_ACES_EXACT
     vec3 ldr = aces2SdrExact(exposed);

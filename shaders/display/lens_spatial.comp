@@ -1,0 +1,113 @@
+#version 460
+
+// One spatial lens pipeline, dispatched in the approved order:
+//   mode 0: update the 1x1 centre auto-focus history
+//   mode 1: depth-aware motion blur
+// Depth of field moved to depth_of_field.comp: it now needs signed CoC, tile dilation and split layers.
+// Source and target are different images for every spatial dispatch. RtComposite alternates rrOutput and
+// one optional RGBA16F scratch, so neighbourhood reads never race writes and no second scratch is resident.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0, set = 0) uniform sampler2D sourceImage;
+layout(binding = 1, set = 0, rgba16f) uniform writeonly image2D targetImage;
+layout(binding = 2, set = 0, r32f) uniform readonly image2D depthImage;
+layout(binding = 3, set = 0, rg16f) uniform readonly image2D motionImage;
+layout(binding = 4, set = 0, r32f) uniform image2D focusImage;
+
+layout(push_constant) uniform Push {
+    mat4 inverseProjection;
+    ivec2 displaySize;
+    ivec2 guideSize;
+    int mode;
+    int sampleCount;
+    int autoFocus;
+    int _pad0;
+    float deltaSeconds;
+    float focusDistance;
+    float fStop;
+    float maxRadius;
+    float shutterScale;
+    float focalLengthMm;
+    float _pad1;
+    float _pad2;
+} pc;
+
+ivec2 guidePixel(vec2 uv) {
+    return clamp(ivec2(uv * vec2(pc.guideSize)), ivec2(0), pc.guideSize - 1);
+}
+
+float reconstructViewDepth(vec2 uv, float hardwareDepth) {
+    if (hardwareDepth <= 1.0e-7) return 1.0e6;
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 viewH = pc.inverseProjection * vec4(ndc, hardwareDepth, 1.0);
+    if (abs(viewH.w) <= 1.0e-7) return 1.0e6;
+    return clamp(abs(viewH.z / viewH.w), 1.0e-3, 1.0e6);
+}
+
+float depthAt(vec2 uv) {
+    ivec2 pixel = guidePixel(clamp(uv, vec2(0.0), vec2(1.0)));
+    return reconstructViewDepth((vec2(pixel) + 0.5) / vec2(pc.guideSize),
+            imageLoad(depthImage, pixel).r);
+}
+
+vec3 sceneAt(vec2 uv) {
+    return textureLod(sourceImage, clamp(uv, vec2(0.0), vec2(1.0)), 0.0).rgb;
+}
+
+void updateAutoFocus() {
+    if (any(notEqual(ivec2(gl_GlobalInvocationID.xy), ivec2(0)))) return;
+    ivec2 centre = pc.guideSize / 2;
+    vec2 uv = (vec2(centre) + 0.5) / vec2(pc.guideSize);
+    float hardwareDepth = imageLoad(depthImage, centre).r;
+    float target = hardwareDepth <= 1.0e-7
+            ? 256.0 : clamp(reconstructViewDepth(uv, hardwareDepth), 0.5, 256.0);
+    float previous = imageLoad(focusImage, ivec2(0)).r;
+    if (!(previous >= 0.5 && previous <= 256.0)) previous = target;
+    // A 0.35-second optical pull removes crosshair-edge popping while remaining responsive in play.
+    float alpha = 1.0 - exp(-clamp(pc.deltaSeconds, 0.0, 0.25) / 0.35);
+    imageStore(focusImage, ivec2(0), vec4(mix(previous, target, alpha), 0.0, 0.0, 1.0));
+}
+
+void motionBlur(ivec2 pixel, vec2 uv) {
+    ivec2 guide = guidePixel(uv);
+    vec2 motion = imageLoad(motionImage, guide).rg
+            * (vec2(pc.displaySize) / vec2(pc.guideSize));
+    vec2 span = motion * clamp(pc.shutterScale, 0.0, 1.0);
+    float halfLength = 0.5 * length(span);
+    float radiusLimit = clamp(pc.maxRadius, 0.0, 64.0);
+    if (halfLength > radiusLimit && halfLength > 0.0) span *= radiusLimit / halfLength;
+    if (length(span) < 0.25 || pc.sampleCount <= 0 || radiusLimit <= 0.0) {
+        imageStore(targetImage, pixel, vec4(sceneAt(uv), 1.0));
+        return;
+    }
+
+    float centreDepth = depthAt(uv);
+    vec3 sum = sceneAt(uv);
+    float weightSum = 1.0;
+    int count = clamp(pc.sampleCount, 1, 16);
+    for (int i = 0; i < 16; ++i) {
+        if (i >= count) break;
+        float t = (float(i) + 0.5) / float(count) - 0.5;
+        vec2 sampleUv = uv + span * t / vec2(pc.displaySize);
+        float sampleDepth = depthAt(sampleUv);
+        float relativeDepth = abs(sampleDepth - centreDepth)
+                / max(min(sampleDepth, centreDepth), 0.25);
+        float weight = 1.0 - smoothstep(0.02, 0.08, relativeDepth);
+        sum += sceneAt(sampleUv) * weight;
+        weightSum += weight;
+    }
+    imageStore(targetImage, pixel, vec4(sum / max(weightSum, 1.0e-5), 1.0));
+}
+
+void main() {
+    if (pc.mode == 0) {
+        updateAutoFocus();
+        return;
+    }
+
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, pc.displaySize))) return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(pc.displaySize);
+    motionBlur(pixel, uv);
+}

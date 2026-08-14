@@ -153,14 +153,25 @@ public final class FluoriteConfig {
                         + " changing colour does not change strength. phase-g is forward-scattering\n"
                         + " anisotropy: positive puts a halo around the sun seen from underwater.");
         FILE.setComment("hdr",
-                " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
-                        + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
+                " Display signal: false is Rec.709/sRGB SDR; true requests Rec.2020/ST.2084-PQ HDR10.\n"
+                        + " HDR requires restart and falls back to SDR if the surface doesn't advertise it.\n"
+                        + " paper-white-nits / peak-nits\n"
                         + " drive only the compatibility AgX HDR mapping; ACES 2 uses its fixed preset.");
+        FILE.setComment("exposure",
+                " Automatic mode meters the 50th-95th percentile of a 256-bin log2 histogram.\n"
+                        + " auto-ev-bias is compensation applied to that target; manual-ev is instead the absolute\n"
+                        + " EV used only in manual mode. Bright/dark adaptation values are exponential EV-domain\n"
+                        + " time constants in seconds: one constant completes about 63% of a transition.");
         FILE.setComment("post-processing",
                 " Display output and scene-referred creative grading. output-transform accepts agx (default),\n"
                         + " aces2-lut (fast 65-cube approximation), or aces2-exact (analytic reference).\n"
                         + " aces-hdr-preset accepts only 500, 1000, 2000, or 4000 nit. The colour grade is a\n"
-                        + " complete bypass while enabled=false.");
+                        + " complete bypass while enabled=false and uses a dirty-rebaked 65-cube scene-linear LUT.\n"
+                        + " Film grain can mix correlated RGB noise into its shared luminance grain. Lens Flare has\n"
+                        + " an independent threshold and a quarter-resolution pentagonal bokeh source. These effects\n"
+                        + " default off; depth-of-field and motion\n"
+                        + " blur share one display-resolution RGBA16F scratch, while cinematic DoF additionally\n"
+                        + " allocates signed-CoC, tile and half-resolution near/far images only while enabled.");
     }
 
     private static Path resolveConfigPath() {
@@ -2569,16 +2580,34 @@ public final class FluoriteConfig {
             public static final StringSetting MODE =
                     string("fluorite.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
             public static final FloatSetting MANUAL_EV =
-                    finiteFloat("fluorite.rt.exposure.manualEv", "exposure.manual-ev", 0.0f);
+                    clampedFloat("fluorite.rt.exposure.manualEv", "exposure.manual-ev", 0.0f, -5.0f, 5.0f);
+            public static final FloatSetting AUTO_EV_BIAS =
+                    clampedFloat("fluorite.rt.exposure.autoEvBias", "exposure.auto-ev-bias", 0.0f, -5.0f, 5.0f);
             public static final FloatSetting KEY = exposureScale("fluorite.rt.exposure.key", "exposure.key", 0.18f);
             public static final FloatSetting MIN_EV =
                     finiteFloat("fluorite.rt.exposure.minEv", "exposure.min-ev", -1.5f);
             public static final FloatSetting MAX_EV =
                     finiteFloat("fluorite.rt.exposure.maxEv", "exposure.max-ev", 4.0f);
-            public static final FloatSetting ADAPT_UP =
-                    exposureScale("fluorite.rt.exposure.adaptUp", "exposure.adapt-up", 0.12f);
-            public static final FloatSetting ADAPT_DOWN =
-                    exposureScale("fluorite.rt.exposure.adaptDown", "exposure.adapt-down", 0.35f);
+            public static final FloatSetting BRIGHT_ADAPT_SECONDS = clampedFloat(
+                    "fluorite.rt.exposure.brightAdaptSeconds",
+                    "exposure.bright-adaptation-seconds", 0.25f, 0.05f, 5.0f);
+            public static final FloatSetting DARK_ADAPT_SECONDS = clampedFloat(
+                    "fluorite.rt.exposure.darkAdaptSeconds",
+                    "exposure.dark-adaptation-seconds", 1.5f, 0.1f, 10.0f);
+
+            static {
+                // D153A splits the old shared dial without changing an existing automatic-exposure look:
+                // on the first load only, copy its value into the new auto bias. Reset-to-default remains
+                // the authored zero because AUTO_EV_BIAS itself was constructed with zero above.
+                if (System.getProperty("fluorite.rt.exposure.autoEvBias") == null
+                        && !FILE.contains("exposure.auto-ev-bias")) {
+                    AUTO_EV_BIAS.set(MANUAL_EV.value());
+                }
+                // These hidden linear-exposure time constants had reversed human semantics. D152A replaces
+                // them with explicit bright/dark EV-domain time constants; do not leave dead keys behind.
+                FILE.remove("exposure.adapt-up");
+                FILE.remove("exposure.adapt-down");
+            }
 
             private Exposure() {
             }
@@ -2835,6 +2864,175 @@ public final class FluoriteConfig {
             public static final FloatSetting HUE_DEGREES = clampedFloat(
                     "fluorite.rt.postProcessing.hue", "post-processing.color-grading.hue-degrees",
                     0.0f, -180.0f, 180.0f);
+            public static final FloatSetting SHADOW_EXPOSURE_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.shadowExposure",
+                    "post-processing.color-grading.shadows.exposure-ev", 0.0f, -4.0f, 4.0f);
+            public static final FloatSetting SHADOW_RED_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.shadowRed",
+                    "post-processing.color-grading.shadows.red-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting SHADOW_GREEN_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.shadowGreen",
+                    "post-processing.color-grading.shadows.green-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting SHADOW_BLUE_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.shadowBlue",
+                    "post-processing.color-grading.shadows.blue-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting SHADOW_SATURATION = clampedFloat(
+                    "fluorite.rt.postProcessing.shadowSaturation",
+                    "post-processing.color-grading.shadows.saturation", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting SHADOW_CONTRAST = clampedFloat(
+                    "fluorite.rt.postProcessing.shadowContrast",
+                    "post-processing.color-grading.shadows.contrast", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting MID_EXPOSURE_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.midExposure",
+                    "post-processing.color-grading.midtones.exposure-ev", 0.0f, -4.0f, 4.0f);
+            public static final FloatSetting MID_RED_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.midRed",
+                    "post-processing.color-grading.midtones.red-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting MID_GREEN_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.midGreen",
+                    "post-processing.color-grading.midtones.green-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting MID_BLUE_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.midBlue",
+                    "post-processing.color-grading.midtones.blue-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting MID_SATURATION = clampedFloat(
+                    "fluorite.rt.postProcessing.midSaturation",
+                    "post-processing.color-grading.midtones.saturation", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting MID_CONTRAST = clampedFloat(
+                    "fluorite.rt.postProcessing.midContrast",
+                    "post-processing.color-grading.midtones.contrast", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting HIGHLIGHT_EXPOSURE_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightExposure",
+                    "post-processing.color-grading.highlights.exposure-ev", 0.0f, -4.0f, 4.0f);
+            public static final FloatSetting HIGHLIGHT_RED_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightRed",
+                    "post-processing.color-grading.highlights.red-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting HIGHLIGHT_GREEN_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightGreen",
+                    "post-processing.color-grading.highlights.green-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting HIGHLIGHT_BLUE_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightBlue",
+                    "post-processing.color-grading.highlights.blue-ev", 0.0f, -2.0f, 2.0f);
+            public static final FloatSetting HIGHLIGHT_SATURATION = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightSaturation",
+                    "post-processing.color-grading.highlights.saturation", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting HIGHLIGHT_CONTRAST = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightContrast",
+                    "post-processing.color-grading.highlights.contrast", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting SHADOW_BOUNDARY_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.shadowBoundary",
+                    "post-processing.color-grading.ranges.shadow-boundary-ev", -2.0f, -8.0f, 0.0f);
+            public static final FloatSetting HIGHLIGHT_BOUNDARY_EV = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightBoundary",
+                    "post-processing.color-grading.ranges.highlight-boundary-ev", 2.0f, 0.0f, 8.0f);
+            public static final BooleanSetting FILM_GRAIN_ENABLED = bool(
+                    "fluorite.rt.postProcessing.filmGrain",
+                    "post-processing.film-grain.enabled", false);
+            public static final FloatSetting FILM_GRAIN_INTENSITY = clampedFloat(
+                    "fluorite.rt.postProcessing.filmGrainIntensity",
+                    "post-processing.film-grain.intensity", 0.2f, 0.0f, 1.0f);
+            public static final FloatSetting FILM_GRAIN_SIZE = clampedFloat(
+                    "fluorite.rt.postProcessing.filmGrainSize",
+                    "post-processing.film-grain.size-px", 1.0f, 0.5f, 4.0f);
+            public static final FloatSetting FILM_GRAIN_CHROMATIC = clampedFloat(
+                    "fluorite.rt.postProcessing.filmGrainChromatic",
+                    "post-processing.film-grain.chromatic-separation", 0.35f, 0.0f, 1.0f);
+            public static final FloatSetting FILM_GRAIN_SHADOWS = clampedFloat(
+                    "fluorite.rt.postProcessing.filmGrainShadows",
+                    "post-processing.film-grain.shadows", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting FILM_GRAIN_MIDTONES = clampedFloat(
+                    "fluorite.rt.postProcessing.filmGrainMidtones",
+                    "post-processing.film-grain.midtones", 1.0f, 0.0f, 2.0f);
+            public static final FloatSetting FILM_GRAIN_HIGHLIGHTS = clampedFloat(
+                    "fluorite.rt.postProcessing.filmGrainHighlights",
+                    "post-processing.film-grain.highlights", 0.5f, 0.0f, 2.0f);
+            public static final FloatSetting HIGHLIGHT_FILTER_THRESHOLD = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightThreshold",
+                    "post-processing.highlights.threshold", 1.0f, 0.0f, 16.0f);
+            public static final FloatSetting HIGHLIGHT_FILTER_SOFT_KNEE = clampedFloat(
+                    "fluorite.rt.postProcessing.highlightSoftKnee",
+                    "post-processing.highlights.soft-knee", 0.5f, 0.0f, 1.0f);
+            public static final BooleanSetting BLOOM_ENABLED = bool(
+                    "fluorite.rt.postProcessing.bloom", "post-processing.bloom.enabled", false);
+            public static final FloatSetting BLOOM_INTENSITY = clampedFloat(
+                    "fluorite.rt.postProcessing.bloomIntensity",
+                    "post-processing.bloom.intensity", 0.2f, 0.0f, 2.0f);
+            public static final FloatSetting BLOOM_RADIUS = clampedFloat(
+                    "fluorite.rt.postProcessing.bloomRadius",
+                    "post-processing.bloom.radius", 0.65f, 0.0f, 1.0f);
+            public static final BooleanSetting LENS_FLARE_ENABLED = bool(
+                    "fluorite.rt.postProcessing.lensFlare", "post-processing.lens-flare.enabled", false);
+            public static final FloatSetting LENS_FLARE_INTENSITY = clampedFloat(
+                    "fluorite.rt.postProcessing.lensFlareIntensity",
+                    "post-processing.lens-flare.intensity", 0.2f, 0.0f, 2.0f);
+            public static final FloatSetting LENS_FLARE_GHOSTS = clampedFloat(
+                    "fluorite.rt.postProcessing.lensFlareGhosts",
+                    "post-processing.lens-flare.ghosts", 0.7f, 0.0f, 2.0f);
+            public static final FloatSetting LENS_FLARE_HALO = clampedFloat(
+                    "fluorite.rt.postProcessing.lensFlareHalo",
+                    "post-processing.lens-flare.halo", 0.35f, 0.0f, 2.0f);
+            public static final FloatSetting LENS_FLARE_STREAKS = clampedFloat(
+                    "fluorite.rt.postProcessing.lensFlareStreaks",
+                    "post-processing.lens-flare.streaks", 0.2f, 0.0f, 2.0f);
+            public static final FloatSetting LENS_FLARE_THRESHOLD = clampedFloat(
+                    "fluorite.rt.postProcessing.lensFlareThreshold",
+                    "post-processing.lens-flare.threshold", 4.0f, 0.0f, 32.0f);
+            public static final FloatSetting LENS_FLARE_BOKEH_SIZE = clampedFloat(
+                    "fluorite.rt.postProcessing.lensFlareBokehSize",
+                    "post-processing.lens-flare.bokeh-size-px", 12.0f, 2.0f, 32.0f);
+            public static final BooleanSetting DEPTH_OF_FIELD_ENABLED = bool(
+                    "fluorite.rt.postProcessing.depthOfField", "post-processing.lens.depth-of-field.enabled", false);
+            public static final StringSetting DEPTH_OF_FIELD_FOCUS_MODE = string(
+                    "fluorite.rt.postProcessing.depthOfFieldFocusMode",
+                    "post-processing.lens.depth-of-field.focus-mode", "auto",
+                    PostProcessing::sanitizeFocusMode);
+            public static final FloatSetting DEPTH_OF_FIELD_FOCUS_DISTANCE = clampedFloat(
+                    "fluorite.rt.postProcessing.depthOfFieldFocusDistance",
+                    "post-processing.lens.depth-of-field.focus-distance", 10.0f, 0.5f, 256.0f);
+            public static final FloatSetting DEPTH_OF_FIELD_F_STOP = clampedFloat(
+                    "fluorite.rt.postProcessing.depthOfFieldFStop",
+                    "post-processing.lens.depth-of-field.f-stop", 4.0f, 0.7f, 32.0f);
+            public static final FloatSetting DEPTH_OF_FIELD_MAX_RADIUS = clampedFloat(
+                    "fluorite.rt.postProcessing.depthOfFieldMaxRadius",
+                    "post-processing.lens.depth-of-field.max-radius-px", 32.0f, 0.0f, 64.0f);
+            public static final IntSetting DEPTH_OF_FIELD_APERTURE_BLADES = new IntSetting(
+                    "fluorite.rt.postProcessing.depthOfFieldApertureBlades",
+                    "post-processing.lens.depth-of-field.aperture-blades", 0,
+                    value -> value == 0 ? 0 : Math.clamp(value, 5, 9));
+            public static final BooleanSetting MOTION_BLUR_ENABLED = bool(
+                    "fluorite.rt.postProcessing.motionBlur", "post-processing.lens.motion-blur.enabled", false);
+            public static final FloatSetting MOTION_BLUR_SHUTTER_ANGLE = clampedFloat(
+                    "fluorite.rt.postProcessing.motionBlurShutterAngle",
+                    "post-processing.lens.motion-blur.shutter-angle", 180.0f, 0.0f, 360.0f);
+            public static final IntSetting MOTION_BLUR_SAMPLES = new IntSetting(
+                    "fluorite.rt.postProcessing.motionBlurSamples",
+                    "post-processing.lens.motion-blur.samples", 16,
+                    value -> value <= 8 ? 8 : 16);
+            public static final FloatSetting MOTION_BLUR_MAX_RADIUS = clampedFloat(
+                    "fluorite.rt.postProcessing.motionBlurMaxRadius",
+                    "post-processing.lens.motion-blur.max-radius-px", 32.0f, 0.0f, 64.0f);
+            public static final BooleanSetting LENS_DISTORTION_ENABLED = bool(
+                    "fluorite.rt.postProcessing.lensDistortion",
+                    "post-processing.lens.distortion.enabled", false);
+            public static final FloatSetting LENS_DISTORTION_STRENGTH = clampedFloat(
+                    "fluorite.rt.postProcessing.lensDistortionStrength",
+                    "post-processing.lens.distortion.strength", 0.0f, -1.0f, 1.0f);
+            public static final BooleanSetting CHROMATIC_ABERRATION_ENABLED = bool(
+                    "fluorite.rt.postProcessing.chromaticAberration",
+                    "post-processing.lens.chromatic-aberration.enabled", false);
+            public static final FloatSetting CHROMATIC_ABERRATION_STRENGTH = clampedFloat(
+                    "fluorite.rt.postProcessing.chromaticAberrationStrength",
+                    "post-processing.lens.chromatic-aberration.strength-px", 0.0f, 0.0f, 8.0f);
+            public static final BooleanSetting VIGNETTE_ENABLED = bool(
+                    "fluorite.rt.postProcessing.vignette", "post-processing.lens.vignette.enabled", false);
+            public static final FloatSetting VIGNETTE_INTENSITY = clampedFloat(
+                    "fluorite.rt.postProcessing.vignetteIntensity",
+                    "post-processing.lens.vignette.intensity", 0.0f, 0.0f, 1.0f);
+            public static final FloatSetting VIGNETTE_START = clampedFloat(
+                    "fluorite.rt.postProcessing.vignetteStart",
+                    "post-processing.lens.vignette.start", 0.5f, 0.0f, 1.0f);
+            public static final FloatSetting VIGNETTE_SOFTNESS = clampedFloat(
+                    "fluorite.rt.postProcessing.vignetteSoftness",
+                    "post-processing.lens.vignette.softness", 0.5f, 0.05f, 1.0f);
 
             private PostProcessing() {
             }
@@ -2864,6 +3062,18 @@ public final class FluoriteConfig {
 
             private static int sanitizeAcesHdrPreset(int value) {
                 return value == 500 || value == 1000 || value == 2000 || value == 4000 ? value : 1000;
+            }
+
+            public static boolean automaticFocus() {
+                return "auto".equals(DEPTH_OF_FIELD_FOCUS_MODE.get());
+            }
+
+            public static boolean spatialLensEffectsEnabled() {
+                return DEPTH_OF_FIELD_ENABLED.value() || MOTION_BLUR_ENABLED.value();
+            }
+
+            private static String sanitizeFocusMode(String value) {
+                return "manual".equalsIgnoreCase(value) ? "manual" : "auto";
             }
         }
     }
