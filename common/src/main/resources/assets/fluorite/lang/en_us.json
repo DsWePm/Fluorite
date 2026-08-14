@@ -636,5 +636,22 @@
   "fluorite.options.rt.fogNoiseWindOffset": "Fog Wind Offset",
   "fluorite.options.rt.fogNoiseWindOffset.tooltip": "How far the near-ground fog runs off the global wind direction. Its speed remains independent of both cloud layers.",
   "fluorite.options.rt.fogNoiseMarchSteps": "Fog March Limit",
-  "fluorite.options.rt.fogNoiseMarchSteps.tooltip": "Maximum density samples in one contiguous numerical interval. More steps resolve structure farther along a ray but increase froxel, reflection and GI cost."
+  "fluorite.options.rt.fogNoiseMarchSteps.tooltip": "Maximum density samples in one contiguous numerical interval. More steps resolve structure farther along a ray but increase froxel, reflection and GI cost.",
+  "fluorite.options.rt.preset.export": "Export Preset",
+  "fluorite.options.rt.preset.export.tooltip": "Export every portable Fluorite setting to a versioned TOML preset. Machine-local paths and diagnostics are omitted.",
+  "fluorite.options.rt.preset.import": "Import Preset",
+  "fluorite.options.rt.preset.import.tooltip": "Strictly validate and replace the portable configuration. Safe settings apply now; resource settings wait for restart.",
+  "fluorite.options.rt.preset.export.dialog": "Export Fluorite preset",
+  "fluorite.options.rt.preset.import.dialog": "Import Fluorite preset",
+  "fluorite.options.rt.preset.filter": "Fluorite TOML preset (*.toml)",
+  "fluorite.options.rt.preset.export.success.title": "Preset Exported",
+  "fluorite.options.rt.preset.export.success": "Exported %s portable settings to:\n%s",
+  "fluorite.options.rt.preset.import.success.title": "Preset Imported",
+  "fluorite.options.rt.preset.import.success": "Applied %s setting changes live.\n%s setting changes are pending restart.\n%s system-property overrides remain active.\nBackup: %s",
+  "fluorite.options.rt.preset.backup.none": "none — no previous config existed",
+  "fluorite.options.rt.preset.error.title": "Preset Operation Failed",
+  "fluorite.options.rt.preset.error": "No configuration was partially applied.\n%s",
+  "fluorite.options.rt.resetDefaults.confirm.title": "Restore All Defaults?",
+  "fluorite.options.rt.resetDefaults.confirm.message": "This replaces every Fluorite setting and clears pending restart choices. This cannot be undone unless you exported a preset first.",
+  "fluorite.options.rt.resetDefaults.confirm.accept": "Restore Defaults"
 }
