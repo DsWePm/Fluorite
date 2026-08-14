@@ -190,6 +190,9 @@ struct CloudLayer {
     // drift. Per layer rather than shared because the two layers are in different wind -- cirrus sits
     // kilometres higher, where it moves faster and often from a different quarter.
     float3 origin;
+    // A small movement relative to origin, authored on the CPU in the same wind direction. Keeping it
+    // separate is what lets cloudlets grow through the macro body without making the weather map boil.
+    float2 detailOffset;
     int   sunSteps;
     bool  cirrus;
 };
@@ -207,6 +210,7 @@ CloudLayer lowLayer() {
     l.fieldScale = max(worldPush.cloudRebase.w, 1.0);
     l.densityScale = worldPush.cloudParams.y;
     l.origin = worldPush.cloudRebase.xyz;
+    l.detailOffset = worldPush.cloudEvolution.xy;
     l.sunSteps = clamp(int(worldPush.cloudLighting.z + 0.5), 0, 8);
     l.cirrus = false;
     return l;
@@ -235,6 +239,7 @@ CloudLayer highLayer() {
     l.fieldScale = max(worldPush.cloudHighOrigin.w, 1.0);
     l.densityScale = worldPush.cloudHighShape.z;
     l.origin = worldPush.cloudHighOrigin.xyz;
+    l.detailOffset = worldPush.cloudEvolution.zw;
     // No self-shadow march. Its optical depth barely leaves zero, so exp(-tau) is within a hair of one
     // everywhere in it, and marching to establish that would be the most expensive nothing in the frame.
     l.sunSteps = 0;
@@ -423,6 +428,49 @@ float cloudType(float3 p) {
  * test even though the height profile now takes it as an argument. Hoisting it would charge every empty
  * step in the sky for a texture read that only matters inside a cloud.
  */
+/** Cumulus and cumulonimbus get rounded sub-cells; stratus deliberately remains a broad sheet. */
+float lowCloudPuffWeight(float type) {
+    return smoothstep(0.12, 0.48, type) * lerp(0.55, 0.80, saturate(type));
+}
+
+/**
+ * The macro body and its smaller cloudlets are two samples of our own baked Perlin-Worley field.
+ *
+ * <p>The second sample is not a cross-fade between unrelated frames. It is a persistent world-space
+ * structure with a slightly different advection speed, so lobes enter and leave the macro envelope
+ * continuously. The high layer uses its authored morphology to blend fibrous cirrus with rounded
+ * cirrocumulus; the low layer derives the amount from its existing cloud type, preserving stratus,
+ * cumulus and cumulonimbus as the same weather continuum.
+ */
+float evolvingCloudShape(CloudLayer layer, float3 pw, float type) {
+    float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);
+    if (layer.cirrus) {
+        float3 fibreUv = pw / (layer.baseScale * float3(3.5, 0.35, 1.0));
+        float fibre = cloudNoise.SampleLevel(fibreUv, 0.0).r;
+        float morphology = saturate(worldPush.cloudHighShape.w);
+        if (morphology <= 0.0) {
+            return fibre;
+        }
+        // High rounded cells sit between the broad streak and erosion scales. Tying the size to both
+        // authored controls keeps the morphology useful when either one is changed independently.
+        float puffScale = max(layer.detailScale * 2.5, layer.baseScale * 0.18);
+        float3 puffUv = detailPw / (puffScale * float3(1.25, 0.55, 1.0));
+        float puffs = cloudNoise.SampleLevel(puffUv, 0.0).r;
+        return lerp(fibre, puffs, morphology);
+    }
+
+    float macro = cloudNoise.SampleLevel(pw / layer.baseScale, 0.0).r;
+    float puffWeight = lowCloudPuffWeight(type);
+    if (puffWeight <= 0.0) {
+        return macro;
+    }
+    float puffs = cloudNoise.SampleLevel(detailPw / (layer.baseScale * 0.36), 0.0).r;
+    // Zero-mean displacement keeps coverage stable while moving the iso-density boundary into many
+    // small rounded protrusions and hollows. The bound (0.34) is below the macro field's full range, so
+    // the weather map remains the owner of where a cloud system exists.
+    return saturate(macro + (puffs - 0.5) * (0.34 * puffWeight));
+}
+
 float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
     float3 pw = worldIn(layer, p);
     if (pw.y < layer.bottom || pw.y > layer.bottom + layer.thickness) {
@@ -437,15 +485,7 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
     if (profile <= 0.0) {
         return 0.0;
     }
-    // Cirrus is SHEARED. Ice crystals falling out of a sheet are drawn into streaks by the wind gradient
-    // they fall through, which is why cirrus looks combed and cumulus looks heaped — so the volume is
-    // sampled anisotropically, stretched along one horizontal axis and compressed vertically. A fixed
-    // world axis stands in for a wind direction the renderer does not model; it is world-anchored, which
-    // is the property that matters here, and a per-frame direction would make the sky crawl.
-    float3 shapeUv = layer.cirrus
-            ? pw / (layer.baseScale * float3(3.5, 0.35, 1.0))
-            : pw / layer.baseScale;
-    float shape = cloudNoise.SampleLevel(shapeUv, 0.0).r;
+    float shape = evolvingCloudShape(layer, pw, type);
     // Coverage raises the whole field rather than masking it, so a cloud grows from its centre outward
     // instead of appearing with hard edges where the mask crosses a threshold.
     float density = saturate(shape + coverage - 1.0) * profile;
@@ -457,7 +497,8 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
     if (density <= 0.0 || cheap) {
         return density * gain;
     }
-    float erosion = cloudNoise.SampleLevel(pw / layer.detailScale, 0.0).g;
+    float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);
+    float erosion = cloudNoise.SampleLevel(detailPw / layer.detailScale, 0.0).g;
     // Erosion only bites where the cloud is already thin, so the body keeps its shape while the edges
     // break up. Subtracting everywhere would hollow the cloud out.
     return saturate(density - erosion * 0.35 * (1.0 - density)) * gain;

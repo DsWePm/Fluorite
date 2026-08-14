@@ -187,8 +187,12 @@ public struct WorldPush {
     // clear that sharing them is the same mistake as sharing a height would be: a high ice sheet and a
     // convective deck are different weather at different altitudes in different wind. Separate lanes are
     // what let one be authored without moving the other.
-    public float4   cloudHighShape;   // x base size, y detail size, z density scale, w reserved
+    public float4   cloudHighShape;   // x base size, y detail size, z density scale, w morphology: 0 cirrus, 1 cirrocumulus
     public float4   cloudHighOrigin;  // xyz its own field origin (rebase - its own drift), w field scale
+    // Differential advection for the body/detail fields. The coverage field still follows each layer's
+    // authored wind exactly; these offsets let smaller structures move through that body slowly, which
+    // changes the density boundary continuously instead of translating one frozen noise volume.
+    public float4   cloudEvolution;   // xy low detail offset, zw high detail offset (absolute blocks)
     // The interactive water simulation's domain (M12). xy is the rebased world position of cell (0,0)'s
     // centre, z the blocks per cell, w the slope strength the sampled field contributes.
     //

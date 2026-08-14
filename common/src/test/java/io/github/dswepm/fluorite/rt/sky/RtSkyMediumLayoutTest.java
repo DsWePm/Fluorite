@@ -19,10 +19,11 @@ final class RtSkyMediumLayoutTest {
         // deriving its shape and wind from the deck below it. M12 and M12.5 grew the water domain and
         // authored wave lanes to 928; M13 residual adds one 16-byte world anchor for the advected fog
         // field, reaching 944. M21 adds six persistent rain/exposure vectors plus two temporary visual-
-        // calibration vectors and reaches 1072. This buffer is not the
+        // calibration vectors and reaches 1072. D161A gives cloud detail advection its own vector rather
+        // than borrowing a water clock, reaching 1088. This buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
         // but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(1072, WorldPushData.BYTE_SIZE);
+        assertEquals(1088, WorldPushData.BYTE_SIZE);
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every
@@ -37,19 +38,20 @@ final class RtSkyMediumLayoutTest {
         assertEquals(588, WorldPushData.ENVIRONMENT_FLAGS_OFFSET);
         assertEquals(592, WorldPushData.FOG_PARAMS_OFFSET);
         assertEquals(656, WorldPushData.FOG_NOISE_ORIGIN_OFFSET);
-        assertEquals(864, WorldPushData.WATER_SIM_DOMAIN_OFFSET);
-        assertEquals(880, WorldPushData.WATER_WAVE_SHAPE_OFFSET);
-        assertEquals(896, WorldPushData.WATER_WAVE_GUST_OFFSET);
-        assertEquals(912, WorldPushData.WATER_WAVE_WARP_OFFSET);
-        assertEquals(928, WorldPushData.WATER_SIM_PLANE_OFFSET);
-        assertEquals(944, WorldPushData.RAIN_EXPOSURE_ORIGIN_OFFSET);
-        assertEquals(960, WorldPushData.RAIN_DIRECTION_OFFSET);
-        assertEquals(976, WorldPushData.RAIN_STATE_OFFSET);
-        assertEquals(992, WorldPushData.RAIN_MATERIAL_DEFAULTS_OFFSET);
-        assertEquals(1008, WorldPushData.RAIN_SURFACE_OFFSET);
-        assertEquals(1024, WorldPushData.RAIN_PUDDLE_OFFSET);
-        assertEquals(1040, WorldPushData.RAIN_CALIBRATION0_OFFSET);
-        assertEquals(1056, WorldPushData.RAIN_CALIBRATION1_OFFSET);
+        assertEquals(864, WorldPushData.CLOUD_EVOLUTION_OFFSET);
+        assertEquals(880, WorldPushData.WATER_SIM_DOMAIN_OFFSET);
+        assertEquals(896, WorldPushData.WATER_WAVE_SHAPE_OFFSET);
+        assertEquals(912, WorldPushData.WATER_WAVE_GUST_OFFSET);
+        assertEquals(928, WorldPushData.WATER_WAVE_WARP_OFFSET);
+        assertEquals(944, WorldPushData.WATER_SIM_PLANE_OFFSET);
+        assertEquals(960, WorldPushData.RAIN_EXPOSURE_ORIGIN_OFFSET);
+        assertEquals(976, WorldPushData.RAIN_DIRECTION_OFFSET);
+        assertEquals(992, WorldPushData.RAIN_STATE_OFFSET);
+        assertEquals(1008, WorldPushData.RAIN_MATERIAL_DEFAULTS_OFFSET);
+        assertEquals(1024, WorldPushData.RAIN_SURFACE_OFFSET);
+        assertEquals(1040, WorldPushData.RAIN_PUDDLE_OFFSET);
+        assertEquals(1056, WorldPushData.RAIN_CALIBRATION0_OFFSET);
+        assertEquals(1072, WorldPushData.RAIN_CALIBRATION1_OFFSET);
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
                 .anyMatch(component -> component.getName().equals("fogNoiseOrigin")));
     }
@@ -71,6 +73,7 @@ final class RtSkyMediumLayoutTest {
         assertTrue(names.contains("cloudLighting"), names.toString());
         assertTrue(names.contains("cloudHighShape"), names.toString());
         assertTrue(names.contains("cloudHighOrigin"), names.toString());
+        assertTrue(names.contains("cloudEvolution"), names.toString());
         assertTrue(names.contains("cloudHigh"), names.toString());
     }
 }

@@ -420,6 +420,8 @@
   "fluorite.options.rt.cloudCirrusFieldScale.tooltip": "How far apart the cirrus layer's own clumps and clearings are. Its own field, independent of the deck below.",
   "fluorite.options.rt.cloudCirrusDensity": "Cirrus Density",
   "fluorite.options.rt.cloudCirrusDensity.tooltip": "Multiplies the cirrus layer's density, independently of the deck below it.",
+  "fluorite.options.rt.cloudCirrusMorphology": "High-cloud Morphology",
+  "fluorite.options.rt.cloudCirrusMorphology.tooltip": "Blends the high layer from fibrous cirrus at 0 to rounded cirrocumulus cloudlets at 1. Intermediate values preserve streaks while breaking them into smaller puffs.",
   "fluorite.options.rt.cloudCirrusWindSpeed": "Cirrus Wind Speed",
   "fluorite.options.rt.cloudCirrusWindSpeed.tooltip": "How fast the cirrus layer drifts, in blocks per second. Its own, not the deck's: cirrus sits kilometres higher where the wind is faster, and two layers sliding past each other at different speeds is most of what makes a sky read as deep rather than as one painted dome.",
   "fluorite.options.rt.cloudCirrus": "Cirrus Layer",

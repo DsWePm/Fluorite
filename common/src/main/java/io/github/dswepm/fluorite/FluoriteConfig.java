@@ -1448,6 +1448,11 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudCirrusDensity",
                             "volumetrics.cloud-cirrus-density", 1f, 0f, 10f);
 
+            /** Blends fibrous cirrus into rounded cirrocumulus cloudlets. */
+            public static final FloatSetting CLOUD_CIRRUS_MORPHOLOGY =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusMorphology",
+                            "volumetrics.cloud-cirrus-morphology", 0.35f, 0f, 1f);
+
             /**
              * How fast the cirrus layer drifts, in blocks per second.
              *

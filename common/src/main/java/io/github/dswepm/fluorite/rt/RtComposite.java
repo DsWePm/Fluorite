@@ -687,7 +687,7 @@ public final class RtComposite {
         return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_BASE_SCALE.value(),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DETAIL_SCALE.value(),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DENSITY.value(),
-                0f);
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_MORPHOLOGY.value());
     }
 
     /** The cirrus layer's own field origin — its own drift — and its own field scale. */
@@ -698,6 +698,24 @@ public final class RtComposite {
         return new Float4((float) (terrain.blockX - drift[0]), terrain.blockY,
                 (float) (terrain.blockZ - drift[1]),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_FIELD_SCALE.value());
+    }
+
+    /**
+     * Relative motion of cloudlets and erosion through each layer's macro body (D161A).
+     *
+     * <p>The layer origin already carries 100% of its wind drift. Adding another 18% to the convective
+     * detail and 12% to the high-cloud detail keeps every scale travelling in the same authored wind,
+     * but stops the density field from being one frozen volume translated forever. These are positions
+     * in blocks rather than time in disguise, so the shader never borrows the water animation clock.
+     */
+    private static Float4 cloudEvolution(RtEnvironmentForcing.Frame environment) {
+        double[] low = windDrift(environment,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value() * 0.18f,
+                FluoriteConfig.Rt.Volumetrics.cloudWindAngle());
+        double[] high = windDrift(environment,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED.value() * 0.12f,
+                FluoriteConfig.Rt.Volumetrics.cloudCirrusWindAngle());
+        return new Float4((float) -low[0], (float) -low[1], (float) -high[0], (float) -high[1]);
     }
 
     private static Float4 cloudRebase(RtTerrain terrain, RtEnvironmentForcing.Frame environment) {
@@ -2758,6 +2776,7 @@ public final class RtComposite {
                     cloudCirrus(),
                     cloudCirrusShape(),
                     cloudCirrusOrigin(terrain, environment),
+                    cloudEvolution(environment),
                     // ORDER MATTERS AND NOTHING CHECKS IT FOR YOU. WorldPushData is generated from the
                     // shader's reflection, so its constructor is POSITIONAL and follows world_common's
                     // declaration order -- waterSimDomain, then the two wave lanes, then the plane.

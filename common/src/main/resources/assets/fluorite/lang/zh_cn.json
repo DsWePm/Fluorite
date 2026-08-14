@@ -420,6 +420,8 @@
   "fluorite.options.rt.cloudCirrusFieldScale.tooltip": "卷云层自己的成团与放晴相隔多远。**独立的场**，与下面的积云层无关。",
   "fluorite.options.rt.cloudCirrusDensity": "卷云密度",
   "fluorite.options.rt.cloudCirrusDensity.tooltip": "缩放卷云层的密度，与下面的积云层互不影响。",
+  "fluorite.options.rt.cloudCirrusMorphology": "高云形态",
+  "fluorite.options.rt.cloudCirrusMorphology.tooltip": "在 0 的纤维状卷云与 1 的圆润卷积云小云包之间混合。中间值保留条缕，同时把它们打散成更小的云包。",
   "fluorite.options.rt.cloudCirrusWindSpeed": "卷云风速",
   "fluorite.options.rt.cloudCirrusWindSpeed.tooltip": "卷云层漂移的速度，单位方块/秒。**是它自己的，不是积云层的**：卷云高出好几公里，那里风更快 —— 两层以不同速度相互滑过，正是天空显得有纵深而不像一个画好的穹顶的主要原因。",
   "fluorite.options.rt.cloudCirrus": "卷云层",

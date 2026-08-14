@@ -126,7 +126,7 @@ public final class RtVideoOptions {
                         // at different altitudes in different wind, and every number they used to share
                         // meant one of them could not be adjusted without moving the other.
                         Section.titled("fluorite.options.rt.section.cloudCirrus",
-                                cloudCirrus(), cloudCirrusCoverage(), cloudCirrusDensity(),
+                                cloudCirrus(), cloudCirrusCoverage(), cloudCirrusDensity(), cloudCirrusMorphology(),
                                 cloudCirrusExtinction(), cloudCirrusAltitude(), cloudCirrusThickness(),
                                 cloudCirrusFieldScale(), cloudCirrusBaseScale(),
                                 cloudCirrusDetailScale(),
@@ -1700,6 +1700,11 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> cloudCirrusDensity() {
         return scaleSlider("fluorite.options.rt.cloudCirrusDensity",
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DENSITY);
+    }
+
+    private static OptionInstance<Integer> cloudCirrusMorphology() {
+        return unitSlider("fluorite.options.rt.cloudCirrusMorphology",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_MORPHOLOGY);
     }
 
     private static OptionInstance<Integer> cloudCirrusWindSpeed() {
