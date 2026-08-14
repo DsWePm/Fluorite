@@ -75,6 +75,9 @@ public final class RtFrameStats {
                     // TLAS build. Its own stage so the deformation's cost is separable from the
                     // terrain's -- the whole reason for taking path 1 was to get this number.
                     "water.deform",
+                    // CPU biome/height queries and the sliding four-block precipitation cache. This
+                    // is separate from gpu.rainExposure, which measures the directional TLAS bake.
+                    "rain.exposureCache",
                     "frame.prepareTlas",
                     "frame.recordTlas",
                     "frame.tracePrimary",
@@ -99,6 +102,8 @@ public final class RtFrameStats {
                     // took to WRITE the commands, not to run them.
                     "gpu.entityBlas",
                     "gpu.tlasBuild",
+                    "gpu.rainExposure",
+                    "gpu.rainStreak",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",
@@ -123,6 +128,8 @@ public final class RtFrameStats {
                     "dynamicBodyAuthoredCandidates", "dynamicBodyFullbrightCandidates",
                     "dynamicParticleCandidates", "dynamicParticleCells", "dynamicTextureSummaryMisses",
                     "dynamicLightUploadBytes", "dynamicLightFlushes",
+                    "rainExposureCpuQueries", "rainExposureUploadBytes",
+                    "rainStreakInstances", "rainImpactRays", "rainImpactsSpawned",
                     "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements"},
             true);
 

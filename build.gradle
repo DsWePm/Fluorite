@@ -94,9 +94,12 @@ abstract class CompileShaders extends DefaultTask {
 		def compileOneSlang = { File src, File spv, List<String> extra ->
 			execOps.exec {
 				// Embed Slang source and line mappings in SPIR-V for RenderDoc/Nsight source debugging.
+				// Overlay Slang stages may consume the reflected world ABI (rain streaks do); expose the
+				// canonical module directory instead of duplicating a partial WorldPush definition.
 				commandLine([slangc.get(), src.absolutePath, "-target", "spirv",
 						"-profile", "spirv_1_5", "-matrix-layout-column-major",
-						"-warnings-as-errors", "all", "-warnings-disable", "41012", "-g"] + extra
+						"-warnings-as-errors", "all", "-warnings-disable", "41012", "-g",
+						"-I", new File(srcDir.get().asFile, "world").absolutePath] + extra
 						+ ["-o", spv.absolutePath])
 			}
 			validate(spv)

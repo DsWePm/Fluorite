@@ -71,6 +71,26 @@ final class RtMaterialOverridesTest {
     }
 
     @Test
+    void formatThreeParsesIndependentWeatherLanesAndOlderFormatsCannotClaimThem() {
+        var rule = RtMaterialOverrides.parse(JsonParser.parseString("""
+                {"format":3,"match":{"sprite":"minecraft:block/stone"},
+                "weather":{"absorption":0.8,"film_retention":0.25}}
+                """).getAsJsonObject(), Identifier.parse("test:weather.json"));
+        assertEquals(0.8f, rule.weather().absorption());
+        assertEquals(-1f, rule.weather().darkening());
+        assertEquals(0.25f, rule.weather().filmRetention());
+        RtMaterialDesc.Weather inherited = new RtMaterialDesc.Weather(-1f, 0.4f, -1f, 0.7f);
+        RtMaterialDesc base = neutralBaseWithWeather(inherited);
+        assertEquals(new RtMaterialDesc.Weather(0.8f, 0.4f, 0.25f, 0.7f), rule.apply(base).weather());
+
+        assertThrows(IllegalArgumentException.class, () -> RtMaterialOverrides.parse(
+                JsonParser.parseString("""
+                        {"format":2,"match":{"sprite":"minecraft:block/stone"},
+                        "weather":{"absorption":0.5}}
+                        """).getAsJsonObject(), Identifier.parse("test:old-weather.json")));
+    }
+
+    @Test
     void rejectsOutOfRangeDisneyParameters() {
         assertThrows(IllegalArgumentException.class, () -> RtMaterialOverrides.parse(
                 JsonParser.parseString("""
@@ -85,10 +105,14 @@ final class RtMaterialOverridesTest {
     }
 
     private static RtMaterialDesc neutralBase() {
+        return neutralBaseWithWeather(RtMaterialDesc.Weather.NONE);
+    }
+
+    private static RtMaterialDesc neutralBaseWithWeather(RtMaterialDesc.Weather weather) {
         return new RtMaterialDesc(RtMaterialRegistry.MODEL_OPAQUE, RtMaterialDesc.Source.LAB_PBR,
                 RtMaterialRegistry.FEATURE_SPEC, 0.8f, 0.0f, 1.0f, 0.0f,
                 RtMaterialDesc.EmissionSource.NONE, 0.0f,
-                RtMaterialDesc.EmissionSummary.NONE, RtMaterialDesc.Disney.NONE);
+                RtMaterialDesc.EmissionSummary.NONE, RtMaterialDesc.Disney.NONE, weather);
     }
 
     @Test

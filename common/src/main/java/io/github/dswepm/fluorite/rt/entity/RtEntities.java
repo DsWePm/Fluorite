@@ -13,6 +13,7 @@ import net.minecraft.client.particle.Particle;
 import net.minecraft.client.particle.ParticleGroup;
 import net.minecraft.client.particle.ParticleRenderType;
 import net.minecraft.client.particle.SingleQuadParticle;
+import net.minecraft.client.particle.WaterDropParticle;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
 import net.minecraft.client.renderer.culling.Frustum;
@@ -238,6 +239,11 @@ public final class RtEntities {
     private IdentityHashMap<Particle, ParticlePrev> particlePrev = new IdentityHashMap<>();
     private IdentityHashMap<Particle, ParticlePrev> particleCur = new IdentityHashMap<>();
     private final float[] particleCenterScratch = new float[3];
+    private static final float[] SPLASH_U = {0f, 1f, 1f, 0f};
+    private static final float[] SPLASH_V = {0f, 0f, 1f, 1f};
+    private final float[] splashX = new float[4];
+    private final float[] splashY = new float[4];
+    private final float[] splashZ = new float[4];
     private final BlockPos.MutableBlockPos entityLightBlockPos = new BlockPos.MutableBlockPos();
     private final BlockPos.MutableBlockPos particleLightBlockPos = new BlockPos.MutableBlockPos();
     private final Long2ObjectOpenHashMap<ParticleLightCell> particleLightCells = new Long2ObjectOpenHashMap<>();
@@ -1042,11 +1048,6 @@ public final class RtEntities {
         }
         Map<ParticleRenderType, ParticleGroup<?>> groups =
                 ((ParticleEngineAccessor) mc.particleEngine).fluorite$getParticleGroups();
-        if (groups == null || groups.isEmpty()) {
-            particlePrev.clear();
-            particleCur.clear();
-            return;
-        }
         capture.reset();
         capture.currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
         particleDisp.clear();
@@ -1060,16 +1061,27 @@ public final class RtEntities {
         frustum.prepare(camPos.x, camPos.y, camPos.z);
         IdentityHashMap<Particle, ParticlePrev> cur = particleCur;
         cur.clear();
-        int particlesCaptured = 0;
+        int particlesCaptured = appendRainSplashes(mc.level, partial, rbx, rby, rbz,
+                frustum, particleLimit);
+        build.logicalCount += particlesCaptured;
         int dynamicParticlesExamined = 0;
         try {
-            particleGroups:
-            for (ParticleGroup<?> group : groups.values()) {
-                Queue<? extends Particle> queue = ((ParticleGroupAccessor) group).fluorite$getParticles();
-                for (Particle p : queue) {
+            if (groups != null) {
+                particleGroups:
+                for (ParticleGroup<?> group : groups.values()) {
+                    Queue<? extends Particle> queue = ((ParticleGroupAccessor) group).fluorite$getParticles();
+                    for (Particle p : queue) {
                     if (build.full() || (particlesCaptured >= particleLimit
                             && dynamicParticlesExamined >= particleLimit)) {
                         break particleGroups;
+                    }
+                    // ClientLevel independently spawns ParticleTypes.RAIN impacts every weather tick.
+                    // Fluorite replaces those blue billboards with the neutral world-oriented splash
+                    // crowns appended above; capturing both would double the impact and retain the
+                    // vanilla-blue artifact. This class is the provider product for that one particle
+                    // type, so smoke, potions, modded particles, and visible rain streaks are untouched.
+                    if (p instanceof WaterDropParticle) {
+                        continue;
                     }
                     if (!(p instanceof SingleQuadParticle sq)) {
                         continue; // item-pickup / elder-guardian particles aren't billboard quads (skip)
@@ -1142,7 +1154,8 @@ public final class RtEntities {
                     }
                     appendParticleMv(p, particleCenterScratch, vertBefore, vertAfter, rbx, rby, rbz, cur);
                     build.logicalCount++;
-                    particlesCaptured++;
+                        particlesCaptured++;
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -1161,6 +1174,173 @@ public final class RtEntities {
         long dispAddr = uploadDisp(ctx, build, particleDisp);
         appendCapture(ctx, build, new Motion(dispAddr, 0f, 0f, 0f),
                 -1, PARTICLE_BIT, particleMask(), IDENTITY); // one combined mesh, per-particle MV
+    }
+
+    /**
+     * Append Fluorite-owned neutral impact crowns before ordinary particles so the particle budget cannot
+     * hide them. Geometry is world-oriented rather than camera-facing: eight short crown walls plus three
+     * crossed droplets, all in the existing primary + optional-shadow particle BLAS.
+     */
+    private int appendRainSplashes(ClientLevel level, float partial, int rbx, int rby, int rbz,
+                                   Frustum frustum, int limit) {
+        if (level == null || limit <= 0) {
+            return 0;
+        }
+        List<RtRainImpacts.Splash> splashes = RtRainImpacts.activeSplashes(level);
+        int captured = 0;
+        int splashColor = rainSplashColor();
+        for (RtRainImpacts.Splash splash : splashes) {
+            if (captured >= limit) {
+                break;
+            }
+            float age = splash.age(partial);
+            float life = age / RtRainImpacts.SPLASH_LIFETIME_TICKS;
+            if (life < 0f || life >= 1f || !frustum.pointInFrustum(splash.x(), splash.y(), splash.z())) {
+                continue;
+            }
+            float envelope = (float) Math.sin(Math.PI * life);
+            float opacity = FluoriteConfig.Rt.Weather.RAIN_SPLASH_OPACITY.value() * envelope;
+            if (opacity <= 1.0e-3f) {
+                continue;
+            }
+            float authoredSize = FluoriteConfig.Rt.Weather.RAIN_SPLASH_SIZE.value();
+            float radius = authoredSize * (0.32f + life * 0.92f);
+            float height = authoredSize * envelope * 0.72f;
+            float cx = (float) splash.x() - rbx;
+            float cy = (float) splash.y() - rby;
+            float cz = (float) splash.z() - rbz;
+            float nx = splash.nx(), ny = splash.ny(), nz = splash.nz();
+            float tx, ty, tz;
+            if (Math.abs(ny) < 0.9f) {
+                float inv = 1f / (float) Math.sqrt(nx * nx + nz * nz);
+                tx = nz * inv;
+                ty = 0f;
+                tz = -nx * inv;
+            } else {
+                tx = 1f;
+                ty = 0f;
+                tz = 0f;
+            }
+            float bx = ny * tz - nz * ty;
+            float by = nz * tx - nx * tz;
+            float bz = nx * ty - ny * tx;
+            float phase = splashRandom(splash.seed(), 0) * (float) (Math.PI * 2.0);
+
+            int primStart = capture.prim.size();
+            int vertStart = capture.verts.size() / 3;
+            capture.currentTexSlot = 0; // ignored by PRIM_RAIN_SPLASH
+            capture.currentMaterialId = 0;
+            capture.currentAlphaBucket = RtAccel.ENTITY_BUCKET_ANY_HIT;
+            capture.currentPrimFlags = RtEntityCapture.PRIM_STOCHASTIC_ALPHA
+                    | RtEntityCapture.PRIM_RAIN_SPLASH;
+
+            final int crownSegments = 8;
+            for (int segment = 0; segment < crownSegments; segment++) {
+                float a0 = phase + (float) (Math.PI * 2.0 * segment / crownSegments);
+                float a1 = phase + (float) (Math.PI * 2.0 * (segment + 1) / crownSegments);
+                float c0 = (float) Math.cos(a0), s0 = (float) Math.sin(a0);
+                float c1 = (float) Math.cos(a1), s1 = (float) Math.sin(a1);
+                float h0 = height * (0.55f + 0.55f * splashRandom(splash.seed(), segment * 2 + 1));
+                float h1 = height * (0.55f + 0.55f * splashRandom(splash.seed(), segment * 2 + 2));
+                setSplashPoint(0, cx, cy, cz, tx, ty, tz, bx, by, bz, nx, ny, nz,
+                        c0, s0, radius, 0f);
+                setSplashPoint(1, cx, cy, cz, tx, ty, tz, bx, by, bz, nx, ny, nz,
+                        c1, s1, radius, 0f);
+                setSplashPoint(2, cx, cy, cz, tx, ty, tz, bx, by, bz, nx, ny, nz,
+                        c1, s1, radius * 0.90f, h1);
+                setSplashPoint(3, cx, cy, cz, tx, ty, tz, bx, by, bz, nx, ny, nz,
+                        c0, s0, radius * 0.90f, h0);
+                float mid = (a0 + a1) * 0.5f;
+                float qx = tx * (float) Math.cos(mid) + bx * (float) Math.sin(mid);
+                float qy = ty * (float) Math.cos(mid) + by * (float) Math.sin(mid);
+                float qz = tz * (float) Math.cos(mid) + bz * (float) Math.sin(mid);
+                capture.addDirectQuad(splashX, splashY, splashZ, SPLASH_U, SPLASH_V,
+                        qx, qy, qz, splashColor);
+            }
+
+            for (int drop = 0; drop < 3; drop++) {
+                float angle = phase + (float) (Math.PI * 2.0 * (drop + 0.25) / 3.0);
+                float ca = (float) Math.cos(angle), sa = (float) Math.sin(angle);
+                float dx = tx * ca + bx * sa;
+                float dy = ty * ca + by * sa;
+                float dz = tz * ca + bz * sa;
+                float qx = -tx * sa + bx * ca;
+                float qy = -ty * sa + by * ca;
+                float qz = -tz * sa + bz * ca;
+                float radial = radius * (0.35f + 0.45f * splashRandom(splash.seed(), 30 + drop));
+                float rise = height * (0.72f + 0.50f * splashRandom(splash.seed(), 40 + drop));
+                float halfWidth = authoredSize * 0.045f;
+                float dropHeight = authoredSize * (0.10f + 0.08f * splashRandom(splash.seed(), 50 + drop));
+                float px = cx + dx * radial + nx * rise;
+                float py = cy + dy * radial + ny * rise;
+                float pz = cz + dz * radial + nz * rise;
+                setSplashRibbon(px, py, pz, qx, qy, qz, nx, ny, nz, halfWidth, dropHeight);
+                capture.addDirectQuad(splashX, splashY, splashZ, SPLASH_U, SPLASH_V,
+                        dx, dy, dz, splashColor);
+                setSplashRibbon(px, py, pz, dx, dy, dz, nx, ny, nz, halfWidth, dropHeight);
+                capture.addDirectQuad(splashX, splashY, splashZ, SPLASH_U, SPLASH_V,
+                        qx, qy, qz, splashColor);
+            }
+            capture.setProceduralAlphaFrom(primStart, opacity);
+            int vertEnd = capture.verts.size() / 3;
+            appendZeroParticleMotion(vertStart, vertEnd);
+            captured++;
+        }
+        capture.currentPrimFlags = 0;
+        return captured;
+    }
+
+    /** Scale the neutral pale-water tint without turning artistic brightness into emission. */
+    private static int rainSplashColor() {
+        float gain = FluoriteConfig.Rt.Weather.RAIN_SPLASH_BRIGHTNESS.value();
+        int red = Math.clamp(Math.round(0xE8 * gain), 0, 255);
+        int green = Math.clamp(Math.round(0xF0 * gain), 0, 255);
+        int blue = Math.clamp(Math.round(0xF2 * gain), 0, 255);
+        return 0xFF000000 | red << 16 | green << 8 | blue;
+    }
+
+    private void setSplashPoint(int index, float cx, float cy, float cz,
+                                float tx, float ty, float tz, float bx, float by, float bz,
+                                float nx, float ny, float nz, float ca, float sa,
+                                float radius, float height) {
+        splashX[index] = cx + (tx * ca + bx * sa) * radius + nx * height;
+        splashY[index] = cy + (ty * ca + by * sa) * radius + ny * height;
+        splashZ[index] = cz + (tz * ca + bz * sa) * radius + nz * height;
+    }
+
+    private void setSplashRibbon(float px, float py, float pz, float ax, float ay, float az,
+                                 float nx, float ny, float nz, float halfWidth, float height) {
+        splashX[0] = px - ax * halfWidth;
+        splashY[0] = py - ay * halfWidth;
+        splashZ[0] = pz - az * halfWidth;
+        splashX[1] = px + ax * halfWidth;
+        splashY[1] = py + ay * halfWidth;
+        splashZ[1] = pz + az * halfWidth;
+        splashX[2] = splashX[1] + nx * height;
+        splashY[2] = splashY[1] + ny * height;
+        splashZ[2] = splashZ[1] + nz * height;
+        splashX[3] = splashX[0] + nx * height;
+        splashY[3] = splashY[0] + ny * height;
+        splashZ[3] = splashZ[0] + nz * height;
+    }
+
+    private void appendZeroParticleMotion(int vertStart, int vertEnd) {
+        for (int vertex = vertStart; vertex < vertEnd; vertex++) {
+            particleDisp.add(0f);
+            particleDisp.add(0f);
+            particleDisp.add(0f);
+            particleDisp.add(0f);
+        }
+    }
+
+    private static float splashRandom(int seed, int salt) {
+        int value = seed ^ salt * 0x9E3779B9;
+        value ^= value >>> 16;
+        value *= 0x7FEB352D;
+        value ^= value >>> 15;
+        value *= 0x846CA68B;
+        value ^= value >>> 16;
+        return (value >>> 8) * (1f / 16777216f);
     }
 
     /** Collect one particle independently of camera visibility; the existing geometry path stays untouched. */

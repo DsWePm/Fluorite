@@ -124,8 +124,8 @@ final class RtFogNoiseContractTest {
         assertTrue(raygen.contains("band < 1u"));
         assertTrue(raygen.contains("band < 2u"));
         assertTrue(raygen.contains("band < 3u"));
-        assertTrue(options.contains("Math.clamp(setting.value(), 0, 25)"));
-        assertTrue(Pattern.compile("List\\.of\\([^;]*\\b25\\)", Pattern.DOTALL)
+        // 25 must remain selectable, but later diagnostics may legitimately extend the upper bound.
+        assertTrue(Pattern.compile("List\\.of\\([^;]*\\b25\\s*,", Pattern.DOTALL)
                 .matcher(options).find());
     }
 

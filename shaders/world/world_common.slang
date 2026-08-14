@@ -32,7 +32,7 @@ public struct WorldPushConstants {
     public uint64_t tableAddr;
     public uint64_t entityTableAddr;
     public uint64_t materialTableAddr;
-    public uint64_t materialExtensionAddr; // optional Disney records; MaterialHeader.extensionOffset indexes it 1-based
+    public uint64_t materialExtensionAddr; // optional Disney/weather records; MaterialHeader.extensionOffset is 1-based
     public uint64_t lightBufAddr;        // RIS emitter-NEE global light buffer (0 = none published)
     public uint64_t lightAliasAddr;      // power-weighted O(1) alias table (0 = uniform fallback)
     public uint64_t lightLocalAliasAddr; // power aliases relative to each section's range
@@ -224,6 +224,22 @@ public struct WorldPush {
     // and its two noise fetches entirely, which is also the shipped field exactly.
     public float4   waterWaveWarp;   // x warp blocks, y warp scale, z first*16+last, w band-limit on
     public float4   waterSimPlane;  // x plane Y, y tolerance, z storm swell bias, w caustic contrast
+
+    // M21 directional rain exposure and globally retained surface water. The depth bake and every path
+    // vertex consume the same origin/direction; duplicating either in a compute-only push constant would
+    // allow the shadow map to be geometrically correct while every consumer sampled the neighbouring ray.
+    // rainExposureOrigin.w is the active square resolution (256 or 512), zero for the exact dry/off path.
+    public float4   rainExposureOrigin; // xyz top-plane minimum corner (rebased), w active resolution
+    public float4   rainDirection;      // xyz unit direction toward ground, w ray length top-to-bottom
+    public float4   rainState;          // x wetFilm storage, y puddle storage, z rain intensity, w enabled
+    // Negative MaterialExtension.weather lanes inherit these values at shading time.
+    public float4   rainMaterialDefaults; // absorption, darkening, film retention, puddle affinity
+    public float4   rainSurface;        // x film strength, y film GGX alpha, z puddle coverage, w puddle scale
+    public float4   rainPuddle;         // x ripple strength, y puddles enabled, z ripple radius, w wrapped time
+    // Temporary M21 art-calibration controls. Keep physical water F0 fixed; these scale coverage,
+    // shallow-puddle extra darkening and roughness and will be baked to constants after visual sign-off.
+    public float4   rainCalibration0;    // wet darkening gain, wet coat gain, puddle layer gain, puddle alpha
+    public float4   rainCalibration1;    // puddle extra darkening, normal flattening, ripple width, wet-film normal flatten
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
@@ -323,6 +339,9 @@ public static const uint PAYLOAD_EMITTER_IN_LIST = 128u;
 // value, but the hit shader overwrites flags before setting this output, so the two meanings cannot leak
 // into one another.
 public static const uint PAYLOAD_DIELECTRIC_ENTERING = 8u;
+// Opaque-hit reuse of bit 3: the unflipped terrain geometric normal points upward. Hits and dielectric
+// crossings are mutually exclusive material classes, so this costs no payload lane.
+public static const uint PAYLOAD_RAIN_TOP_FACE = 8u;
 public static const uint PAYLOAD_EMISSION_SOURCE_SHIFT = 4u;
 public static const uint PAYLOAD_EMISSION_SOURCE_MASK = 7u;
 public static const uint EMISSION_SOURCE_NONE = 0u;
@@ -349,6 +368,9 @@ public static const uint PAYLOAD_MATERIAL_MASK = 3u;
 // than its radiance: dividing by the square's solid angle is the raygen's job, because at the smallest
 // configurable sun the radiance is over a million and half would clamp it.
 public static const uint PAYLOAD_ANALYTIC_LIGHT = 1u << 20u;
+// Opaque-hit reuse of bit 20. Misses use it for the analytic celestial emitter; terrain hits use it to
+// identify small pass-through plants whose exposed cards receive rain film on every visible face.
+public static const uint PAYLOAD_RAIN_PLANT = 1u << 20u;
 
 // PCG lives in the binding-free common module because raygen, the froxel compute bake and the
 // world-space visibility compute bake all need the SAME celestial-emitter sampler. Keeping the stream
@@ -521,6 +543,14 @@ public static const uint ENTITY_PRIM_GLINT = 1u;
 // MaterialHeader, but PARTICLES CARRY NO MATERIAL RECORD — they never index the table — so the flag lane
 // is the only place the any-hit shader can learn it. Vanilla decides: SingleQuadParticle.Layer.translucent.
 public static const uint PRIM_STOCHASTIC_ALPHA = 2u;
+// Fluorite-owned neutral rain crown/droplet geometry. It carries procedural alpha in Prim.aux1 and never
+// samples the vanilla blue rain sprite; valid only when InstanceID has PARTICLE_BIT.
+public static const uint PRIM_RAIN_SPLASH = 4u;
+// Terrain precipitation interception. These bits live on TerrainPrim rather than MaterialHeader because
+// the same atlas sprite can be emitted by a low grass card and a dense leaf block. The mesher knows the
+// block state and can classify that geometry without making the rain bake fetch Minecraft state.
+public static const uint TERRAIN_PRIM_RAIN_PASS = 4u;      // grass/flowers/crops: wet themselves, do not shelter ground
+public static const uint TERRAIN_PRIM_RAIN_FOLIAGE = 8u;  // leaves: a capped number of layers attenuate rain
 
 // Entity per-triangle record (48 B). The final lane mirrors TerrainPrim's integer material metadata.
 public struct Prim {
@@ -551,10 +581,10 @@ public struct TerrainPrim {
  *
  * Separate from the header because almost no material needs any of it: a block with default parameters
  * keeps extensionOffset == 0 and costs nothing, neither a record nor a load. Only materials that
- * actually author sheen, clearcoat, anisotropy or subsurface pay for one.
+ * actually author Disney or format-3 rain response parameters pay for one.
  *
  * Packed into float4s rather than declared field by field: std430 gives a float3 16-byte alignment, so
- * ten loose scalars would round up to far more than these 48 bytes. Every roughness-like quantity in
+ * loose scalars would round up to more than these 64 bytes. Every roughness-like quantity in
  * here is linear and is the GGX alpha — see the header of bsdf.slang before transcribing anything from
  * Disney's paper.
  */
@@ -562,6 +592,9 @@ public struct MaterialExtension {
     public float4 sheen;      // x sheen, y sheenTint, z clearcoat, w clearcoatGloss
     public float4 specular;   // x specularTint, y anisotropy, z subsurfaceWeight, w subsurfacePhaseG
     public float4 subsurface; // xyz subsurface radius (blocks, per channel), w reserved
+    // Format 3 rain response. A negative lane inherits the matching global WorldPush default, so changing
+    // a video option never requires rebuilding the resource-epoch material table.
+    public float4 weather;    // x absorption, y darkening, z film retention, w puddle affinity
 };
 
 public struct MaterialHeader {

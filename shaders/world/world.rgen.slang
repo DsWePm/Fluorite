@@ -22,6 +22,7 @@ import world_common;
 import world_core;
 import math;
 import bsdf;
+import rain_surface;
 import medium;
 import volume;
 import volume_source; // debug 25 shares D66's exact resolution and multiplier helpers
@@ -301,6 +302,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 n = applyWaterWaves(geometricNormal, waterDomain,
                                     worldPush.waterParams.w, waterFootprint);
             }
+            if (isWater) {
+                float impactFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.12);
+                n = applyRainImpactRipples(hitPos, n, openWaterRainImpact(hitPos), impactFootprint);
+            }
 
             // The medium this face opens into, and the one it returns to on the way out — which is what
             // the stack remembers.
@@ -450,8 +455,15 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
 
         float3 albedo = payload.albedo;
         float sss = payloadSss(); // LabPBR SSS strength (0 when absent)
-        float3 p = hitPos + n * SURF_BIAS;
         float3 v = -rd; // view direction (toward the camera / incoming ray)
+        MaterialExtension ext = materialExtension(payload.flags);
+        RainSurface rain = evaluateRainSurface(hitPos, ext,
+                payloadRainFilmReceiver(), payloadRainTopFace(), payloadRainPlant());
+        n = applyRainLayerNormal(n, rain, payloadRainTopFace(), payloadRainPlant());
+        float impactFootprint = rayConeWidth / max(abs(dot(-rd, n)), 0.12);
+        n = applyRainImpactRipples(hitPos, n, rain.puddle, impactFootprint);
+        albedo *= 1.0 - rain.darkening;
+        float3 p = hitPos + n * SURF_BIAS;
 
         // Material split. Metals tint F0 by albedo and have no diffuse lobe; dielectrics use a fixed
         // 0.04 F0, sourced from the chit (LabPBR custom/metal F0, or the dielectric default it applies).
@@ -473,7 +485,6 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // One shading context for the whole vertex: the sun NEE, the emitter RIS and the continuation
         // all have to agree on the specular frame, and rebuilding it three times was how they could
         // quietly stop agreeing. It also carries the anisotropic tangent, decoded once here.
-        MaterialExtension ext = materialExtension(payload.flags);
         float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
         // Hoisted above the NEE because the sun's MIS needs to know how much of the non-specular half
         // the walk will take; the lobe itself is selected further down.
@@ -499,12 +510,21 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         }
         BsdfContext bc = makeBsdfContextAniso(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                               ext, payload.flags);
+        bc.rain = rain;
+        // Third continuation lobe: the top water film. Its selection tracks view Fresnel so it becomes
+        // common at grazing angles, where the layer actually carries the energy, without wasting half
+        // the paths on a two-percent normal-incidence reflection.
+        float filmEnergy = rain.film * rainFilmFresnel(bc.ndv);
+        float baseEnergy = (1.0 - filmEnergy) * (luminance(F0) + luminance(diffAlb));
+        float pf = rain.film > 1.0e-4
+                ? clamp(filmEnergy / (filmEnergy + baseEnergy + 1.0e-4), 0.02, 0.90) : 0.0;
 
         // Same D78A floor as particles. Diffuse only: inventing an all-direction specular environment
         // response would be a second, stronger approximation and was not approved. Metals therefore
         // still need an actual local emitter or traced environment path.
         if ((worldPush.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u) {
-            L += throughput * diffAlb * worldPush.mediumSkyRadiance.xyz;
+            L += throughput * diffAlb * rainBaseTransmission(bc, n)
+                    * worldPush.mediumSkyRadiance.xyz;
         }
 
         // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
@@ -522,7 +542,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // RIS is skipped must also gather emission directly or that light is lost outright.
         bool gateEmitter = risOn && payloadEmitterInList();
         if (emission > 0.0 && (!gateEmitter || showCelestial)) {
-            L += throughput * albedo * emission;
+            L += throughput * albedo * emission * rainBaseExitTransmission(bc);
         }
 
         // NEE: direct light from the dominant celestial body (sun by day, moon by night) — Lambert
@@ -578,14 +598,16 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 float D = ggxDAniso(hx, hy, ndh, ax, ay);
                 float G = g1v * ggxG1Aniso(lx, ly, ndl, ax, ay); // separable Smith masking
                 float3 F = fresnelSchlick(vdh, F0);
-                // The two lobes the continuation actually samples: Lambertian diffuse (f = albedo/PI)
-                // and Cook–Torrance specular.
-                float3 sampled = diffAlb * INV_PI + (D * G) * F / (4.0 * ndv * ndl);
+                // The three lobes the continuation actually samples: Lambertian diffuse, base
+                // Cook–Torrance specular, and M21's top water-film Cook–Torrance lobe.
+                float3 baseBrdf = diffAlb * INV_PI + (D * G) * F / (4.0 * ndv * ndl);
+                float3 sampled = baseBrdf * rainBaseTransmission(bc, lightDir)
+                        + rainFilmBrdf(bc, lightDir, floorAlpha);
 
                 // Multiple importance sampling, but only over `sampled`. MIS pairs strategies for one
                 // integral, and the strategies here are NEE and the continuation mixture — so the
-                // weight applies to exactly the lobes that mixture can draw, and nothing else. Sheen
-                // and clearcoat are evaluated but never sampled as a continuation, so NEE is their only
+                // weight applies to exactly the lobes that mixture can draw, and nothing else.
+                // Sheen and clearcoat are evaluated but never sampled as a continuation, so NEE is their only
                 // estimator and they keep the full contribution; weighting them down would simply lose
                 // that energy, because no BSDF ray would ever arrive to make it up. (It is also why the
                 // clearcoat highlight stays noisy on a very smooth coat: adding the coat to the
@@ -597,12 +619,17 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 // The diffuse share shrinks when a subsurface lobe is in the mixture, and the walk
                 // itself contributes no analytic density, so this is the whole of what the continuation
                 // can put toward the sun. Getting it wrong loses energy quietly on smooth materials.
-                float diffuseShare = (1.0 - ps) * (1.0 - walkSssShare);
+                float baseShare = 1.0 - pf;
+                float diffuseShare = baseShare * (1.0 - ps) * (1.0 - walkSssShare);
                 float pdfB = diffuseShare * ndl * INV_PI
-                        + (exactSpecular ? 0.0 : ps * ggxReflectPdfAniso(hx, hy, ndh, ndv, ax, ay, g1v));
+                        + (exactSpecular ? 0.0 : baseShare * ps
+                                * ggxReflectPdfAniso(hx, hy, ndh, ndv, ax, ay, g1v))
+                        + pf * ggxReflectPdf(ndh, ndv, rain.filmAlpha,
+                                ggxG1(ndv, rain.filmAlpha));
                 float wLight = misActive ? powerHeuristic(pdfLight, pdfB) : 1.0;
 
-                float3 brdf = sampled * wLight + disneyLobes(bc, ext, lightDir);
+                float3 brdf = sampled * wLight
+                        + disneyLobes(bc, ext, lightDir) * rainBaseTransmission(bc, lightDir);
                 L += throughput * brdf * sampledLightIrradiance * ndl * vis;
             }
         }
@@ -647,6 +674,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 if (max(visB.r, max(visB.g, visB.b)) > 0.0) {
                     float cosT = dot(lightDir, rd);
                     L += throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
+                            * rainBaseExitTransmission(bc)
                             * sampledLightIrradiance * visB;
                 }
             }
@@ -666,13 +694,32 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // instead of silently zeroing subsurface (weight 0 falls through to sss).
         float walkSss = walkSssShare;
 
-        if (rndf(seed) < ps) {
+        float lobeChoice = rndf(seed);
+        if (lobeChoice < pf) {
+            float alpha = rain.filmAlpha;
+            float3 h = sampleGGXVNDF(n, v, alpha, seed);
+            float3 l = reflect(rd, h);
+            float ndl2 = dot(n, l);
+            if (ndl2 <= 0.0) {
+                break;
+            }
+            float3 F = fresnelSchlick(max(0.0, dot(v, h)),
+                    float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0));
+            throughput *= rain.film * F * ggxG1(ndl2, alpha) / pf;
+            rayConeSpread = max(rayConeSpread, alpha * RAY_CONE_GLOSSY_SPREAD_SCALE);
+            bsdfPdf = pf * ggxReflectPdf(max(0.0, dot(n, h)), bc.ndv, alpha,
+                    ggxG1(bc.ndv, alpha));
+            ro = p;
+            rd = l;
+            showCelestial = true;
+        } else if ((lobeChoice - pf) / max(1.0 - pf, 1.0e-6) < ps) {
             float3 l;
             if (exactSpecular) {
                 // Authored zero is a delta distribution, not a narrow finite GGX lobe. This avoids the
                 // degenerate VNDF at alpha=0 and preserves a genuinely sharp reflection without a floor.
                 l = reflect(rd, n);
-                throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0) / ps;
+                throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0)
+                        * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
                 bsdfPdf = -1.0;
             } else {
                 float3 h = sampleGGXVNDFAniso(n, bc.t, bc.b, v, bc.alphaX, bc.alphaY, seed);
@@ -683,13 +730,15 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 }
                 // VNDF + separable Smith ⇒ weight = F · G2/G1(v) = F · G1(l); divide by the lobe pdf ps.
                 float3 F = fresnelSchlick(max(0.0, dot(v, h)), F0);
-                throughput *= F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY) / ps;
+                throughput *= F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY)
+                        * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
                 // The cone grows by the wider axis: it bounds the texture footprint, and taking the
                 // narrower one would sharpen mip selection along the stretched direction, which is
                 // exactly where it should blur.
                 rayConeSpread = max(rayConeSpread,
                         max(bc.alphaX, bc.alphaY) * RAY_CONE_GLOSSY_SPREAD_SCALE);
-                bsdfPdf = ps * ggxReflectPdfAniso(dot(h, bc.t), dot(h, bc.b), max(0.0, dot(n, h)),
+                bsdfPdf = (1.0 - pf) * ps * ggxReflectPdfAniso(
+                                                  dot(h, bc.t), dot(h, bc.b), max(0.0, dot(n, h)),
                                                   bc.ndv, bc.alphaX, bc.alphaY, bc.g1v);
             }
             ro = p;
@@ -700,21 +749,21 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // walk enters, scatters and leaves before the path continues — so nothing here reaches the
             // continuation record or the pass boundary.
             //
-            float lobeProb = (1.0 - ps) * walkSss;
+            float lobeProb = (1.0 - pf) * (1.0 - ps) * walkSss;
             WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, sssRadius, ext.specular.w,
                                                    sssMaxEvents, seed);
             if (walk.absorbed) {
                 break; // roulette inside the walk: an unbiased stop, so this path is simply over
             }
             if (walk.escaped) {
-                throughput *= walk.weight / lobeProb;
+                throughput *= walk.weight * rainBaseTransmission(bc, walk.dir) / lobeProb;
                 ro = walk.origin;
                 rd = walk.dir;
             } else {
                 // Ran out of events. Fall back to the cheap lobe rather than dropping the energy —
                 // truncating here would darken the thickest parts of a material, which reads as dirt
                 // rather than as a budget. This is the knob SUBSURFACE_MAX_EVENTS turns.
-                throughput *= diffAlb / lobeProb;
+                throughput *= diffAlb * rainBaseTransmission(bc, n) / lobeProb;
                 ro = p;
                 rd = cosineDir(n, seed);
             }
@@ -725,10 +774,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
             showCelestial = false;
         } else {
-            float lobeProb = (1.0 - ps) * (1.0 - walkSss);
-            throughput *= diffAlb / lobeProb;
+            float lobeProb = (1.0 - pf) * (1.0 - ps) * (1.0 - walkSss);
+            float3 l = cosineDir(n, seed);
+            throughput *= diffAlb * rainBaseTransmission(bc, l) / lobeProb;
             ro = p;
-            rd = cosineDir(n, seed);
+            rd = l;
             bsdfPdf = lobeProb * max(0.0, dot(n, rd)) * INV_PI;
             rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
             showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
@@ -1341,6 +1391,9 @@ void main() {
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
     bool compositePrefixDebug = pc.debugView == DEBUG_VIEW_COMPOSITE_PREFIX_AB;
     if (pc.debugView != 0u && !compositePrefixDebug) {
+        if (pc.debugView == 26u) {
+            return; // pass A owns the direct-hit rain material/film/exposure diagnostic
+        }
         if (pc.debugView == DEBUG_VIEW_CAMERA_PREFIX) {
             SegmentIntegral prefix = cameraPrefixIntegral(
                     dispatchIndex, dimensions, queue[pixelIndex], pixelIndex);

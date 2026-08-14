@@ -44,8 +44,11 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.BushBlock;
+import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
@@ -56,6 +59,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 final class RtTerrainMesher {
+    /** Mirrors TerrainPrim precipitation flags in world_common.slang. */
+    private static final int PRIM_RAIN_PASS = 4;
+    private static final int PRIM_RAIN_FOLIAGE = 8;
     /**
      * Reusable per-worker-thread meshing state. The mesh + captures are reset between tasks so their
      * backing arrays amortize across sections instead of re-growing per task. Everything the result carries out —
@@ -487,6 +493,22 @@ final class RtTerrainMesher {
             TextureAtlasSprite sprite = spriteFinder.find(quad);
             q.sprite = sprite;
             q.materialId = materials.resolve(sprite, state, q.translucent);
+            q.rainFlags = rainFlags(state);
+        }
+
+        /** Small plants pass rain; leaf volumes retain a bounded, partial interception. */
+        private static int rainFlags(BlockState state) {
+            if (state == null) {
+                return 0;
+            }
+            if (state.is(BlockTags.LEAVES) || state.getBlock() instanceof LeavesBlock) {
+                return PRIM_RAIN_FOLIAGE;
+            }
+            if (state.is(BlockTags.FLOWERS) || state.is(BlockTags.CROPS)
+                    || state.getBlock() instanceof BushBlock || state.canBeReplaced()) {
+                return PRIM_RAIN_PASS;
+            }
+            return 0;
         }
 
         /** The cull predicate returns true when the nominal face should be discarded. */
@@ -648,7 +670,7 @@ final class RtTerrainMesher {
                 prim.add(q.tb);
                 prim.add(0f);
                 prim.add(Float.intBitsToFloat(q.materialId)); // TerrainPrim.materialId uint bits
-                prim.add(0f); // flags
+                prim.add(Float.intBitsToFloat(q.rainFlags)); // TerrainPrim.flags uint bits
                 prim.add(0f); // aux0
                 prim.add(0f); // aux1
                 g.ommSprites.add(q.sprite);
@@ -666,6 +688,7 @@ final class RtTerrainMesher {
         boolean tinted; // tintIndex >= 0 — the tinted member of a base+overlay pair
         float tr, tg, tb, emission;
         int materialId;
+        int rainFlags;
         TextureAtlasSprite sprite;
     }
 

@@ -50,6 +50,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | M18 | 手持、实体火焰、发光模型层和粒子 cell 已统一编码为未绑定的 32 B 动态球灯，并写入稳定 source key；真正采样等待 ReSTIR。 | [动态光源数据层](devlog/M18-dynamic-light-data.md) |
 | M19 | 受伤 overlay、实体火焰和近似 glint 已进入路径追踪并通过视觉验收。 | [实体 overlay](devlog/M19-M20-entities-particles.md#m19实体-overlay) |
 | M20.1–20.3 | 粒子发光、stochastic alpha 和可选阴影完成；阴影默认关。 | [粒子](devlog/M19-M20-entities-particles.md#m20粒子) |
+| M21 | 世界锚定降雨暴露、连续湿润历史、程序化水坑/涟漪、RT 水花与受统一光源照明的 HDR 雨丝完成并通过功能视觉验收。 | [雨天表面系统](devlog/M21-rain.md) |
 
 ### 1.4 尚未完成的主线
 
@@ -58,7 +59,6 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 - 间歇性水面消失与水下曝光闪烁：GitHub [Issue #20](https://github.com/DsWePm/Fluorite/issues/20)，等待下一次现场证据。
 - M13 最终性能与专项复验：结构雾 0/A/0、12→24 步、D72 水波天气过渡、D73 焦散天气衰减。
 - M14 末地美术替换：当前 HDR/Kerr 技术 Provider 已由 PR #26 合入；后续由用户在 Blender 预渲染包含星空、透镜黑洞和动态吸积盘的循环 HDR 全天球序列，再替换当前实时黑洞。素材到位前不决定帧格式、分辨率、帧率、循环长度、插帧与照明采样方案。
-- M21 雨天表面系统：雨滴粒子、程序化外表面水坑，以及所有暴露于降雨表面的浸湿材质响应。
 - M22 后处理与调色：景深、ACES 色调映射、屏幕黑边聚焦、屏幕色散、动态模糊，以及含白平衡和色调偏移等参数的滤镜系统。
 - M23 配置预设：用按键把当前配置保存为版本化 TOML，并可导入 TOML 以校验后的完整配置替换当前设置。
 - ReSTIR 前全项目 review、诊断清理和性能欠账结算。
@@ -90,17 +90,18 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | 天空 | `world.rmiss.slang` | 大气 sky-view/日月，或末地 HDR 环境/Kerr 盘面 miss |
 | 末地环境 | `environment.slang` | 全天球坐标、Kerr transfer/穿盘路径解码、运行时动态盘有界 `Le/T` 积分、HDRI 旋转、环境天体 NEE |
 | 公共 ABI | `world_common.slang` / `world_core.slang` | `WorldPush`、地址、材质、segment、Light、bindings、payload |
-| 材质与光照 | `bsdf.slang` / `lighting.slang` / `light_sampling.slang` / `subsurface.slang` | Disney、共享 Light/alias/grid 采样、RIS/NEE、BSSRDF |
+| 材质与光照 | `bsdf.slang` / `lighting.slang` / `light_sampling.slang` / `subsurface.slang` / `rain_surface.slang` | Disney、共享 Light/alias/grid 采样、RIS/NEE、BSSRDF，以及共享降雨暴露与能量分层水膜 |
 | 介质 | `medium.slang` / `volume.slang` / `volume_source.slang` | Medium 参数、段积分、跨 compute/RT 的纯源数学 |
 | 大气 | `atmosphere*.slang` / `sky_*.comp.slang` | transmittance、multi-scatter、sky-view、reduction、froxel |
 | 可见性 | `volume_visibility*.slang` | 世界空间太阳/天顶可见性网格 |
 | 云 | `cloud.slang` / `cloud_noise.comp.slang` | 世界锚定双层云、密度、光照和二次光线预算 |
 | 雾 | `fog_noise.comp.slang` | 128³ 结构雾一次性烘焙 |
+| 降雨暴露 | `rain_exposure.comp.slang` | 世界锚定、沿全局雨向的首命中深度图；供所有路径顶点与可见雨丝共享 |
 | 水 | `water.slang` / `water_wave.slang` | 水材质、波场、法线、焦散 |
 | 水仿真 | `water_sim.comp.slang` / `water_obstacle.comp.slang` / `water_deform.comp.slang` | 高度场、障碍、顶点位移与 refit 输入 |
 | 追踪 | `trace.slang` / `trace_ser.slang` / `segment.slang` | 普通/SER TraceRay、分段数据 |
 
-`shaders/display/` 负责 HDR/SDR、直方图曝光和 UI composite；`shaders/overlay/` 负责方块轮廓、glow 与名牌。
+`shaders/display/` 负责 HDR/SDR、直方图曝光和 UI composite；`shaders/overlay/` 负责方块轮廓、glow、名牌，以及 RR 后/曝光前的 HDR 雨丝。
 
 ### 2.3 Java 文件职责
 
@@ -112,17 +113,17 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | `rt/RtComposite` | 帧编排、WorldPush、资源生命周期、Pass/compute 顺序 |
 | `rt/RtEnvironmentForcing` | 一帧一次读取天气/时间，解析为雾、云、水的最终 forcing |
 | `rt/RtCloudLighting` | D61 的云扩散源尺度，CPU 侧能量标定 |
-| `rt/sky/RtSky` | 大气 LUT 资源与唯一烘焙顺序 |
+| `rt/sky/RtSky` | 大气 LUT、体积可见性、降雨暴露和水模拟资源及其唯一烘焙顺序 |
 | `rt/sky/RtSkyPreset` / `RtSkyPresets` / `RtDimensionControls` | 版本化维度 Provider/preset、资源包覆盖、未知维度回退与玩家逐维度修正 |
 | `rt/sky/RtEnvironmentTextures` / `RtKtx2` | resource epoch 内 KTX2 校验、环境/transfer/disk 数组上传与逐维度 layer 映射 |
 | `buildSrc/.../GenerateEndEnvironment` | 构建期把许可的 10K HDR 转为 4K KTX2，并离线生成 Cartesian Kerr-Schild transfer 与盘 `Le/T` |
 | `rt/terrain/` | 地形驻留、section 构建、流体、静态发光 quad、light hierarchy/grid |
-| `rt/entity/` | 实体/粒子捕获、逐帧 BLAS/TLAS、overlay aux 数据；从真实 item submit 变换提取手持动态光 |
+| `rt/entity/` | 实体/粒子捕获、逐帧 BLAS/TLAS、overlay aux 数据；从真实 item submit 变换提取手持动态光；CPU 稀疏雨滴落点 |
 | `rt/light/` | 共享 32 B `Light` CPU 编码、动态球灯记录和功率守恒 quad→sphere 聚合 |
 | `rt/material/` | CPU decode-once 材质管线、LabPBR、发光资格、IOR 和 JSON overrides |
 | `rt/accel/` | Vulkan buffer/image、BLAS/TLAS/OMM |
 | `rt/pipeline/` | RT pipeline/SBT、DLSS-RR/FG、曝光和显示 |
-| `rt/overlay/` | display-resolution 共享 overlay buffer 和三个 feature |
+| `rt/overlay/` | display-resolution 共享 overlay buffer、既有 feature，以及独立 HDR 雨丝 pass |
 | `rt/RtGpuTimers`, `RtFrameStats` | GPU timestamp 与 CSV；性能结论的唯一数据源 |
 
 ### 2.4 ABI 锚点
@@ -131,9 +132,9 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | --- | --- | --- | --- |
 | `PackedPathSegment` | 48 B | `RtPathSegmentLayoutTest` | 只剩一个空 uint lane；进位到 64 B 在 1440p 约 +118 MB，优先使用 `pathFlags` bit |
 | `WorldPushConstantsData` | 104 B | `RtMaterialLayoutTest` | 11 个 64-bit 地址；Vulkan 128 B 保证下只余 24 B，每个新增字段由 closest-hit 高频读取 |
-| `WorldPushData` | 944 B | `RtSkyMediumLayoutTest` | 独立 GPU 数据，不受 128 B push-constant 限制；构造是 positional，Java/Slang 必须同步 |
+| `WorldPushData` | 1072 B | `RtSkyMediumLayoutTest` | 独立 GPU 数据，不受 128 B push-constant 限制；M21 当前使用 8 个降雨向量，其中末两组是验收后需固化/删除的临时美术校准量；构造是 positional，Java/Slang 必须同步 |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移钉死 |
-| `MaterialExtensionData` | 48 B | `RtMaterialExtensionLayoutTest` | Disney lanes 逐位钉死 |
+| `MaterialExtensionData` | 64 B | `RtMaterialExtensionLayoutTest` | Disney 与 format-3 天气响应 lanes 逐位钉死 |
 | `Light` | 32 B | `RtDynamicLightContractTest`、`RtLightHierarchyTest` | 32 B 对齐 cache line；bit31=动态球灯，半轴/半径按类型解释；矩形面积由 halfU/halfV 反推 |
 
 `Ptr<T,...,Std430DataLayout>` 的 layout 参数承重；裸 `Ptr<T>` 会使用 natural layout 并静默错位。
@@ -262,7 +263,7 @@ M18 的已批准边界是“收集但不采样”：动态记录使用同一 32 
 - `-Xss16m` 必须直接作为 JVM 参数，不能依赖 `JAVA_TOOL_OPTIONS`。
 - 设置用途结束后要么删除，要么记录长期理由；禁止废弃旋钮留在 UI。
 - `RtVideoOptions` 只放每帧可重读设置；需要重建资源的设置保留在 TOML/`-D`。
-- 新增/修改设置只维护 `en_us`、`zh_cn`、`zh_tw`。其他语言允许依赖 `en_us` fallback，禁止填英文占位凑齐键。
+- 新增/修改设置只保证 `en_us`、`zh_cn`。包括 `zh_tw` 在内的其他语言允许依赖 `en_us` fallback；禁止填英文占位凑齐键，也不把它们列入验收阻塞项。
 - GitHub Issues 是未完成问题跟踪器；已结案过程进入 devlog。
 - `.claude/plans` 是历史考古，不是当前事实源。
 
@@ -408,6 +409,7 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 3. 它们是光栅/RenderGraph/屏幕空间管线，不能把成本模型直接移植到纯光线架构。
 4. HPWater 相位漏 `1/(4π)`，HPVolumeCloud 含量纲不明的强度常数；所有常数由本项目重推和标定。
 5. 参考实现含相机依赖云场等结构缺陷；Fluorite 的云必须对反射射线成立。
+6. 外部 shader 页面必须先核对逐文件许可。Shadertoy 页面没有显式许可证时采用网站默认的 CC BY-NC-SA，不能把代码复制、翻译或改写进 Fluorite；只能提炼不受版权保护的通用方法，并以不同的数据流、公式和常数独立实现。本轮雨滴参考页仅提供“随机分布事件 + 浅水反馈”的讨论入口，获批实现选择了无状态解析事件场，没有复制其反馈代码。
 
 每次准备借鉴新方法时，先向用户提交：参考做法、本项目候选做法、异同、物理差距、性能代价和推荐。用户批准后才实施。历史对比见 M9/M11 devlog。
 
@@ -423,13 +425,15 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 | 水形变内存 | `deform-mode=all` 消除重建闪烁，但含水 section 放弃压缩并常驻输入；海洋场景未测 |
 | 间歇性水故障 | Issue #20 等现场；禁止视觉猜测修复，诊断不得提前删 |
 | 云天空遮蔽 | 当前 `τup` 为局部密度解析近似，可能高估塔底、低估塔顶；review 时裁决 |
+| 卷云天顶环 | 源码已定位“球壳求交、平层密度裁切、未裁剪步长”三者不一致；当前极薄卷云配置会把误差放大成以天顶为中心的环形分界。等待游戏内 A/B 闭环，未批准修复路线 |
 | 粒子阴影 | 成本未知、默认关；需要真实烟柱场景 |
 | BSSRDF/glint/焦散常数 | `PROVISIONAL` 或美术夸张，不得宣传为物理标定 |
-| 语言 | `zh_tw` 仍有约 64 个键含简体正文，需单独清理；不扩展其他语言维护范围 |
+| 语言 | 只保证 `en_us`、`zh_cn`；仓库中的 `zh_tw` 是不完整的旧资源，不列入当前维护和验收范围 |
 | 资源生命周期 | `RtComposite.lutSampler` 已知未销毁，进入 ReSTIR 前 review 修复 |
 | 末地环境成本 | 三张 KTX2 原始载荷/GPU 常驻约 74.7 MiB；Fabric jar 内 DEFLATE 实测合计约 24.2 MiB（HDRI 15.0、transfer 9.1、稀疏 disk 0.15 MiB）。可见 miss 读取 transfer、disk，并仅在逃逸时读 HDRI，环境 NEE 读取同一 disk `Le`；1080p GPU 时间待验收实测，未测前不宣称成本接近太阳 |
 | 末地资源兼容 | 只接受 4096×2048 R11G11B10 13 mip HDRI，以及 2048×1024 RGBA16F transfer 与 disk；任一资源失败只回退该维度到完整大气，不能留下未绑定 descriptor |
 | 末地母版可用性 | D87C 不跟踪 10K 母版；首次干净构建依赖外部 URL。下载必须匹配固定 SHA，禁止网站替换后静默更新；来源失效时只能提供已归档的同哈希副本，不得擅自接受新素材 |
+| M21 降雨成本 | 暴露图每帧最多更新 8 个 32² tile（8192 条 RayQuery），近区 4 tile 高频循环、远区 4 tile 渐进轮询；默认雨丝 4096 条。D129A 为每条进入屏幕宽边界的雨丝最多增加一条天体阴影线和一条统一局部光源阴影线，并常驻 256 KiB 的 16384×`float4` 辐亮度缓存；compute 视锥预剔除和缺少有效光源会减少实际射线数。尚无游戏内 GPU 中位数，不能宣称成本可接受；性能日志必须同时核对 `gpu.rainExposure`、`gpu.rainStreak`、`rain.exposureCache` 与查询/上传计数 |
 
 ## 8. 待办与未来架构
 
@@ -440,6 +444,21 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 下一次触发时：水下朝曝光方向停留约 3 秒，再朝缺失水面停留约 3 秒，立即记录现实时间，并记录天气、区块加载、雾/水波/形变开关。用同一段日志核对 terrain water instance、CPU/GPU 起始 Medium、Radiance/segment/visibility 的 NaN 或突变。
 
 完成标准是日志或最小复现证明根因，Fabric/NeoForge 构建通过并完成视觉回归。旧“submerged 与参考水面矛盾”探针未触发，已降级为候选，不允许据此直接改代码。
+
+#### 卷云天顶环：源码定位，等待游戏内 A/B
+
+当前最可能的主因不是卷云噪声的球面 UV 极点，而是 `cloud.slang` 内两套垂直边界互相矛盾：`cloudShellSpan` 用半径为 `PLANET_R + altitude` 的球壳求交，`cloudDensity` 与 `cloudHeightProfile` 却仍按绝对世界 `y` 的平层裁切。两者只在玩家所在切点的正上方严格重合，视线离开天顶后球壳入口逐渐落到平层底面以下，因此可见概率天然只由天顶角决定，能画出以天顶为圆心的环形分界。卷云路径没有 `atan`、`acos` 或 `normalize(rd.xz)`，所以没有经纬度极点奇点的代码证据。
+
+当前 `run/config/fluorite.toml` 又把该误差显著放大：卷云高度为 1091、厚度为最小值 8、云量 1、密度 5。以相机 `y≈64` 为例，天顶射线的真实球壳跨度约 8 格，但 `step=max(24,t×0.125)` 的首步约 128 格，且积分时没有夹到 `tExit-t`，单步长度约为真实介质段的 16 倍；入口 jitter 在竖直方向最多只有约 0.8 格。源码公式扫描预测：离天顶 65°、70°、72° 时，首样本还能进入平层的概率约为 52%、22%、2%，约 73° 后为 0。未裁剪步长不会单独制造圆环，但会把边界附近偶然命中的极薄密度当成百余格介质积分，使环更亮、更硬。
+
+下一次视觉验证只做判定，不顺手调参：
+
+1. 暂时把低层“云密度”设为 0、卷云风速设为 0，只留下静止卷云；固定位置和俯仰，转动视角一周。若环始终锁在世界天顶而内部纹理随方位变化，支持边界/march 根因；若环锁太阳方向，则转查相位与天体源。
+2. 保持高度、云量、密度不变，只把“卷云厚度”从 8 改到 60。该模型预测环会明显向地平线外移并变软；若位置完全不动，则本定位被否证。
+3. 恢复厚度 8，只改变“卷云高度”。该模型预测高度越高，环越靠近天顶；高度变化只缩放纹理、不改变环半径，则转查周期噪声。
+4. 现有 Debug View 22 只检查低层云，不能拿它证明卷云正确。若前三项不闭环，再新增只显示卷云 `span / flat-height support / first-step-to-span` 的临时诊断。
+
+验证前不改渲染代码。若根因闭环，后续必须由用户在“球壳高度统一到密度场（更物理、每密度样本增加径向高度计算）”与“平层求交加独立地平线处理（更便宜、曲率近似更强）”之间批准方向；无论选择哪条路线，都应单独修正末步积分越过 `tExit` 的能量误差。
 
 ### 8.2 M13 验收债务
 
@@ -459,11 +478,11 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 - 完整物理大气是代码默认；未知或无效的模组维度自动取得完整大气，不做 `dimensionType()` 启发式降级。
 - `RtSkyPreset` 从 `assets/fluorite/fluorite/sky/<namespace>/<dimension>.json` 加载，允许资源包覆盖；format 版本、逐文件隔离、有限值/范围/能量校验是加载契约。
 - 参数所有权顺序固定为：preset 基础值 → 该 preset 允许时的 D70 天气/时间 forcing → 用户全局修正 → 玩家逐维度修正。资源包负责物理基线；全局开关仍有最终总门控权，逐维度页只关闭或缩放一个明确维度。
-- `WorldPush.skyProvider/environmentFlags` 花掉既有 8 B padding，不增大 944 B ABI。shader 只按能力分支；`environmentFlags[8..15]` 是 resource-epoch 环境数组 layer，低位仍是介质能力。
+- M14 的 `WorldPush.skyProvider/environmentFlags` 当时花掉既有 8 B padding，结构大小保持 944 B；M21 当前结构为 1072 B，其中最后 32 B 是视觉验收期间的临时降雨校准向量。shader 只按能力分支；`environmentFlags[8..15]` 是 resource-epoch 环境数组 layer，低位仍是介质能力。
 - 雾 `heightScale<=0` 是明确的均匀介质编码；高度雾必须为正。关闭结构时必须在纹理 fetch 和数值 march 前退出。
 - 大气表、云噪声和雾噪声当前共用一次性静态 bake。内置地狱三者都不需要，因此完全跳过；资源包的非大气维度若开启云或结构雾，会为保证纹理已初始化而顺带烘焙暂时不用的大气表。只有实测首次加载成本值得优化时才拆生命周期。
 - `light_sampling.slang` 是 RT 与 froxel 共用的 32 B `Light`、alias、局部 grid 采样接口；维度不能复制一套光源格式。
-- 只维护 `en_us`、`zh_cn`、`zh_tw` 三份语言文件。
+- 只保证 `en_us`、`zh_cn` 两份语言文件；其他语言资源可存在，但不作为当前功能的维护或验收承诺。
 
 已批准的 Provider：
 
@@ -509,7 +528,30 @@ D101A–D104A 完成剩余数据层：实体只接受实际火焰、submission b
 - 在受雨外表面生成世界锚定的程序化水坑结构；水坑不能随相机游动，也不能仅作为屏幕空间贴花假装存在于反射/折射路径中。
 - 所有真正暴露于降雨的外表面获得连续浸湿响应；至少要区分表面粗糙度/高光变化与有厚度积水，不能把“湿”和“水坑”写成同一个二值材质标记。
 
-尚未裁决：降雨暴露度来自逐点天空射线、缓存可见性场还是混合方案；湿润累积/干燥是否具有时间状态；水坑使用纯 BSDF 薄层、法线/高度近似还是真实几何；不同材质的吸水性来源；雨滴粒子的密度、碰撞和涟漪预算。实现前必须分别给出物理差距、GPU/CPU/显存成本和推荐方案，不得把这些选择藏进默认常数。
+D105A–D114A 已批准以下架构与量化边界：降雨暴露使用世界锚定、沿全局风向偏转的降雨方向深度图，一次 bake 后由所有路径顶点共享；低/高档为 256²/512²，默认高档、每 texel 1 方块，边缘向“干燥”淡出，CPU 以 4 方块粗网格缓存群系降水类型；偏转角范围 0–30°、默认 8°。湿润状态分为连续的 `wetFilm` 与 `puddleStorage`；满雨浸湿/干燥默认 8/120 秒，水坑填充/蒸发默认 45/300 秒，日照与云量联动干燥默认开启，夜间和厚云下最低约为晴朗白昼的 25%。动态物体仍没有稳定的逐物体身份历史，不能把世界列缓存误称为实体级历史。
+
+D115A–D120A 把首版的全图逐帧 RayQuery 和单一全局储量改为分层更新。暴露图以 32² tile 工作：每帧 4 个中心 3×3 近区 tile 高频循环，另 4 个远区 tile 按中心向外轮询，最多 8192 条 RayQuery；低/高档远区约 14/62 帧完成一轮。地图锚点保持稳定，玩家的入雨位置离中心约 32 格才重定位；重定位先把旧坐标清为未解析，再从玩家附近渐进补齐，禁止把旧世界坐标的深度直接当成新坐标。CPU 的 4×4 群系降水缓存滑动复用重叠区域，并采用相同的近场优先/远场轮询；未加载区块必须保持“未知”并在流式加载后重试，禁止把暂时缺少客户端区块误记为无雨群系。
+
+湿润历史放在 GPU 的双缓冲 `R32G32_UINT` 图中，每个 texel 保存当前与前一层两组“half 深度 + 8 bit 水膜 + 8 bit 积水”，高档总常驻约 4 MiB。新屋顶出现时，屋顶作为当前层从干燥开始，原本湿润的地面移到前一层并按干燥计时退去；屋顶移除后可按深度重新匹配地面。该结构只承诺同一雨线下两层表面，不能表示任意多层建筑，也不替代移动实体的身份历史。曝光读取使用四邻域“先比较、后插值”。普通方块和树叶只允许几何法线向上的顶面取得湿润响应；草、花、作物和 `BushBlock` 等小型透雨植物是明确例外，只要方向曝光成立，其可见顶面与侧面都获得水膜。水平表面的干湿边界通过双频世界坐标 warp 破坏轮廓，垂直普通方块不再出现轴向不一致的干湿线。
+
+湿表面采用能量分层的水膜 GGX，固定水 IOR 1.333（法线入射 F0 约 0.0204），并让 NEE、续接采样和 RR guide 使用同一模型；水膜强度/粗糙度默认 1.0/0.08。薄水膜先按临时校准项（默认 15%，范围 0–100%）把原材质微法线向几何宏观法线连续压低，水坑再按其羽化覆盖与校准强度追加压平，两段使用补集相乘合成；水膜强度与水坑羽化都连续，因此水坑—水膜、水膜—干燥、水坑—干燥三类边界不会切换法线模型。植物侧卡只压回自身竖直宏观平面，不会被错误拉向世界向上。水坑是独立的平滑、周期、世界锚定 FBM 场，受材质蓄水能力控制；选区资格只读取 closest-hit 携带的几何顶面标记，不允许材质微法线参与坡度判定，避免强法线贴图在平坦积水中打出错误的干燥亮洞。水坑不生成真实水体几何，不使用视差，也不限制为圆形或固定最大面积；“尺度”只改变噪声特征，不裁切连通水坑。积水通过独立薄水层覆盖、GGX 粗糙度、共享的湿润材质颜色端点和法线压平建立“浮在表面”的观感，而不是任意提高水 F0。毫米级清水不再使用无量纲 Beer–Lambert 项重复压暗底层；仅保留 0–25% 的额外美术压暗，默认 8%，并以补集形式叠加在普通湿润响应之后。覆盖、尺度与雨滴涟漪强度默认 0.35、8 方块、0.35。材质格式升级为 v3，可选声明吸水、变暗、水膜保持和蓄水参数，未声明时采用 0.50、0.20、0.65、0.35；原生水、玻璃与粒子不获得方块水膜。
+
+材质响应拆为三层：普通湿膜负责变暗与 GGX 薄层，水坑负责近水平表面的独立静水平滑，雨滴冲击同时作用于水坑和原生水面。冲击采用无状态的世界锚定随机事件场：3×3 候选单元具有独立周期、空窗、落点、寿命、半径、环宽和强度，不增加状态纹理或显存；基础环宽默认 0.04 方块，并按 ray footprint 加宽、同步补偿峰值，避免细环成为 RR 可抹除的亚像素噪声。单环形状借鉴二维波动方程从圆形扰动产生阻尼波列的数学特征，以平滑因果前沿和指数衰减的交替峰谷作解析近似；没有复制外部 shader 代码，也没有引入反馈纹理。它能提供稳定的随机观感，但不是反馈浅水求解，不承诺波纹传播、碰撞或相互干涉。小草、花和作物自身可被淋湿但不遮住下方地面；叶片采用“前两层透雨、第三层遮挡”的有限近似。雨丝随机身份由绝对世界网格坐标产生，滑动窗口不能改变重叠区域的位置或相位；近相机剔除读取整段到相机的最近距离，而不只读取线段中心。Debug View 26 显示 `R=原生水材质、G=方块水膜、B=降雨暴露`；Debug View 27 显示 `R=局部水坑储量、G=程序化选区与坡度、B=最终水坑响应`。两者都是临时 review 诊断，ReSTIR 前通盘 review 时重新判断是否保留。
+
+可见降雨采用混合方案：密集雨丝在 RR 之后、曝光之前进入 HDR 独立 pass，低/中/高实例上限为 2048/4096/8192（默认 4096），另有 0–2 密度倍率，默认速度 24 方块/秒、长度 0.7 方块。D129A 在绘制前以 compute 每实例计算一次直接光，位置函数由 compute 与六顶点程序化几何共享，禁止在每个顶点重复追踪。天空使用 GPU 归约的 `mediumSkyRadiance`；天体辐照度与统一 `Light`/alias/grid 选出的一个局部面光源均使用归一化各向同性相位 `1/(4π)`，并各自最多发射一条不透明阴影线。响应系数 `0.004×4π` 保持旧太阳项的能量尺度，旧的固定白色辐亮度下限已经删除，因此无天空、无天体、无局部光时必须输出黑。该模型是稳定而廉价的单次散射近似：支持昼夜、色温、火把/方块/生物/粒子光与直接遮挡，但不追踪雨滴 GI、反射中的雨丝，也不模拟球形水滴的高频焦散或方向性闪光。
+
+涟漪与 RT 水花共享 D127A 确定性事件定义：Java 与 Slang 使用相同的 0.5 方块周期格、4096 方块世界周期、整数溢出哈希、事件时钟、落点和种子；密集涟漪仍在着色点局部求值，CPU 只从刚进入活动期的事件中分批选择水花子集，因此不增加 GPU 事件缓冲或 readback。CPU 用高度图反投同一倾斜雨向，只接受靠近事件中心的向上碰撞面，`Fluid.ANY` 让原生水面也能命中；最终水花 XZ 保持事件中心。设置控制相机附近活动池的目标数量 0–256（默认 96），约以 `目标数/10` 条成功碰撞线每 tick 维持；碰撞失败、遮挡、视锥和总粒子预算会让实际屏幕数量低于目标。水花生成 Fluorite 自有的中性程序化水冠与小水滴，不再主动生成原版蓝色 `ParticleTypes.RAIN`，并在 RT 粒子捕获处排除 `ClientLevel` 独立生成的 `WaterDropParticle`，避免新旧水花重叠。水花复用现有粒子 BLAS，当前只进入主摄像机光线与可选阴影，不进入反射/GI；96/256 个水花分别约为 2688/7168 个三角形。M21 不实现雪。
+
+视觉验收前保留一组明确标注的临时校准项：全局湿润变暗（0–8×）、水膜覆盖、水坑层覆盖、水坑粗糙度、水坑额外压暗（0–25%，默认 8%）、水坑法线压平、水膜法线压平、涟漪宽度，以及 RT 水花尺寸/可见度/颜色明暗。涟漪原有强度项明确为法线扰动强度并扩为 0–3×。这些旋钮不得被误当成长期配置 ABI；验收确定数值后固化为常数并删除对应临时设置与 `rainCalibration0/1`。D127A 的目标水花数是性能/密度设置，不随美术固化一起删除。
+
+上述代码、format-3 材质格式、`en_us`/`zh_cn` 文案和跨 pass 契约测试已完成，并于 2026-08-14 通过功能视觉验收；完整实现与验收记录见[开发日志](devlog/M21-rain.md)。以下项目继续作为回归标准：
+
+- 晴→雨→停雨的 8/120 秒水膜与 45/300 秒水坑连续变化；正午晴空比夜间/厚云干得快，但不能突然跳变。
+- 屋檐下和洞内保持干燥；新遮挡出现后，原湿地面按计时干燥而非瞬间切干。普通方块与树叶只有顶面出现水膜，普通垂直面不得出现任一轴向的干湿边界；暴露的小草、花和作物顶面/侧面都有水膜且不阻断草地下方湿润，叶冠可形成有限遮挡。
+- 水坑为平滑、不规则、可连通的世界噪声场，固定在几何顶面；材质法线贴图不得改变水坑选区或打出干燥亮洞。水坑—水膜、水膜—干燥、水坑—干燥三种边界的法线都必须连续；水坑与普通水膜共享湿润颜色端点，默认额外压暗最多 8%、任意设置下最多 25%，不得再出现水坑底色骤黑。相机移动、terrain rebase、RR 开关和低/高暴露图切换时不游动、不翻转。水面不获得方块水膜；水坑和原生水面都出现尺寸可调的小型雨滴圆环，落点、间隔、寿命、半径和强度不得形成固定网格或同步节拍。
+- Debug View 26 中，暴露原生水为洋红、暴露湿方块为青色。Debug View 27 中，R 应随局部积水历史上升，G 应在近水平表面形成世界固定的不规则区域，B 只在储量、选区和材质亲和度同时成立时出现；若 R/G 有值而 B 黑，优先检查材质亲和度或水坑总开关。普通画面水面不得在水材质与方块水膜之间闪烁。改变全局风向或 0–30° 倾角时，暴露、雨丝和飞溅方向一致。
+- 雨丝受场景深度和屋顶暴露遮挡，密度只改变实例数而不二次放大单条透明度；零天空/零天体/零局部光时必须为黑，夜间远离光源时不得保留固定白色亮度，靠近火把、方块光、生物或粒子光时应取得对应颜色与距离衰减，天体和局部光被不透明几何遮挡时均应失去直接项。飞溅不得在有完整洞顶的洞穴地面生成。
+- 性能日志中，CPU 群系缓存不再首帧突发查询整张高档 16,384 粗格；每帧仅尝试与 8 个曝光 tile 对应的最多 512 个粗格，已经解析的格子不重复查询，未加载区块在以后轮次重试。高/低档每次上传完整缓存分别为 65,536/16,384 B；流式加载持续解析期间可能逐帧上传，稳定后每个 ring slot 只补齐最新 generation。曝光每帧上限仍是 8192 条 RayQuery；随机涟漪从 4 个固定候选改为最多 9 个随机候选，其着色成本与 `gpu.rainExposure`、`gpu.rainStreak` 都必须游戏内实测，不能由候选数推断。
 
 ### 8.6 M22：后处理与调色管线
 
@@ -529,7 +571,7 @@ D101A–D104A 完成剩余数据层：实体只接受实际火焰、submission b
 - 提供按键把当前实际生效的配置保存为 TOML 预设。
 - 支持导入 TOML，经 schema/范围/有限值校验后替换当前配置。
 - 导入失败必须保持原配置完整，不允许部分写入；成功后需要统一触发对应的即时更新、history reset 或资源重建。
-- 预设格式必须版本化，并只承诺 `en_us`、`zh_cn`、`zh_tw` 的 UI 文案。
+- 预设格式必须版本化，并只承诺 `en_us`、`zh_cn` 的 UI 文案。
 
 尚未裁决：保存整个配置还是可选分类、预设目录与命名、导入通过文件选择器还是固定热键/最近文件、未知键和旧版本迁移策略、是否允许资源重建级设置在世界内立即应用。实现前请示。
 
@@ -626,6 +668,6 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 3. 仍有效的架构/铁律更新到对应章节和代码注释。
 4. 已结束待办从主文档删除；未结残余拆成明确验证债务或 GitHub Issue。
 5. 检查所有“待验收/待裁决/下一步”是否仍与 Git 历史一致。
-6. 只维护 `en_us`、`zh_cn`、`zh_tw`。
+6. 只保证 `en_us`、`zh_cn`；其他语言不列入维护和验收承诺。
 
 代码注释中的 `M*`、`D*`、`F*`、`R*` 通过 [`docs/devlog/README.md`](devlog/README.md) 查找。外部 `.claude/plans` 已被本仓库文档取代，只允许考古，不继续追加。

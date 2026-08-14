@@ -19,6 +19,7 @@
 import math;
 import world_common;
 import world_core;
+import rain_surface;
 
 /**
  * Everything about a shading point that does not change while it is being shaded.
@@ -51,6 +52,10 @@ public struct BsdfContext {
     public float  alphaY;
     public bool   aniso;
 
+    // Optional M21 top water layer. Dry callers initialise the exact zero state below; opaque world
+    // shading replaces it once after evaluating the shared directional exposure map.
+    public RainSurface rain;
+
     // ---- Derived once from the above.
     public float  ndv;    // clamped away from zero: it divides the specular term
     public float  g1v;    // Smith masking for the view direction
@@ -74,6 +79,7 @@ public BsdfContext makeBsdfContext(float3 hitPos, float3 n, float3 v, float3 rd,
     c.alphaX = rough;
     c.alphaY = rough;
     c.aniso = false;
+    c.rain = dryRainSurface();
     return c;
 }
 
@@ -108,6 +114,48 @@ public BsdfContext makeBsdfContextAniso(float3 hitPos, float3 n, float3 v, float
     return c;
 }
 
+// ---- M21 energy-layered rain film.
+
+public float rainFilmFresnel(float cosine) {
+    return fresnelSchlick(clamp(cosine, 0.0, 1.0),
+            float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0)).x;
+}
+
+/** Two interface crossings attenuate the base layer: eye->base and light->base. */
+public float rainBaseTransmission(BsdfContext c, float3 wi) {
+    if (c.rain.film <= 0.0) {
+        return 1.0;
+    }
+    float fv = rainFilmFresnel(c.ndv);
+    float fl = rainFilmFresnel(max(0.0, dot(c.n, wi)));
+    return (1.0 - c.rain.film * fv) * (1.0 - c.rain.film * fl);
+}
+
+/** Radiance emitted beneath the film crosses only the view-side interface. */
+public float rainBaseExitTransmission(BsdfContext c) {
+    return 1.0 - c.rain.film * rainFilmFresnel(c.ndv);
+}
+
+/** Cook-Torrance response of the top water layer; its IOR/F0 is fixed, not an art slider. */
+public float3 rainFilmBrdf(BsdfContext c, float3 wi, bool floorAlpha) {
+    if (c.rain.film <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float ndl = max(0.0, dot(c.n, wi));
+    if (ndl <= 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 h = normalize(wi + c.v);
+    float ndh = max(0.0, dot(c.n, h));
+    float vdh = max(0.0, dot(c.v, h));
+    float alpha = floorAlpha ? max(c.rain.filmAlpha, UNWEIGHTED_SPEC_ALPHA_FLOOR)
+                             : c.rain.filmAlpha;
+    float D = ggxD(ndh, alpha);
+    float G = ggxG1(c.ndv, alpha) * ggxG1(ndl, alpha);
+    float3 F = fresnelSchlick(vdh, float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0));
+    return c.rain.film * (D * G) * F / (4.0 * c.ndv * ndl);
+}
+
 // ---- Optional Disney parameters.
 
 /**
@@ -127,6 +175,7 @@ public MaterialExtension materialExtension(uint payloadFlags) {
     e.sheen = float4(0.0, 0.5, 0.0, 1.0);      // no sheen; halfway tint and a polished coat if enabled
     e.specular = float4(0.0, 0.0, 0.0, 0.0);   // no tint, isotropic, no subsurface
     e.subsurface = float4(0.0, 0.0, 0.0, 0.0);
+    e.weather = float4(-1.0, -1.0, -1.0, -1.0); // inherit all global rain-response defaults
     uint index = (payloadFlags >> PAYLOAD_EXTENSION_SHIFT) & PAYLOAD_EXTENSION_MASK;
     if (index == 0u) {
         return e;

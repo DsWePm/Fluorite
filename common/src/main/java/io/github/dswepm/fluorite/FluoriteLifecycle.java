@@ -11,6 +11,7 @@ import io.github.dswepm.fluorite.rt.RtReflex;
 import io.github.dswepm.fluorite.rt.RtUiOverlay;
 import io.github.dswepm.fluorite.rt.entity.RtEntities;
 import io.github.dswepm.fluorite.rt.entity.RtEntityTextures;
+import io.github.dswepm.fluorite.rt.entity.RtRainImpacts;
 import io.github.dswepm.fluorite.rt.material.RtBlockMaterials;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssFg;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssRr;
@@ -67,6 +68,7 @@ public final class FluoriteLifecycle {
 			RtContext ctx = RtContext.currentOrNull();
 			if (ctx != null) {
 				RtFrameStats.FRAME.beginIfInactive();
+				RtRainImpacts.tick();
 				// Bring the world pipeline + LabPBR atlases up before terrain tessellates, so per-prim
 				// material flags resolve from the first section (PBR on join, no re-extract). No-op until
 				// we're in a world with the block atlas loaded, or once already created.

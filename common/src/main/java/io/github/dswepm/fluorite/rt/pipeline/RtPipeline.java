@@ -107,6 +107,8 @@ public final class RtPipeline {
     private final int environmentTransferBinding;
     private final int environmentDiskEntryBinding;
     private final int environmentDiskExitBinding;
+    private final int rainExposureBinding;
+    private final int rainWetHistoryBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
@@ -115,7 +117,8 @@ public final class RtPipeline {
                        int froxelBinding, int visibilityGridBinding, int cloudNoiseBinding,
                        int waterHeightBinding, int fogNoiseBinding, int environmentRadianceBinding,
                         int environmentTransferBinding, int environmentDiskEntryBinding,
-                        int environmentDiskExitBinding) {
+                        int environmentDiskExitBinding, int rainExposureBinding,
+                        int rainWetHistoryBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -151,6 +154,8 @@ public final class RtPipeline {
         this.environmentTransferBinding = environmentTransferBinding;
         this.environmentDiskEntryBinding = environmentDiskEntryBinding;
         this.environmentDiskExitBinding = environmentDiskExitBinding;
+        this.rainExposureBinding = rainExposureBinding;
+        this.rainWetHistoryBinding = rainWetHistoryBinding;
     }
 
     /**
@@ -245,11 +250,21 @@ public final class RtPipeline {
             int environmentDiskExitBinding = skyAtlas
                     ? environmentDiskEntryBinding + environmentDiskEntrySamplers : -1;
             int environmentDiskExitSamplers = skyAtlas ? 1 : 0;
+            // M21's directional rain depth map, binding 24. Raygen-only: closest-hit publishes the base
+            // material, while both raygens apply exposure consistently at the path vertex/guide seam.
+            int rainExposureBinding = skyAtlas
+                    ? environmentDiskExitBinding + environmentDiskExitSamplers : -1;
+            int rainExposureSamplers = skyAtlas ? 1 : 0;
+            // Packed two-layer R32G32_UINT wet/puddle history, binding 25. It is separate from binary
+            // exposure so newly sheltered surfaces dry by their configured timers rather than disappearing.
+            int rainWetHistoryBinding = skyAtlas ? rainExposureBinding + rainExposureSamplers : -1;
+            int rainWetHistorySamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers
                     + cloudNoiseSamplers + waterHeightSamplers + fogNoiseSamplers
                     + environmentRadianceSamplers + environmentTransferSamplers
-                    + environmentDiskEntrySamplers + environmentDiskExitSamplers;
+                    + environmentDiskEntrySamplers + environmentDiskExitSamplers
+                    + rainExposureSamplers + rainWetHistorySamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -306,6 +321,12 @@ public final class RtPipeline {
                 binds.get(environmentDiskExitBinding).binding(environmentDiskExitBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(environmentStages);
+                binds.get(rainExposureBinding).binding(rainExposureBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(rainWetHistoryBinding).binding(rainWetHistoryBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -317,7 +338,8 @@ public final class RtPipeline {
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers
                     + visibilityGridSamplers + cloudNoiseSamplers + waterHeightSamplers
                     + fogNoiseSamplers + environmentRadianceSamplers + environmentTransferSamplers
-                    + environmentDiskEntrySamplers + environmentDiskExitSamplers;
+                    + environmentDiskEntrySamplers + environmentDiskExitSamplers
+                    + rainExposureSamplers + rainWetHistorySamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -506,7 +528,8 @@ public final class RtPipeline {
                     multiScatterBinding, skyViewBinding, froxelBinding, visibilityGridBinding,
                     cloudNoiseBinding, waterHeightBinding, fogNoiseBinding,
                     environmentRadianceBinding, environmentTransferBinding,
-                    environmentDiskEntryBinding, environmentDiskExitBinding);
+                    environmentDiskEntryBinding, environmentDiskExitBinding, rainExposureBinding,
+                    rainWetHistoryBinding);
         }
     }
 
@@ -658,6 +681,36 @@ public final class RtPipeline {
     /** Bind the second endpoint of M14's local Kerr disk chord. */
     public void setEnvironmentDiskExit(long imageView, long sampler) {
         writeAtlasBinding(environmentDiskExitBinding, imageView, sampler);
+    }
+
+    /** Bind M21's fixed-allocation directional exposure depth map. */
+    public void setRainExposureDepth(long imageView, long sampler) {
+        writeAtlasBinding(rainExposureBinding, imageView, sampler);
+    }
+
+    /** Bind M21's persistent two-layer wet/puddle history. */
+    public void setRainWetHistory(long imageView, long sampler) {
+        writeAtlasBinding(rainWetHistoryBinding, imageView, sampler);
+    }
+
+    /** The selected ring slot is safe to rewrite after setTlas waited for its prior use. */
+    public void setCurrentRainWetHistory(long imageView, long sampler) {
+        writeCurrentAtlasBinding(rainWetHistoryBinding, imageView, sampler);
+    }
+
+    private void writeCurrentAtlasBinding(int binding, long imageView, long sampler) {
+        if (binding < 0) {
+            return;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
+            info.get(0).sampler(sampler).imageView(imageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
+            write.get(0).sType$Default().dstSet(descriptorSets[currentSet]).dstBinding(binding)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .pImageInfo(info);
+            VK10.vkUpdateDescriptorSets(ctx.vk(), write, null);
+        }
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

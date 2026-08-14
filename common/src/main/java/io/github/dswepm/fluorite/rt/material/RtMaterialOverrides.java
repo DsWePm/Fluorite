@@ -20,11 +20,10 @@ import java.util.Map;
 /** Optional resource-pack material properties compiled ahead of LabPBR and engine heuristics. */
 public final class RtMaterialOverrides {
     /**
-     * Format 2 adds the Disney parameter blocks (sheen, clearcoat, specular, anisotropy, subsurface).
-     * Format 1 files remain loadable and mean exactly what they meant: no Disney parameters, so no
-     * extension record and no change in appearance.
+     * Format 2 adds the Disney parameter blocks. Format 3 adds rain absorption, darkening, water-film
+     * retention and puddle affinity. Older files remain loadable and author neither newer block.
      */
-    public static final int FORMAT = 2;
+    public static final int FORMAT = 3;
     public static final RtMaterialOverrides EMPTY = new RtMaterialOverrides(List.of());
 
     private final List<Rule> rules;
@@ -164,6 +163,24 @@ public final class RtMaterialOverrides {
                     specularTint, anisotropy, sssWeight, sssPhaseG, radiusR, radiusG, radiusB);
         }
 
+        RtMaterialDesc.Weather weather = null;
+        if (root.has("weather")) {
+            if (format < 3) {
+                throw new IllegalArgumentException("weather requires material format 3");
+            }
+            JsonObject value = root.getAsJsonObject("weather");
+            Float absorption = optionalFloat(value, "absorption");
+            Float darkening = optionalFloat(value, "darkening");
+            Float filmRetention = optionalFloat(value, "film_retention");
+            Float puddleAffinity = optionalFloat(value, "puddle_affinity");
+            validate01("weather.absorption", absorption);
+            validate01("weather.darkening", darkening);
+            validate01("weather.film_retention", filmRetention);
+            validate01("weather.puddle_affinity", puddleAffinity);
+            weather = new RtMaterialDesc.Weather(orDefault(absorption, -1f), orDefault(darkening, -1f),
+                    orDefault(filmRetention, -1f), orDefault(puddleAffinity, -1f));
+        }
+
         validate01("roughness", roughness);
         validate01("metalness", metalness);
         validate01("transmission.factor", transmission);
@@ -180,7 +197,7 @@ public final class RtMaterialOverrides {
             emissionStrength = clamped;
         }
         return new Rule(source, sprite, block, model, roughness, metalness, ior, transmission,
-                disney, emissionStrength);
+                disney, weather, emissionStrength);
     }
 
     public List<Rule> rules() {
@@ -195,6 +212,8 @@ public final class RtMaterialOverrides {
                         * source format carries one.
                         */
                        RtMaterialDesc.Disney disney,
+                       /** Format-3 per-material rain response, or null when this rule names none. */
+                       RtMaterialDesc.Weather weather,
                        /**
                         * Multiplier on whatever emission the material naturally resolves to (LabPBR
                         * {@code _s}, heuristic mask, or state-uniform block light) — NOT a replacement.
@@ -237,7 +256,8 @@ public final class RtMaterialOverrides {
             return new RtMaterialDesc(nextModel, RtMaterialDesc.Source.OVERRIDE, nextFeatures,
                     nextRoughness, nextMetalness, nextIor, nextTransmission,
                     base.emissionSource(), nextEmissionStrength, base.emissionSummary(),
-                    disney != null ? disney : base.disney());
+                    disney != null ? disney : base.disney(),
+                    weather != null ? weather.over(base.weather()) : base.weather());
         }
 
         private static float defaultIor(int model) {

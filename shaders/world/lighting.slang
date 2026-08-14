@@ -103,12 +103,17 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float3 Fs = fresnelSchlick(vdh, c.F0);
             brdf += (D * Gs) * Fs / (4.0 * c.ndv * ndl);
         }
+        brdf = brdf * rainBaseTransmission(c, wi) + rainFilmBrdf(c, wi, true);
         contrib = brdf * le * (G * area);
     } else if (c.sss > 0.0) {
         float backNdl = -ndl;
         float G = backNdl * cosL / dist2;
         float cosT = dot(wi, c.rd);
-        contrib = c.diffAlb * c.sss * sssStrength() * sssPhase(cosT) * le * (G * area);
+        // Back lighting enters the substrate from the uncoated side and exits through the visible
+        // water film once. Applying the two-interface reflection formula here makes a full film
+        // annihilate all thin-shell transmission because dot(n,wi)<0 evaluates the second Fresnel at 1.
+        contrib = c.diffAlb * c.sss * sssStrength() * sssPhase(cosT)
+                * rainBaseExitTransmission(c) * le * (G * area);
     }
     phat = luminance(contrib);
     return contrib;
@@ -394,7 +399,8 @@ public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
         if (dot(c.n, wi) > 0.0) {
             float dist2 = max(dot(s.pos - c.hitPos, s.pos - c.hitPos), 1.0e-6);
             float cosL = max(0.0, dot(s.lnrm, -wi));
-            contrib += disneyLobes(c, ext, wi) * s.le * (dot(c.n, wi) * cosL / dist2 * s.area);
+            contrib += disneyLobes(c, ext, wi) * rainBaseTransmission(c, wi)
+                    * s.le * (dot(c.n, wi) * cosL / dist2 * s.area);
         }
     }
     if (phat <= 0.0) {
