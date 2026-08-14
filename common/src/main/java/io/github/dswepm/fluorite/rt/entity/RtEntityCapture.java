@@ -63,6 +63,8 @@ public final class RtEntityCapture implements VertexConsumer {
     static final int ENTITY_PRIM_GLINT = 1;
     /** Must equal PRIM_STOCHASTIC_ALPHA in world_common.slang. */
     static final int PRIM_STOCHASTIC_ALPHA = 2;
+    /** Must equal PRIM_RAIN_SPLASH in world_common.slang. */
+    static final int PRIM_RAIN_SPLASH = 4;
     // When a model textures from an atlas sprite (block entities: chests/signs/beds via a Material),
     // its ModelPart UVs are 0..1 in a virtual texture and must be remapped into the sprite's atlas
     // region — the work vanilla's sprite-coordinate-expander VertexConsumer does, which we bypass.
@@ -495,6 +497,14 @@ public final class RtEntityCapture implements VertexConsumer {
     void setEmissionFrom(int primStart, float emission) {
         for (int i = primStart + 3; i < prim.size(); i += 12) { // 12 floats/triangle, normal.w is index 3
             prim.set(i, emission);
+        }
+    }
+
+    /** Store procedural stochastic coverage in Prim.aux1 for every newly appended splash triangle. */
+    void setProceduralAlphaFrom(int primStart, float alpha) {
+        float clamped = Math.clamp(alpha, 0f, 1f);
+        for (int i = primStart + 11; i < prim.size(); i += 12) { // Prim.aux1 is lane 11
+            prim.set(i, clamped);
         }
     }
 

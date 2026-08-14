@@ -17,6 +17,7 @@
 | [M15–M17：统一介质与体积光照](M15-M17-medium-lighting.md) | 介质接口、Radiance 源、水下前缀、Slang 错编规避、散射顶点与 NEE | D1–D27、D29–D31、R24 |
 | [M18：动态光源数据层](M18-dynamic-light-data.md) | 手持/火焰/发光实体球灯、粒子 cell、稳定 source key、未绑定上传 | D98–D104、M20.4 |
 | [M19–M20：实体 overlay 与粒子](M19-M20-entities-particles.md) | 受伤 overlay、实体火焰、glint、粒子发光/透明/阴影 | D6、D28、D32、F16 |
+| [M21：雨天表面系统](M21-rain.md) | 世界锚定降雨暴露、湿润历史、水膜/水坑/涟漪、RT 水花和受光雨丝 | D105–D129 |
 | [测量、诊断与失败经验](lessons-and-measurements.md) | 基准纪律、GPU 日志、observer effect、设备故障取证、F/R 索引 | F1–F28、R1–R24 |
 
 ## 维护规则

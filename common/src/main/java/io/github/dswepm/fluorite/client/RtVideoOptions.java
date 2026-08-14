@@ -135,6 +135,23 @@ public final class RtVideoOptions {
                                 cloudCirrusWindSpeed(), cloudCirrusWindOffset()));
                 case WEATHER -> List.of(
                         Section.of(windAngle()),
+                        Section.titled("fluorite.options.rt.section.weatherRainExposure",
+                                rainSurfacesEnabled(), rainExposureQuality(), rainSlantDegrees(),
+                                wetFillSeconds(), wetDrySeconds(), puddleFillSeconds(),
+                                puddleDrySeconds(), daylightDrying()),
+                        Section.titled("fluorite.options.rt.section.weatherWetSurface",
+                                wetFilmStrength(), wetFilmRoughness(), puddlesEnabled(),
+                                puddleCoverage(), puddleScale(), puddleRippleStrength(), rainRippleSize(),
+                                defaultWetAbsorption(), defaultWetDarkening(),
+                                defaultWetFilm(), defaultPuddleAffinity()),
+                        Section.titled("fluorite.options.rt.section.weatherRainCalibration",
+                                wetDarkeningGain(), wetCoatGain(), puddleLayerGain(), puddleRoughness(),
+                                puddleExtraDarkening(), puddleNormalFlattening(),
+                                wetFilmNormalFlattening(), rainRippleWidth()),
+                        Section.titled("fluorite.options.rt.section.weatherRainParticles",
+                                rainParticlesEnabled(), rainStreakQuality(), rainStreakDensity(),
+                                rainStreakSpeed(), rainStreakLength(), rainSplashTarget(),
+                                rainSplashSize(), rainSplashOpacity(), rainSplashBrightness()),
                         Section.titled("fluorite.options.rt.section.weatherFog",
                                 fogTimeGain(), fogWeatherGain(), fogThunderDensityGain(),
                                 fogTimeStructureGain(), fogRainStructureGain(),
@@ -608,6 +625,182 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> waterStormSwellBias() {
         return unitSlider("fluorite.options.rt.waterStormSwellBias",
                 FluoriteConfig.Rt.Weather.WATER_STORM_SWELL_BIAS);
+    }
+
+    private static OptionInstance<Boolean> rainSurfacesEnabled() {
+        return bool("fluorite.options.rt.rainSurfacesEnabled",
+                FluoriteConfig.Rt.Weather.RAIN_SURFACES_ENABLED);
+    }
+
+    private static OptionInstance<String> rainExposureQuality() {
+        StringSetting setting = FluoriteConfig.Rt.Weather.RAIN_EXPOSURE_QUALITY;
+        return enumString("fluorite.options.rt.rainExposureQuality", setting, List.of("low", "high"));
+    }
+
+    private static OptionInstance<Integer> rainSlantDegrees() {
+        return floatRangeSlider("fluorite.options.rt.rainSlantDegrees",
+                FluoriteConfig.Rt.Weather.RAIN_SLANT_DEGREES, 0, 30, 1f, "°");
+    }
+
+    private static OptionInstance<Integer> wetFillSeconds() {
+        return floatRangeSlider("fluorite.options.rt.wetFillSeconds",
+                FluoriteConfig.Rt.Weather.WET_FILL_SECONDS, 1, 60, 1f, " s");
+    }
+
+    private static OptionInstance<Integer> wetDrySeconds() {
+        return floatRangeSlider("fluorite.options.rt.wetDrySeconds",
+                FluoriteConfig.Rt.Weather.WET_DRY_SECONDS, 10, 600, 1f, " s");
+    }
+
+    private static OptionInstance<Integer> puddleFillSeconds() {
+        return floatRangeSlider("fluorite.options.rt.puddleFillSeconds",
+                FluoriteConfig.Rt.Weather.PUDDLE_FILL_SECONDS, 5, 300, 1f, " s");
+    }
+
+    private static OptionInstance<Integer> puddleDrySeconds() {
+        return floatRangeSlider("fluorite.options.rt.puddleDrySeconds",
+                FluoriteConfig.Rt.Weather.PUDDLE_DRY_SECONDS, 30, 1800, 1f, " s");
+    }
+
+    private static OptionInstance<Boolean> daylightDrying() {
+        return bool("fluorite.options.rt.daylightDrying", FluoriteConfig.Rt.Weather.DAYLIGHT_DRYING);
+    }
+
+    private static OptionInstance<Integer> wetFilmStrength() {
+        return unitSlider("fluorite.options.rt.wetFilmStrength",
+                FluoriteConfig.Rt.Weather.WET_FILM_STRENGTH);
+    }
+
+    private static OptionInstance<Integer> wetFilmRoughness() {
+        return floatRangeSlider("fluorite.options.rt.wetFilmRoughness",
+                FluoriteConfig.Rt.Weather.WET_FILM_ROUGHNESS, 1, 30, 0.01f, "");
+    }
+
+    private static OptionInstance<Boolean> puddlesEnabled() {
+        return bool("fluorite.options.rt.puddlesEnabled", FluoriteConfig.Rt.Weather.PUDDLES_ENABLED);
+    }
+
+    private static OptionInstance<Integer> puddleCoverage() {
+        return unitSlider("fluorite.options.rt.puddleCoverage", FluoriteConfig.Rt.Weather.PUDDLE_COVERAGE);
+    }
+
+    private static OptionInstance<Integer> puddleScale() {
+        return blockSlider("fluorite.options.rt.puddleScale", FluoriteConfig.Rt.Weather.PUDDLE_SCALE, 2, 32);
+    }
+
+    private static OptionInstance<Integer> puddleRippleStrength() {
+        return floatRangeSlider("fluorite.options.rt.puddleRippleStrength",
+                FluoriteConfig.Rt.Weather.PUDDLE_RIPPLE_STRENGTH, 0, 300, 0.01f, "x");
+    }
+
+    private static OptionInstance<Integer> rainRippleSize() {
+        return floatRangeSlider("fluorite.options.rt.rainRippleSize",
+                FluoriteConfig.Rt.Weather.RAIN_RIPPLE_SIZE, 3, 30, 0.01f, " blocks");
+    }
+
+    private static OptionInstance<Integer> wetDarkeningGain() {
+        return floatRangeSlider("fluorite.options.rt.wetDarkeningGain",
+                FluoriteConfig.Rt.Weather.WET_DARKENING_GAIN, 0, 800, 0.01f, "x");
+    }
+
+    private static OptionInstance<Integer> wetCoatGain() {
+        return floatRangeSlider("fluorite.options.rt.wetCoatGain",
+                FluoriteConfig.Rt.Weather.WET_COAT_GAIN, 0, 200, 0.01f, "x");
+    }
+
+    private static OptionInstance<Integer> puddleLayerGain() {
+        return floatRangeSlider("fluorite.options.rt.puddleLayerGain",
+                FluoriteConfig.Rt.Weather.PUDDLE_LAYER_GAIN, 0, 300, 0.01f, "x");
+    }
+
+    private static OptionInstance<Integer> puddleRoughness() {
+        return floatRangeSlider("fluorite.options.rt.puddleRoughness",
+                FluoriteConfig.Rt.Weather.PUDDLE_ROUGHNESS, 2, 150, 0.001f, "");
+    }
+
+    private static OptionInstance<Integer> puddleExtraDarkening() {
+        return floatRangeSlider("fluorite.options.rt.puddleExtraDarkening",
+                FluoriteConfig.Rt.Weather.PUDDLE_EXTRA_DARKENING, 0, 25, 0.01f, "");
+    }
+
+    private static OptionInstance<Integer> puddleNormalFlattening() {
+        return floatRangeSlider("fluorite.options.rt.puddleNormalFlattening",
+                FluoriteConfig.Rt.Weather.PUDDLE_NORMAL_FLATTENING, 0, 300, 0.01f, "x");
+    }
+
+    private static OptionInstance<Integer> wetFilmNormalFlattening() {
+        return unitSlider("fluorite.options.rt.wetFilmNormalFlattening",
+                FluoriteConfig.Rt.Weather.WET_FILM_NORMAL_FLATTENING);
+    }
+
+    private static OptionInstance<Integer> rainRippleWidth() {
+        return floatRangeSlider("fluorite.options.rt.rainRippleWidth",
+                FluoriteConfig.Rt.Weather.RAIN_RIPPLE_WIDTH, 1, 8, 0.01f, " blocks");
+    }
+
+    private static OptionInstance<Integer> defaultWetAbsorption() {
+        return unitSlider("fluorite.options.rt.defaultWetAbsorption",
+                FluoriteConfig.Rt.Weather.DEFAULT_WET_ABSORPTION);
+    }
+
+    private static OptionInstance<Integer> defaultWetDarkening() {
+        return unitSlider("fluorite.options.rt.defaultWetDarkening",
+                FluoriteConfig.Rt.Weather.DEFAULT_WET_DARKENING);
+    }
+
+    private static OptionInstance<Integer> defaultWetFilm() {
+        return unitSlider("fluorite.options.rt.defaultWetFilm",
+                FluoriteConfig.Rt.Weather.DEFAULT_WET_FILM);
+    }
+
+    private static OptionInstance<Integer> defaultPuddleAffinity() {
+        return unitSlider("fluorite.options.rt.defaultPuddleAffinity",
+                FluoriteConfig.Rt.Weather.DEFAULT_PUDDLE_AFFINITY);
+    }
+
+    private static OptionInstance<Boolean> rainParticlesEnabled() {
+        return bool("fluorite.options.rt.rainParticlesEnabled",
+                FluoriteConfig.Rt.Weather.RAIN_PARTICLES_ENABLED);
+    }
+
+    private static OptionInstance<Integer> rainSplashSize() {
+        return floatRangeSlider("fluorite.options.rt.rainSplashSize",
+                FluoriteConfig.Rt.Weather.RAIN_SPLASH_SIZE, 5, 50, 0.01f, " blocks");
+    }
+
+    private static OptionInstance<Integer> rainSplashOpacity() {
+        return unitSlider("fluorite.options.rt.rainSplashOpacity",
+                FluoriteConfig.Rt.Weather.RAIN_SPLASH_OPACITY);
+    }
+
+    private static OptionInstance<Integer> rainSplashBrightness() {
+        return floatRangeSlider("fluorite.options.rt.rainSplashBrightness",
+                FluoriteConfig.Rt.Weather.RAIN_SPLASH_BRIGHTNESS, 5, 125, 0.01f, "x");
+    }
+
+    private static OptionInstance<String> rainStreakQuality() {
+        return enumString("fluorite.options.rt.rainStreakQuality",
+                FluoriteConfig.Rt.Weather.RAIN_STREAK_QUALITY, List.of("low", "medium", "high"));
+    }
+
+    private static OptionInstance<Integer> rainStreakDensity() {
+        return scaleSlider("fluorite.options.rt.rainStreakDensity",
+                FluoriteConfig.Rt.Weather.RAIN_STREAK_DENSITY, 2f);
+    }
+
+    private static OptionInstance<Integer> rainStreakSpeed() {
+        return floatRangeSlider("fluorite.options.rt.rainStreakSpeed",
+                FluoriteConfig.Rt.Weather.RAIN_STREAK_SPEED, 1, 64, 1f, " blocks/s");
+    }
+
+    private static OptionInstance<Integer> rainStreakLength() {
+        return floatRangeSlider("fluorite.options.rt.rainStreakLength",
+                FluoriteConfig.Rt.Weather.RAIN_STREAK_LENGTH, 1, 20, 0.1f, " blocks");
+    }
+
+    private static OptionInstance<Integer> rainSplashTarget() {
+        return countSlider("fluorite.options.rt.rainSplashTarget",
+                FluoriteConfig.Rt.Weather.RAIN_SPLASH_TARGET, 0, 256);
     }
 
     private static OptionInstance<Integer> fogDensity() {
@@ -1214,6 +1407,31 @@ public final class RtVideoOptions {
             v -> setting.set(v / 100.0f));
     }
 
+    /** Reusable string-backed cycle whose labels live beside the setting's ordinary translation key. */
+    private static OptionInstance<String> enumString(String key, StringSetting setting, List<String> values) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, value) -> Component.translatable(key + "." + value),
+            new OptionInstance.Enum<>(values, Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    /** Integer-backed slider mapped to an arbitrary positive float step. */
+    private static OptionInstance<Integer> floatRangeSlider(String key, FloatSetting setting,
+                                                             int min, int max, float step, String suffix) {
+        return new OptionInstance<>(
+            key,
+            OptionInstance.cachedConstantTooltip(Component.translatable(key + ".tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, step < 1f ? "%.2f%s" : "%.0f%s",
+                            v * step, suffix))),
+            new OptionInstance.IntRange(min, max),
+            Math.clamp(Math.round(setting.value() / step), min, max),
+            v -> setting.set(v * step));
+    }
+
     /** A slider over a distance in blocks. */
     private static OptionInstance<Integer> blockSlider(String key, FloatSetting setting, int min, int max) {
         int initial = Math.clamp(Math.round(setting.value()), min, max);
@@ -1421,9 +1639,9 @@ public final class RtVideoOptions {
             // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
             new OptionInstance.Enum<>(
                     List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                            24, 25),
+                            24, 25, 26, 27),
                     Codec.INT),
-            Math.clamp(setting.value(), 0, 25),
+            Math.clamp(setting.value(), 0, 27),
             setting::set);
     }
 

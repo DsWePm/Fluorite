@@ -5,6 +5,8 @@ import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkImageMemoryBarrier;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
+import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkBufferImageCopy;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
 import org.lwjgl.vulkan.VkDescriptorImageInfo;
@@ -30,9 +32,14 @@ import java.nio.LongBuffer;
 import io.github.dswepm.fluorite.rt.RtContext;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 import io.github.dswepm.fluorite.rt.RtGpuExecutor;
+import io.github.dswepm.fluorite.rt.RtFrameStats;
 import io.github.dswepm.fluorite.rt.overlay.RtOverlayPipelines;
 import io.github.dswepm.fluorite.rt.accel.RtBuffer;
 import io.github.dswepm.fluorite.rt.accel.RtImage;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.levelgen.Heightmap;
 
 import static io.github.dswepm.fluorite.rt.RtContext.check;
 
@@ -72,6 +79,22 @@ public final class RtSky {
     public static final int VIS_GRID_D = 64;
     private static final int VIS_GROUP = 4; // matches [numthreads(4, 4, 4)]
     private static final int VIS_PUSH_BYTES = 8; // WorldPush address; the grid's placement is a field in it
+    /** D110 high tier; low dispatches only the top-left 256² of this fixed allocation. */
+    public static final int RAIN_EXPOSURE_MAX = 512;
+    private static final int RAIN_EXPOSURE_GROUP = 8;
+    private static final int RAIN_EXPOSURE_PUSH_BYTES = 48;
+    private static final int RAIN_EXPOSURE_TILE = 32;
+    private static final int RAIN_EXPOSURE_TILES_PER_FRAME = 8;
+    private static final int RAIN_EXPOSURE_NEAR_TILES = 9;
+    private static final int RAIN_EXPOSURE_NEAR_TILES_PER_FRAME = 4;
+    private static final int RAIN_HISTORY_PUSH_BYTES = 56;
+    private static final int RAIN_PRECIP_CELL = 4;
+    private static final int RAIN_PRECIP_MAX_DIM = RAIN_EXPOSURE_MAX / RAIN_PRECIP_CELL;
+    private static final int RAIN_PRECIP_NONE = 0;
+    private static final int RAIN_PRECIP_RAIN = 1;
+    private static final int RAIN_PRECIP_UNKNOWN = 2;
+    /** Matches RtComposite's push ring; each slot is host-written only after its prior GPU use completes. */
+    private static final int RAIN_PRECIP_RING = 6;
     private static final int BAKE_GROUP = 8; // matches [numthreads(8, 8, 1)] in both bake shaders
 
     /** One compute stage: its layout, its set, and its pipeline. */
@@ -92,12 +115,16 @@ public final class RtSky {
     private final Bake mediumSkyReduceBake;
     private final Bake froxelBake;
     private final Bake visibilityBake;
+    private final Bake rainExposureBake;
+    private final Bake[] rainHistoryBakes;
     private final Bake cloudNoiseBake;
     private final Bake fogNoiseBake;
     private final RtOverlayPipelines.AccelStructureSet froxelTlas;
     private final RtOverlayPipelines.AccelStructureSet visibilityTlas;
+    private final RtOverlayPipelines.AccelStructureSet rainExposureTlas;
     private final long lutSampler;
     private final long noiseSampler;
+    private final long rainHistorySampler;
     private RtImage transmittance;
     private RtImage multiScatter;
     private RtImage skyViewRayleigh;
@@ -105,6 +132,42 @@ public final class RtSky {
     private RtImage skyViewMulti;
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
+    private RtImage rainExposureDepth;
+    private RtImage[] rainWetHistory;
+    private int rainWetHistoryRead;
+    private int rainWetHistoryResolution;
+    private int rainWetHistoryOriginX;
+    private int rainWetHistoryOriginZ;
+    private boolean rainWetHistoryValid;
+    private int rainExposureNearTileCursor;
+    private int rainExposureFarTileCursor;
+    private int rainExposureTileResolution;
+    private int[][] rainExposureTiles = new int[0][2];
+    private int rainExposureOriginX;
+    private int rainExposureOriginZ;
+    private float rainExposureDirectionX;
+    private float rainExposureDirectionY;
+    private float rainExposureDirectionZ;
+    private boolean rainExposureOriginValid;
+    private RtBuffer[] rainPrecipitation;
+    // Keep unresolved cells explicit: client chunks outside the initial neighbourhood may not exist yet.
+    // Near/far tile cursors revisit those cells after streaming catches up instead of permanently caching
+    // the false "no rain" answer observed during world entry.
+    private final int[] rainPrecipitationCpu = new int[RAIN_PRECIP_MAX_DIM * RAIN_PRECIP_MAX_DIM];
+    private final int[] rainPrecipitationScratch = new int[RAIN_PRECIP_MAX_DIM * RAIN_PRECIP_MAX_DIM];
+    private final boolean[] rainPrecipitationResolved =
+            new boolean[RAIN_PRECIP_MAX_DIM * RAIN_PRECIP_MAX_DIM];
+    private final boolean[] rainPrecipitationResolvedScratch =
+            new boolean[RAIN_PRECIP_MAX_DIM * RAIN_PRECIP_MAX_DIM];
+    private int rainPrecipitationNearTileCursor;
+    private int rainPrecipitationFarTileCursor;
+    private int[][] rainPrecipitationTiles = new int[0][2];
+    private ClientLevel rainPrecipitationCpuLevel;
+    private int rainPrecipitationCpuOriginX = Integer.MIN_VALUE;
+    private int rainPrecipitationCpuOriginZ = Integer.MIN_VALUE;
+    private int rainPrecipitationCpuResolution;
+    private long rainPrecipitationGeneration;
+    private final long[] rainPrecipitationUploadedGeneration = new long[RAIN_PRECIP_RING];
     private RtImage cloudNoise;
     private RtImage fogNoise;
     // The interactive water simulation's height field (M12), in metres of displacement. Three buffers
@@ -152,7 +215,10 @@ public final class RtSky {
                   Bake mediumSkyReduceBake, Bake froxelBake,
                   RtOverlayPipelines.AccelStructureSet froxelTlas,
                   Bake visibilityBake, RtOverlayPipelines.AccelStructureSet visibilityTlas,
-                  Bake cloudNoiseBake, Bake fogNoiseBake, long lutSampler, long noiseSampler) {
+                  Bake rainExposureBake, Bake[] rainHistoryBakes,
+                  RtOverlayPipelines.AccelStructureSet rainExposureTlas,
+                  Bake cloudNoiseBake, Bake fogNoiseBake, long lutSampler, long noiseSampler,
+                  long rainHistorySampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
         this.multiScatterBake = multiScatterBake;
@@ -161,11 +227,15 @@ public final class RtSky {
         this.froxelBake = froxelBake;
         this.froxelTlas = froxelTlas;
         this.visibilityBake = visibilityBake;
+        this.rainExposureBake = rainExposureBake;
+        this.rainHistoryBakes = rainHistoryBakes;
         this.cloudNoiseBake = cloudNoiseBake;
         this.fogNoiseBake = fogNoiseBake;
         this.visibilityTlas = visibilityTlas;
+        this.rainExposureTlas = rainExposureTlas;
         this.lutSampler = lutSampler;
         this.noiseSampler = noiseSampler;
+        this.rainHistorySampler = rainHistorySampler;
     }
 
     public static RtSky create(RtContext ctx) {
@@ -225,10 +295,20 @@ public final class RtSky {
             long sampler = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, sampler, "sky LUT chain sampler");
 
+            // Packed integer wetness is always read with Load(), but its combined descriptor still owns a
+            // sampler. Keep that sampler NEAREST so the descriptor remains valid for an integer format;
+            // the LINEAR atmosphere sampler above is not filter-compatible with R32G32_UINT.
+            sci.magFilter(VK10.VK_FILTER_NEAREST).minFilter(VK10.VK_FILTER_NEAREST);
+            check(VK10.vkCreateSampler(vk, sci, null, p), "vkCreateSampler(rain wet history)");
+            long rainHistorySampler = p.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, rainHistorySampler,
+                    "rain wet-history sampler");
+
             // The two packed density fields are periodic in all three axes. The bake makes their lattice
             // continuous at the seam; REPEAT is still needed so filtering across that seam reads the
             // opposite face instead of clamping to the last texel.
-            sci.addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+            sci.magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
+                    .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
                     .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
                     .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT);
             check(VK10.vkCreateSampler(vk, sci, null, p), "vkCreateSampler(rt sky noise)");
@@ -285,11 +365,25 @@ public final class RtSky {
             Bake visibilityBake = createBake(ctx, stack, "volume_visibility.comp.spv", "volume visibility",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, VIS_PUSH_BYTES,
                     visibilityTlas.layout);
+            RtOverlayPipelines.AccelStructureSet rainExposureTlas = RtOverlayPipelines.accelStructureSet(
+                    ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "rain exposure TLAS");
+            Bake rainExposureBake = createBake(ctx, stack, "rain_exposure.comp.spv", "rain exposure",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, RAIN_EXPOSURE_PUSH_BYTES,
+                    rainExposureTlas.layout);
+            Bake[] rainHistoryBakes = new Bake[2];
+            for (int target = 0; target < 2; target++) {
+                rainHistoryBakes[target] = createBake(ctx, stack, "rain_history.comp.spv",
+                        "rain wet history " + target,
+                        new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}, RAIN_HISTORY_PUSH_BYTES);
+            }
 
             RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
                     mediumSkyReduceBake, froxelBake, froxelTlas,
-                    visibilityBake, visibilityTlas, cloudNoiseBake, fogNoiseBake,
-                    sampler, noiseSampler);
+                    visibilityBake, visibilityTlas, rainExposureBake, rainHistoryBakes, rainExposureTlas,
+                    cloudNoiseBake, fogNoiseBake,
+                    sampler, noiseSampler, rainHistorySampler);
             sky.waterSimBakes = waterSimBakes;
             sky.waterDeformBake = waterDeformBake;
             sky.waterObstacleBake = waterObstacleBake;
@@ -382,6 +476,32 @@ public final class RtSky {
             sky.visibilityGrid = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "volume visibility grid");
             writeStorageImage(vk, stack, visibilityBake.descriptorSet(), 0, sky.visibilityGrid.view);
+            // One fixed 512² R32 depth image. Low quality dispatches and samples a 256² prefix, so a live
+            // option change never rewrites a descriptor still referenced by an in-flight frame.
+            sky.rainExposureDepth = ctx.createStorageImage(RAIN_EXPOSURE_MAX, RAIN_EXPOSURE_MAX,
+                    VK10.VK_FORMAT_R32_SFLOAT, "directional rain exposure depth");
+            writeStorageImage(vk, stack, rainExposureBake.descriptorSet(), 0, sky.rainExposureDepth.view);
+            sky.rainWetHistory = new RtImage[2];
+            for (int i = 0; i < 2; i++) {
+                sky.rainWetHistory[i] = ctx.createStorageImage(RAIN_EXPOSURE_MAX, RAIN_EXPOSURE_MAX,
+                        VK10.VK_FORMAT_R32G32_UINT, "rain wet history " + i);
+            }
+            for (int target = 0; target < 2; target++) {
+                Bake history = rainHistoryBakes[target];
+                writeSampledImage(vk, stack, history.descriptorSet(), 0,
+                        sky.rainWetHistory[1 - target].view, rainHistorySampler);
+                writeStorageImage(vk, stack, history.descriptorSet(), 1,
+                        sky.rainWetHistory[target].view);
+                writeSampledImage(vk, stack, history.descriptorSet(), 2,
+                        sky.rainExposureDepth.view, sampler);
+            }
+            sky.rainPrecipitation = new RtBuffer[RAIN_PRECIP_RING];
+            for (int slot = 0; slot < RAIN_PRECIP_RING; slot++) {
+                sky.rainPrecipitation[slot] = ctx.createBuffer(
+                        (long) RAIN_PRECIP_MAX_DIM * RAIN_PRECIP_MAX_DIM * Integer.BYTES,
+                        VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                        "rain precipitation cache " + slot);
+            }
             return sky;
         }
     }
@@ -389,6 +509,11 @@ public final class RtSky {
     /** The transmittance table's view. Valid from construction; contents defined after the first bake. */
     public long transmittanceView() {
         return transmittance == null ? 0L : transmittance.view;
+    }
+
+    /** Shared linear/clamp sampler for consumers of the atmospheric transmittance table. */
+    public long transmittanceSampler() {
+        return lutSampler;
     }
 
     /** The multi-scatter table's view. Valid from construction; contents defined after the first bake. */
@@ -415,6 +540,163 @@ public final class RtSky {
     /** M13.2 visibility grid: R sun, G sky, BA visibility-weighted celestial sample coordinates. */
     public long visibilityGridView() {
         return visibilityGrid == null ? 0L : visibilityGrid.view;
+    }
+
+    /** D105 directional depth map shared by every opaque path vertex. */
+    public long rainExposureDepthView() {
+        return rainExposureDepth == null ? 0L : rainExposureDepth.view;
+    }
+
+    /** Current persistent wet/puddle history sampled by both ray-generation passes. */
+    public long rainWetHistoryView() {
+        return rainWetHistory == null ? 0L : rainWetHistory[rainWetHistoryRead].view;
+    }
+
+    public long rainWetHistoryView(int index) {
+        return rainWetHistory == null ? 0L : rainWetHistory[Math.clamp(index, 0, 1)].view;
+    }
+
+    /** NEAREST is required by the packed R32G32_UINT history descriptor. */
+    public long rainWetHistorySampler() {
+        return rainHistorySampler;
+    }
+
+    /** Index this frame's history compute will publish; written into rainPuddle.z before dispatch. */
+    public int rainWetHistoryTargetIndex() {
+        return 1 - rainWetHistoryRead;
+    }
+
+    /**
+     * Slide the one-cell-per-four-block precipitation cache with the world map, then resolve loaded
+     * cells in the same near-first/far-progressive order as the GPU exposure bake. Cells whose chunks
+     * have not streamed in remain UNKNOWN and are revisited; they must never be frozen as dry merely
+     * because the first client frame arrived before the chunk.
+     */
+    public void updateRainPrecipitation(ClientLevel level, int originX, int originZ,
+                                        int resolution, int slot) {
+        if (level == null || rainPrecipitation == null || resolution <= 0
+                || slot < 0 || slot >= rainPrecipitation.length) {
+            return;
+        }
+        int coarseDim = resolution / RAIN_PRECIP_CELL;
+        boolean mapChanged = level != rainPrecipitationCpuLevel || originX != rainPrecipitationCpuOriginX
+                || originZ != rainPrecipitationCpuOriginZ
+                || resolution != rainPrecipitationCpuResolution;
+        if (mapChanged) {
+            boolean canSlide = level == rainPrecipitationCpuLevel
+                    && resolution == rainPrecipitationCpuResolution
+                    && rainPrecipitationCpuOriginX != Integer.MIN_VALUE
+                    && rainPrecipitationCpuOriginZ != Integer.MIN_VALUE
+                    && (originX - rainPrecipitationCpuOriginX) % RAIN_PRECIP_CELL == 0
+                    && (originZ - rainPrecipitationCpuOriginZ) % RAIN_PRECIP_CELL == 0;
+            int shiftX = canSlide
+                    ? (originX - rainPrecipitationCpuOriginX) / RAIN_PRECIP_CELL : coarseDim;
+            int shiftZ = canSlide
+                    ? (originZ - rainPrecipitationCpuOriginZ) / RAIN_PRECIP_CELL : coarseDim;
+            canSlide &= Math.abs(shiftX) < coarseDim && Math.abs(shiftZ) < coarseDim;
+
+            for (int z = 0; z < coarseDim; z++) {
+                for (int x = 0; x < coarseDim; x++) {
+                    int oldX = x + shiftX;
+                    int oldZ = z + shiftZ;
+                    int index = z * coarseDim + x;
+                    if (canSlide && oldX >= 0 && oldX < coarseDim
+                            && oldZ >= 0 && oldZ < coarseDim) {
+                        int oldIndex = oldZ * coarseDim + oldX;
+                        rainPrecipitationScratch[index] = rainPrecipitationCpu[oldIndex];
+                        rainPrecipitationResolvedScratch[index] = rainPrecipitationResolved[oldIndex];
+                    } else {
+                        rainPrecipitationScratch[index] = RAIN_PRECIP_UNKNOWN;
+                        rainPrecipitationResolvedScratch[index] = false;
+                    }
+                }
+            }
+            System.arraycopy(rainPrecipitationScratch, 0, rainPrecipitationCpu, 0,
+                    coarseDim * coarseDim);
+            System.arraycopy(rainPrecipitationResolvedScratch, 0, rainPrecipitationResolved, 0,
+                    coarseDim * coarseDim);
+            rainPrecipitationCpuLevel = level;
+            rainPrecipitationCpuOriginX = originX;
+            rainPrecipitationCpuOriginZ = originZ;
+            rainPrecipitationCpuResolution = resolution;
+            rainPrecipitationNearTileCursor = 0;
+            rainPrecipitationFarTileCursor = 0;
+            rainPrecipitationTiles = rainExposureTileOrder(resolution);
+            rainPrecipitationGeneration++;
+        }
+        long queries = refreshRainPrecipitationTiles(level, originX, originZ, resolution, coarseDim);
+        if (queries > 0L) {
+            rainPrecipitationGeneration++;
+        }
+        RtFrameStats.FRAME.count("rainExposureCpuQueries", queries);
+        if (rainPrecipitationUploadedGeneration[slot] == rainPrecipitationGeneration) {
+            return;
+        }
+        RtBuffer cache = rainPrecipitation[slot];
+        int cellCount = coarseDim * coarseDim;
+        MemoryUtil.memIntBuffer(cache.mapped, cellCount).put(rainPrecipitationCpu, 0, cellCount);
+        cache.flush(0L, (long) cellCount * Integer.BYTES);
+        RtFrameStats.FRAME.count("rainExposureUploadBytes", (long) cellCount * Integer.BYTES);
+        rainPrecipitationUploadedGeneration[slot] = rainPrecipitationGeneration;
+    }
+
+    /** Resolve only loaded chunks; unresolved cells stay queued until a later near/far visit. */
+    private long refreshRainPrecipitationTiles(ClientLevel level, int originX, int originZ,
+                                               int resolution, int coarseDim) {
+        int tileCount = rainPrecipitationTiles.length;
+        if (tileCount == 0) {
+            return 0L;
+        }
+        long queries = 0L;
+        int nearCount = Math.min(RAIN_EXPOSURE_NEAR_TILES, tileCount);
+        int nearWork = Math.min(RAIN_EXPOSURE_NEAR_TILES_PER_FRAME, nearCount);
+        for (int work = 0; work < nearWork; work++) {
+            int[] tile = rainPrecipitationTiles[rainPrecipitationNearTileCursor++ % nearCount];
+            queries += refreshRainPrecipitationTile(level, originX, originZ, resolution, coarseDim, tile);
+        }
+        int farCount = tileCount - nearCount;
+        int farWork = Math.min(RAIN_EXPOSURE_TILES_PER_FRAME - nearWork, farCount);
+        for (int work = 0; work < farWork; work++) {
+            int[] tile = rainPrecipitationTiles[
+                    nearCount + rainPrecipitationFarTileCursor++ % farCount];
+            queries += refreshRainPrecipitationTile(level, originX, originZ, resolution, coarseDim, tile);
+        }
+        return queries;
+    }
+
+    private long refreshRainPrecipitationTile(ClientLevel level, int originX, int originZ,
+                                              int resolution, int coarseDim, int[] tile) {
+        int extentX = Math.min(RAIN_EXPOSURE_TILE, resolution - tile[0]);
+        int extentZ = Math.min(RAIN_EXPOSURE_TILE, resolution - tile[1]);
+        int startX = tile[0] / RAIN_PRECIP_CELL;
+        int startZ = tile[1] / RAIN_PRECIP_CELL;
+        int endX = (tile[0] + extentX + RAIN_PRECIP_CELL - 1) / RAIN_PRECIP_CELL;
+        int endZ = (tile[1] + extentZ + RAIN_PRECIP_CELL - 1) / RAIN_PRECIP_CELL;
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        long queries = 0L;
+        for (int z = startZ; z < endZ; z++) {
+            for (int x = startX; x < endX; x++) {
+                int index = z * coarseDim + x;
+                if (rainPrecipitationResolved[index]) {
+                    continue;
+                }
+                int worldX = originX + x * RAIN_PRECIP_CELL + RAIN_PRECIP_CELL / 2;
+                int worldZ = originZ + z * RAIN_PRECIP_CELL + RAIN_PRECIP_CELL / 2;
+                if (!level.getChunkSource().hasChunk(worldX >> 4, worldZ >> 4)) {
+                    continue;
+                }
+                // Height is sampled at the motion-blocking surface because rain/snow may depend on local
+                // altitude; a fixed sea-level query would turn mountain snow into rain.
+                int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING, worldX, worldZ);
+                pos.set(worldX, y, worldZ);
+                rainPrecipitationCpu[index] =
+                        level.getPrecipitationAt(pos) == Biome.Precipitation.RAIN
+                                ? RAIN_PRECIP_RAIN : RAIN_PRECIP_NONE;
+                rainPrecipitationResolved[index] = true;
+                queries++;
+            }
+        }
+        return queries;
     }
 
     /** M11.1 cloud noise: R the billow that shapes a cloud, G the detail that erodes its edges. */
@@ -525,6 +807,167 @@ public final class RtSky {
                     (VIS_GRID_H + VIS_GROUP - 1) / VIS_GROUP,
                     (VIS_GRID_D + VIS_GROUP - 1) / VIS_GROUP);
         }
+    }
+
+    /**
+     * Record D105's directional depth after the frame TLAS is complete. The centre 32x32 tiles are
+     * always first; eight tiles advance per frame, so the player's neighbourhood refreshes immediately
+     * while the far square converges without a 512^2 burst.
+     */
+    public void recordRainExposureBake(VkCommandBuffer cmd, long worldPushAddr, long sectionTableAddr,
+                                       long tlas, int originX, int originZ, int resolution,
+                                       float directionX, float directionY, float directionZ, int slot,
+                                       RtGpuExecutor.GraphicsUse graphicsUse) {
+        if (resolution <= 0 || rainPrecipitation == null
+                || slot < 0 || slot >= rainPrecipitation.length) {
+            return;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "rain exposure bake")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, rainExposureBake.pipeline());
+            long tlasSet = rainExposureTlas.bind(ctx, tlas, graphicsUse);
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    rainExposureBake.pipelineLayout(), 0,
+                    stack.longs(rainExposureBake.descriptorSet(), tlasSet), null);
+            boolean directionChanged = rainExposureOriginValid
+                    && (Math.abs(rainExposureDirectionX - directionX) > 1.0e-5f
+                    || Math.abs(rainExposureDirectionY - directionY) > 1.0e-5f
+                    || Math.abs(rainExposureDirectionZ - directionZ) > 1.0e-5f);
+            boolean moved = !rainExposureOriginValid || rainExposureTileResolution != resolution
+                    || rainExposureOriginX != originX || rainExposureOriginZ != originZ
+                    || directionChanged;
+            if (moved) {
+                rainExposureTileResolution = resolution;
+                rainExposureOriginX = originX;
+                rainExposureOriginZ = originZ;
+                rainExposureDirectionX = directionX;
+                rainExposureDirectionY = directionY;
+                rainExposureDirectionZ = directionZ;
+                rainExposureOriginValid = true;
+                rainExposureNearTileCursor = 0;
+                rainExposureFarTileCursor = 0;
+                rainExposureTiles = rainExposureTileOrder(resolution);
+                clearRainExposure(cmd, stack);
+                if (directionChanged) {
+                    // Packed depths are measured along the old ray. They cannot be reprojected to a new
+                    // slant/heading by shifting xz, so start the local association from global reservoirs.
+                    rainWetHistoryValid = false;
+                }
+            }
+            int tileCount = rainExposureTiles.length;
+            int nearCount = Math.min(RAIN_EXPOSURE_NEAR_TILES, tileCount);
+            int nearWork = Math.min(RAIN_EXPOSURE_NEAR_TILES_PER_FRAME, nearCount);
+            for (int work = 0; work < nearWork; work++) {
+                int[] tile = rainExposureTiles[rainExposureNearTileCursor++ % nearCount];
+                dispatchRainExposureTile(cmd, stack, worldPushAddr, sectionTableAddr,
+                        resolution, slot, tile);
+            }
+            int farCount = tileCount - nearCount;
+            int farWork = Math.min(RAIN_EXPOSURE_TILES_PER_FRAME - nearWork, farCount);
+            for (int work = 0; work < farWork; work++) {
+                int[] tile = rainExposureTiles[nearCount + rainExposureFarTileCursor++ % farCount];
+                dispatchRainExposureTile(cmd, stack, worldPushAddr, sectionTableAddr,
+                        resolution, slot, tile);
+            }
+        }
+    }
+
+    private void dispatchRainExposureTile(VkCommandBuffer cmd, MemoryStack stack, long worldPushAddr,
+                                          long sectionTableAddr, int resolution, int slot, int[] tile) {
+                int extentX = Math.min(RAIN_EXPOSURE_TILE, resolution - tile[0]);
+                int extentY = Math.min(RAIN_EXPOSURE_TILE, resolution - tile[1]);
+                ByteBuffer push = stack.malloc(RAIN_EXPOSURE_PUSH_BYTES);
+                push.putLong(0, worldPushAddr)
+                        .putLong(8, rainPrecipitation[slot].deviceAddress)
+                        .putLong(16, sectionTableAddr);
+                push.putInt(24, resolution).putInt(28, resolution / RAIN_PRECIP_CELL);
+                push.putInt(32, tile[0]).putInt(36, tile[1]);
+                push.putInt(40, extentX).putInt(44, extentY);
+                VK10.vkCmdPushConstants(cmd, rainExposureBake.pipelineLayout(),
+                        VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+                VK10.vkCmdDispatch(cmd, (extentX + RAIN_EXPOSURE_GROUP - 1) / RAIN_EXPOSURE_GROUP,
+                        (extentY + RAIN_EXPOSURE_GROUP - 1) / RAIN_EXPOSURE_GROUP, 1);
+    }
+
+    /** Drop texels from the previous world anchor before the centre-out refresh begins. */
+    private void clearRainExposure(VkCommandBuffer cmd, MemoryStack stack) {
+        VkMemoryBarrier.Buffer before = VkMemoryBarrier.calloc(1, stack);
+        before.get(0).sType$Default()
+                .srcAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_SHADER_WRITE_BIT)
+                .dstAccessMask(VK10.VK_ACCESS_TRANSFER_WRITE_BIT);
+        VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, before, null, null);
+        VkClearColorValue clear = VkClearColorValue.calloc(stack);
+        // -2 means "not refreshed for this anchor yet". -1 is reserved for a resolved no-rain biome;
+        // rain_history uses that distinction to retain rather than prematurely dry distant history.
+        clear.float32(0, -2.0f);
+        VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+        range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
+        VK10.vkCmdClearColorImage(cmd, rainExposureDepth.image,
+                VK10.VK_IMAGE_LAYOUT_GENERAL, clear, range);
+        VkMemoryBarrier.Buffer after = VkMemoryBarrier.calloc(1, stack);
+        after.get(0).sType$Default().srcAccessMask(VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_SHADER_WRITE_BIT);
+        VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, after, null, null);
+    }
+
+    /** Centre-out square-ring tile order; rebuilt only when the quality tier changes. */
+    private static int[][] rainExposureTileOrder(int resolution) {
+        int dim = (resolution + RAIN_EXPOSURE_TILE - 1) / RAIN_EXPOSURE_TILE;
+        int[][] result = new int[dim * dim][2];
+        int centre = dim / 2;
+        int out = 0;
+        for (int radius = 0; radius <= dim; radius++) {
+            for (int y = 0; y < dim; y++) {
+                for (int x = 0; x < dim; x++) {
+                    if (Math.max(Math.abs(x - centre), Math.abs(y - centre)) == radius) {
+                        result[out][0] = x * RAIN_EXPOSURE_TILE;
+                        result[out][1] = y * RAIN_EXPOSURE_TILE;
+                        out++;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /** Update and swap the compressed two-layer world-column wetness history. */
+    public void recordRainHistory(VkCommandBuffer cmd, long worldPushAddr,
+                                  int originX, int originZ, int resolution,
+                                  float elapsedSeconds, float wetFillSeconds, float wetDrySeconds,
+                                  float puddleFillSeconds, float puddleDrySeconds, float dryingScale) {
+        if (resolution <= 0 || rainWetHistory == null) {
+            return;
+        }
+        int shiftX = rainWetHistoryValid ? originX - rainWetHistoryOriginX : 0;
+        int shiftZ = rainWetHistoryValid ? originZ - rainWetHistoryOriginZ : 0;
+        boolean clear = !rainWetHistoryValid || rainWetHistoryResolution != resolution
+                || Math.abs(shiftX) >= resolution || Math.abs(shiftZ) >= resolution;
+        int write = 1 - rainWetHistoryRead;
+        Bake rainHistoryBake = rainHistoryBakes[write];
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "rain wet history")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, rainHistoryBake.pipeline());
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    rainHistoryBake.pipelineLayout(), 0, stack.longs(rainHistoryBake.descriptorSet()), null);
+            ByteBuffer push = stack.malloc(RAIN_HISTORY_PUSH_BYTES);
+            push.putLong(0, worldPushAddr).putInt(8, resolution).putInt(12, clear ? 1 : 0);
+            push.putFloat(16, elapsedSeconds).putFloat(20, wetFillSeconds)
+                    .putFloat(24, wetDrySeconds).putFloat(28, puddleFillSeconds)
+                    .putFloat(32, puddleDrySeconds).putFloat(36, dryingScale);
+            push.putInt(40, shiftX).putInt(44, shiftZ).putInt(48, 0).putInt(52, 0);
+            VK10.vkCmdPushConstants(cmd, rainHistoryBake.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+            VK10.vkCmdDispatch(cmd, (resolution + RAIN_EXPOSURE_GROUP - 1) / RAIN_EXPOSURE_GROUP,
+                    (resolution + RAIN_EXPOSURE_GROUP - 1) / RAIN_EXPOSURE_GROUP, 1);
+        }
+        rainWetHistoryRead = write;
+        rainWetHistoryResolution = resolution;
+        rainWetHistoryOriginX = originX;
+        rainWetHistoryOriginZ = originZ;
+        rainWetHistoryValid = true;
     }
 
     /**
@@ -827,6 +1270,26 @@ public final class RtSky {
             visibilityGrid.destroy();
             visibilityGrid = null;
         }
+        if (rainExposureDepth != null) {
+            rainExposureDepth.destroy();
+            rainExposureDepth = null;
+        }
+        if (rainWetHistory != null) {
+            for (RtImage history : rainWetHistory) {
+                if (history != null) {
+                    history.destroy();
+                }
+            }
+            rainWetHistory = null;
+        }
+        if (rainPrecipitation != null) {
+            for (RtBuffer cache : rainPrecipitation) {
+                if (cache != null) {
+                    cache.destroy();
+                }
+            }
+            rainPrecipitation = null;
+        }
         if (cloudNoise != null) {
             cloudNoise.destroy();
             cloudNoise = null;
@@ -857,7 +1320,11 @@ public final class RtSky {
         if (noiseSampler != 0L) {
             VK10.vkDestroySampler(vk, noiseSampler, null);
         }
+        if (rainHistorySampler != 0L) {
+            VK10.vkDestroySampler(vk, rainHistorySampler, null);
+        }
         visibilityTlas.destroy(vk);
+        rainExposureTlas.destroy(vk);
         if (waterObstacleTlas != null) {
             waterObstacleTlas.destroy(vk);
         }
@@ -872,6 +1339,10 @@ public final class RtSky {
             waterObstacleBake.destroy(vk);
         }
         visibilityBake.destroy(vk);
+        rainExposureBake.destroy(vk);
+        for (Bake history : rainHistoryBakes) {
+            history.destroy(vk);
+        }
         cloudNoiseBake.destroy(vk);
         fogNoiseBake.destroy(vk);
         froxelTlas.destroy(vk);

@@ -7,7 +7,7 @@ pack down with it.
 
 This exists because the formats Minecraft resource packs already use do not describe everything a
 principled BSDF needs. LabPBR 1.3 carries roughness, metalness, F0, emission and a subsurface mask — and
-has no channel for sheen, clearcoat, anisotropy or a subsurface radius. Rather than invent a competing
+has no channel for sheen, clearcoat, anisotropy, a subsurface radius or weather response. Rather than invent a competing
 texture format, Fluorite takes those from JSON and leaves the textures alone.
 
 ## The shape of the pipeline
@@ -30,7 +30,8 @@ unmodified LabPBR pack renders identically**; that is a property the tests pin, 
 ## Format versions
 
 `format` is required. Version 1 files remain loadable and mean what they always meant. Version 2 adds the
-Disney blocks below.
+Disney blocks below. Version 3 adds the optional `weather` block; versions 1 and 2 inherit the global
+rain-response defaults and therefore keep their previous dry-weather appearance.
 
 ## Matching
 
@@ -47,7 +48,7 @@ Everything is optional. Anything absent is inherited, not defaulted.
 
 ```json
 {
-  "format": 2,
+  "format": 3,
   "match": {"sprite": "minecraft:block/oak_leaves"},
 
   "model": "opaque",
@@ -59,7 +60,9 @@ Everything is optional. Anything absent is inherited, not defaulted.
   "clearcoat":  {"amount": 0.0, "gloss": 1.0},
   "specular":   {"tint": 0.0},
   "anisotropy": {"amount": 0.0},
-  "subsurface": {"weight": 0.0, "phase": 0.0, "radius": [0.0, 0.0, 0.0]}
+  "subsurface": {"weight": 0.0, "phase": 0.0, "radius": [0.0, 0.0, 0.0]},
+  "weather": {"absorption": 0.5, "darkening": 0.2,
+              "film_retention": 0.65, "puddle_affinity": 0.35}
 }
 ```
 
@@ -80,6 +83,10 @@ Everything is optional. Anything absent is inherited, not defaulted.
 | `subsurface.weight` | 0–1 | |
 | `subsurface.phase` | −1–1 | Henyey-Greenstein g. Positive scatters forward. |
 | `subsurface.radius` | ≥ 0, three numbers | Mean free path per channel, in blocks. |
+| `weather.absorption` | 0–1 | Porosity/saturation response of the visible wet layer. |
+| `weather.darkening` | 0–1 | Maximum albedo darkening after saturation. |
+| `weather.film_retention` | 0–1 | How strongly the material retains a reflective water film. |
+| `weather.puddle_affinity` | 0–1 | Participation in world-space standing-water structure. |
 
 Unknown keys are an error, and the file is skipped with a warning naming it. That is deliberate: a typo
 that silently did nothing would be worse than one that says so.
@@ -148,9 +155,9 @@ almost nothing, which is correct.
 The material log line reports what was loaded:
 
 ```
-RT materials: epoch=8, ... overrideRules=5, matchedOverrides=5, disneyExtensions=32, ...
+RT materials: epoch=8, ... overrideRules=5, matchedOverrides=5, materialExtensions=32, ...
 ```
 
-`matchedOverrides` below `overrideRules` means a rule's sprite never appeared. `disneyExtensions` counts
-the materials that ended up with Disney parameters; zero while a pack authors them means the rules
+`matchedOverrides` below `overrideRules` means a rule's sprite never appeared. `materialExtensions` counts
+the materials that ended up with Disney or weather parameters; zero while a pack authors them means the rules
 matched nothing, and the two numbers together say which half to look at.

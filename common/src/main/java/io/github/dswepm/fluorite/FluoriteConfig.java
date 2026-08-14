@@ -66,7 +66,8 @@ public final class FluoriteConfig {
             Rt.Dimensions.END_ENVIRONMENT_ROTATION_SPEED,
             Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
             Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.ABSORB_OVERRIDE,
-            Rt.Water.SCATTER_R,
+            Rt.Water.SCATTER_R, Rt.Weather.RAIN_SURFACES_ENABLED,
+            Rt.Weather.RAIN_EXPOSURE_QUALITY, Rt.Weather.RAIN_PARTICLES_ENABLED,
         };
     }
 
@@ -1552,6 +1553,126 @@ public final class FluoriteConfig {
          * {@code RtEnvironmentForcing}; the shader receives only the final physical parameters.
          */
         public static final class Weather {
+            /** Master switch for D105-D108 rain exposure, wet film and puddles. */
+            public static final BooleanSetting RAIN_SURFACES_ENABLED =
+                    bool("fluorite.rt.weather.rainSurfacesEnabled",
+                            "weather.rain-surfaces-enabled", true);
+            /** D105A exposure-map size: low=256², high=512², both at one block per texel. */
+            public static final StringSetting RAIN_EXPOSURE_QUALITY =
+                    string("fluorite.rt.weather.rainExposureQuality",
+                            "weather.rain-exposure-quality", "high", Weather::sanitizeExposureQuality);
+            /** Downwind tilt from vertical. Heading is the existing global weather wind. */
+            public static final FloatSetting RAIN_SLANT_DEGREES =
+                    clampedFloat("fluorite.rt.weather.rainSlantDegrees",
+                            "weather.rain-slant-degrees", 8f, 0f, 30f);
+
+            public static final FloatSetting WET_FILL_SECONDS =
+                    clampedFloat("fluorite.rt.weather.wetFillSeconds",
+                            "weather.wet-fill-seconds", 8f, 1f, 60f);
+            public static final FloatSetting WET_DRY_SECONDS =
+                    clampedFloat("fluorite.rt.weather.wetDrySeconds",
+                            "weather.wet-dry-seconds", 120f, 10f, 600f);
+            public static final FloatSetting PUDDLE_FILL_SECONDS =
+                    clampedFloat("fluorite.rt.weather.puddleFillSeconds",
+                            "weather.puddle-fill-seconds", 45f, 5f, 300f);
+            public static final FloatSetting PUDDLE_DRY_SECONDS =
+                    clampedFloat("fluorite.rt.weather.puddleDrySeconds",
+                            "weather.puddle-dry-seconds", 300f, 30f, 1800f);
+            public static final BooleanSetting DAYLIGHT_DRYING =
+                    bool("fluorite.rt.weather.daylightDrying",
+                            "weather.daylight-drying", true);
+
+            public static final FloatSetting WET_FILM_STRENGTH =
+                    clampedFloat("fluorite.rt.weather.wetFilmStrength",
+                            "weather.wet-film-strength", 1f, 0f, 1f);
+            public static final FloatSetting WET_FILM_ROUGHNESS =
+                    clampedFloat("fluorite.rt.weather.wetFilmRoughness",
+                            "weather.wet-film-roughness", 0.08f, 0.01f, 0.30f);
+            public static final BooleanSetting PUDDLES_ENABLED =
+                    bool("fluorite.rt.weather.puddlesEnabled",
+                            "weather.puddles-enabled", true);
+            public static final FloatSetting PUDDLE_COVERAGE =
+                    clampedFloat("fluorite.rt.weather.puddleCoverage",
+                            "weather.puddle-coverage", 0.35f, 0f, 1f);
+            public static final FloatSetting PUDDLE_SCALE =
+                    clampedFloat("fluorite.rt.weather.puddleScale",
+                            "weather.puddle-scale", 8f, 2f, 32f);
+            public static final FloatSetting PUDDLE_RIPPLE_STRENGTH =
+                    clampedFloat("fluorite.rt.weather.puddleRippleStrength",
+                            "weather.puddle-ripple-strength", 0.35f, 0f, 3f);
+            public static final FloatSetting RAIN_RIPPLE_SIZE =
+                    clampedFloat("fluorite.rt.weather.rainRippleSize",
+                            "weather.rain-ripple-size", 0.12f, 0.03f, 0.30f);
+
+            /** Temporary M21 art-calibration controls; remove after accepted values become constants. */
+            public static final FloatSetting WET_DARKENING_GAIN =
+                    clampedFloat("fluorite.rt.weather.wetDarkeningGain",
+                            "weather.wet-darkening-gain", 1f, 0f, 8f);
+            public static final FloatSetting WET_COAT_GAIN =
+                    clampedFloat("fluorite.rt.weather.wetCoatGain",
+                            "weather.wet-coat-gain", 1f, 0f, 2f);
+            public static final FloatSetting PUDDLE_LAYER_GAIN =
+                    clampedFloat("fluorite.rt.weather.puddleLayerGain",
+                            "weather.puddle-layer-gain", 1.8f, 0f, 3f);
+            public static final FloatSetting PUDDLE_ROUGHNESS =
+                    clampedFloat("fluorite.rt.weather.puddleRoughness",
+                            "weather.puddle-roughness", 0.02f, 0.002f, 0.15f);
+            public static final FloatSetting PUDDLE_EXTRA_DARKENING =
+                    clampedFloat("fluorite.rt.weather.puddleExtraDarkening",
+                            "weather.puddle-extra-darkening", 0.08f, 0f, 0.25f);
+            public static final FloatSetting PUDDLE_NORMAL_FLATTENING =
+                    clampedFloat("fluorite.rt.weather.puddleNormalFlattening",
+                            "weather.puddle-normal-flattening", 1.6f, 0f, 3f);
+            public static final FloatSetting WET_FILM_NORMAL_FLATTENING =
+                    clampedFloat("fluorite.rt.weather.wetFilmNormalFlattening",
+                            "weather.wet-film-normal-flattening", 0.15f, 0f, 1f);
+            public static final FloatSetting RAIN_RIPPLE_WIDTH =
+                    clampedFloat("fluorite.rt.weather.rainRippleWidth",
+                            "weather.rain-ripple-width", 0.04f, 0.01f, 0.08f);
+
+            /** Global fallback for material JSON v3 weather properties. */
+            public static final FloatSetting DEFAULT_WET_ABSORPTION =
+                    clampedFloat("fluorite.rt.weather.defaultWetAbsorption",
+                            "weather.default-wet-absorption", 0.50f, 0f, 1f);
+            public static final FloatSetting DEFAULT_WET_DARKENING =
+                    clampedFloat("fluorite.rt.weather.defaultWetDarkening",
+                            "weather.default-wet-darkening", 0.20f, 0f, 1f);
+            public static final FloatSetting DEFAULT_WET_FILM =
+                    clampedFloat("fluorite.rt.weather.defaultWetFilm",
+                            "weather.default-wet-film", 0.65f, 0f, 1f);
+            public static final FloatSetting DEFAULT_PUDDLE_AFFINITY =
+                    clampedFloat("fluorite.rt.weather.defaultPuddleAffinity",
+                            "weather.default-puddle-affinity", 0.35f, 0f, 1f);
+
+            /** D109A visible rain streaks plus D127A's selected shared-event RT impact pool. */
+            public static final BooleanSetting RAIN_PARTICLES_ENABLED =
+                    bool("fluorite.rt.weather.rainParticlesEnabled",
+                            "weather.rain-particles-enabled", true);
+            public static final StringSetting RAIN_STREAK_QUALITY =
+                    string("fluorite.rt.weather.rainStreakQuality",
+                            "weather.rain-streak-quality", "medium", Weather::sanitizeStreakQuality);
+            public static final FloatSetting RAIN_STREAK_DENSITY =
+                    clampedFloat("fluorite.rt.weather.rainStreakDensity",
+                            "weather.rain-streak-density", 1f, 0f, 2f);
+            public static final FloatSetting RAIN_STREAK_SPEED =
+                    clampedFloat("fluorite.rt.weather.rainStreakSpeed",
+                            "weather.rain-streak-speed", 24f, 1f, 64f);
+            public static final FloatSetting RAIN_STREAK_LENGTH =
+                    clampedFloat("fluorite.rt.weather.rainStreakLength",
+                            "weather.rain-streak-length", 0.7f, 0.1f, 2f);
+            public static final IntSetting RAIN_SPLASH_TARGET =
+                    clampedInt("fluorite.rt.weather.rainSplashTarget",
+                            "weather.rain-splash-target", 96, 0, 256);
+            public static final FloatSetting RAIN_SPLASH_SIZE =
+                    clampedFloat("fluorite.rt.weather.rainSplashSize",
+                            "weather.rain-splash-size", 0.18f, 0.05f, 0.50f);
+            public static final FloatSetting RAIN_SPLASH_OPACITY =
+                    clampedFloat("fluorite.rt.weather.rainSplashOpacity",
+                            "weather.rain-splash-opacity", 0.55f, 0f, 1f);
+            public static final FloatSetting RAIN_SPLASH_BRIGHTNESS =
+                    clampedFloat("fluorite.rt.weather.rainSplashBrightness",
+                            "weather.rain-splash-brightness", 1f, 0.05f, 1.25f);
+
             /** Extra fog-density gain at full thunder, on top of the existing rain gain. */
             public static final FloatSetting FOG_THUNDER_DENSITY_GAIN =
                     clampedFloat("fluorite.rt.weather.fogThunderDensityGain",
@@ -1600,6 +1721,29 @@ public final class FluoriteConfig {
             public static final FloatSetting WATER_STORM_SWELL_BIAS =
                     clampedFloat("fluorite.rt.weather.waterStormSwellBias",
                             "weather.water-storm-swell-bias", 0.5f, 0f, 1f);
+
+            public static int rainExposureResolution() {
+                return "low".equals(RAIN_EXPOSURE_QUALITY.get()) ? 256 : 512;
+            }
+
+            public static int rainStreakBudget() {
+                return switch (RAIN_STREAK_QUALITY.get()) {
+                    case "low" -> 2048;
+                    case "high" -> 8192;
+                    default -> 4096;
+                };
+            }
+
+            private static String sanitizeExposureQuality(String value) {
+                return "low".equals(value) ? "low" : "high";
+            }
+
+            private static String sanitizeStreakQuality(String value) {
+                return switch (value) {
+                    case "low", "high" -> value;
+                    default -> "medium";
+                };
+            }
 
             private Weather() {
             }

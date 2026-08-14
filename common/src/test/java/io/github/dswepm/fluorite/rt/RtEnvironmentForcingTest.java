@@ -54,6 +54,19 @@ final class RtEnvironmentForcingTest {
     }
 
     @Test
+    void rainReservoirsFillFromIntensityAndDryAtTheResolvedDaylightRate() {
+        assertEquals(0.5f, RtEnvironmentForcing.advanceRainStorage(0f, 1f, 4f, 8f, 120f, 1f),
+                1.0e-6f);
+        assertEquals(0.5f, RtEnvironmentForcing.advanceRainStorage(1f, 0f, 60f, 8f, 120f, 1f),
+                1.0e-6f);
+        // A drizzle is a slower source, not a hard 20%-wet ceiling.
+        assertTrue(RtEnvironmentForcing.advanceRainStorage(0.2f, 0.2f, 8f, 8f, 120f, 0.25f) > 0.2f);
+        assertEquals(1f, RtEnvironmentForcing.dryingScale(1f, 1f, 0f), 1.0e-6f);
+        assertEquals(0.25f, RtEnvironmentForcing.dryingScale(0f, 1f, 0f), 1.0e-6f);
+        assertTrue(RtEnvironmentForcing.dryingScale(1f, 3f, 1f) < 0.4f);
+    }
+
+    @Test
     void compositeCapturesWeatherOnceAndDoesNotReadRainOrThunderItself() throws IOException {
         String composite = repositoryFile(
                 "common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");

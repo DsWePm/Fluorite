@@ -108,7 +108,7 @@ public final class RtMaterialRegistry {
     private int nextDynamicId;
     private int tableCapacity;
 
-    private record EntityTemplate(RtMaterialDesc desc, RtBlockMaterials.Entry entry) {
+    private record EntityTemplate(RtMaterialDesc desc, RtBlockMaterials.Entry entry, int extensionIndex) {
     }
 
     /** Stable within one atlas epoch even if capture presents a different sprite wrapper instance. */
@@ -142,7 +142,8 @@ public final class RtMaterialRegistry {
         List<RtMaterialDesc> descriptions = new ArrayList<>(headers.size());
         List<RtEmissionGrid> grids = new ArrayList<>(headers.size());
         // Parallel to headers only in build order, not in index: an extension record exists for the few
-        // materials that authored Disney parameters, and headers point at it by one-based index.
+        // materials that authored Disney or format-3 weather parameters, and headers point at it by a
+        // one-based index.
         List<MaterialExtensionData> extensions = new ArrayList<>();
         add(headers, extensions, descriptions, grids, compileDesc(MODEL_OPAQUE, 0, RtMaterials.Profile.DEFAULT,
                 false, true, RtMaterialDesc.EmissionSummary.NONE), transparentWhiteAverage(), fallbackEntry, null);
@@ -256,7 +257,8 @@ public final class RtMaterialRegistry {
             int id = headers.size();
             add(headers, extensions, descriptions, grids, desc, transparentWhiteAverage(), entry, null);
             nextEntityTextureIds.put(name, id);
-            nextEntityTemplates.put(name, new EntityTemplate(desc, entry));
+            nextEntityTemplates.put(name, new EntityTemplate(
+                    desc, entry, headers.get(id).extensionOffset()));
         }
 
         // Full entity textures have fixed [0,1] UVs and receive IDs above. Atlas sprites need a second,
@@ -290,7 +292,7 @@ public final class RtMaterialRegistry {
         // past the end of it would have to move whenever that grew.
         //
         // Never empty. Vulkan has no use for a zero-sized buffer, and a world where no material authored
-        // Disney parameters is the common case, so one unused record is the floor.
+        // extension parameters is the common case, so one unused record is the floor.
         long extensionBytes = Math.multiplyExact(
                 (long) Math.max(1, extensions.size()), MaterialExtensionData.BYTE_SIZE);
         RtBuffer nextExtensionTable = ctx.createBuffer(extensionBytes,
@@ -352,7 +354,7 @@ public final class RtMaterialRegistry {
                 == RtMaterialDesc.EmissionSource.STATE_UNIFORM).count();
         double averageCoverage = descriptions.stream().filter(desc -> desc.emissionSummary().emissive())
                 .mapToDouble(desc -> desc.emissionSummary().coverage()).average().orElse(0.0);
-        FluoriteMod.LOGGER.info("RT materials: epoch={}, records={}, capacity={}, blockSprites={}, entityResources={}, overrideRules={}, matchedOverrides={}, disneyExtensions={}, emissive={}, labPbrEmission={}, heuristicMasks={}, uniformEmission={}, avgEmissionCoverage={}, tableKiB={}",
+        FluoriteMod.LOGGER.info("RT materials: epoch={}, records={}, capacity={}, blockSprites={}, entityResources={}, overrideRules={}, matchedOverrides={}, materialExtensions={}, emissive={}, labPbrEmission={}, heuristicMasks={}, uniformEmission={}, avgEmissionCoverage={}, tableKiB={}",
                 epoch, headers.size(), recordCapacity, sprites.size(), entityResources.size(), overrides.rules().size(),
                 matchedOverrideRules, extensions.size(), emissive,
                 authoredEmission, inferred, uniformEmission,
@@ -454,14 +456,11 @@ public final class RtMaterialRegistry {
             throw new IllegalStateException("RT entity material header reserve exhausted");
         }
         int id = nextDynamicId++;
-        // The extension table is sized and uploaded once the material build finishes, so there is no
-        // index to allocate here. Entity descriptions compile with Disney.NONE so there is nothing to
-        // allocate either — but say so loudly rather than drop parameters silently if that ever changes.
-        if (!template.desc().disney().absent()) {
-            throw new IllegalStateException(
-                    "entity material carries Disney parameters, which the fixed extension table cannot hold");
-        }
-        MaterialHeaderData header = header(template.desc(), 0, transparentWhiteAverage(), template.entry(),
+        // The template's extension was allocated at the resource-epoch boundary. Reuse that immutable
+        // index for every late atlas rectangle, so entities can opt into format-3 weather response (and
+        // Disney parameters) without mutating the in-flight extension table here.
+        MaterialHeaderData header = header(template.desc(), template.extensionIndex(),
+                transparentWhiteAverage(), template.entry(),
                 sprite.getU0(), sprite.getV0(),
                 RtBlockMaterials.inverseExtent(sprite.getU1() - sprite.getU0()),
                 RtBlockMaterials.inverseExtent(sprite.getV1() - sprite.getV0()));
@@ -616,21 +615,24 @@ public final class RtMaterialRegistry {
      */
     private static int extensionIndex(List<MaterialExtensionData> extensions, RtMaterialDesc desc) {
         RtMaterialDesc.Disney d = desc.disney();
-        if (d.absent()) {
+        RtMaterialDesc.Weather w = desc.weather();
+        if (d.absent() && w.absent()) {
             return 0;
         }
         if (extensions.size() >= MAX_EXTENSIONS) {
             // The index travels in 12 payload bits, so overflowing it would not fail — it would wrap and
             // silently point a material at somebody else's parameters. Refuse instead.
             throw new IllegalStateException("more than " + MAX_EXTENSIONS
-                    + " materials authored Disney parameters; the payload index cannot address them");
+                    + " materials authored extension parameters; the payload index cannot address them");
         }
         extensions.add(new MaterialExtensionData(
                 new MaterialExtensionData.Float4(d.sheen(), d.sheenTint(), d.clearcoat(), d.clearcoatGloss()),
                 new MaterialExtensionData.Float4(d.specularTint(), d.anisotropy(),
                         d.subsurfaceWeight(), d.subsurfacePhaseG()),
                 new MaterialExtensionData.Float4(d.subsurfaceRadiusR(), d.subsurfaceRadiusG(),
-                        d.subsurfaceRadiusB(), 0.0f)));
+                        d.subsurfaceRadiusB(), 0.0f),
+                new MaterialExtensionData.Float4(w.absorption(), w.darkening(),
+                        w.filmRetention(), w.puddleAffinity())));
         return extensions.size();
     }
 

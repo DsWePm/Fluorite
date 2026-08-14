@@ -81,6 +81,33 @@ final class RtEnvironmentForcing {
     }
 
     /**
+     * Advance one globally stored rain reservoir without tying its ceiling to the instantaneous rain
+     * slider. Rain supplies water at {@code rain/fillSeconds}; the uncovered share evaporates it at the
+     * daylight-adjusted dry rate. A long drizzle can therefore eventually saturate a surface instead of
+     * being permanently capped at (say) twenty percent wetness.
+     */
+    static float advanceRainStorage(float current, float rain, float elapsedSeconds,
+                                    float fillSeconds, float drySeconds, float dryingScale) {
+        if (!Float.isFinite(current)) {
+            current = Math.clamp(rain, 0f, 1f);
+        }
+        if (elapsedSeconds <= 0f) {
+            return Math.clamp(current, 0f, 1f);
+        }
+        float wetRate = Math.clamp(rain, 0f, 1f) / Math.max(fillSeconds, 1.0e-3f);
+        float dryRate = (1f - Math.clamp(rain, 0f, 1f))
+                * Math.max(dryingScale, 0f) / Math.max(drySeconds, 1.0e-3f);
+        return Math.clamp(current + elapsedSeconds * (wetRate - dryRate), 0f, 1f);
+    }
+
+    /** Daylight/cloud drying multiplier: clear noon is one, night or very thick cloud approaches 0.25. */
+    static float dryingScale(float dayFactor, float finalCloudDensity, float coverageBias) {
+        float cloudLoad = Math.max(finalCloudDensity * (1f + Math.max(coverageBias, 0f)) - 1f, 0f);
+        float directSky = Math.clamp(dayFactor, 0f, 1f) / (1f + cloudLoad);
+        return 0.25f + 0.75f * directSky;
+    }
+
+    /**
      * Fade only the deviation of a caustic from neutral irradiance.
      *
      * <p>The result is a contrast, not a brightness multiplier: the shader applies

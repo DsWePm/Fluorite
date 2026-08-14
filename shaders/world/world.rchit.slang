@@ -277,18 +277,24 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         uint p2 = ib[3u * pid + 2u];
         float3 pbary = float3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
         float2 puv = pbary.x * uvb[p0] + pbary.y * uvb[p1] + pbary.z * uvb[p2];
+        bool proceduralRainSplash = (pr.flags & PRIM_RAIN_SPLASH) != 0u;
         int pslot = int(pr.tint.w + 0.5);
         float3x3 o2w = (float3x3)ObjectToWorld3x4();
         float3 pp0 = mul(o2w, HitTriangleVertexPosition(0));
         float3 pp1 = mul(o2w, HitTriangleVertexPosition(1));
         float3 pp2 = mul(o2w, HitTriangleVertexPosition(2));
-        float particleLod = rayConeTextureLod(rayCone, texSizePx(entityAlbedoTex[NonUniformResourceIndex(pslot)]),
-                pp0, pp1, pp2, uvb[p0], uvb[p1], uvb[p2]);
+        float particleLod = proceduralRainSplash ? 0.0
+                : rayConeTextureLod(rayCone,
+                        texSizePx(entityAlbedoTex[NonUniformResourceIndex(pslot)]),
+                        pp0, pp1, pp2, uvb[p0], uvb[p1], uvb[p2]);
         float3 pn = normalize(pr.normal.xyz);
         if (dot(pn, WorldRayDirection()) > 0.0) {
             pn = -pn;
         }
-        payload.albedo = half3(srgbToLinear(entityAlbedoTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb) * pr.tint.rgb);
+        payload.albedo = half3(proceduralRainSplash
+                ? srgbToLinear(pr.tint.rgb)
+                : srgbToLinear(entityAlbedoTex[NonUniformResourceIndex(pslot)]
+                        .SampleLevel(puv, particleLod).rgb) * pr.tint.rgb);
         payload.normal = half3(pn);
         payload.hitT = RayTCurrent();
         // Per-particle motion vector: interpolate the captured per-vertex displacement (uniform across
@@ -429,6 +435,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[pid];
     MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
     float3 n = normalize(pr.normal.xyz);
+    bool rainTopFace = pr.normal.y > 0.5;
     float3 tint = pr.tint.rgb;
 
     // Water prims are single-sided, wound outward from the fluid volume (RtFluidMesher), so the
@@ -522,6 +529,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
             surface.emission, surface.sss, materialHeader.params.z, materialHeader.params.w,
             materialEmissionSource(materialHeader, surface.emission), materialHeader.extensionOffset);
     payloadSetDielectric(payload, material, entering);
+    if (material == MATERIAL_OPAQUE && rainTopFace) {
+        payload.flags |= PAYLOAD_RAIN_TOP_FACE;
+    }
+    if (material == MATERIAL_OPAQUE && (pr.flags & TERRAIN_PRIM_RAIN_PASS) != 0u) {
+        payload.flags |= PAYLOAD_RAIN_PLANT;
+    }
     // RIS emitter-NEE membership: raygen gates this emitter's direct-hit emission term (RIS covers it).
     if ((pr.flags & TERRAIN_PRIM_IN_LIGHT_BUFFER) != 0u) {
         payload.flags |= PAYLOAD_EMITTER_IN_LIST;

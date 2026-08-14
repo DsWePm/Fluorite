@@ -64,6 +64,7 @@ import io.github.dswepm.fluorite.rt.pipeline.RtDisplayPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssFg;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssRr;
 import io.github.dswepm.fluorite.rt.overlay.RtWorldOverlay;
+import io.github.dswepm.fluorite.rt.overlay.RtRainStreaks;
 import io.github.dswepm.fluorite.rt.pipeline.RtHdrCompositePipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtSdrPresentPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
@@ -94,6 +95,7 @@ import java.nio.LongBuffer;
  */
 public final class RtComposite {
     public static final RtComposite INSTANCE = new RtComposite();
+    private static final int RAIN_EXPOSURE_REANCHOR_DISTANCE = 32;
 
     public static boolean enabled() {
         return FluoriteConfig.Rt.ENABLED.value();
@@ -1037,6 +1039,136 @@ public final class RtComposite {
         return smoothedWaterStorm;
     }
 
+    /**
+     * D106's two world-global water reservoirs. They retain weather history without a texture readback;
+     * exposure and material response are multiplied later at each path vertex. A newly joined world has
+     * no stored weather history, so it starts at the current rain fraction instead of visibly pretending
+     * that an already-raining world has been bone dry for hours.
+     */
+    private RainSurfaceState smoothRainSurfaces(ClientLevel level, RtEnvironmentForcing.Frame environment,
+                                                float dayFactor, Float4 finalCloudParams) {
+        float rain = Math.clamp(environment.rain(), 0f, 1f);
+        double now = environment.gameSeconds();
+        if (level != rainSurfaceLevel || !Double.isFinite(rainSurfaceSeconds)) {
+            rainSurfaceLevel = level;
+            rainSurfaceSeconds = now;
+            wetFilmStorage = rain;
+            puddleStorage = rain;
+            return new RainSurfaceState(wetFilmStorage, puddleStorage, rain, 0f, 1f);
+        }
+        double elapsed = now - rainSurfaceSeconds;
+        rainSurfaceSeconds = now;
+        // A command, catch-up or pause is not elapsed weather simulation. Consume only adjacent frames,
+        // exactly like D72's sea state, so /time set cannot instantly dry a world.
+        float drying = FluoriteConfig.Rt.Weather.DAYLIGHT_DRYING.value()
+                ? RtEnvironmentForcing.dryingScale(dayFactor, finalCloudParams.y(), finalCloudParams.x())
+                : 1f;
+        float frameElapsed = elapsed > 0.0 && elapsed <= 1.0 ? (float) elapsed : 0f;
+        if (frameElapsed > 0f) {
+            wetFilmStorage = RtEnvironmentForcing.advanceRainStorage(wetFilmStorage, rain, (float) elapsed,
+                    FluoriteConfig.Rt.Weather.WET_FILL_SECONDS.value(),
+                    FluoriteConfig.Rt.Weather.WET_DRY_SECONDS.value(), drying);
+            puddleStorage = RtEnvironmentForcing.advanceRainStorage(puddleStorage, rain, (float) elapsed,
+                    FluoriteConfig.Rt.Weather.PUDDLE_FILL_SECONDS.value(),
+                    FluoriteConfig.Rt.Weather.PUDDLE_DRY_SECONDS.value(), drying);
+        }
+        return new RainSurfaceState(wetFilmStorage, puddleStorage, rain, frameElapsed, drying);
+    }
+
+    private record RainSurfaceState(float wetFilm, float puddle, float rain,
+                                    float elapsedSeconds, float dryingScale) {
+    }
+
+    /** CPU and shader views of the same snapped D105 exposure square. */
+    private record RainExposureFrame(int originX, int originZ, int resolution,
+                                     Float4 origin, Float4 direction, Float4 state,
+                                     Float4 materialDefaults, Float4 surface, Float4 puddle,
+                                     Float4 calibration0, Float4 calibration1) {
+        private static RainExposureFrame off() {
+            Float4 zero = new Float4(0f, 0f, 0f, 0f);
+            return new RainExposureFrame(0, 0, 0, zero, zero, zero, zero, zero, zero, zero, zero);
+        }
+    }
+
+    /**
+     * Place the rain map in absolute coordinates, then rebase it. The map is centred on where the rain
+     * ray through the camera intersects the top plane, not blindly on camera xz; otherwise an 8° slant
+     * shifts the useful footprint sideways by dozens of blocks across the world's height.
+     */
+    private RainExposureFrame rainExposureFrame(double camX, double camY, double camZ,
+                                                ClientLevel level, RtTerrain terrain,
+                                                float animationTime,
+                                                RainSurfaceState storage) {
+        boolean needsWetSurface = FluoriteConfig.Rt.Weather.RAIN_SURFACES_ENABLED.value()
+                && Math.max(storage.wetFilm(), storage.puddle()) > 1.0e-5f;
+        boolean needsVisibleRain = FluoriteConfig.Rt.Weather.RAIN_PARTICLES_ENABLED.value()
+                && FluoriteConfig.Rt.Weather.RAIN_STREAK_DENSITY.value() > 1.0e-5f
+                && storage.rain() > 1.0e-5f;
+        if (level == null || !(needsWetSurface || needsVisibleRain)) {
+            return RainExposureFrame.off();
+        }
+        int resolution = FluoriteConfig.Rt.Weather.rainExposureResolution();
+        double heading = Math.toRadians(FluoriteConfig.Rt.Composite.WIND_ANGLE.value());
+        double slant = Math.toRadians(FluoriteConfig.Rt.Weather.RAIN_SLANT_DEGREES.value());
+        float horizontal = (float) Math.sin(slant);
+        float dirX = (float) (Math.cos(heading) * horizontal);
+        float dirY = -(float) Math.cos(slant);
+        float dirZ = (float) (Math.sin(heading) * horizontal);
+        int topY = level.getMinY() + level.getHeight() + 1;
+        int bottomY = level.getMinY() - 1;
+        double cameraT = (camY - topY) / dirY;
+        double cameraEntryX = camX - dirX * cameraT;
+        double cameraEntryZ = camZ - dirZ * cameraT;
+        // The precipitation cache is one cell per four blocks. Snapping the whole depth square to that
+        // lattice avoids rebuilding 16k biome classifications for every single-block camera step.
+        int desiredOriginX = (int) Math.floor(cameraEntryX / 4.0) * 4 - resolution / 2;
+        int desiredOriginZ = (int) Math.floor(cameraEntryZ / 4.0) * 4 - resolution / 2;
+        double anchoredCentreX = rainExposureAnchorOriginX + resolution * 0.5;
+        double anchoredCentreZ = rainExposureAnchorOriginZ + resolution * 0.5;
+        boolean reanchor = !rainExposureAnchorValid || rainExposureAnchorLevel != level
+                || rainExposureAnchorResolution != resolution
+                || Math.abs(cameraEntryX - anchoredCentreX) >= RAIN_EXPOSURE_REANCHOR_DISTANCE
+                || Math.abs(cameraEntryZ - anchoredCentreZ) >= RAIN_EXPOSURE_REANCHOR_DISTANCE;
+        if (reanchor) {
+            rainExposureAnchorLevel = level;
+            rainExposureAnchorResolution = resolution;
+            rainExposureAnchorOriginX = desiredOriginX;
+            rainExposureAnchorOriginZ = desiredOriginZ;
+            rainExposureAnchorValid = true;
+        }
+        int originX = rainExposureAnchorOriginX;
+        int originZ = rainExposureAnchorOriginZ;
+        float maxT = (bottomY - topY) / dirY;
+        Float4 origin = new Float4(originX - terrain.blockX, topY - terrain.blockY,
+                originZ - terrain.blockZ, resolution);
+        Float4 direction = new Float4(dirX, dirY, dirZ, maxT);
+        Float4 state = new Float4(needsWetSurface ? storage.wetFilm() : 0f,
+                needsWetSurface ? storage.puddle() : 0f, storage.rain(),
+                (needsWetSurface || needsVisibleRain) ? 1f : 0f);
+        Float4 defaults = new Float4(FluoriteConfig.Rt.Weather.DEFAULT_WET_ABSORPTION.value(),
+                FluoriteConfig.Rt.Weather.DEFAULT_WET_DARKENING.value(),
+                FluoriteConfig.Rt.Weather.DEFAULT_WET_FILM.value(),
+                FluoriteConfig.Rt.Weather.DEFAULT_PUDDLE_AFFINITY.value());
+        Float4 surface = new Float4(FluoriteConfig.Rt.Weather.WET_FILM_STRENGTH.value(),
+                FluoriteConfig.Rt.Weather.WET_FILM_ROUGHNESS.value(),
+                FluoriteConfig.Rt.Weather.PUDDLE_COVERAGE.value(),
+                FluoriteConfig.Rt.Weather.PUDDLE_SCALE.value());
+        Float4 puddle = new Float4(FluoriteConfig.Rt.Weather.PUDDLE_RIPPLE_STRENGTH.value(),
+                FluoriteConfig.Rt.Weather.PUDDLES_ENABLED.value() ? 1f : 0f,
+                FluoriteConfig.Rt.Weather.RAIN_RIPPLE_SIZE.value(),
+                animationTime);
+        Float4 calibration0 = new Float4(FluoriteConfig.Rt.Weather.WET_DARKENING_GAIN.value(),
+                FluoriteConfig.Rt.Weather.WET_COAT_GAIN.value(),
+                FluoriteConfig.Rt.Weather.PUDDLE_LAYER_GAIN.value(),
+                FluoriteConfig.Rt.Weather.PUDDLE_ROUGHNESS.value());
+        Float4 calibration1 = new Float4(FluoriteConfig.Rt.Weather.PUDDLE_EXTRA_DARKENING.value(),
+                FluoriteConfig.Rt.Weather.PUDDLE_NORMAL_FLATTENING.value(),
+                FluoriteConfig.Rt.Weather.RAIN_RIPPLE_WIDTH.value(),
+                FluoriteConfig.Rt.Weather.WET_FILM_NORMAL_FLATTENING.value());
+        return new RainExposureFrame(originX, originZ, resolution, origin, direction, state,
+                defaults, surface, puddle, calibration0, calibration1);
+    }
+
     /** M13 heterogeneous controls in the retired xyz lanes; w remains thin-shell thickness. */
     private static Float4 fogAux(RtSkyPreset preset, RtEnvironmentForcing.Frame environment) {
         float structure = preset.fog().noise() ? environment.fogStructureContrast() : 0f;
@@ -1253,8 +1385,12 @@ public final class RtComposite {
     // a TLAS zone there is no way to tell whether that price is smaller than the saving.
     private static final int GPU_ZONE_ENTITY_BLAS = 7;
     private static final int GPU_ZONE_TLAS_BUILD = 8;
+    /** D105's directional exposure map: comparable ray count to the high visibility grid, separate cost. */
+    private static final int GPU_ZONE_RAIN_EXPOSURE = 9;
+    private static final int GPU_ZONE_RAIN_STREAK = 10;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
+    private final RtRainStreaks rainStreaks = new RtRainStreaks();
     private RtImage output;
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
@@ -1439,6 +1575,15 @@ public final class RtComposite {
     private ClientLevel waterWeatherLevel;
     private double waterWeatherSeconds = Double.NaN;
     private float smoothedWaterStorm;
+    private ClientLevel rainSurfaceLevel;
+    private double rainSurfaceSeconds = Double.NaN;
+    private float wetFilmStorage;
+    private float puddleStorage;
+    private ClientLevel rainExposureAnchorLevel;
+    private int rainExposureAnchorResolution;
+    private int rainExposureAnchorOriginX;
+    private int rainExposureAnchorOriginZ;
+    private boolean rainExposureAnchorValid;
     private long atlasSampler;
     private long lutSampler;
     private long tilingSampler;
@@ -1726,7 +1871,7 @@ public final class RtComposite {
                 gpuTimers = RtGpuTimers.create(ctx, PUSH_RING, "gpu.tracePrimary", "gpu.traceIndirect",
                         "gpu.skyBake", "gpu.visBake", "gpu.froxelBake",
                         "gpu.waterSim", "gpu.waterDeform",
-                        "gpu.entityBlas", "gpu.tlasBuild");
+                        "gpu.entityBlas", "gpu.tlasBuild", "gpu.rainExposure", "gpu.rainStreak");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -1812,6 +1957,9 @@ public final class RtComposite {
             // wrapping it would put the far shore's ripples on the near one. The sampler's clamp is a
             // backstop only -- waterSimGrad rejects out-of-domain coordinates before it reads.
             worldPipeline.setWaterSimHeight(skyLuts.waterHeightView(), lutSampler(ctx));
+            worldPipeline.setRainExposureDepth(skyLuts.rainExposureDepthView(), lutSampler(ctx));
+            worldPipeline.setRainWetHistory(
+                    skyLuts.rainWetHistoryView(), skyLuts.rainWetHistorySampler());
             worldPipeline.setEnvironmentRadiance(
                     environmentTextures.radianceView(), environmentSampler(ctx));
             worldPipeline.setEnvironmentTransfer(
@@ -1982,7 +2130,8 @@ public final class RtComposite {
         gSpecAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide specular albedo " + renderW + "x" + renderH);
         gSpecMotion = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16_SFLOAT, "guide specular motion " + renderW + "x" + renderH);
         // Display-res RT image the display mapper reads. Always present (DLSS-RR target, or blit-upscale fallback).
-        rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "DLSS-RR output " + width + "x" + height);
+        rrOutput = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "DLSS-RR output " + width + "x" + height, VK10.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
         exposure.ensureResources(ctx);
 
         mvHasPrev = false; // recreated images -> first MV frame is zero
@@ -2276,6 +2425,11 @@ public final class RtComposite {
                     : RtEnvironmentForcing.captureClock(level);
             SkyPush sky = skyPush(skyPreset, dimensionControls, environment.gameSeconds());
             Float4 resolvedFogParams = fogParams(skyPreset, dimensionControls, environment);
+            Float4 resolvedCloudParams = cloudParams(environment);
+            RainSurfaceState rainSurface = smoothRainSurfaces(
+                    level, environment, sky.sunDir().w(), resolvedCloudParams);
+            RainExposureFrame rainExposure = rainExposureFrame(
+                    camX, camY, camZ, level, terrain, waterWaveTime, rainSurface);
             float waterStorm = smoothWaterStorm(level, environment);
             float stormSwellBias = Math.clamp(waterStorm, 0f, 1f)
                     * FluoriteConfig.Rt.Weather.WATER_STORM_SWELL_BIAS.value();
@@ -2332,7 +2486,7 @@ public final class RtComposite {
                     waterAbsorbOverride(),
                     waterAux(waterStorm),
                     visibilityGridOrigin(camX, camY, camZ, terrain),
-                    cloudParams(environment),
+                    resolvedCloudParams,
                     cloudShape(),
                     cloudRebase(terrain, environment),
                     cloudLighting(),
@@ -2347,7 +2501,15 @@ public final class RtComposite {
                     waterWaveShape(waterStorm),
                     waterWaveGust(waterStorm),
                     waterWaveWarp(),
-                    waterSimPlane(stormSwellBias, environment.waterCausticContrast())
+                    waterSimPlane(stormSwellBias, environment.waterCausticContrast()),
+                    rainExposure.origin(),
+                    rainExposure.direction(),
+                    rainExposure.state(),
+                    rainExposure.materialDefaults(),
+                    rainExposure.surface(),
+                    rainExposure.puddle(),
+                    rainExposure.calibration0(),
+                    rainExposure.calibration1()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -2399,6 +2561,11 @@ public final class RtComposite {
                         graphicsUse);
             }
             active.setTlas(frameTlas.accel.handle, graphicsUse, graphicsUseWaiter);
+            // recordRainHistory will publish the opposite ping-pong image before the trace; bind that
+            // exact target into the descriptor slot setTlas just proved idle.
+            active.setCurrentRainWetHistory(
+                    skyLuts.rainWetHistoryView(skyLuts.rainWetHistoryTargetIndex()),
+                    skyLuts.rainWetHistorySampler());
             currentTlasHandle = frameTlas.accel.handle;
             if (gpuTimers != null) {
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_TLAS_BUILD);
@@ -2478,6 +2645,33 @@ public final class RtComposite {
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_RAIN_EXPOSURE);
+            }
+            if (rainExposure.resolution() > 0) {
+                // The anchor remains stable around the player and recentres in 32-block steps. The CPU
+                // cache slides its overlap then; the compute pass keeps near tiles hot and fills far tiles
+                // progressively before every path vertex consumes the shared directional depth.
+                try (RtFrameStats.Scope ignoredStats =
+                             RtFrameStats.FRAME.stage("rain.exposureCache")) {
+                    skyLuts.updateRainPrecipitation(level, rainExposure.originX(), rainExposure.originZ(),
+                            rainExposure.resolution(), pushSlot);
+                }
+                skyLuts.recordRainExposureBake(cmd, pushBuf.deviceAddress, terrain.tableAddress(),
+                        frameTlas.accel.handle, rainExposure.originX(), rainExposure.originZ(),
+                        rainExposure.resolution(), rainExposure.direction().x(),
+                        rainExposure.direction().y(), rainExposure.direction().z(), pushSlot, graphicsUse);
+                VulkanCommandEncoder.memoryBarrier(cmd, stack);
+                skyLuts.recordRainHistory(cmd, pushBuf.deviceAddress,
+                        rainExposure.originX(), rainExposure.originZ(), rainExposure.resolution(),
+                        rainSurface.elapsedSeconds(),
+                        FluoriteConfig.Rt.Weather.WET_FILL_SECONDS.value(),
+                        FluoriteConfig.Rt.Weather.WET_DRY_SECONDS.value(),
+                        FluoriteConfig.Rt.Weather.PUDDLE_FILL_SECONDS.value(),
+                        FluoriteConfig.Rt.Weather.PUDDLE_DRY_SECONDS.value(),
+                        rainSurface.dryingScale());
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_RAIN_EXPOSURE);
             }
             // OUTSIDE the visibility gate, which is where it used to be and had no business being. The
             // water solver was nested inside `VISIBILITY_CELL_SIZE > 0 && Volumetrics.ENABLED`, so
@@ -2511,9 +2705,6 @@ public final class RtComposite {
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_WATER_SIM);
-            }
-            if (gpuTimers != null) {
-                gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
 
@@ -2574,7 +2765,31 @@ public final class RtComposite {
                     blitUpscale(cmd, stack, output, rrOutput);
                 }
             }
-            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to exposure histogram
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rrOutput visible to the HDR rain pass
+
+            int rainStreakCount = 0;
+            float rainStreakDensity = FluoriteConfig.Rt.Weather.RAIN_STREAK_DENSITY.value();
+            if (FluoriteConfig.Rt.Weather.RAIN_PARTICLES_ENABLED.value()) {
+                rainStreakCount = Math.round(FluoriteConfig.Rt.Weather.rainStreakBudget()
+                        * rainStreakDensity * rainSurface.rain());
+            }
+            RtFrameStats.FRAME.count("rainStreakInstances", rainStreakCount);
+            if (gpuTimers != null) {
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_RAIN_STREAK);
+            }
+            rainStreaks.record(ctx, cmd, rrOutput.view, gDepth.view, skyLuts.rainExposureDepthView(),
+                    skyLuts.transmittanceView(), skyLuts.transmittanceSampler(),
+                    frameTlas.accel.handle, displayW, displayH,
+                    pushBuf.deviceAddress, (int) frameCounter, rainStreakCount,
+                    FluoriteConfig.Rt.Weather.RAIN_STREAK_SPEED.value(),
+                    FluoriteConfig.Rt.Weather.RAIN_STREAK_LENGTH.value(), rainStreakDensity,
+                    terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
+                    terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
+                    terrain.lightGridSpanBufferAddress(), graphicsUse);
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_RAIN_STREAK);
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // rain colour writes visible to exposure
 
             // Auto-exposure meters rrOutput (the post-RR, denoised/converged image), not the raw
             // pre-RR trace: RR has no notion of exposure (DLSS-RR Integration Guide §3.7 — ignore
@@ -2849,6 +3064,7 @@ public final class RtComposite {
             fgHdrHudlessImage = null;
         }
         RtWorldOverlay.INSTANCE.destroy(); // overlay features/pipelines/scratch live on the same device lifetime
+        rainStreaks.destroy();
         if (output != null) {
             output.destroy();
             output = null;

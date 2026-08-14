@@ -65,8 +65,17 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         uint i2 = indices[3u * pid + 2u];
         float2 uv = bary.x * uvs[i0] + bary.y * uvs[i1] + bary.z * uvs[i2];
         Prim epr = ConstPtr<Prim>(g.primAddr)[pid];
-        int texSlot = int(epr.tint.w + 0.5);
-        float4 texel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(uv, 0.0);
+        bool proceduralRainSplash = instanceKind == PARTICLE_BIT
+                && (epr.flags & PRIM_RAIN_SPLASH) != 0u;
+        float4 texel;
+        if (proceduralRainSplash) {
+            float edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+            float coverage = asfloat(epr.aux1) * smoothstep(0.0, 0.14, edge);
+            texel = float4(1.0, 1.0, 1.0, coverage);
+        } else {
+            int texSlot = int(epr.tint.w + 0.5);
+            texel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(uv, 0.0);
+        }
         bool stochasticAlpha = false;
         // Only entities carry a material record; particles never index the table. The three fields the
         // shadow-ray paths below need are lifted out of the struct rather than keeping the whole

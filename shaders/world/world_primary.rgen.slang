@@ -17,6 +17,7 @@ import world_common;
 import world_core;
 import math;
 import bsdf;
+import rain_surface;
 import medium;
 import volume;
 import segment;
@@ -71,6 +72,16 @@ public PathSegment tracePrimary(PathSegment seg,
         // only describes a delta; and the split budget is two records per pixel, which an interface that
         // scatters cannot be allowed to branch out of.
         if (!dielectric || !isDeltaTransmission(clamp(payloadRoughness(), 0.0, 1.0))) {
+            MaterialExtension ext = materialExtension(payload.flags);
+            RainSurface rain = material == MATERIAL_OPAQUE
+                    ? evaluateRainSurface(hitPos, ext, payloadRainFilmReceiver(),
+                            payloadRainTopFace(), payloadRainPlant()) : dryRainSurface();
+            if (material == MATERIAL_OPAQUE) {
+                n = applyRainLayerNormal(n, rain, payloadRainTopFace(), payloadRainPlant());
+                float impactReceiver = rain.puddle;
+                float footprint = rayConeWidth / max(abs(dot(-rd, n)), 0.12);
+                n = applyRainImpactRipples(hitPos, n, impactReceiver, footprint);
+            }
             float rough = material == MATERIAL_PARTICLE
                     ? 1.0 : clamp(payloadRoughness(), 0.0, 1.0);
             bool exactSpecular = material == MATERIAL_OPAQUE && isDeltaAlpha(rough);
@@ -83,7 +94,8 @@ public PathSegment tracePrimary(PathSegment seg,
             float3 diffAlb = dielectric
                     ? float3(0.0, 0.0, 0.0)
                     : (material == MATERIAL_PARTICLE
-                            ? float3(payload.albedo) : float3(payload.albedo) * (1.0 - metal));
+                            ? float3(payload.albedo)
+                            : float3(payload.albedo) * (1.0 - rain.darkening) * (1.0 - metal));
             if (bounce == 0) {
                 gv_normal = n;
                 gv_hitCamRel = hitPos - worldPush.camOffset;
@@ -99,7 +111,28 @@ public PathSegment tracePrimary(PathSegment seg,
                     // One roughness reaches RR, so a clearcoated surface has to nominate whichever of
                     // its two specular lobes carries the energy — see specularGuide.
                     SpecularGuide guide = specularGuide(float3(payload.f0), rough,
-                            max(1.0e-4, dot(n, v)), materialExtension(payload.flags));
+                            max(1.0e-4, dot(n, v)), ext);
+                    if (rain.film > 0.0) {
+                        float ndv = max(1.0e-4, dot(n, v));
+                        float viewFilmF = rain.film * rainFilmFresnel(ndv);
+                        // The base guide is seen through the top interface on both the incident and
+                        // reflected legs. RR cannot encode a layer graph, but it can receive the same
+                        // integrated energy split the tracer uses.
+                        guide.reflectance *= (1.0 - viewFilmF) * (1.0 - viewFilmF);
+                        float3 filmGuide = rrSpecularAlbedo(
+                                float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0),
+                                rain.filmAlpha, ndv) * rain.film;
+                        float basePeak = luminance(guide.reflectance)
+                                / max(guide.alpha * guide.alpha, 1.0e-8);
+                        float filmPeak = luminance(filmGuide)
+                                / max(rain.filmAlpha * rain.filmAlpha, 1.0e-8);
+                        if (filmPeak > basePeak) {
+                            guide.alpha = rain.filmAlpha;
+                        }
+                        // One RR specular-albedo guide must represent both layers. Sum their integrated
+                        // reflectance and nominate the lobe with the taller peak for filter width.
+                        guide.reflectance += filmGuide;
+                    }
                     gv_albedo = diffAlb;
                     gv_rough = guide.alpha;
                     gv_spec = makeSpecSurface(gv_hitCamRel, n, float3(payload.motionPrev), guide.alpha,
@@ -136,6 +169,11 @@ public PathSegment tracePrimary(PathSegment seg,
                 n = applyWaterWaves(geometricNormal, waterDomain,
                                     worldPush.waterParams.w, waterFootprint);
             }
+        }
+        if (isWater) {
+            float impactFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.12);
+            n = applyRainImpactRipples(hitPos, n, openWaterRainImpact(hitPos), impactFootprint);
+            previousNormal = n; // analytic impacts are not reprojected; avoid invented guide motion
         }
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
@@ -225,6 +263,47 @@ public PathSegment tracePrimary(PathSegment seg,
     }
 }
 
+/**
+ * D120 diagnostic, direct camera hit only:
+ *   R = the payload is MATERIAL_WATER
+ *   G = opaque wet film is actually active
+ *   B = directional rain exposure / water-impact receiver
+ * Exposed water is magenta (R+B); an exposed wet opaque surface is cyan (G+B). A visually-water
+ * pixel that switches to cyan/green is being classified as opaque and is the exact failure this
+ * view exists to catch.
+ */
+float3 rainSurfaceDebug(float3 ro, float3 rd, float rayConeSpread) {
+    traceRadiance(CULL_PRIMARY, ro, 0.0, rd, RAY_FAR, true, true, 0.0, rayConeSpread);
+    if (payload.hitT < 0.0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 hitPos = ro + rd * payload.hitT;
+    uint material = payloadMaterial();
+    float exposure = rainExposureAt(hitPos);
+    float film = 0.0;
+    if (material == MATERIAL_OPAQUE) {
+        film = evaluateRainSurface(hitPos, materialExtension(payload.flags),
+                payloadRainFilmReceiver(), payloadRainTopFace(), payloadRainPlant()).film;
+    }
+    return float3(material == MATERIAL_WATER ? 1.0 : 0.0,
+                  clamp(film, 0.0, 1.0), clamp(exposure, 0.0, 1.0));
+}
+
+/**
+ * M21 puddle diagnosis, direct opaque camera hit only:
+ *   R = retained local puddle history
+ *   G = procedural basin mask after slope rejection
+ *   B = final puddle response after enable/material affinity
+ */
+float3 rainPuddleDebug(float3 ro, float3 rd, float rayConeSpread) {
+    traceRadiance(CULL_PRIMARY, ro, 0.0, rd, RAY_FAR, true, true, 0.0, rayConeSpread);
+    if (payload.hitT < 0.0 || payloadMaterial() != MATERIAL_OPAQUE) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float3 hitPos = ro + rd * payload.hitT;
+    return rainPuddleDebugAt(hitPos, materialExtension(payload.flags), payloadRainTopFace());
+}
+
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
@@ -252,6 +331,14 @@ void main() {
     DevicePtr<PackedPathSegment> queue = DevicePtr<PackedPathSegment>(pc.pathQueueAddr);
 
     seed = pcg(seed);
+    if (pc.debugView == 26u) {
+        outImage[pix] = float4(rainSurfaceDebug(origin, dir, rayConeSpread), 1.0);
+        return;
+    }
+    if (pc.debugView == 27u) {
+        outImage[pix] = float4(rainPuddleDebug(origin, dir, rayConeSpread), 1.0);
+        return;
+    }
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
             cameraMedium, 0.0, rayConeSpread, seed, 0, true);
     bool hasNext;

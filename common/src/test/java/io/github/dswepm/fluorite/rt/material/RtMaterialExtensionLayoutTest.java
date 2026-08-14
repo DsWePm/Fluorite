@@ -15,24 +15,25 @@ final class RtMaterialExtensionLayoutTest {
      * Pins the optional Disney parameter record's layout.
      *
      * <p>Unlike the material header, this record is addressed indirectly and is written for only the few
-     * materials that author sheen, clearcoat, anisotropy or subsurface — everything else keeps
+     * materials that author Disney or format-3 rain response parameters — everything else keeps
      * {@code extensionOffset == 0} and costs neither a record nor a load. That indirection is the point:
      * ten loose scalars in the header would be paid by every material in the world.
      *
-     * <p>Packed into three float4s because std430 aligns a float3 to 16 bytes, so the loose form would
-     * round well past 48. The test asserts the field offsets rather than only the size, because the
+     * <p>Packed into four float4s because std430 aligns a float3 to 16 bytes. The test asserts the field
+     * offsets rather than only the size, because the
      * packing is the part a reader has to trust: which scalar lives in which lane is not recoverable from
      * the type, only from the comment on the Slang struct.
      */
     @Test
     void reflectedExtensionMatchesThePackedLayout() {
-        assertEquals(48, MaterialExtensionData.BYTE_SIZE);
+        assertEquals(64, MaterialExtensionData.BYTE_SIZE);
         ByteBuffer data = ByteBuffer.allocateDirect(MaterialExtensionData.BYTE_SIZE)
                 .order(ByteOrder.nativeOrder());
         new MaterialExtensionData(
                 new Float4(0.1f, 0.2f, 0.3f, 0.4f),   // sheen, sheenTint, clearcoat, clearcoatGloss
                 new Float4(0.5f, 0.6f, 0.7f, 0.8f),   // specularTint, anisotropy, sssWeight, sssPhaseG
-                new Float4(0.9f, 1.0f, 1.1f, 0.0f))   // subsurface radius rgb, reserved
+                new Float4(0.9f, 1.0f, 1.1f, 0.0f),   // subsurface radius rgb, reserved
+                new Float4(0.15f, 0.25f, 0.35f, 0.45f)) // rain response
                 .write(data);
 
         assertEquals(0.1f, data.getFloat(0), "sheen");
@@ -46,5 +47,9 @@ final class RtMaterialExtensionLayoutTest {
         assertEquals(0.9f, data.getFloat(32), "subsurfaceRadius.r");
         assertEquals(1.0f, data.getFloat(36), "subsurfaceRadius.g");
         assertEquals(1.1f, data.getFloat(40), "subsurfaceRadius.b");
+        assertEquals(0.15f, data.getFloat(48), "weather.absorption");
+        assertEquals(0.25f, data.getFloat(52), "weather.darkening");
+        assertEquals(0.35f, data.getFloat(56), "weather.filmRetention");
+        assertEquals(0.45f, data.getFloat(60), "weather.puddleAffinity");
     }
 }
