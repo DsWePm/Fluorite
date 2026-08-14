@@ -228,7 +228,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // bounce > 0 is every ray that is not the first of its path — a reflection, a refraction, a
             // diffuse bounce. It buys a reduced march rather than a different sky: the shells and their
             // contents are the same world-anchored field either way, so only the budget moves.
-            float cloudMaxT = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
+            // Geometry still stops at RAY_FAR, but a sky miss is not a statement that the atmosphere
+            // ends there.  The old shared cap cut a high cloud shell at a constant view angle: at a
+            // cirrus altitude of 1800 blocks it drew a world-zenith ring about ten degrees above the
+            // horizon.  Clouds own a farther importance budget; geometry hits remain exact segment ends.
+            float cloudMaxT = payload.hitT < 0.0 ? CLOUD_MAX_DIST : payload.hitT;
             CloudResult clouds = traceClouds(ro, rd, cloudMaxT, seed, bounce > 0);
             L += throughput * clouds.inScatter;
             throughput *= clouds.transmittance;
