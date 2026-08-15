@@ -41,7 +41,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | M8 | 随机游走 BSSRDF 完成，因成本超门槛保留为高质量档，`thin` 默认。 | [BSSRDF](devlog/M00-M08-foundations.md#m8随机游走-bssrdf) |
 | M9 | 水体 σa/σs、闭式散射、折射太阳、天空开放度、焦散与色散完成。 | [水体介质](devlog/M09-M10-water-atmosphere.md#m9-最终成果) |
 | M10 | transmittance、multi-scatter、三张 sky-view 和 aerial froxel LUT 链完成。 | [LUT 大气](devlog/M09-M10-water-atmosphere.md#m10lut-大气) |
-| M11 | 世界锚定低层体积云与单层解析高云、天气云型、自阴影和扩散近似完成；D61 修正体积太阳源的 4π 能量错误；D169–D175 删除 PolyHaven 上层高云、分布/云型改用独立 2D 天气图、步长改按穿越长度并加噪声 mip 预滤波、太阳自阴影按垂直厚度取程、低层改用 curl 域扭曲塑形并按自有时钟演变、厚度旋钮变为上限而每朵云自有深度。 | [云系统](devlog/M11-clouds.md) |
+| M11 | 世界锚定低层体积云与单层解析高云、天气云型、自阴影和扩散近似完成；D61 修正体积太阳源的 4π 能量错误；D169–D175 删除 PolyHaven 上层高云、分布/云型改用独立 2D 天气图、步长改按穿越长度并加噪声 mip 预滤波、太阳自阴影按垂直厚度取程、低层改用 curl 域扭曲塑形并按自有时钟演变、厚度旋钮变为上限而每朵云自有深度；D176 云向地面、水面与粒子投影阴影，走光空间二维透射率图。 | [云系统](devlog/M11-clouds.md) |
 | M12 | 256² 交互水体高度场、CFL、Neumann 障碍、海绵层和实体/方块冲量完成。 | [交互水体](devlog/M12-water-simulation.md#m12交互水体仿真) |
 | M12.5 | 水面顶点位移与 BLAS refit、路 3′ 形变覆盖、完整波谱重做完成；FFT 明确不实施。 | [水面真形变](devlog/M12-water-simulation.md#m125水面真形变) |
 | M13 | 世界空间可见性、随机体积阴影、3D 结构雾、统一风向和连续天气 forcing 完成并合入 PR #22。 | [雾与天气](devlog/M13-fog-weather.md) |
@@ -95,7 +95,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | 介质 | `medium.slang` / `volume.slang` / `volume_source.slang` | Medium 参数、段积分、跨 compute/RT 的纯源数学 |
 | 大气 | `atmosphere*.slang` / `sky_*.comp.slang` | transmittance、multi-scatter、sky-view、reduction、froxel |
 | 可见性 | `volume_visibility*.slang` | 世界空间太阳/天顶可见性网格 |
-| 云 | `cloud.slang` / `cloud_field.slang` / `cloud_noise.comp.slang` / `cloud_weather.comp.slang` / `cloud_warp.comp.slang` | 世界锚定低层 3D 体积 march、单层解析高云、共享 Radiance 光照和二次光线预算。`cloud_field` 是**无入口无绑定的场模块**：三个 bake 共用同一份构造，两份拷贝一旦被单独编辑就会悄悄改变整片天空 |
+| 云 | `cloud.slang` / **`cloud_density.slang`** / `cloud_field.slang` / `cloud_noise.comp.slang` / `cloud_weather.comp.slang` / `cloud_warp.comp.slang` / `cloud_shadow.comp.slang` | 世界锚定低层 3D 体积 march、单层解析高云、共享 Radiance 光照和二次光线预算。**两个无绑定模块，理由相同**：`cloud_field` 让三个 bake 共用同一份噪声构造；`cloud_density` 让**着色与云影烘焙共用同一个密度场、同一套 CloudLayer 构造、同一份高云 τ**。`cloud.slang` 持有 set-0 绑定并读全局 `worldPush`，compute pass 无法 import 它——与 `water_wave.slang` 横幅所记的是同一个问题。两份拷贝写下来那天一致，第一次被单独编辑就分叉，而「阴影不在云下面」从截图无法归因 |
 | 雾 | `fog_noise.comp.slang` | 128³ 结构雾一次性烘焙 |
 | 降雨暴露 | `rain_exposure.comp.slang` | 世界锚定、沿全局雨向的首命中深度图；供所有路径顶点与可见雨丝共享 |
 | 水 | `water.slang` / `water_wave.slang` | 水材质、波场、法线、焦散 |
@@ -320,7 +320,7 @@ M18 的已批准边界是“收集但不采样”：动态记录使用同一 32 
 | M17 发光体 NEE | +20.9 ms | 默认关；阴影线不是主要成本 |
 | `SegmentIntegral` 6→12 floats | 1.001× | 未撞 R6 台阶 |
 | M12.5 水形变 | 小场景约 4 section / 0.27 ms | 海洋场景未测，不可外推 |
-| M11 云 | 未测；D172/D173 又各加了一笔未量化的代价 | R19 活跃风险，优先级已上升 |
+| M11 云 | 未测；D172/D173/D176 各加了一笔未量化的代价 | R19 活跃风险，优先级已上升 |
 | M13 结构雾 | 未完成正式 0/A/0 | 不得仅凭“12 步”估成本 |
 | 粒子阴影 | 未测 | 默认关，需 `bench-particles` |
 
@@ -479,7 +479,7 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 - 完整物理大气是代码默认；未知或无效的模组维度自动取得完整大气，不做 `dimensionType()` 启发式降级。
 - `RtSkyPreset` 从 `assets/fluorite/fluorite/sky/<namespace>/<dimension>.json` 加载，允许资源包覆盖；format 版本、逐文件隔离、有限值/范围/能量校验是加载契约。
 - 参数所有权顺序固定为：preset 基础值 → 该 preset 允许时的 D70 天气/时间 forcing → 用户全局修正 → 玩家逐维度修正。资源包负责物理基线；全局开关仍有最终总门控权，逐维度页只关闭或缩放一个明确维度。
-- M14 的 `WorldPush.skyProvider/environmentFlags` 当时花掉既有 8 B padding，结构大小保持 944 B；M21 加入降雨向量后达到 1072 B，D161 的独立 `cloudEvolution` lane 后为 1088 B，D173 的 `cloudWarp` lane 后当前为 1104 B。shader 只按能力分支；`environmentFlags[8..15]` 是 resource-epoch 环境数组 layer，低位仍是介质能力。
+- M14 的 `WorldPush.skyProvider/environmentFlags` 当时花掉既有 8 B padding，结构大小保持 944 B；M21 加入降雨向量后达到 1072 B，D161 的独立 `cloudEvolution` lane 后为 1088 B，D173 的 `cloudWarp` lane 后当前为 1104 B。**D176 云影未加任何 lane**：用户裁定只有开/关不给强度旋钮，开关落在 `flags` bit 31，光空间基底由 `lightDir` 现推（烘焙与消费者调用同一个 `cloudShadowFrame`），故 ABI 未动。shader 只按能力分支；`environmentFlags[8..15]` 是 resource-epoch 环境数组 layer，低位仍是介质能力。
 - 雾 `heightScale<=0` 是明确的均匀介质编码；高度雾必须为正。关闭结构时必须在纹理 fetch 和数值 march 前退出。
 - 大气表、云噪声和雾噪声当前共用一次性静态 bake。内置地狱三者都不需要，因此完全跳过；资源包的非大气维度若开启云或结构雾，会为保证纹理已初始化而顺带烘焙暂时不用的大气表。只有实测首次加载成本值得优化时才拆生命周期。
 - `light_sampling.slang` 是 RT 与 froxel 共用的 32 B `Light`、alias、局部 grid 采样接口；维度不能复制一套光源格式。
@@ -604,58 +604,25 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 
 全项目 review 还必须核对 `submitFlame` 的直接命中材质：当前捕获 primitive 写 emission mask 1，但可见材质通过非 emitting sprite variant 解析；没有 LabPBR `_s` 的资源包可能因此得到零材质 emission strength。M18 side-band 火焰球故意读取 emitting variant，但受 D98A 约束不能顺手改写现有 primitive。修复前先用无 PBR 资源包复现，禁止用动态灯常数补偿。
 
-### 8.10 云向地面、水面与焦散投影
+### 8.10 云向地面、水面与焦散投影（D176 已落地，仅余精确后端）
 
-当前云只有云内自阴影。目标接口是概念上的 `cloudSunTransmittance(worldPosition)`，统一给地面、水面和焦散查询太阳透射率；它必须覆盖低层 3D 云和 D163/D169 的**单层**高云薄层。
+**二维图后端已实现并合并**（PR #37）。`cloudSunTransmittance(worldPosition)` 现在是一张 512² R8 光空间透射率图，8192 格跨度、16 格每 texel，逐帧由 compute 烘焙，覆盖低层 3D 云与单层高云薄层。消费者为地面、水面、粒子与水下焦散，各一次纹理读取。设置 `volumetrics.cloud-shadows`，默认开。
 
-#### 后端一：云体太阳阴影 march
+落地时的裁决、实测与试错过程见 [云系统 devlog 的 D176 两节](devlog/M11-clouds.md)，包括：为什么密度场必须先抽成无绑定模块、光空间基底为何是推导而非 push、固定 texel 与真实半影的逐仰角比值（30° 持平、高太阳最多软 1.75 倍），以及中途一个被算错又纠正的结论。
 
-从世界点沿同一有限面积太阳样本穿过世界锚定云：低层 march 3D 密度，高层在两个球壳交点直接采样并累加 `τ`，最后返回 `T=exp(-τ)`。
+**几条必须继续成立的约束**（改动云或阴影时先读）：
 
-- 更接近当前 3D 云物理，能表达局部厚度、层高和视差。
-- 有限步数和有限太阳样本仍是近似；软阴影可能带噪声。
-- 每个表面光照查询增加一次 cloud march，成本最高，必须独立计时和质量档。
+- 阴影必须由**与着色同一份**密度场投出。这是 `cloud_density.slang` 存在的唯一理由，其横幅与 `RtCloudShadowContractTest` 一起钉住它。
+- 禁止直接拿 raw coverage/type/shape noise 当阴影：它没有完整沿光线厚度，也不满足 `T=exp(-τ)`；高云必须先换算为正式 `τ`。
+- **雾与云自身不得接这张图**。雾的 segment 常走到甲板之上，会被位于其下方的云遮蔽；云自身的 `sunOpticalDepth` 已从云内部按样本高度积分，两者都上等于每朵云被遮两次。
+- 关档必须两侧都短路，且 D73 的全局天气焦散代理必须在关档时回来——那个代理与这张图**永远不能同时生效**，否则阴天下焦散被压暗又被压平两次。
 
-#### 后端二：太阳方向二维 Beer 透射率图
-
-预先沿太阳方向对同一云光学模型积分，生成世界/太阳空间二维 `T` 图；低云来自 3D 密度，高云来自那一张薄层的光学厚度，消费者约一次纹理采样。
-
-- 性能适合大面积地面、水面和高频焦散查询。
-- 分辨率、覆盖、更新频率和投影会损失局部视差；太阳移动时需要更新。
-- 禁止直接采 raw cloud coverage/type/shape noise。它没有完整沿光线厚度，也不满足 Beer 能量关系；高云形状必须先换算为其正式 `τ`。
-
-已批准的消费者路由：地面和水面提供精确/近似切换；水底焦散始终采二维图，避免逐焦散点嵌套 march。D73 当前天气 load 只作过渡，未来替换其云输入，不重写 `1+S(focus-1)` 焦散模型。
-
-#### D176 二维图参数已裁决（2026-08-15，用户逐项选定；其中两项由实测直接定死）
-
-**先由实测定死、无需选择的两项**：
-
-- **面积太阳样本 = 1。** 太阳角半径 0.6° 使云影边缘天然是软的：30° 仰角时云到地面斜距 756 格、**半影 16 格**，10° 时 46 格。而下面选定的 texel 是 16 格——**贴图自身的滤波已经比真实半影更软**，多花太阳样本是在买已经有的东西。
-- **不做级联。** 级联的全部意义是近处细节，而云影**在物理上没有近处细节**：半影随距离线性增宽，最近处也有 9 格。
-
-**用户选定的三项**：
-
-| 项 | 裁决 | 理由与代价 |
-|---|---|---|
-| 参数化 | **光空间**（与阴影贴图同理） | 云影落点离云极远——30° 偏 655 格、10° 偏 2144 格。世界 XZ + 参考高度的代价是**接收点每高 h 格、阴影错 `h/tan(elev)`**：高差 100 格时 30° 错 173 格、15° 错 373 格。Minecraft 起伏轻松过百格，而山正是最想看云影扫过的地方。光空间无此误差，代价是查表多一次投影 |
-| 分辨率 × 范围 | **8192 格 / 512² = 16 格每 texel**，R8，256 KB | 烘焙 2.1 M 次密度采样/帧，约为 1920×1080/96 步主 trace 的 **1%**。16 格恰等于 30° 时的真实半影宽度——再细是在解析物理上不存在的锐度 |
-| 更新频率 | **逐帧重烘，不做时域滤波** | 主导变化是太阳移动（影子约 9.3 格/秒，1.7 秒走一个 texel），云平流只有 16 秒/texel。烘焙既然只占 1%，逐帧免掉整一类「贴图是第几帧的」的 bug；烘焙确定性无抖动，故无需累积 |
-
-**必须带上的纪律**：贴图**按 texel 边界吸附**跟随玩家，不得连续滑动。理由与 R22 相同——连续滑动会让场每帧在不同相位被重采样。
-
-**仍未裁决**：UI 所有权（开关放在体积云栏还是单列，以及精确/近似切换的呈现方式）。
-
-#### 落地前提：云密度场必须先抽成无绑定模块
-
-动工时发现的结构障碍，记在这里以免下次重新发现：`cloud.slang` 持有 **4 个 set-0 绑定**（17 噪声、26 高云片、27 天气图、28 扭曲体）并直接读 `worldPush`，因此**烘焙用的 compute pass 无法 import 它**——会被迫声明一整套自己永远不用的 raygen 描述符。
-
-本项目已经解过同一个问题：`water_wave.slang` 的开头横幅正是这条。所以先把密度场抽成 `cloud_density.slang`（纯算术、以采样器与参数结构为入参），再由两个调用方各自包装：raygen 用 set 0 + `worldPush`，烘焙用自己的描述符集 + `worldPush` 设备地址（与 `water_deform.comp.slang` 同构）。
-
-**这一步不是可选的**：绕开它意味着密度场存在两份实现，而阴影与投下它的云一旦对密度的说法不一致，就是「阴影不在云下面」这类无法从截图归因的故障。
+**仍未做：精确后端（每着色点一次云 march）。** 用户在 D176 裁决时选择先只接二维图。它更接近当前 3D 云物理（能表达局部厚度、层高与视差），代价是每个表面太阳采样一次云 march——本项目能加进着色循环的最贵的一件事，必须独立计时与质量档。二维图丢失的正是局部视差；已知最明显的场景是玩家站得比云底还高时（甲板底 192 格，山地可以超过），图会过度遮蔽。**重启该路线前须重新请示。**
 
 ### 8.11 测量欠账
 
-- M11：云开关、低云自阴影步数（D171 后低太阳最多 +3 步）、单层解析高云、secondary 三项成本；常驻资源现为高云约 13.98 MiB + 噪声体 9.14 MiB（D172 的 mip 链 8/7）+ 天气图 32 KB + 扭曲体 128 KB。另加 D172 的步数预算与 D173 的每样本 fetch。
+- M11：云开关、低云自阴影步数（D171 后低太阳最多 +3 步）、单层解析高云、secondary 三项成本；常驻资源现为高云约 13.98 MiB + 噪声体 9.14 MiB（D172 的 mip 链 8/7）+ 天气图 32 KB + 扭曲体 128 KB + **云影图 256 KB**。另加 D172 的步数预算与 D173 的每样本 fetch。
+- **D176 云影**：`gpu.cloudShadow` 已单列时间区但**从未采集**。§8.10 的「约主 trace 的 1%」是由 512²×8 = 2.1 M 次密度采样算出来的，不是称出来的；消费侧每个太阳采样多一次纹理读取也未定价。关档（`volumetrics.cloud-shadows`）两侧都短路（烘焙跳 march、查表跳读取），因此比值法可直接用。
 - M12.5：海洋场景 refit、显存和 all/near 档。
 - M13：结构雾 0/A/0 和 12/24 步。
 - M16：默认非零太阳角半径跨日出/日落连续性与成本。
