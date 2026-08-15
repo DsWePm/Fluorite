@@ -1450,6 +1450,24 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudWarpAmount",
                             "volumetrics.cloud-warp-amount", 28f, 0f, 200f);
 
+            /**
+             * How fast a cloud's shape changes, in blocks per second, INDEPENDENT OF THE WIND.
+             *
+             * <p>Tying this to wind speed was wrong twice over. Physically, clouds are reshaped by
+             * convection and turbulence, not by advection -- a still afternoon cumulus rises, billows and
+             * dissolves without moving anywhere, and a wind-driven rate freezes the sky solid whenever the
+             * wind is set to zero. And numerically it was invisible: as a fraction of the shipped wind
+             * speed it took over eight minutes for one warp feature to pass through a cloud, which is not
+             * a rate anyone can perceive.
+             *
+             * <p>This is the speed the warp field slides through the shape field, so it is the whole of
+             * how fast lobes appear and dissolve. About one warp feature per minute and a half at the
+             * default scale; too high and the cloud boils rather than grows.
+             */
+            public static final FloatSetting CLOUD_EVOLUTION_SPEED =
+                    clampedFloat("fluorite.rt.fog.cloudEvolutionSpeed",
+                            "volumetrics.cloud-evolution-speed", 2.5f, 0f, 30f);
+
             /** How large the warp's own swirls are, in blocks. Larger reshapes whole lobes; smaller frays edges. */
             public static final FloatSetting CLOUD_WARP_SCALE =
                     clampedFloat("fluorite.rt.fog.cloudWarpScale",

@@ -110,6 +110,14 @@ final class RtCloudShapeContractTest {
         assertTrue(cloud.contains("if (amplitude <= 0.0)"));
         assertTrue(config.contains("\"volumetrics.cloud-warp-amount\""));
         assertTrue(config.contains("\"volumetrics.cloud-warp-scale\""));
+        // The rate is its OWN setting, not a fraction of the wind. As a fraction it was proportional to
+        // wind speed and still took eight minutes per feature -- invisible -- and it froze the whole sky
+        // whenever the wind was set to zero, which is the opposite of what a calm day looks like.
+        String composite = source(
+                "common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
+        assertTrue(composite.contains(
+                "FluoriteConfig.Rt.Volumetrics.CLOUD_EVOLUTION_SPEED.value(),"));
+        assertFalse(composite.contains("CLOUD_WIND_SPEED.value() * 0.45f"));
     }
 
     private static String source(String relativePath) throws IOException {

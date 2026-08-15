@@ -387,5 +387,7 @@
   "fluorite.options.rt.cloudWarpAmount": "雲的翻捲",
   "fluorite.options.rt.cloudWarpAmount.tooltip": "雲的形狀在繪製前被推動多遠，單位為方塊。它**位移雲的表面**而不是啃食它——這正是「翻捲的雲」和「邊緣毛糙的圓團」之間的差別。扭曲場按自己的速度飄移，所以天空移動時形狀會**生長與消散**，而不是原樣滑過去。為零則完全關閉。",
   "fluorite.options.rt.cloudWarpScale": "翻捲尺度",
-  "fluorite.options.rt.cloudWarpScale.tooltip": "翻捲的尺度，單位為方塊。數值大會重塑雲的整片瓣狀結構；數值小則把邊緣撕成絲縷。"
+  "fluorite.options.rt.cloudWarpScale.tooltip": "翻捲的尺度，單位為方塊。數值大會重塑雲的整片瓣狀結構；數值小則把邊緣撕成絲縷。",
+  "fluorite.options.rt.cloudEvolutionSpeed": "雲的演變",
+  "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "雲的**形狀**變化有多快，與它飄得多快是兩回事。雲是被**對流**重塑的而不是被風——無風的午後積雲照樣鼓起又消散、並不去往任何地方——所以這一項**不跟隨風速**，把風速調到 0 也不會讓天空凍住。數值越大瓣狀結構生長與消散越快；過高則雲會「沸騰」而不是生長。"
 }

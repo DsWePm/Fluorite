@@ -657,5 +657,7 @@
   "fluorite.options.rt.cloudWarpAmount": "Cloud Billowing",
   "fluorite.options.rt.cloudWarpAmount.tooltip": "How far a cloud's shape is pushed around before it is drawn, in blocks. This displaces the cloud's surface rather than eating into it, which is the difference between clouds that billow and clouds that are round blobs with frayed edges. The warp drifts at its own speed, so shapes grow and dissolve as the sky moves instead of sliding past unchanged. Zero turns it off entirely.",
   "fluorite.options.rt.cloudWarpScale": "Billow Size",
-  "fluorite.options.rt.cloudWarpScale.tooltip": "How large the billows are, in blocks. Large values reshape whole lobes of a cloud; small values fray its edges into wisps."
+  "fluorite.options.rt.cloudWarpScale.tooltip": "How large the billows are, in blocks. Large values reshape whole lobes of a cloud; small values fray its edges into wisps.",
+  "fluorite.options.rt.cloudEvolutionSpeed": "Cloud Evolution",
+  "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "How fast a cloud's shape changes, separately from how fast it drifts. Clouds are reshaped by convection rather than by wind -- a cumulus on a still afternoon billows and dissolves without going anywhere -- so this does not follow the wind speed, and setting the wind to zero no longer freezes the sky. Higher makes lobes grow and dissolve faster; too high and the cloud boils instead of growing."
 }

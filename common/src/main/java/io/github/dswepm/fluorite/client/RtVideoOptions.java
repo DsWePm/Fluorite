@@ -114,6 +114,7 @@ public final class RtVideoOptions {
                                 clouds(), cloudCoverage(), cloudType(), cloudDensity(),
                                 cloudExtinction(), cloudAltitude(), cloudThickness(),
                                 cloudFieldScale(), cloudBaseScale(), cloudDetailScale(),
+                                cloudWarpAmount(), cloudWarpScale(), cloudEvolutionSpeed(),
                                 cloudWindSpeed(), cloudWindOffset()),
                         Section.titled("fluorite.options.rt.section.cloudLighting",
                                 cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo(),
@@ -122,7 +123,6 @@ public final class RtVideoOptions {
                         // shared weather controls and wind remain independent from the low volume.
                         Section.titled("fluorite.options.rt.section.cloudCirrus",
                                 cloudCirrus(), cloudCirrusCoverage(), cloudCirrusDensity(),
-                                cloudWarpAmount(), cloudWarpScale(),
                                 cloudCirrusPatchStrength(),
                                 cloudCirrusExtinction(), cloudCirrusAltitude(), cloudCirrusThickness(),
                                 cloudCirrusPatchSpacing(), cloudCirrusPatchDiameter(),
@@ -1696,6 +1696,11 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> cloudWarpAmount() {
         return blockSlider("fluorite.options.rt.cloudWarpAmount",
                 FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_AMOUNT, 0, 200);
+    }
+
+    private static OptionInstance<Integer> cloudEvolutionSpeed() {
+        return scaleSlider("fluorite.options.rt.cloudEvolutionSpeed",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_EVOLUTION_SPEED);
     }
 
     private static OptionInstance<Integer> cloudWarpScale() {

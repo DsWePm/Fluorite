@@ -721,14 +721,24 @@ public final class RtComposite {
      * warp carried at the same speed would deform each cloud once and then translate it unchanged -- the
      * sky would move without ever growing. Advecting the warp at a DIFFERENT speed slides it through the
      * shape, so the displaced boundary is continuously re-formed and lobes appear and dissolve in place.
-     * That is the same mechanism as the low deck's differential detail offset, which is already proven.
      *
-     * <p>The fraction is larger than that offset's 18%, because a warp has to travel a whole feature to
-     * change the shape while a detail sample only has to travel its own width.
+     * <p>ITS OWN SPEED, NOT A FRACTION OF THE WIND, and this was got wrong first time round. The
+     * differential-advection idea is borrowed from the low deck's detail offset, which takes 18% of the
+     * wind -- and the record for that change already says it did not produce the growth it was aimed at.
+     * Reusing the mechanism at 45% without checking the rate it produces repeated the same mistake: at the
+     * shipped wind speed one warp feature took over eight minutes to pass through a cloud. It was
+     * proportional to wind speed, and it was still invisible.
+     *
+     * <p>Clouds are reshaped by convection, not by advection: a still afternoon cumulus billows and
+     * dissolves without going anywhere. A wind-proportional rate also freezes the whole sky the moment the
+     * wind is set to zero, which is the opposite of what a calm day looks like.
+     *
+     * <p>The DIRECTION still follows the wind, because the turbulence really is carried along by it, and
+     * that costs no second setting.
      */
     private static Float4 cloudWarp(RtEnvironmentForcing.Frame environment) {
         double[] drift = windDrift(environment,
-                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value() * 0.45f,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_EVOLUTION_SPEED.value(),
                 FluoriteConfig.Rt.Volumetrics.cloudWindAngle());
         return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_AMOUNT.value(),
                 FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_SCALE.value(),
