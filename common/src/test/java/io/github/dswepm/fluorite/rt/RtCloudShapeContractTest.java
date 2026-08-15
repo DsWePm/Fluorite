@@ -105,7 +105,10 @@ final class RtCloudShapeContractTest {
         assertTrue(cloud.contains("[[vk::binding(28, 0)]] Sampler3D cloudWarp;"));
         // Its own advection is what makes cloud grow instead of pass by unchanged. Sharing the shape
         // field's drift would deform each cloud once and then translate it rigidly.
-        assertTrue(cloud.contains("float3(worldPush.cloudWarp.z, 0.0, worldPush.cloudWarp.w)"));
+        // Along the warp volume's own axis, not horizontally: a sideways drift makes the deformation
+        // SWEEP across the cloud, and a sweep reads as translation -- the one motion the warp exists to
+        // stop being the only thing in the sky.
+        assertTrue(cloud.contains("float3(0.0, worldPush.cloudWarp.z, 0.0)"));
         // Zero amplitude must skip the fetch and leave the field bit-for-bit as it was.
         assertTrue(cloud.contains("if (amplitude <= 0.0)"));
         assertTrue(config.contains("\"volumetrics.cloud-warp-amount\""));
@@ -116,8 +119,11 @@ final class RtCloudShapeContractTest {
         String composite = source(
                 "common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
         assertTrue(composite.contains(
-                "FluoriteConfig.Rt.Volumetrics.CLOUD_EVOLUTION_SPEED.value(),"));
+                "FluoriteConfig.Rt.Volumetrics.CLOUD_EVOLUTION_SPEED.value()"));
         assertFalse(composite.contains("CLOUD_WIND_SPEED.value() * 0.45f"));
+        // Wrapped on the CPU: the offset grows without bound over a session and the sampler repeats
+        // anyway, so the coordinate handed to the GPU must never be what limits the evolution.
+        assertTrue(composite.contains("(float) (travelled % scale)"));
     }
 
     private static String source(String relativePath) throws IOException {

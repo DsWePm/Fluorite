@@ -1466,7 +1466,7 @@ public final class FluoriteConfig {
              */
             public static final FloatSetting CLOUD_EVOLUTION_SPEED =
                     clampedFloat("fluorite.rt.fog.cloudEvolutionSpeed",
-                            "volumetrics.cloud-evolution-speed", 2.5f, 0f, 30f);
+                            "volumetrics.cloud-evolution-speed", 6f, 0f, 60f);
 
             /** How large the warp's own swirls are, in blocks. Larger reshapes whole lobes; smaller frays edges. */
             public static final FloatSetting CLOUD_WARP_SCALE =

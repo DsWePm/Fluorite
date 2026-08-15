@@ -733,16 +733,27 @@ public final class RtComposite {
      * dissolves without going anywhere. A wind-proportional rate also freezes the whole sky the moment the
      * wind is set to zero, which is the opposite of what a calm day looks like.
      *
-     * <p>The DIRECTION still follows the wind, because the turbulence really is carried along by it, and
-     * that costs no second setting.
+     * <p>ALONG THE VOLUME'S OWN AXIS, NOT HORIZONTALLY, and this is the second thing the first attempt got
+     * wrong. A horizontal drift slides the warp ACROSS the cloud, so the deformation pattern is seen to
+     * sweep through -- and a sweep is the one motion that reads as translation rather than as growth,
+     * which is exactly what it was supposed to replace. The warp volume tiles on all three axes, so
+     * walking along the vertical one instead steps through slices that are uncorrelated with each other
+     * and share no horizontal motion with anything: the displacement at a fixed point in a fixed cloud
+     * simply becomes a different displacement. Lobes swell and subside where they stand.
+     *
+     * <p>Horizontally the warp now travels WITH the shape field -- pw already carries the wind, and adding
+     * nothing keeps a deformation attached to the cloud it belongs to instead of blowing through it.
+     *
+     * <p>Wrapped to the field's own period on the CPU. The offset grows without bound over a long session
+     * and the sampler repeats anyway, so wrapping here costs one modulo and keeps the coordinate handed to
+     * the GPU small enough that its float precision never becomes the thing that limits the evolution.
      */
     private static Float4 cloudWarp(RtEnvironmentForcing.Frame environment) {
-        double[] drift = windDrift(environment,
-                FluoriteConfig.Rt.Volumetrics.CLOUD_EVOLUTION_SPEED.value(),
-                FluoriteConfig.Rt.Volumetrics.cloudWindAngle());
-        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_AMOUNT.value(),
-                FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_SCALE.value(),
-                (float) -drift[0], (float) -drift[1]);
+        float scale = Math.max(FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_SCALE.value(), 1f);
+        double travelled = FluoriteConfig.Rt.Volumetrics.CLOUD_EVOLUTION_SPEED.value()
+                * Math.max(environment.gameSeconds(), 0.0);
+        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_AMOUNT.value(), scale,
+                (float) (travelled % scale), 0f);
     }
 
     private static Float4 cloudRebase(RtTerrain terrain, RtEnvironmentForcing.Frame environment) {

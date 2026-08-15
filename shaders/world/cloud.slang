@@ -480,10 +480,15 @@ float cloudNoiseLod(float footprint, float scale) {
  * the erosion is pushed. Moving the sample position moves the iso-surface, so it grows folds, protrusions
  * and hollows that the base field never contained.
  *
- * <p>ITS OWN DRIFT (cloudWarp.zw), and that is what makes cloud GROW rather than merely pass by. The shape
- * field already advects with the layer origin; a warp carried at the same speed would deform each cloud
- * once, permanently, and then translate it. A different speed slides the warp through the shape, so the
- * displaced boundary is continuously re-formed and lobes appear and dissolve where they stand.
+ * <p>ITS OWN CLOCK (cloudWarp.z), and that is what makes cloud GROW rather than merely pass by. The shape
+ * field advects with the layer origin, so a warp locked to it would deform each cloud once, permanently,
+ * and then translate it. Walking the lookup along the warp volume's vertical axis steps through slices
+ * that are uncorrelated with one another, so the displacement at a fixed point in a fixed cloud simply
+ * becomes a different displacement: lobes swell and subside where they stand.
+ *
+ * <p>NOT a horizontal drift, which is what this tried first. Sliding the warp sideways makes the
+ * deformation pattern sweep across the cloud, and a sweep reads as translation -- the very thing the warp
+ * exists to stop being the only motion in the sky. Horizontally the warp now travels WITH the shape.
  *
  * <p>STRONGER HIGH IN THE CLOUD. A cumulus is turbulent where it is rising and flat where it is not, so
  * the warp is faded in with height through the deck. Warping the base as hard as the top would lift the
@@ -497,7 +502,7 @@ float3 cloudWarpPosition(CloudLayer layer, float3 pw) {
         return pw;
     }
     float scale = max(worldPush.cloudWarp.y, 1.0);
-    float3 wp = pw + float3(worldPush.cloudWarp.z, 0.0, worldPush.cloudWarp.w);
+    float3 wp = pw + float3(0.0, worldPush.cloudWarp.z, 0.0);
     float3 warp = cloudWarp.SampleLevel(wp / scale, 0.0).xyz * 2.0 - 1.0;
     // Normalised height through the deck, faded so the base keeps its flat underside.
     float h = saturate((pw.y - layer.bottom) / max(layer.thickness, 1.0));
