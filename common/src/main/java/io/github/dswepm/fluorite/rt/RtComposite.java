@@ -1995,6 +1995,9 @@ public final class RtComposite {
             // cloud and fog noise are sampled at WORLD COORDINATES divided by a feature size, which
             // leaves that range immediately and has to wrap. See tilingSampler.
             worldPipeline.setCloudNoise(skyLuts.cloudNoiseView(), tilingSampler(ctx));
+            // Same tiling sampler as the volume: the weather map is read by dividing world
+            // coordinates by an authored span and letting it repeat, exactly as the slices did.
+            worldPipeline.setCloudWeather(skyLuts.cloudWeatherView(), tilingSampler(ctx));
             worldPipeline.setFogNoise(skyLuts.fogNoiseView(), tilingSampler(ctx));
             // Clamped, not repeating: the height field is a finite domain that follows the player, and
             // wrapping it would put the far shore's ripples on the near one. The sampler's clamp is a

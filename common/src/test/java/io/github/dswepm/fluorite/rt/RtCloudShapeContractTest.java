@@ -26,8 +26,11 @@ final class RtCloudShapeContractTest {
         assertTrue(fields.contains("cloudEvolution"), fields.toString());
         assertTrue(common.contains("public float4   cloudEvolution;"));
         assertTrue(cloud.contains("l.detailOffset = worldPush.cloudEvolution.xy;"));
-        assertTrue(cloud.contains("max(worldPush.cloudEvolution.z, 0.0)"));
         assertTrue(composite.contains("cloudEvolution(environment)"));
+        // z carried the retired upper sheet's gain. The LANE stays -- removing it would move every field
+        // after it in a push buffer whose Java record is positional -- but nothing may read it again, or
+        // it becomes a lane that is zero on the CPU and meaningful in the shader.
+        assertFalse(cloud.contains("worldPush.cloudEvolution.z"));
     }
 
     @Test

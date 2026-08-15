@@ -119,6 +119,7 @@ public final class RtSky {
     private final Bake[] rainHistoryBakes;
     private final Bake cloudNoiseBake;
     private final Bake fogNoiseBake;
+    private final Bake cloudWeatherBake;
     private final RtOverlayPipelines.AccelStructureSet froxelTlas;
     private final RtOverlayPipelines.AccelStructureSet visibilityTlas;
     private final RtOverlayPipelines.AccelStructureSet rainExposureTlas;
@@ -169,6 +170,7 @@ public final class RtSky {
     private long rainPrecipitationGeneration;
     private final long[] rainPrecipitationUploadedGeneration = new long[RAIN_PRECIP_RING];
     private RtImage cloudNoise;
+    private RtImage cloudWeather;
     private RtImage fogNoise;
     // The interactive water simulation's height field (M12), in metres of displacement. Three buffers
     // rotate through prev/cur/next: leapfrog needs both previous states, so writing next over prev in
@@ -205,6 +207,8 @@ public final class RtSky {
     private boolean waterObstacleReady;
     /** Must equal CLOUD_NOISE_DIM in cloud_noise.comp.slang, and numthreads there. */
     private static final int CLOUD_NOISE_DIM = 128;
+    /** Must equal CLOUD_WEATHER_DIM in cloud_weather.comp.slang. */
+    private static final int CLOUD_WEATHER_DIM = 128;
     private static final int CLOUD_NOISE_GROUP = 4;
     /** Must match FOG_NOISE_DIM in fog_noise.comp.slang. */
     private static final int FOG_NOISE_DIM = 128;
@@ -217,7 +221,8 @@ public final class RtSky {
                   Bake visibilityBake, RtOverlayPipelines.AccelStructureSet visibilityTlas,
                   Bake rainExposureBake, Bake[] rainHistoryBakes,
                   RtOverlayPipelines.AccelStructureSet rainExposureTlas,
-                  Bake cloudNoiseBake, Bake fogNoiseBake, long lutSampler, long noiseSampler,
+                  Bake cloudNoiseBake, Bake fogNoiseBake, Bake cloudWeatherBake,
+                  long lutSampler, long noiseSampler,
                   long rainHistorySampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
@@ -231,6 +236,7 @@ public final class RtSky {
         this.rainHistoryBakes = rainHistoryBakes;
         this.cloudNoiseBake = cloudNoiseBake;
         this.fogNoiseBake = fogNoiseBake;
+        this.cloudWeatherBake = cloudWeatherBake;
         this.visibilityTlas = visibilityTlas;
         this.rainExposureTlas = rainExposureTlas;
         this.lutSampler = lutSampler;
@@ -328,6 +334,8 @@ public final class RtSky {
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
             Bake fogNoiseBake = createBake(ctx, stack, "fog_noise.comp.spv", "fog noise",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
+            Bake cloudWeatherBake = createBake(ctx, stack, "cloud_weather.comp.spv", "cloud weather",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
 
             // One binding: the simulated height. Everything else the displacement needs arrives as a
             // device address in the push constants, because the buffers it writes belong to a terrain
@@ -382,7 +390,7 @@ public final class RtSky {
             RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
                     mediumSkyReduceBake, froxelBake, froxelTlas,
                     visibilityBake, visibilityTlas, rainExposureBake, rainHistoryBakes, rainExposureTlas,
-                    cloudNoiseBake, fogNoiseBake,
+                    cloudNoiseBake, fogNoiseBake, cloudWeatherBake,
                     sampler, noiseSampler, rainHistorySampler);
             sky.waterSimBakes = waterSimBakes;
             sky.waterDeformBake = waterDeformBake;
@@ -432,6 +440,13 @@ public final class RtSky {
             sky.fogNoise = ctx.createStorageImage3D(FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_DIM,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "fog noise volume");
             writeStorageImage(vk, stack, fogNoiseBake.descriptorSet(), 0, sky.fogNoise.view);
+            // Where cloud systems stand (R) and which family they are (G). 128^2 RG8 is 32 KB, against
+            // the 8 MB volume these two fields used to be read out of as fixed horizontal slices -- they
+            // have no third dimension, so they were paying a 3D fetch for 2D data twice per density call.
+            // Same dimension as the slices it replaces, so the field is the field that shipped.
+            sky.cloudWeather = ctx.createStorageImage(CLOUD_WEATHER_DIM, CLOUD_WEATHER_DIM,
+                    VK10.VK_FORMAT_R8G8_UNORM, "cloud weather map");
+            writeStorageImage(vk, stack, cloudWeatherBake.descriptorSet(), 0, sky.cloudWeather.view);
 
             // R16F: a displacement in metres, signed, and a ripple's amplitude spans four orders of
             // magnitude between a raindrop and a boat wake -- which is what a float format buys over the
@@ -702,6 +717,11 @@ public final class RtSky {
     /** M11.1 cloud noise: R the billow that shapes a cloud, G the detail that erodes its edges. */
     public long cloudNoiseView() {
         return cloudNoise == null ? 0L : cloudNoise.view;
+    }
+
+    /** The weather map: R where cloud systems stand, G which family they are. */
+    public long cloudWeatherView() {
+        return cloudWeather == null ? 0L : cloudWeather.view;
     }
 
     /** M13 packed heterogeneous fog: R broad variation, G detail, both mean-zero after decode. */
@@ -1090,6 +1110,8 @@ public final class RtSky {
                     CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_GROUP);
             dispatch3D(cmd, stack, fogNoiseBake,
                     FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_GROUP);
+            // Reads nothing any other bake writes, so it joins them with no barrier.
+            dispatch(cmd, stack, cloudWeatherBake, CLOUD_WEATHER_DIM, CLOUD_WEATHER_DIM);
         }
         baked = true;
         return true;
@@ -1294,6 +1316,10 @@ public final class RtSky {
             cloudNoise.destroy();
             cloudNoise = null;
         }
+        if (cloudWeather != null) {
+            cloudWeather.destroy();
+            cloudWeather = null;
+        }
         if (fogNoise != null) {
             fogNoise.destroy();
             fogNoise = null;
@@ -1344,6 +1370,7 @@ public final class RtSky {
             history.destroy(vk);
         }
         cloudNoiseBake.destroy(vk);
+        cloudWeatherBake.destroy(vk);
         fogNoiseBake.destroy(vk);
         froxelTlas.destroy(vk);
         froxelBake.destroy(vk);

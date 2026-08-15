@@ -34,6 +34,11 @@ import world_core;
 
 [[vk::binding(17, 0)]] Sampler3D cloudNoise;
 [[vk::binding(26, 0)]] Sampler2DArray highCloudPatchTau;
+// Where cloud systems stand (R) and which family they are (G). Two-dimensional fields, in a
+// two-dimensional texture -- see cloud_weather.comp.slang for why they stopped being slices of the body
+// volume. Reuses the descriptor slot the retired upper high-cloud sheet left free, so this costs no
+// binding.
+[[vk::binding(27, 0)]] Sampler2D cloudWeather;
 
 static const float HIGH_CLOUD_PATCH_TAU_RANGE = 4.0;
 
@@ -359,7 +364,7 @@ float cloudProfileTop(float type) {
  */
 float cloudCoverage(CloudLayer layer, float3 p) {
     float2 w = worldIn(layer, p).xz / layer.fieldScale;
-    float m = cloudNoise.SampleLevel(float3(w.x, 0.37, w.y), 0.0).r;
+    float m = cloudWeather.SampleLevel(w, 0.0).r;
     // Re-centred for the Perlin-Worley body. The old (m - 0.42) * 2.6 was fitted to pure Worley, whose
     // mean sits at 0.486; the normalised Perlin-Worley field is wider and centred differently, and
     // keeping the old numbers against it overcasts 96% of the sky at neutral bias. Both halves were
@@ -384,7 +389,7 @@ float cloudCoverage(CloudLayer layer, float3 p) {
  */
 float cloudType(float3 p) {
     float2 w = worldIn(lowLayer(), p).xz / cloudTypeScale();
-    float m = cloudNoise.SampleLevel(float3(w.x, 0.61, w.y), 0.0).b;
+    float m = cloudWeather.SampleLevel(w, 0.0).g;
     // Scaled below 1 so fair weather stays in the sheet-to-heap half of the range and the tower is
     // something the weather has to ask for.
     return saturate(m * 0.75 + worldPush.cloudParams.z);
@@ -397,8 +402,8 @@ float cloudType(float3 p) {
  * <p>ORDERED BY COST, and that ordering is load-bearing rather than tidy. Every factor below multiplies,
  * so any one of them reaching zero ends the function — which makes it worth asking the free question
  * first and the expensive one last. The deck bounds are arithmetic on p.y and reject the majority of
- * steps along the majority of rays; coverage is one fetch and rejects most of what survives; type is a
- * second fetch and cannot reject anything by itself, so it is deliberately NOT hoisted above the height
+ * steps along the majority of rays; coverage is one 2D fetch into the weather map and rejects most of what survives; type is a
+ * second such fetch and cannot reject anything by itself, so it is deliberately NOT hoisted above the height
  * test even though the height profile now takes it as an argument. Hoisting it would charge every empty
  * step in the sky for a texture read that only matters inside a cloud.
  */
