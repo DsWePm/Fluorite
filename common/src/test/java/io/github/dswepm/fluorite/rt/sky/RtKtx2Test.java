@@ -18,6 +18,7 @@ final class RtKtx2Test {
         assertEquals(4, image.typeSize());
         assertEquals(4096, image.width());
         assertEquals(2048, image.height());
+        assertEquals(1, image.layers());
         assertEquals(13, image.levels().size());
         assertEquals("rd", image.metadata().get("KTXorientation"));
         assertEquals("CC-BY-4.0", image.metadata().get("fluoriteLicense"));
@@ -28,6 +29,45 @@ final class RtKtx2Test {
         assertTrue(image.metadata().get("fluoriteModification").contains("10000x5000 to 4096x2048"));
         assertNotNull(image.metadata().get("fluoriteMeanRadiance"));
         assertTrue(image.levels().stream().allMatch(level -> level.length > 0));
+    }
+
+    @Test
+    void generatedHighCloudPatchesHaveEqualisedOpticalDepthAndPinnedProvenance() throws Exception {
+        RtKtx2.Image image = cloudResource("high_cloud_patches.ktx2");
+        assertEquals(9, image.vkFormat());
+        assertEquals(1, image.typeSize());
+        assertEquals(1024, image.width());
+        assertEquals(1024, image.height());
+        assertEquals(10, image.layers());
+        assertEquals(11, image.levels().size());
+        assertEquals(10 * 1024 * 1024, image.levels().getFirst().length);
+        assertEquals("CC0-1.0", image.metadata().get("fluoriteLicense"));
+        assertEquals("83514a391c765819bc159b7f9ab61ec9f06c0caa2b5865af20a5bd3b2a14cca4",
+                image.metadata().get("fluoriteSourceSha256"));
+
+        byte[] base = image.levels().getFirst();
+        double minimumMean = Double.POSITIVE_INFINITY;
+        double maximumMean = Double.NEGATIVE_INFINITY;
+        int layerBytes = 1024 * 1024;
+        for (int layer = 0; layer < 10; layer++) {
+            long sum = 0;
+            double transmittance = 0.0;
+            for (int i = 0; i < layerBytes; i++) sum += base[layer * layerBytes + i] & 0xff;
+            for (int i = 0; i < layerBytes; i++) {
+                double tau = (base[layer * layerBytes + i] & 0xff) * (4.0 / 255.0);
+                transmittance += Math.exp(-tau);
+            }
+            double mean = sum / (255.0 * layerBytes);
+            minimumMean = Math.min(minimumMean, mean);
+            maximumMean = Math.max(maximumMean, mean);
+            double expectedTau = -Math.log(transmittance / layerBytes);
+            byte[] lastMip = image.levels().getLast();
+            double storedTau = (lastMip[layer] & 0xff) * (4.0 / 255.0);
+            assertTrue(Math.abs(expectedTau - storedTau) < 0.025,
+                    "Patch mip chain changed Beer transmittance in layer " + layer);
+        }
+        assertTrue(maximumMean - minimumMean < 0.002,
+                "Patch choice changes integrated tau: " + minimumMean + ".." + maximumMean);
     }
 
     @Test
@@ -160,6 +200,14 @@ final class RtKtx2Test {
     private static RtKtx2.Image resource(String name) throws Exception {
         try (InputStream input = RtKtx2Test.class.getResourceAsStream(
                 "/assets/fluorite/fluorite/environment/" + name)) {
+            assertNotNull(input);
+            return RtKtx2.read(input);
+        }
+    }
+
+    private static RtKtx2.Image cloudResource(String name) throws Exception {
+        try (InputStream input = RtKtx2Test.class.getResourceAsStream(
+                "/assets/fluorite/fluorite/cloud/" + name)) {
             assertNotNull(input);
             return RtKtx2.read(input);
         }

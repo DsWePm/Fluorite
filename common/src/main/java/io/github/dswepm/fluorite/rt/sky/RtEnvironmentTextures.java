@@ -125,7 +125,7 @@ public final class RtEnvironmentTextures {
     }
 
     private static void validateSky(RtKtx2.Image image) {
-        if (image.vkFormat() != 122 || image.width() != 4096 || image.height() != 2048
+        if (image.vkFormat() != 122 || image.width() != 4096 || image.height() != 2048 || image.layers() != 1
                 || image.levels().size() != 13) {
             throw new IllegalArgumentException("Environment radiance must be 4096x2048 R11G11B10 with 13 mips");
         }
@@ -135,7 +135,7 @@ public final class RtEnvironmentTextures {
     }
 
     private static void validateTransfer(RtKtx2.Image image) {
-        if (image.vkFormat() != 97 || image.width() != 2048 || image.height() != 1024
+        if (image.vkFormat() != 97 || image.width() != 2048 || image.height() != 1024 || image.layers() != 1
                 || image.levels().size() != 1) {
             throw new IllegalArgumentException("Kerr transfer must be 2048x1024 RGBA16F with one level");
         }
@@ -145,7 +145,7 @@ public final class RtEnvironmentTextures {
     }
 
     private static void validateDiskPath(RtKtx2.Image image, String endpoint) {
-        if (image.vkFormat() != 97 || image.width() != 2048 || image.height() != 1024
+        if (image.vkFormat() != 97 || image.width() != 2048 || image.height() != 1024 || image.layers() != 1
                 || image.levels().size() != 1) {
             throw new IllegalArgumentException("Kerr disk " + endpoint
                     + " must be 2048x1024 RGBA16F with one level");
@@ -182,17 +182,17 @@ public final class RtEnvironmentTextures {
             width = Math.max(1, width / 2);
             height = Math.max(1, height / 2);
         }
-        return new RtKtx2.Image(122, 4, 4096, 2048, levels,
+        return new RtKtx2.Image(122, 4, 4096, 2048, 1, levels,
                 Map.of("KTXorientation", "rd", "fluoriteMeanRadiance", "0,0,0"));
     }
 
     private static RtKtx2.Image capturedTransfer() {
-        return new RtKtx2.Image(97, 2, 2048, 1024,
+        return new RtKtx2.Image(97, 2, 2048, 1024, 1,
                 List.of(new byte[2048 * 1024 * 8]), Map.of("KTXorientation", "rd"));
     }
 
     private static RtKtx2.Image emptyDiskPath() {
-        return new RtKtx2.Image(97, 2, 2048, 1024,
+        return new RtKtx2.Image(97, 2, 2048, 1024, 1,
                 List.of(new byte[2048 * 1024 * 8]),
                 Map.of("KTXorientation", "rd", "fluoriteDiskPathLayout", "empty"));
     }
@@ -211,6 +211,9 @@ public final class RtEnvironmentTextures {
                 if (image.vkFormat() != first.vkFormat() || image.width() != first.width()
                         || image.height() != first.height() || image.levels().size() != first.levels().size()) {
                     throw new IllegalArgumentException("Environment array layers do not share one shape");
+                }
+                if (image.layers() != 1) {
+                    throw new IllegalArgumentException("Environment source must not already be an array");
                 }
             }
             this.vma = ctx.vma();

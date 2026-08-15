@@ -178,21 +178,14 @@ public struct WorldPush {
     // multiple-scattering term decays at is sqrt(3*(1-albedo)) times the ordinary optical depth, so this
     // single number is the difference between a cloud whose interior stays bright and one that goes black.
     public float4   cloudLighting;    // x phase g, y albedo, z sun-march steps, w diffuse source A/(4*pi)
-    // The HIGH layer (M11 slice three): cirrus, a thin ice sheet far above the convective deck. Its own
-    // lane rather than a second copy of cloudShape because almost nothing it needs is the same — it has
-    // no cloud-type dimension, no self-shadowing worth marching, and a feature size an order of magnitude
-    // larger. w <= 0 turns it off, which is the same disable-by-zero pattern the fog's density uses.
-    public float4   cloudHigh;        // x altitude, y thickness, z coverage bias, w extinction/block
-    // The cirrus layer's OWN shape and OWN origin. It derived both from the deck below until it became
-    // clear that sharing them is the same mistake as sharing a height would be: a high ice sheet and a
-    // convective deck are different weather at different altitudes in different wind. Separate lanes are
-    // what let one be authored without moving the other.
-    public float4   cloudHighShape;   // x base size, y detail size, z density scale, w morphology: 0 cirrus, 1 cirrocumulus
-    public float4   cloudHighOrigin;  // xyz its own field origin (rebase - its own drift), w field scale
-    // Differential advection for the body/detail fields. The coverage field still follows each layer's
-    // authored wind exactly; these offsets let smaller structures move through that body slowly, which
-    // changes the density boundary continuously instead of translating one frozen noise volume.
-    public float4   cloudEvolution;   // xy low detail offset, zw high detail offset (absolute blocks)
+    // D163-D168 HIGH clouds: two analytic optical-depth sheets. y is both their vertical separation and
+    // the reference thickness that turns extinction/block into vertical tau. w <= 0 disables both.
+    public float4   cloudHigh;        // x bottom altitude, y separation/reference thickness, z coverage, w extinction/block
+    // Shape scale and world origin are independent from the low volume; source RGB never reaches runtime.
+    public float4   cloudHighShape;   // x patch diameter, y upper-field span, z density, w patch tau strength
+    public float4   cloudHighOrigin;  // xyz high-cloud origin (rebase - drift), w patch-grid spacing
+    // Low-volume differential advection plus the upper high-cloud sheet's independent tau strength.
+    public float4   cloudEvolution;   // xy low detail offset (blocks), z upper high-cloud tau strength, w reserved
     // The interactive water simulation's domain (M12). xy is the rebased world position of cell (0,0)'s
     // centre, z the blocks per cell, w the slope strength the sampled field contributes.
     //

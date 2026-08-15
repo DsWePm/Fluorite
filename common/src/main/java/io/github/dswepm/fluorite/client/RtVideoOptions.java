@@ -109,10 +109,7 @@ public final class RtVideoOptions {
                                 sunIntensity(), sunTemperature()),
                         Section.titled("fluorite.options.rt.section.skyArt",
                                 skyIntensity(), skyTemperature()),
-                        // One group, because this branch has one layer. The cirrus sheet arrives with
-                        // the layers slice and gets a complete parameter set of its own there -- every
-                        // number below has a counterpart, including its own wind, because a high ice
-                        // sheet and a convective deck do not share a size, a height or a speed.
+                        // The low convective deck keeps the volume controls and 3D march budget.
                         Section.titled("fluorite.options.rt.section.cumulus",
                                 clouds(), cloudCoverage(), cloudType(), cloudDensity(),
                                 cloudExtinction(), cloudAltitude(), cloudThickness(),
@@ -121,15 +118,13 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.cloudLighting",
                                 cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo(),
                                 cloudSecondary()),
-                        // The cirrus sheet's own complete set, parallel to the deck's above. Nothing
-                        // here derives from the cumulus group any more: two layers of different weather
-                        // at different altitudes in different wind, and every number they used to share
-                        // meant one of them could not be adjusted without moving the other.
+                        // D163-D168 high clouds are two analytic optical-depth sheets. Their shape scale,
+                        // shared weather controls and wind remain independent from the low volume.
                         Section.titled("fluorite.options.rt.section.cloudCirrus",
-                                cloudCirrus(), cloudCirrusCoverage(), cloudCirrusDensity(), cloudCirrusMorphology(),
+                                cloudCirrus(), cloudCirrusCoverage(), cloudCirrusDensity(),
+                                cloudCirrusPatchStrength(),
                                 cloudCirrusExtinction(), cloudCirrusAltitude(), cloudCirrusThickness(),
-                                cloudCirrusFieldScale(), cloudCirrusBaseScale(),
-                                cloudCirrusDetailScale(),
+                                cloudCirrusPatchSpacing(), cloudCirrusPatchDiameter(),
                                 cloudCirrusWindSpeed(), cloudCirrusWindOffset()));
                 case WEATHER -> List.of(
                         Section.of(windAngle()),
@@ -1682,19 +1677,14 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_COVERAGE);
     }
 
-    private static OptionInstance<Integer> cloudCirrusBaseScale() {
-        return blockSlider("fluorite.options.rt.cloudCirrusBaseScale",
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_BASE_SCALE, 500, 40000);
+    private static OptionInstance<Integer> cloudCirrusPatchDiameter() {
+        return blockSlider("fluorite.options.rt.cloudCirrusPatchDiameter",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_PATCH_DIAMETER, 500, 40000);
     }
 
-    private static OptionInstance<Integer> cloudCirrusDetailScale() {
-        return blockSlider("fluorite.options.rt.cloudCirrusDetailScale",
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DETAIL_SCALE, 40, 8000);
-    }
-
-    private static OptionInstance<Integer> cloudCirrusFieldScale() {
-        return blockSlider("fluorite.options.rt.cloudCirrusFieldScale",
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_FIELD_SCALE, 500, 80000);
+    private static OptionInstance<Integer> cloudCirrusPatchSpacing() {
+        return blockSlider("fluorite.options.rt.cloudCirrusPatchSpacing",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_PATCH_SPACING, 1000, 80000);
     }
 
     private static OptionInstance<Integer> cloudCirrusDensity() {
@@ -1702,9 +1692,9 @@ public final class RtVideoOptions {
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DENSITY);
     }
 
-    private static OptionInstance<Integer> cloudCirrusMorphology() {
-        return unitSlider("fluorite.options.rt.cloudCirrusMorphology",
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_MORPHOLOGY);
+    private static OptionInstance<Integer> cloudCirrusPatchStrength() {
+        return scaleSlider("fluorite.options.rt.cloudCirrusPatchStrength",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_PATCH_STRENGTH);
     }
 
     private static OptionInstance<Integer> cloudCirrusWindSpeed() {

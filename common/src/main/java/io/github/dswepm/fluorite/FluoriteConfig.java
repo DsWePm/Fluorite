@@ -1387,12 +1387,7 @@ public final class FluoriteConfig {
             public static final BooleanSetting CLOUD_MULTI_SCATTER =
                     bool("fluorite.rt.fog.cloudMultiScatter", "volumetrics.cloud-multi-scatter", true);
 
-            /**
-             * The high cirrus layer: a thin ice sheet far above the convective deck.
-             *
-             * <p>A second march, but a cheap one — it is thin enough that its optical depth barely leaves
-             * zero, so it gets no self-shadow march at all, and a ray crosses it once.
-             */
+            /** Two analytic optical-depth sheets far above the convective deck; no high-cloud march. */
             public static final BooleanSetting CLOUD_CIRRUS =
                     bool("fluorite.rt.fog.cloudCirrus", "volumetrics.cloud-cirrus", true);
 
@@ -1400,19 +1395,18 @@ public final class FluoriteConfig {
              * Where the cirrus sits, in blocks. Raised to clear the deck below it if it would overlap.
              *
              * <p>That clamp is structural rather than cosmetic: the two shells being disjoint is what
-             * makes ordering them by which one a ray reaches first correct, and overlapping shells would
-             * need the two marches interleaved by depth.
+             * makes ordering them by which one a ray reaches first correct.
              */
             public static final FloatSetting CLOUD_CIRRUS_ALTITUDE =
                     clampedFloat("fluorite.rt.fog.cloudCirrusAltitude", "volumetrics.cloud-cirrus-altitude",
                             760f, 128f, 2048f);
 
-            /** How deep the cirrus sheet is, in blocks. Thin by nature — it is a sheet, not a deck. */
+            /** Vertical separation and optical reference thickness of the two analytic high-cloud sheets. */
             public static final FloatSetting CLOUD_CIRRUS_THICKNESS =
                     clampedFloat("fluorite.rt.fog.cloudCirrusThickness", "volumetrics.cloud-cirrus-thickness",
                             60f, 8f, 400f);
 
-            /** Added to the cirrus layer's own coverage field, in [-1, 1]. */
+            /** Added to both high-cloud optical-depth shape fields, in [-1, 1]. */
             public static final FloatSetting CLOUD_CIRRUS_COVERAGE =
                     clampedFloat("fluorite.rt.fog.cloudCirrusCoverage", "volumetrics.cloud-cirrus-coverage",
                             0f, -1f, 1f);
@@ -1428,33 +1422,37 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudCirrusExtinction",
                             "volumetrics.cloud-cirrus-extinction", 0.004f, 0f, 0.1f);
 
-            /** How wide one cirrus streak is, in blocks. */
-            public static final FloatSetting CLOUD_CIRRUS_BASE_SCALE =
-                    clampedFloat("fluorite.rt.fog.cloudCirrusBaseScale",
+            /** Mean diameter of one deterministic CC0 cloud patch, in world blocks. */
+            public static final FloatSetting CLOUD_CIRRUS_PATCH_DIAMETER =
+                    migratingClampedFloat("fluorite.rt.fog.cloudCirrusPatchDiameter",
+                            "volumetrics.cloud-cirrus-patch-diameter",
                             "volumetrics.cloud-cirrus-base-scale", 9600f, 500f, 40000f);
 
-            /** How fine the texture within a cirrus streak is, in blocks. */
-            public static final FloatSetting CLOUD_CIRRUS_DETAIL_SCALE =
-                    clampedFloat("fluorite.rt.fog.cloudCirrusDetailScale",
-                            "volumetrics.cloud-cirrus-detail-scale", 1020f, 40f, 8000f);
+            /** World-grid spacing whose hash selects patch, offset, rotation and scale. */
+            public static final FloatSetting CLOUD_CIRRUS_PATCH_SPACING =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusPatchSpacing",
+                            "volumetrics.cloud-cirrus-patch-spacing", 16000f, 1000f, 80000f);
 
-            /** How far apart the cirrus layer's own clumps and clearings are, in blocks. */
-            public static final FloatSetting CLOUD_CIRRUS_FIELD_SCALE =
-                    clampedFloat("fluorite.rt.fog.cloudCirrusFieldScale",
-                            "volumetrics.cloud-cirrus-field-scale", 22500f, 500f, 80000f);
-
-            /** Multiplies the cirrus layer's density, independently of the deck below it. */
+            /** Optical-depth multiplier for the high-cloud sheet. */
             public static final FloatSetting CLOUD_CIRRUS_DENSITY =
                     clampedFloat("fluorite.rt.fog.cloudCirrusDensity",
                             "volumetrics.cloud-cirrus-density", 1f, 0f, 10f);
 
-            /** Blends fibrous cirrus into rounded cirrocumulus cloudlets. */
-            public static final FloatSetting CLOUD_CIRRUS_MORPHOLOGY =
-                    clampedFloat("fluorite.rt.fog.cloudCirrusMorphology",
-                            "volumetrics.cloud-cirrus-morphology", 0.35f, 0f, 1f);
+            /** Optical-depth gain for the randomly scattered patch sheet. */
+            public static final FloatSetting CLOUD_CIRRUS_PATCH_STRENGTH =
+                    clampedFloat("fluorite.rt.fog.cloudCirrusPatchStrength",
+                            "volumetrics.cloud-cirrus-patch-strength", 1f, 0f, 10f);
+
+            static {
+                // The upper sheet sampled a single periodic HDRI and filled every gap the patches left,
+                // which is the one thing a cirrus sky must not do. Its span and gain went with it; do not
+                // leave dead keys behind for a later reader to wonder about.
+                FILE.remove("volumetrics.cloud-cirrus-furry-span");
+                FILE.remove("volumetrics.cloud-cirrus-furry-strength");
+            }
 
             /**
-             * How fast the cirrus layer drifts, in blocks per second.
+             * How fast the high-cloud sheet drifts, in blocks per second.
              *
              * <p>Its own, not the deck's. Cirrus sits kilometres higher, where the wind is faster and
              * frequently from a different quarter — and two layers sliding past each other at different
@@ -1464,7 +1462,6 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudCirrusWindSpeed",
                             "volumetrics.cloud-cirrus-wind-speed", 6f, 0f, 120f);
 
-            /** Which way the cirrus layer's own wind blows, in degrees clockwise from +X. */
             /**
              * Degrees off the global wind. Defaults to +30, which reproduces the shipped 65 against a
              * global 35 — and is physically the right shape: high cirrus really does run at an angle to
@@ -1474,7 +1471,7 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudCirrusWindOffset",
                             "volumetrics.cloud-cirrus-wind-offset", 30f, -180f, 180f);
 
-            /** Absolute heading of the cirrus sheet, in degrees clockwise from +X. */
+            /** Absolute heading of both high-cloud sheets, in degrees clockwise from +X. */
             public static float cloudCirrusWindAngle() {
                 return Rt.Composite.WIND_ANGLE.value() + CLOUD_CIRRUS_WIND_OFFSET.value();
             }
@@ -3353,6 +3350,19 @@ public final class FluoriteConfig {
 
     private static FloatSetting clampedFloat(String key, String tomlPath, float fallback, float min, float max) {
         return new FloatSetting(key, tomlPath, fallback, v -> v, v -> v, v -> Math.clamp(v, min, max));
+    }
+
+    /** Moves one compatible legacy numeric value to its renamed path before the setting resolves it. */
+    private static FloatSetting migratingClampedFloat(String key, String tomlPath, String legacyTomlPath,
+                                                       float fallback, float min, float max) {
+        synchronized (FluoriteConfig.class) {
+            if (!FILE.contains(tomlPath) && FILE.contains(legacyTomlPath)) {
+                Object legacy = FILE.get(legacyTomlPath);
+                if (legacy instanceof Number) FILE.set(tomlPath, legacy);
+                FILE.remove(legacyTomlPath);
+            }
+        }
+        return clampedFloat(key, tomlPath, fallback, min, max);
     }
 
     private static FloatSetting radians(String key, String tomlPath, float fallbackDegrees) {

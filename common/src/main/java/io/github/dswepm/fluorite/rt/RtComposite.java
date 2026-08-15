@@ -75,6 +75,7 @@ import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
 import io.github.dswepm.fluorite.rt.sky.RtSky;
 import io.github.dswepm.fluorite.rt.sky.RtDimensionControls;
 import io.github.dswepm.fluorite.rt.sky.RtEnvironmentTextures;
+import io.github.dswepm.fluorite.rt.sky.RtHighCloudTextures;
 import io.github.dswepm.fluorite.rt.sky.RtSkyPreset;
 import io.github.dswepm.fluorite.rt.sky.RtSkyPresets;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrain;
@@ -280,8 +281,8 @@ public final class RtComposite {
     /**
      * The wind's accumulated drift for one layer, in blocks.
      *
-     * <p>Shared by both layers and parameterised by their own speed and angle, because they are in
-     * different wind: cirrus sits kilometres higher, where it moves faster and often from another
+     * <p>Shared by all cloud representations and parameterised by their own speed and angle, because
+     * high clouds sit kilometres higher, where they move faster and often from another
      * quarter, and two layers sliding past each other at different speeds is most of what makes a sky
      * read as deep rather than as one painted dome.
      *
@@ -299,7 +300,6 @@ public final class RtComposite {
                 Math.sin(angle) * speed * environment.gameSeconds()};
     }
 
-    /** The cirrus layer's own shape: how big a streak is, how fine its texture, how dense the sheet. */
     /**
      * Where the water simulation's domain sits, and how much of its slope reaches the shading.
      *
@@ -683,39 +683,35 @@ public final class RtComposite {
                 String.format(java.util.Locale.ROOT, "%.2f", waterSurfaceY));
     }
 
+    /** y was the retired upper sheet's field span and is now unread; the shader holds detailScale at 1. */
     private static Float4 cloudCirrusShape() {
-        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_BASE_SCALE.value(),
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DETAIL_SCALE.value(),
+        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_PATCH_DIAMETER.value(),
+                0f,
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_DENSITY.value(),
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_MORPHOLOGY.value());
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_PATCH_STRENGTH.value());
     }
 
-    /** The cirrus layer's own field origin — its own drift — and its own field scale. */
+    /** High-cloud world origin and deterministic patch-grid spacing. */
     private static Float4 cloudCirrusOrigin(RtTerrain terrain, RtEnvironmentForcing.Frame environment) {
         double[] drift = windDrift(environment,
                 FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED.value(),
                 FluoriteConfig.Rt.Volumetrics.cloudCirrusWindAngle());
         return new Float4((float) (terrain.blockX - drift[0]), terrain.blockY,
                 (float) (terrain.blockZ - drift[1]),
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_FIELD_SCALE.value());
+                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_PATCH_SPACING.value());
     }
 
     /**
-     * Relative motion of cloudlets and erosion through each layer's macro body (D161A).
+     * Relative motion of the low cloudlets.
      *
-     * <p>The layer origin already carries 100% of its wind drift. Adding another 18% to the convective
-     * detail and 12% to the high-cloud detail keeps every scale travelling in the same authored wind,
-     * but stops the density field from being one frozen volume translated forever. These are positions
-     * in blocks rather than time in disguise, so the shader never borrows the water animation clock.
+     * <p>The layer origin already carries 100% of its wind drift; this is D161's 18% differential detail
+     * motion on top. z carried the retired upper sheet's gain and is now zero, as w always was.
      */
     private static Float4 cloudEvolution(RtEnvironmentForcing.Frame environment) {
         double[] low = windDrift(environment,
                 FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value() * 0.18f,
                 FluoriteConfig.Rt.Volumetrics.cloudWindAngle());
-        double[] high = windDrift(environment,
-                FluoriteConfig.Rt.Volumetrics.CLOUD_CIRRUS_WIND_SPEED.value() * 0.12f,
-                FluoriteConfig.Rt.Volumetrics.cloudCirrusWindAngle());
-        return new Float4((float) -low[0], (float) -low[1], (float) -high[0], (float) -high[1]);
+        return new Float4((float) -low[0], (float) -low[1], 0f, 0f);
     }
 
     private static Float4 cloudRebase(RtTerrain terrain, RtEnvironmentForcing.Frame environment) {
@@ -761,10 +757,10 @@ public final class RtComposite {
     }
 
     /**
-     * The high cirrus layer: altitude, thickness, coverage bias and extinction.
+     * The high-cloud pair: bottom altitude, sheet separation/reference thickness, coverage and extinction.
      *
      * <p>Zero extinction is the disable path, the same pattern the fog's density uses — the shader
-     * returns before intersecting the shell, so switching cirrus off costs one comparison rather than a
+     * returns before intersecting either sheet, so switching high clouds off costs one comparison rather than a
      * shader variant.
      */
     private static Float4 cloudCirrus() {
@@ -1628,12 +1624,14 @@ public final class RtComposite {
     private long tilingSampler;
     private long environmentSampler;
     private long environmentTransferSampler;
+    private long highCloudPatchSampler;
     // The atmosphere's precomputed tables (M10). Baked once, then sampled by world.rmiss and world.rgen.
     private RtSky skyLuts;
     // Reloaded through the same resource-manager seam as material overrides. A missing entry is not an
     // error: RtSkyPresets deliberately resolves it to the complete atmosphere.
     private RtSkyPresets skyPresets = RtSkyPresets.EMPTY;
     private RtEnvironmentTextures environmentTextures;
+    private RtHighCloudTextures highCloudTextures;
     private boolean failed;
     private boolean loggedActive;
 
@@ -1961,6 +1959,10 @@ public final class RtComposite {
             environmentTextures.destroy();
         }
         environmentTextures = RtEnvironmentTextures.load(ctx, skyPresets);
+        if (highCloudTextures != null) {
+            highCloudTextures.destroy();
+        }
+        highCloudTextures = RtHighCloudTextures.load(ctx);
         RtEmissionSemantics emissionSemantics = RtEmissionSemantics.analyze();
         RtBlockMaterials.INSTANCE.prepareAll(ctx, bindlessTextureCapacity, emissionSemantics, materialOverrides);
         RtEntityTextures.INSTANCE.reset(bindlessTextureCapacity);
@@ -2009,6 +2011,8 @@ public final class RtComposite {
                     environmentTextures.diskEntryView(), environmentTransferSampler(ctx));
             worldPipeline.setEnvironmentDiskExit(
                     environmentTextures.diskExitView(), environmentTransferSampler(ctx));
+            worldPipeline.setHighCloudPatches(
+                    highCloudTextures.patchView(), highCloudPatchSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -2063,6 +2067,10 @@ public final class RtComposite {
             if (environmentTextures != null) {
                 environmentTextures.destroy();
                 environmentTextures = null;
+            }
+            if (highCloudTextures != null) {
+                highCloudTextures.destroy();
+                highCloudTextures = null;
             }
             RtMaterialRegistry.INSTANCE.destroy();
         }
@@ -3510,6 +3518,10 @@ public final class RtComposite {
             environmentTextures.destroy();
             environmentTextures = null;
         }
+        if (highCloudTextures != null) {
+            highCloudTextures.destroy();
+            highCloudTextures = null;
+        }
         bindlessTextureCapacity = 0;
         materialBindingsReady = false;
         materialEpochTraceGate = false;
@@ -3550,6 +3562,39 @@ public final class RtComposite {
                 VK10.vkDestroySampler(ctx.vk(), environmentTransferSampler, null);
             }
             environmentTransferSampler = 0L;
+        }
+        if (highCloudPatchSampler != 0L) {
+            RtContext ctx = RtContext.currentOrNull();
+            if (ctx != null) {
+                VK10.vkDestroySampler(ctx.vk(), highCloudPatchSampler, null);
+            }
+            highCloudPatchSampler = 0L;
+        }
+    }
+
+    /** Sprite-array sampling clamps to one selected layer; mip filtering removes distant shimmer. */
+    private long highCloudPatchSampler(RtContext ctx) {
+        if (highCloudPatchSampler == 0L) {
+            highCloudPatchSampler = createHighCloudSampler(ctx, VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                    10f, "high-cloud patch sampler");
+        }
+        return highCloudPatchSampler;
+    }
+
+    private long createHighCloudSampler(RtContext ctx, int addressMode, float maxLod, String label) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                    .magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
+                    .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_LINEAR)
+                    .addressModeU(addressMode).addressModeV(addressMode).addressModeW(addressMode)
+                    .minLod(0f).maxLod(maxLod);
+            LongBuffer p = stack.mallocLong(1);
+            if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                throw new IllegalStateException("vkCreateSampler(" + label + ") failed");
+            }
+            long sampler = p.get(0);
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, sampler, label);
+            return sampler;
         }
     }
 
