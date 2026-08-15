@@ -43,8 +43,6 @@ import cloud_field;   // CLOUD_NOISE_DIM: the LOD below is in texels of that vol
 // D173's domain-warp vector field: curl noise, signed, encoded into RGB. See cloud_warp.comp.slang.
 [[vk::binding(28, 0)]] Sampler3D cloudWarp;
 
-static const float HIGH_CLOUD_PATCH_TAU_RANGE = 4.0;
-
 // The march's step bounds, in blocks. The step is now chosen from how far THIS RAY crosses the deck
 // rather than from how far the deck is, so a grazing crossing is spread over the budget instead of being
 // swallowed by a handful of enormous strides. See marchLayer.
@@ -56,15 +54,7 @@ static const float CLOUD_STEP_MAX = 400.0;
 // sliver of nearly transparent volume.
 public static const float CLOUD_MAX_DIST = 40000.0;
 
-// How far apart the sky's clumps and clearings are, in blocks — the FIELD, distinct from how big a single
-// cloud within a clump is (cloudShape.z). Authored, because those are two different questions and
-// answering them with one number was the reason neither could be adjusted.
-float cloudFieldScale() { return max(worldPush.cloudRebase.w, 1.0); }
-// Cloud TYPE varies far more slowly still. A storm covers a region; it does not alternate with fair
-// weather every kilometre — so it is pinned to a multiple of the field rather than authored separately.
-float cloudTypeScale() { return cloudFieldScale() * 2.9; }
-
-// Everything else is authored per frame, from worldPush, and read into a CloudLayer below:
+// Everything is authored per frame, from worldPush, and read into a CloudLayer below:
 //   cloudParams   = (coverage bias, density scale, type bias, extinction per block at full density)
 //   cloudShape    = (deck bottom altitude, deck thickness, base feature size, detail feature size)
 //   cloudLighting = (phase g, single-scattering albedo, sun-march steps, diffuse source A/(4*pi))
@@ -176,59 +166,17 @@ CloudResult overCloud(CloudResult front, CloudResult back) {
 
 import cloud_density;   // CloudLayer, worldIn and the whole density field
 
-CloudLayer lowLayer() {
-    CloudLayer l;
-    l.bottom = worldPush.cloudShape.x;
-    l.thickness = max(worldPush.cloudShape.y, 1.0);
-    l.coverageBias = worldPush.cloudParams.x;
-    l.extinction = worldPush.cloudParams.w;
-    l.baseScale = max(worldPush.cloudShape.z, 1.0);
-    l.detailScale = max(worldPush.cloudShape.w, 1.0);
-    l.fieldScale = max(worldPush.cloudRebase.w, 1.0);
-    l.densityScale = worldPush.cloudParams.y;
-    l.origin = worldPush.cloudRebase.xyz;
-    l.detailOffset = worldPush.cloudEvolution.xy;
-    l.sunSteps = clamp(int(worldPush.cloudLighting.z + 0.5), 0, 8);
-    return withFieldParams(l);
-}
-
-/**
- * The high-cloud sheet, placed above the convective deck rather than at an authored absolute altitude.
- *
- * <p>The clamp is what keeps the two shells DISJOINT, and that is what makes ordering them by entry
- * distance correct: with the high sheet strictly outside the low volume, a ray meets one region entirely
- * before the other from every origin and direction. Overlap would require depth-interleaved estimators,
- * and getting that wrong shows up as one cloud drawn in front from some angles and behind from others.
- */
-CloudLayer highLayer() {
-    CloudLayer l;
-    CloudLayer low = lowLayer();
-    // Still the reference thickness the sheet's optical depth is authored against. It no longer also
-    // means the separation between two sheets, because there is no second sheet to separate from.
-    l.thickness = max(worldPush.cloudHigh.y, 1.0);
-    l.bottom = max(worldPush.cloudHigh.x, low.bottom + low.thickness + 16.0);
-    l.coverageBias = worldPush.cloudHigh.z;
-    l.extinction = worldPush.cloudHigh.w;
-    // Authored, not derived. These lanes now mean patch diameter and patch spacing.
-    l.baseScale = max(worldPush.cloudHighShape.x, 1.0);
-    l.detailScale = 1.0; // unused: the sheet is sprites on a grid, not a periodic field with a span
-    l.fieldScale = max(worldPush.cloudHighOrigin.w, 1.0);
-    l.densityScale = worldPush.cloudHighShape.z;
-    l.origin = worldPush.cloudHighOrigin.xyz;
-    l.detailOffset = float2(0.0, 0.0); // D163 high clouds are two 2D sheets, not evolving 3D detail
-    // High sheets never enter cloudBudget()/marchLayer(); initialise the shared carrier defensively.
-    l.sunSteps = 0;
-    return withFieldParams(l);
-}
+// Both layers are constructed in cloud_density, from a WorldPush handed in as an argument, so that the
+// shadow bake builds the SAME deck out of the same lanes. See that module.
+CloudLayer lowLayer() { return lowCloudLayer(worldPush); }
+CloudLayer highLayer() { return highCloudLayer(worldPush); }
 
 bool layerEnabled(CloudLayer l) {
     return l.extinction > 0.0;
 }
 
-/** Bit 30 (Rt.Clouds.ENABLED). */
-public bool cloudsOn() {
-    return (worldPush.flags & (1u << 30u)) != 0u;
-}
+/** Bit 30 (Rt.Clouds.ENABLED). The test itself is in cloud_density, so the shadow bake shares it. */
+public bool cloudsOn() { return cloudsOn(worldPush); }
 
 /**
  * Where a ray enters and leaves the cloud shell, as distances along it.
@@ -289,47 +237,15 @@ float2 cloudShellSpan(CloudLayer layer, float3 ro, float3 rd) {
     return float2(max(enter, 0.0), min(exit, CLOUD_MAX_DIST));
 }
 
-/**
- * Vertical profile, selected by cloud TYPE — which is the difference between weather and wallpaper.
- *
- * <p>One deck, three shapes blended along a single axis, because from the ground the families that read
- * differently are a sheet, a heap and a tower:
- *
- * <ul>
- *   <li><b>0, stratus</b>: a shallow sheet lying on the deck's floor, flat above as well as below. It is
- *       a layer, not an object, so it occupies only the lowest tenth of the deck.</li>
- *   <li><b>0.5, cumulus</b>: flat-bottomed, rounded on top, filling the lower half. Fair weather.</li>
- *   <li><b>1, cumulonimbus</b>: the full depth, still flat-bottomed, and WIDENING again near the top.
- *       That late flare is the anvil — the tower reaches stable air and spreads sideways instead of
- *       continuing to climb. Without it a storm cloud reads as a column rather than as a storm.</li>
- * </ul>
- *
- * <p>All three share the flat base for one physical reason: convective cloud condenses at the altitude
- * where rising air reaches saturation, and that altitude is the same across a region, so the underside of
- * a cloud field is a plane. The tops differ because a top is wherever that particular parcel ran out of
- * lift.
- *
- * <p>Blended in two halves rather than by a single lerp between the extremes, so the middle of the range
- * is cumulus rather than a half-height average of a sheet and a tower.
- */
 // ---- The density field lives in cloud_density, which has no bindings so the shadow bake can share it.
 // These wrappers are the only place set 0 and worldPush meet it. See that module's banner for why.
-
-/** The layer, completed with the authored values the bindings-free field cannot reach for itself. */
-CloudLayer withFieldParams(CloudLayer l) {
-    l.typeScale = cloudTypeScale();
-    l.typeBias = worldPush.cloudParams.z;
-    l.warpAmplitude = worldPush.cloudWarp.x;
-    l.warpScale = worldPush.cloudWarp.y;
-    l.warpClock = worldPush.cloudWarp.z;
-    return l;
-}
 
 CloudTextures cloudTextures() {
     CloudTextures t;
     t.noise = cloudNoise;
     t.weather = cloudWeather;
     t.warp = cloudWarp;
+    t.highTau = highCloudPatchTau;
     return t;
 }
 
@@ -588,59 +504,6 @@ float3 highCloudSheetNormal(float altitude, float3 ro, float3 rd, float t) {
     return normalize(centreRelative + rd * t);
 }
 
-uint highCloudCellHash(int2 cell) {
-    uint h = asuint(cell.x) * 0x8DA6B343u;
-    h ^= asuint(cell.y) * 0xD8163841u;
-    h ^= 0xCB1AB31Fu;
-    return pcg(h);
-}
-
-float highCloudHash01(inout uint state) {
-    state = pcg(state);
-    return float(state >> 8u) * (1.0 / 16777216.0);
-}
-
-/**
- * Lower high-cloud sheet: deterministic texture bombing over a fixed world grid.
- *
- * <p>The 3x3 loop is a candidate search, not nine unconditional texture reads. Hash arithmetic rejects
- * every sprite whose rotated square does not contain this point before SampleLevel executes; at the
- * approved diameter/spacing the ordinary path reads one texture, occasionally two near an overlap.
- * No ray seed enters this function, so primary, reflection and later-frame rays ask the same world field.
- */
-float highCloudPatchShape(float2 worldXZ, float t, CloudLayer high) {
-    float spacing = max(high.fieldScale, 1.0);
-    float2 gridPosition = worldXZ / spacing;
-    int2 baseCell = int2(floor(gridPosition));
-    float tau = 0.0;
-    [unroll]
-    for (int dz = -1; dz <= 1; ++dz) {
-        [unroll]
-        for (int dx = -1; dx <= 1; ++dx) {
-            int2 cell = baseCell + int2(dx, dz);
-            uint hash = highCloudCellHash(cell);
-            float2 jitter = float2(highCloudHash01(hash), highCloudHash01(hash)) - 0.5;
-            float2 centre = (float2(cell) + 0.5 + jitter * 0.56) * spacing;
-            float scale = lerp(0.75, 1.25, highCloudHash01(hash));
-            float diameter = max(high.baseScale * scale, 1.0);
-            float angle = highCloudHash01(hash) * (2.0 * PI);
-            float cosine = cos(angle);
-            float sine = sin(angle);
-            float2 delta = worldXZ - centre;
-            float2 local = float2(cosine * delta.x + sine * delta.y,
-                                  -sine * delta.x + cosine * delta.y);
-            float2 uv = local / diameter + 0.5;
-            if (all(uv > 0.0) && all(uv < 1.0)) {
-                float layer = float(hash % 10u);
-                float lod = clamp(log2(max(t / diameter, 1.0)), 0.0, 10.0);
-                tau += highCloudPatchTau.SampleLevel(float3(uv, layer), lod).r
-                        * HIGH_CLOUD_PATCH_TAU_RANGE;
-            }
-        }
-    }
-    return max(tau + high.coverageBias, 0.0);
-}
-
 /** Exact Beer integration through one thin sheet with the shared cloud Radiance sources. */
 CloudResult shadeHighCloudSheet(float verticalTau, float altitude,
                                 float3 ro, float3 rd, float t) {
@@ -695,10 +558,9 @@ CloudResult traceHighClouds(float3 ro, float3 rd, float tMax) {
     if (t < 0.0 || t > tMax) {
         return noClouds();
     }
-    float2 worldXZ = worldIn(high, ro + rd * t).xz;
-    float shapeTau = highCloudPatchShape(worldXZ, t, high);
-    float verticalTau = shapeTau * high.extinction * high.thickness * 0.5
-            * high.densityScale * max(worldPush.cloudHighShape.w, 0.0);
+    // The footprint is this ray's own distance: the sheet is read at whatever mip a pixel this far away
+    // resolves. The shadow bake passes its texel width to the same function instead.
+    float verticalTau = highCloudVerticalTau(cloudTextures(), high, ro + rd * t, t);
     return shadeHighCloudSheet(verticalTau, altitude, ro, rd, t);
 }
 

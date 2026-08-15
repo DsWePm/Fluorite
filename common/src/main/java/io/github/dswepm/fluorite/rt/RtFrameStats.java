@@ -92,6 +92,10 @@ public final class RtFrameStats {
                     "gpu.skyBake",
                     "gpu.visBake",
                     "gpu.froxelBake",
+                    // D176's cloud shadow map. Its own column because 8.10 costed it at about 1% of the
+                    // primary trace on paper and nothing has weighed it; resolution and step count are
+                    // each one constant away, and a shared number could not say which to turn.
+                    "gpu.cloudShadow",
                     // The two water passes. The spectrum is deliberately absent -- it runs inline in
                     // the raygen shaders, so it is measured by the water.waves isolation switch
                     // against gpu.tracePrimary/gpu.traceIndirect, not by a zone.

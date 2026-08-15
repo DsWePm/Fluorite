@@ -1450,6 +1450,12 @@ public final class RtComposite {
     private static final int GPU_ZONE_LENS_SPATIAL = 11;
     private static final int GPU_ZONE_DISPLAY_MAP = 12;
     private static final int GPU_ZONE_BLOOM_FLARE = 13;
+    // D176's cloud shadow map. ITS OWN ZONE rather than a share of gpu.skyBake, for the reason the
+    // froxel was split out of that zone: 8.10 budgeted this bake at about 1% of the primary trace by
+    // arithmetic, nobody has measured it, and a number folded in with the sky tables could never
+    // settle the question. It is also the dial most likely to move -- resolution and step count are
+    // both one constant away.
+    private static final int GPU_ZONE_CLOUD_SHADOW = 14;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtLensPipeline lensPipeline;
@@ -1952,7 +1958,7 @@ public final class RtComposite {
                         "gpu.skyBake", "gpu.visBake", "gpu.froxelBake",
                         "gpu.waterSim", "gpu.waterDeform",
                         "gpu.entityBlas", "gpu.tlasBuild", "gpu.rainExposure", "gpu.rainStreak",
-                        "gpu.lensSpatial", "gpu.displayMap", "gpu.bloomFlare");
+                        "gpu.lensSpatial", "gpu.displayMap", "gpu.bloomFlare", "gpu.cloudShadow");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -2059,6 +2065,15 @@ public final class RtComposite {
                     environmentTextures.diskExitView(), environmentTransferSampler(ctx));
             worldPipeline.setHighCloudPatches(
                     highCloudTextures.patchView(), highCloudPatchSampler(ctx));
+            // The shadow bake integrates the high sheet as well as the low deck, and the patch array
+            // belongs to this object rather than to the LUT chain. Handing it over here keeps the two
+            // binds of the same texture adjacent, so a future reload path cannot update one alone.
+            skyLuts.setHighCloudPatches(highCloudTextures.patchView(), highCloudPatchSampler(ctx));
+            // The map itself, read by the shading. THE LUT SAMPLER, not the tiling one: this is a
+            // finite square that follows the player, and repeating it would put a shadow from eight
+            // kilometres away onto ground that has none. Clamping at the edge is the honest fallback --
+            // there is no answer out there to extrapolate.
+            worldPipeline.setCloudShadow(skyLuts.cloudShadowView(), lutSampler(ctx));
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -2952,6 +2967,22 @@ public final class RtComposite {
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_SKY_BAKE);
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_CLOUD_SHADOW);
+            }
+            // D176's cloud shadow map, every frame, for the same reason as the sky-view table above: the
+            // sun's direction enters this integral where it is BAKED. It reads the three cloud fields
+            // and the push buffer and writes nothing anything else here consumes, so it needs no barrier
+            // against its neighbours -- only the one before the trace, which is recorded below.
+            //
+            // UNCONDITIONAL, deliberately, and it is worth saying why the obvious `if (cloudsEnabled)`
+            // is the worse code. The bake tests the same bit 30 this method sets a hundred lines up, and
+            // writes clear sky when it is off -- so the map is ALWAYS a valid transmittance and no
+            // consumer ever needs to ask whether it may be trusted. Gating here would save a dispatch
+            // that only stores a constant, and buy back a condition every future reader has to
+            // reproduce correctly.
+            skyLuts.recordCloudShadowBake(cmd, pushBuf.deviceAddress);
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_CLOUD_SHADOW);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_FROXEL_BAKE);
             }
             // The froxel, after the sky-view table and after the push buffer it reads has been written.

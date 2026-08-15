@@ -18,14 +18,20 @@
 module cloud_density;
 
 import cloud_field;    // CLOUD_NOISE_DIM: the LOD below is in texels of that volume
-import world_common;   // rndf. Declares structs only -- no bindings, so a compute bake may import it
+import world_common;   // rndf, pcg, and WorldPush. Structs only -- no bindings, so a bake may import it
 
-// The three fields the density is built from. Bundled so that adding a fourth is one signature change
-// rather than a dozen, and so a caller cannot supply them in the wrong order.
+// Local rather than imported: PI lives in world_core, and world_core owns descriptor bindings. Same
+// reason water_wave.slang and world.rmiss.slang each keep their own copy. Not public, so a file that
+// imports both this and world_core still sees exactly one.
+static const float PI = 3.14159265359;
+
+// The fields the cloud is built from. Bundled so that adding one is a single signature change rather
+// than a dozen, and so a caller cannot supply them in the wrong order.
 public struct CloudTextures {
     public Sampler3D noise;     // R shape, G erosion, B type, A unused -- see cloud_noise.comp.slang
     public Sampler2D weather;   // R coverage, G type -- see cloud_weather.comp.slang
     public Sampler3D warp;      // curl noise, signed in RGB -- see cloud_warp.comp.slang
+    public Sampler2DArray highTau;  // the high sheet's ten CC0 patch masks, as optical depth
 };
 
 // The stratus band's upper support, as a fraction of the deck. Named because TWO things depend on it:
@@ -63,9 +69,82 @@ public struct CloudLayer {
     public float warpAmplitude;
     public float warpScale;
     public float warpClock;
+    // High sheet only: how hard the patch masks' optical depth is driven. Carried rather than left for
+    // each caller to multiply in, because the shading and the shadow bake reading a sheet at two
+    // different strengths is the same undiagnosable disagreement the banner is about.
+    public float highTauStrength;
 };
 
 public float3 worldIn(CloudLayer layer, float3 p) { return p + layer.origin; }
+
+// How far apart the sky's clumps and clearings are, in blocks -- the FIELD, distinct from how big a
+// single cloud within a clump is. Cloud TYPE varies far more slowly still: a storm covers a region, it
+// does not alternate with fair weather every kilometre, so its span is pinned to a multiple of the
+// field's rather than authored separately.
+float cloudFieldScale(WorldPush wp) { return max(wp.cloudRebase.w, 1.0); }
+float cloudTypeScale(WorldPush wp) { return cloudFieldScale(wp) * 2.9; }
+
+/**
+ * The low convective deck, read out of the frame's authored parameters.
+ *
+ * <p>HERE RATHER THAN IN THE SHADING, and for the same reason the field itself is. A shadow cast by a
+ * deck 300 blocks thick onto ground lit by a deck 400 blocks thick is wrong in a way no screenshot can
+ * attribute, and two constructors reading the same lanes would agree exactly until one of them was
+ * edited. WorldPush arrives as an ARGUMENT: the struct is declared in world_common and carries no
+ * bindings, so a compute bake reads it through a device address while the raygen passes its global.
+ * That is the whole distinction this module's banner draws -- no descriptor set, not no data.
+ */
+public CloudLayer lowCloudLayer(WorldPush wp) {
+    CloudLayer l;
+    l.bottom = wp.cloudShape.x;
+    l.thickness = max(wp.cloudShape.y, 1.0);
+    l.coverageBias = wp.cloudParams.x;
+    l.extinction = wp.cloudParams.w;
+    l.baseScale = max(wp.cloudShape.z, 1.0);
+    l.detailScale = max(wp.cloudShape.w, 1.0);
+    l.fieldScale = cloudFieldScale(wp);
+    l.densityScale = wp.cloudParams.y;
+    l.origin = wp.cloudRebase.xyz;
+    l.detailOffset = wp.cloudEvolution.xy;
+    l.sunSteps = clamp(int(wp.cloudLighting.z + 0.5), 0, 8);
+    l.typeScale = cloudTypeScale(wp);
+    l.typeBias = wp.cloudParams.z;
+    l.warpAmplitude = wp.cloudWarp.x;
+    l.warpScale = wp.cloudWarp.y;
+    l.warpClock = wp.cloudWarp.z;
+    l.highTauStrength = 0.0; // the low deck marches a density; it has no sheet
+    return l;
+}
+
+/**
+ * The high sheet, placed above the convective deck rather than at an authored absolute altitude.
+ *
+ * <p>The clamp is what keeps the two shells DISJOINT, and that is what makes ordering them by entry
+ * distance correct: with the high sheet strictly outside the low volume, a ray meets one region entirely
+ * before the other from every origin and direction. Overlap would require depth-interleaved estimators,
+ * and getting that wrong shows up as one cloud drawn in front from some angles and behind from others.
+ */
+public CloudLayer highCloudLayer(WorldPush wp) {
+    CloudLayer l = lowCloudLayer(wp);
+    CloudLayer low = l;
+    // Still the reference thickness the sheet's optical depth is authored against. It no longer also
+    // means the separation between two sheets, because there is no second sheet to separate from.
+    l.thickness = max(wp.cloudHigh.y, 1.0);
+    l.bottom = max(wp.cloudHigh.x, low.bottom + low.thickness + 16.0);
+    l.coverageBias = wp.cloudHigh.z;
+    l.extinction = wp.cloudHigh.w;
+    // Authored, not derived. These lanes now mean patch diameter and patch spacing.
+    l.baseScale = max(wp.cloudHighShape.x, 1.0);
+    l.detailScale = 1.0; // unused: the sheet is sprites on a grid, not a periodic field with a span
+    l.fieldScale = max(wp.cloudHighOrigin.w, 1.0);
+    l.densityScale = wp.cloudHighShape.z;
+    l.origin = wp.cloudHighOrigin.xyz;
+    l.detailOffset = float2(0.0, 0.0); // D163 high clouds are one 2D sheet, not evolving 3D detail
+    l.highTauStrength = max(wp.cloudHighShape.w, 0.0);
+    // High sheets never enter cloudBudget()/marchLayer(); initialise the shared carrier defensively.
+    l.sunSteps = 0;
+    return l;
+}
 
 /**
  * How deep THIS cloud is, as a fraction of the authored maximum.
@@ -94,6 +173,29 @@ public float cloudDepthFraction(float coverage, float type) {
     return lerp(saturate(CLOUD_STRATUS_TOP / top), 1.0, saturate(coverage));
 }
 
+/**
+ * Vertical profile, selected by cloud TYPE — which is the difference between weather and wallpaper.
+ *
+ * <p>One deck, three shapes blended along a single axis, because from the ground the families that read
+ * differently are a sheet, a heap and a tower:
+ *
+ * <ul>
+ *   <li><b>0, stratus</b>: a shallow sheet lying on the deck's floor, flat above as well as below. It is
+ *       a layer, not an object, so it occupies only the lowest tenth of the deck.</li>
+ *   <li><b>0.5, cumulus</b>: flat-bottomed, rounded on top, filling the lower half. Fair weather.</li>
+ *   <li><b>1, cumulonimbus</b>: the full depth, still flat-bottomed, and WIDENING again near the top.
+ *       That late flare is the anvil — the tower reaches stable air and spreads sideways instead of
+ *       continuing to climb. Without it a storm cloud reads as a column rather than as a storm.</li>
+ * </ul>
+ *
+ * <p>All three share the flat base for one physical reason: convective cloud condenses at the altitude
+ * where rising air reaches saturation, and that altitude is the same across a region, so the underside of
+ * a cloud field is a plane. The tops differ because a top is wherever that particular parcel ran out of
+ * lift.
+ *
+ * <p>Blended in two halves rather than by a single lerp between the extremes, so the middle of the range
+ * is cumulus rather than a half-height average of a sheet and a tower.
+ */
 public float cloudHeightProfile(CloudLayer layer, float altitude, float type, float depth) {
     // Dividing the DEPTH rather than offsetting the base is what keeps the underside flat: t still starts
     // at zero on the deck floor, it just reaches the profile's top sooner.
@@ -362,4 +464,179 @@ public float sunOpticalDepth(CloudTextures tex, CloudLayer layer, float3 p, floa
         step *= 2.0;
     }
     return tau * layer.extinction;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The high sheet. Not a density -- an optical depth field on an infinitesimally thin shell, which is why
+// it has its own pair of functions rather than another branch inside cloudDensity.
+
+// What a fully opaque patch texel means, in optical depth. The masks are stored normalised.
+static const float HIGH_CLOUD_PATCH_TAU_RANGE = 4.0;
+
+uint highCloudCellHash(int2 cell) {
+    uint h = asuint(cell.x) * 0x8DA6B343u;
+    h ^= asuint(cell.y) * 0xD8163841u;
+    h ^= 0xCB1AB31Fu;
+    return pcg(h);
+}
+
+float highCloudHash01(inout uint state) {
+    state = pcg(state);
+    return float(state >> 8u) * (1.0 / 16777216.0);
+}
+
+/**
+ * Deterministic texture bombing over a fixed world grid.
+ *
+ * <p>The 3x3 loop is a candidate search, not nine unconditional texture reads. Hash arithmetic rejects
+ * every sprite whose rotated square does not contain this point before SampleLevel executes; at the
+ * approved diameter/spacing the ordinary path reads one texture, occasionally two near an overlap.
+ * No ray seed enters this function, so primary, reflection, later-frame and SHADOW-BAKE lookups all ask
+ * the same world field -- which is what lets the shadow map be built from it without a second opinion.
+ *
+ * @param footprint how wide an area this sample stands for, in blocks: a ray's distance for the shading,
+ *                  a texel's width for the shadow bake. Only selects a mip.
+ */
+public float highCloudPatchShape(CloudTextures tex, CloudLayer high, float2 worldXZ, float footprint) {
+    float spacing = max(high.fieldScale, 1.0);
+    float2 gridPosition = worldXZ / spacing;
+    int2 baseCell = int2(floor(gridPosition));
+    float tau = 0.0;
+    [unroll]
+    for (int dz = -1; dz <= 1; ++dz) {
+        [unroll]
+        for (int dx = -1; dx <= 1; ++dx) {
+            int2 cell = baseCell + int2(dx, dz);
+            uint hash = highCloudCellHash(cell);
+            float2 jitter = float2(highCloudHash01(hash), highCloudHash01(hash)) - 0.5;
+            float2 centre = (float2(cell) + 0.5 + jitter * 0.56) * spacing;
+            float scale = lerp(0.75, 1.25, highCloudHash01(hash));
+            float diameter = max(high.baseScale * scale, 1.0);
+            float angle = highCloudHash01(hash) * (2.0 * PI);
+            float cosine = cos(angle);
+            float sine = sin(angle);
+            float2 delta = worldXZ - centre;
+            float2 local = float2(cosine * delta.x + sine * delta.y,
+                                  -sine * delta.x + cosine * delta.y);
+            float2 uv = local / diameter + 0.5;
+            if (all(uv > 0.0) && all(uv < 1.0)) {
+                float layer = float(hash % 10u);
+                float lod = clamp(log2(max(footprint / diameter, 1.0)), 0.0, 10.0);
+                tau += tex.highTau.SampleLevel(float3(uv, layer), lod).r * HIGH_CLOUD_PATCH_TAU_RANGE;
+            }
+        }
+    }
+    return max(tau + high.coverageBias, 0.0);
+}
+
+/**
+ * The sheet's optical depth measured STRAIGHT DOWN through it, before any ray's or the sun's secant.
+ *
+ * <p>Assembled here rather than at each call site so that the shading and the shadow bake cannot end up
+ * multiplying the same mask by different strengths -- which would put a cirrus shadow on the ground with
+ * no cirrus above it, or the reverse.
+ */
+public float highCloudVerticalTau(CloudTextures tex, CloudLayer high, float3 p, float footprint) {
+    float shapeTau = highCloudPatchShape(tex, high, worldIn(high, p).xz, footprint);
+    return shapeTau * high.extinction * high.thickness * 0.5 * high.densityScale * high.highTauStrength;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// D176: the light-space frame the cloud shadow map is baked into and read back out of.
+//
+// LIGHT SPACE, WHICH IS THE ONE CHOICE THAT SURVIVES TERRAIN. A cloud's shadow lands a long way from the
+// cloud -- 655 blocks at a 30-degree sun, 2144 at 10 -- so a map parameterised by world XZ has to assume
+// a receiving altitude, and every block the real receiver stands above it displaces the shadow by
+// h/tan(elevation): 173 blocks at 30 degrees for a hundred-block hill, 373 at 15. Minecraft terrain
+// clears a hundred blocks without trying, and a mountainside is exactly where a moving cloud shadow is
+// worth having. Projecting along the light instead makes the lookup independent of how far along the
+// light ray the receiver sits, so there is no reference altitude to be wrong about. It costs one dot
+// product more per lookup.
+//
+// The frame is DERIVED, not pushed. Both the bake and every consumer call the function below with lanes
+// they already hold, so there is no third copy on the CPU to drift out of step and no new push lane.
+//
+// WHERE THE FIXED TEXEL SIZE STANDS AGAINST THE PHYSICS, in numbers, because "16 blocks is about the
+// penumbra" is only true at one sun elevation and it is worth knowing which way it errs at the others.
+// A cloud sits about 378 blocks up, so its shadow's penumbra measured ACROSS the light is
+// 378/sin(elevation) * 0.0209 = 7.9/sin(elevation) blocks, and the texel is a flat 16. The ratio is
+// therefore 2.0*sin(elevation): 1.75 at a 60-degree sun, 1.0 at 30, 0.35 at 10, 0.18 at 5.
+//
+// So the map is AT PARITY at a 30-degree sun, at worst about 1.75x softer than physical when the sun is
+// high, and steadily sharper than it needs to be as the sun drops. The low-sun end looks alarming in
+// world coordinates -- a texel covers 16/sin = 184 blocks of ground at 5 degrees -- but the shadow is
+// stretched by exactly the same 1/sin over the same ground, which is the property light space has and
+// world XZ does not. There is no cascade to add here and D176 ruled them out for the separate reason
+// that a cloud shadow has no near detail to gain from one.
+//
+// The one direction this is genuinely lossy is a HIGH sun, where the fixed texel blurs a 9-block
+// penumbra to 16. That is a decision to revisit with a smaller texel, not a bug to fix here.
+
+public static const int CLOUD_SHADOW_DIM = 512;
+// 16 blocks a texel, 8192 blocks across. Not a resolution chosen for looks: the sun's 0.6-degree angular
+// radius already makes a real cloud shadow's penumbra about 16 blocks wide at a 30-degree sun, so a
+// finer map would be resolving a sharpness the physics does not contain. It is also why the bake takes
+// ONE sun sample -- the texel is already softer than the penumbra.
+public static const float CLOUD_SHADOW_BLOCKS_PER_TEXEL = 16.0;
+public static const float CLOUD_SHADOW_EXTENT = CLOUD_SHADOW_BLOCKS_PER_TEXEL * float(CLOUD_SHADOW_DIM);
+// Below this the sun is within about a degree of the horizon, where its own transmittance has taken the
+// light to nothing and the crossing this map would integrate is fifty deck thicknesses long. The map
+// reports clear sky there rather than spending the march to prove it.
+public static const float CLOUD_SHADOW_MIN_SUN_Y = 0.02;
+
+/** Bit 30 (Rt.Clouds.ENABLED), which RtComposite sets only when the preset AND the toggle allow it. */
+public bool cloudsOn(WorldPush wp) {
+    return (wp.flags & (1u << 30u)) != 0u;
+}
+
+public struct CloudShadowFrame {
+    public float3 right;      // horizontal
+    public float3 up;         // carries all of the sun's tilt
+    public float3 lightDir;   // toward the sun
+    public float2 origin;     // light-space coordinates of texel (0,0)'s corner
+    public bool   valid;      // false when the sun is at or below the horizon
+};
+
+/**
+ * @param lightDir toward the sun, normalised
+ * @param camera   the rebased position the map centres on
+ */
+public CloudShadowFrame cloudShadowFrame(float3 lightDir, float3 camera) {
+    CloudShadowFrame f;
+    f.lightDir = lightDir;
+    // A HORIZONTAL first axis, so u runs along the ground and v carries the whole tilt. The alternative
+    // basis is not wrong, only harder to reason about; the fallback branch matters solely for a sun
+    // exactly overhead, where the cross product vanishes and any horizontal axis is as good as another.
+    float3 axis = abs(lightDir.y) > 0.999 ? float3(1.0, 0.0, 0.0) : float3(0.0, 1.0, 0.0);
+    f.right = normalize(cross(lightDir, axis));
+    f.up = cross(f.right, lightDir);
+    // SNAPPED TO WHOLE TEXELS, for R22's reason: a grid that slides continuously resamples the density
+    // field at a different phase every frame, and a field this noisy at texel scale shows that as
+    // crawling rather than as motion. Snapping removes the camera's contribution to the slide. It does
+    // NOT remove the sun's -- the basis itself rotates as the sun moves, so the far edge of the map
+    // still travels about a texel a second -- and that is accepted rather than overlooked, because the
+    // shadows themselves are crossing the ground nine blocks a second at the same time.
+    float2 centre = float2(dot(camera, f.right), dot(camera, f.up));
+    f.origin = floor(centre / CLOUD_SHADOW_BLOCKS_PER_TEXEL) * CLOUD_SHADOW_BLOCKS_PER_TEXEL
+            - 0.5 * CLOUD_SHADOW_EXTENT;
+    f.valid = lightDir.y > CLOUD_SHADOW_MIN_SUN_Y;
+    return f;
+}
+
+/** Where a rebased world position falls on the map. Outside [0,1]^2 means the map does not cover it. */
+public float2 cloudShadowUv(CloudShadowFrame f, float3 p) {
+    float2 ls = float2(dot(p, f.right), dot(p, f.up));
+    return (ls - f.origin) / CLOUD_SHADOW_EXTENT;
+}
+
+/**
+ * The point texel (x,y) integrates through, on the plane through the rebased origin.
+ *
+ * <p>WHICH plane does not matter and that is the property being relied on: every point on a given light
+ * ray projects to the same texel, so any plane transverse to the light names the same set of rays. The
+ * crossing of the deck is then found from altitude in the bake, not from this point's position.
+ */
+public float3 cloudShadowTexelPoint(CloudShadowFrame f, uint2 texel) {
+    float2 ls = f.origin + (float2(texel) + 0.5) * CLOUD_SHADOW_BLOCKS_PER_TEXEL;
+    return f.right * ls.x + f.up * ls.y;
 }

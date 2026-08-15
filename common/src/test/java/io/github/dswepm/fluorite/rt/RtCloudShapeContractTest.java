@@ -26,12 +26,16 @@ final class RtCloudShapeContractTest {
 
         assertTrue(fields.contains("cloudEvolution"), fields.toString());
         assertTrue(common.contains("public float4   cloudEvolution;"));
-        assertTrue(cloud.contains("l.detailOffset = worldPush.cloudEvolution.xy;"));
+        // The layer is assembled in the bindings-free module now, from a WorldPush passed as an
+        // argument, so that the shadow bake builds its deck from the SAME lanes the sky is drawn from.
+        assertTrue(density.contains("l.detailOffset = wp.cloudEvolution.xy;"));
         assertTrue(composite.contains("cloudEvolution(environment)"));
         // z carried the retired upper sheet's gain. The LANE stays -- removing it would move every field
         // after it in a push buffer whose Java record is positional -- but nothing may read it again, or
-        // it becomes a lane that is zero on the CPU and meaningful in the shader.
+        // it becomes a lane that is zero on the CPU and meaningful in the shader. Both files, because
+        // the read would now most naturally be written in the module and spell the struct differently.
         assertFalse(cloud.contains("worldPush.cloudEvolution.z"));
+        assertFalse(density.contains("wp.cloudEvolution.z"));
     }
 
     @Test
@@ -130,10 +134,15 @@ final class RtCloudShapeContractTest {
         // import. Two copies would agree the day they were written and diverge the first time one was
         // edited alone, and "the shadow is not under its cloud" is not attributable from a screenshot.
         assertFalse(density.contains("[[vk::binding"));
-        // Its banner says the words, so this has to look for USE: a member access or a
-        // parameter, not the string.
+        // NO DESCRIPTOR SET, which is not the same rule as no data, and the distinction is what makes the
+        // module usable. `worldPush` is a GLOBAL behind world_core's set, so a compute pass importing it
+        // would have to declare a raygen layout it never uses; the WorldPush struct passed as an argument
+        // carries no bindings at all, which is how lowCloudLayer gives both callers one deck. The banner
+        // says the word, so this looks for the global's USE -- a member access, not the string.
         assertFalse(density.contains("worldPush."));
+        assertTrue(density.contains("public CloudLayer lowCloudLayer(WorldPush wp)"));
         assertTrue(cloud.contains("import cloud_density;"));
+        assertTrue(cloud.contains("CloudLayer lowLayer() { return lowCloudLayer(worldPush); }"));
         assertTrue(config.contains("\"volumetrics.cloud-warp-amount\""));
         assertTrue(config.contains("\"volumetrics.cloud-warp-scale\""));
         // The rate is its OWN setting, not a fraction of the wind. As a fraction it was proportional to

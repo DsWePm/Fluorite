@@ -122,6 +122,7 @@ public final class RtSky {
     private final Bake fogNoiseBake;
     private final Bake cloudWeatherBake;
     private final Bake cloudWarpBake;
+    private final Bake cloudShadowBake;
     private final RtOverlayPipelines.AccelStructureSet froxelTlas;
     private final RtOverlayPipelines.AccelStructureSet visibilityTlas;
     private final RtOverlayPipelines.AccelStructureSet rainExposureTlas;
@@ -174,6 +175,9 @@ public final class RtSky {
     private RtImage cloudNoise;
     private RtImage cloudWeather;
     private RtImage cloudWarp;
+    private RtImage cloudShadow;
+    /** False until the high-cloud patch array has been bound; the bake reads it, so it must wait. */
+    private boolean cloudShadowReady;
     private RtImage fogNoise;
     // The interactive water simulation's height field (M12), in metres of displacement. Three buffers
     // rotate through prev/cur/next: leapfrog needs both previous states, so writing next over prev in
@@ -223,6 +227,18 @@ public final class RtSky {
     /** Must equal CLOUD_WARP_DIM in cloud_warp.comp.slang, and numthreads there. */
     private static final int CLOUD_WARP_DIM = 32;
     private static final int CLOUD_WARP_GROUP = 4;
+    /**
+     * D176's cloud shadow map. Must equal CLOUD_SHADOW_DIM in cloud_density.slang -- the shader owns
+     * that constant because the CONSUMERS need it too, and a map baked at one size and read at another
+     * would put every cloud shadow somewhere other than under its cloud.
+     *
+     * <p>512 texels over 8192 blocks is 16 blocks a texel, which is the width of a real cloud shadow's
+     * penumbra at a 30-degree sun; R8 makes it 256 KB.
+     */
+    private static final int CLOUD_SHADOW_DIM = 512;
+    private static final int CLOUD_SHADOW_GROUP = 8;
+    /** One device address: the same WorldPush the shading reads. See the bake's header. */
+    private static final int CLOUD_SHADOW_PUSH_BYTES = 8;
     private static final int CLOUD_NOISE_GROUP = 4;
     /** Must match FOG_NOISE_DIM in fog_noise.comp.slang. */
     private static final int FOG_NOISE_DIM = 128;
@@ -236,7 +252,7 @@ public final class RtSky {
                   Bake rainExposureBake, Bake[] rainHistoryBakes,
                   RtOverlayPipelines.AccelStructureSet rainExposureTlas,
                   Bake cloudNoiseBake, Bake fogNoiseBake, Bake cloudWeatherBake, Bake cloudWarpBake,
-                  long lutSampler, long noiseSampler,
+                  Bake cloudShadowBake, long lutSampler, long noiseSampler,
                   long rainHistorySampler) {
         this.ctx = ctx;
         this.transmittanceBake = transmittanceBake;
@@ -252,6 +268,7 @@ public final class RtSky {
         this.fogNoiseBake = fogNoiseBake;
         this.cloudWeatherBake = cloudWeatherBake;
         this.cloudWarpBake = cloudWarpBake;
+        this.cloudShadowBake = cloudShadowBake;
         this.visibilityTlas = visibilityTlas;
         this.rainExposureTlas = rainExposureTlas;
         this.lutSampler = lutSampler;
@@ -353,6 +370,17 @@ public final class RtSky {
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
             Bake cloudWarpBake = createBake(ctx, stack, "cloud_warp.comp.spv", "cloud warp",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, 0);
+            // The cloud shadow map, and the one bake on this chain that is NOT once-ever: what it
+            // integrates moves with the sun. Four fields in, one map out, in the order
+            // cloud_shadow.comp.slang binds them -- noise, weather, warp, high-cloud patches, output.
+            // The patch array is not this object's to own (RtComposite loads it from a KTX2 asset), so
+            // its descriptor arrives later through setHighCloudPatches and the dispatch waits for it.
+            Bake cloudShadowBake = createBake(ctx, stack, "cloud_shadow.comp.spv", "cloud shadow",
+                    new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                              VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, CLOUD_SHADOW_PUSH_BYTES);
 
             // One binding: the simulated height. Everything else the displacement needs arrives as a
             // device address in the push constants, because the buffers it writes belong to a terrain
@@ -407,7 +435,7 @@ public final class RtSky {
             RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
                     mediumSkyReduceBake, froxelBake, froxelTlas,
                     visibilityBake, visibilityTlas, rainExposureBake, rainHistoryBakes, rainExposureTlas,
-                    cloudNoiseBake, fogNoiseBake, cloudWeatherBake, cloudWarpBake,
+                    cloudNoiseBake, fogNoiseBake, cloudWeatherBake, cloudWarpBake, cloudShadowBake,
                     sampler, noiseSampler, rainHistorySampler);
             sky.waterSimBakes = waterSimBakes;
             sky.waterDeformBake = waterDeformBake;
@@ -471,6 +499,27 @@ public final class RtSky {
             sky.cloudWarp = ctx.createStorageImage3D(CLOUD_WARP_DIM, CLOUD_WARP_DIM, CLOUD_WARP_DIM,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "cloud warp volume");
             writeStorageImage(vk, stack, cloudWarpBake.descriptorSet(), 0, sky.cloudWarp.view);
+            // R8: this is a transmittance, so it is bounded in [0,1] and read through a filter. 512^2
+            // is 256 KB. The three fields it marches are bound here once -- they never change identity
+            // -- and read through the tiling noise sampler, which is the same sampler the shading uses
+            // for them and therefore the same filtering.
+            sky.cloudShadow = ctx.createStorageImage(CLOUD_SHADOW_DIM, CLOUD_SHADOW_DIM,
+                    VK10.VK_FORMAT_R8_UNORM, "cloud shadow map");
+            // CLEARED TO ONE, not to the zero every other storage image here starts at, because this
+            // image's zero is not "empty" -- it is FULL SHADOW. Every other bake on this chain writes
+            // its whole output before anything samples it; this one waits for a descriptor that arrives
+            // from another object, and if that texture ever failed to load the map would stay at its
+            // initial value forever. Zero would then black out the world under a clear sky, which is a
+            // spectacular symptom for a missing cirrus texture and would be chased anywhere but here.
+            // One is clear sky, which is what the absence of a cloud shadow means.
+            clearImageToWhite(ctx, sky.cloudShadow);
+            writeSampledImage(vk, stack, cloudShadowBake.descriptorSet(), 0, sky.cloudNoise.view,
+                    noiseSampler);
+            writeSampledImage(vk, stack, cloudShadowBake.descriptorSet(), 1, sky.cloudWeather.view,
+                    noiseSampler);
+            writeSampledImage(vk, stack, cloudShadowBake.descriptorSet(), 2, sky.cloudWarp.view,
+                    noiseSampler);
+            writeStorageImage(vk, stack, cloudShadowBake.descriptorSet(), 4, sky.cloudShadow.view);
 
             // R16F: a displacement in metres, signed, and a ripple's amplitude spans four orders of
             // magnitude between a raindrop and a boat wake -- which is what a float format buys over the
@@ -746,6 +795,27 @@ public final class RtSky {
     /** The domain-warp vector field, curl noise encoded signed into RGB. */
     public long cloudWarpView() {
         return cloudWarp == null ? 0L : cloudWarp.view;
+    }
+
+    public long cloudShadowView() {
+        return cloudShadow == null ? 0L : cloudShadow.view;
+    }
+
+    /**
+     * Hand the shadow bake the high-cloud patch array, which RtComposite owns.
+     *
+     * <p>The bake cannot run until this arrives: it integrates the high sheet as well as the low deck,
+     * and an unwritten combined-image descriptor is not a zero, it is undefined behaviour. Idempotent,
+     * because the caller rebinds on every resource reload.
+     */
+    public void setHighCloudPatches(long imageView, long sampler) {
+        if (imageView == 0L || sampler == 0L) {
+            return;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            writeSampledImage(ctx.vk(), stack, cloudShadowBake.descriptorSet(), 3, imageView, sampler);
+        }
+        cloudShadowReady = true;
     }
 
     /** The weather map: R where cloud systems stand, G which family they are. */
@@ -1108,6 +1178,42 @@ public final class RtSky {
     }
 
     /**
+     * Record D176's cloud shadow map. EVERY FRAME, like the sky view above and unlike everything on the
+     * once-ever chain, and for the same kind of reason: the sun's direction enters this integral where
+     * the map is baked rather than where it is sampled.
+     *
+     * <p>It is worth being precise about which motion forces the rate, because "clouds move slowly" is
+     * the intuition that would argue for baking it rarely. Cloud advection alone would take about
+     * sixteen seconds to carry a shadow across one 16-block texel. The SUN carries it across in 1.7 --
+     * a shadow crosses the ground at roughly nine blocks a second — so the map is stale within two
+     * frames of the sun moving, not within two seconds. Baking it every frame costs about a hundredth
+     * of what the primary trace already spends and removes the entire question of how old the texture
+     * is; the bake is deterministic and unjittered, so there is nothing a temporal filter would add.
+     *
+     * <p>Returns false when the map was not written, which is not an error: the high-cloud patch array
+     * is loaded from a resource pack and may not have been bound yet. The caller keeps whatever it had.
+     */
+    public boolean recordCloudShadowBake(VkCommandBuffer cmd, long worldPushAddr) {
+        if (!cloudShadowReady || cloudShadowBake == null || worldPushAddr == 0L) {
+            return false;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "cloud shadow bake")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, cloudShadowBake.pipeline());
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    cloudShadowBake.pipelineLayout(), 0, stack.longs(cloudShadowBake.descriptorSet()),
+                    null);
+            ByteBuffer push = stack.malloc(CLOUD_SHADOW_PUSH_BYTES);
+            push.putLong(0, worldPushAddr);
+            VK10.vkCmdPushConstants(cmd, cloudShadowBake.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+            int groups = (CLOUD_SHADOW_DIM + CLOUD_SHADOW_GROUP - 1) / CLOUD_SHADOW_GROUP;
+            VK10.vkCmdDispatch(cmd, groups, groups, 1);
+        }
+        return true;
+    }
+
+    /**
      * Record the bakes if they have not been recorded yet. Returns true when work was added to
      * {@code cmd}, so the caller knows a barrier is needed before anything samples the tables.
      *
@@ -1356,6 +1462,10 @@ public final class RtSky {
             cloudWarp.destroy();
             cloudWarp = null;
         }
+        if (cloudShadow != null) {
+            cloudShadow.destroy();
+            cloudShadow = null;
+        }
         if (fogNoise != null) {
             fogNoise.destroy();
             fogNoise = null;
@@ -1408,6 +1518,7 @@ public final class RtSky {
         cloudNoiseBake.destroy(vk);
         cloudWeatherBake.destroy(vk);
         cloudWarpBake.destroy(vk);
+        cloudShadowBake.destroy(vk);
         fogNoiseBake.destroy(vk);
         froxelTlas.destroy(vk);
         froxelBake.destroy(vk);
@@ -1570,6 +1681,19 @@ public final class RtSky {
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE, pipeline, label + " pipeline");
         VK10.vkDestroyShaderModule(vk, module, null);
         return new Bake(dsl, pool, set, pipelineLayout, pipeline);
+    }
+
+    /** Fill an image with 1.0 on every channel. See the cloud shadow map's creation for why it needs it. */
+    private static void clearImageToWhite(RtContext ctx, RtImage image) {
+        ctx.submitSync(cmd -> {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkClearColorValue clear = VkClearColorValue.calloc(stack);
+                clear.float32(stack.floats(1f, 1f, 1f, 1f));
+                VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+                range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
+                VK10.vkCmdClearColorImage(cmd, image.image, VK10.VK_IMAGE_LAYOUT_GENERAL, clear, range);
+            }
+        });
     }
 
     private static void writeStorageImage(VkDevice vk, MemoryStack stack, long set, int binding, long view) {
