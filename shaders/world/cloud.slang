@@ -31,6 +31,7 @@ import atmosphere_lut;  // mediumSkyRadiance lives in WorldPush, read via world_
 import math;
 import world_common;
 import world_core;
+import cloud_field;   // CLOUD_NOISE_DIM: the LOD below is in texels of that volume
 
 [[vk::binding(17, 0)]] Sampler3D cloudNoise;
 [[vk::binding(26, 0)]] Sampler2DArray highCloudPatchTau;
@@ -41,6 +42,12 @@ import world_core;
 [[vk::binding(27, 0)]] Sampler2D cloudWeather;
 
 static const float HIGH_CLOUD_PATCH_TAU_RANGE = 4.0;
+
+// The march's step bounds, in blocks. The step is now chosen from how far THIS RAY crosses the deck
+// rather than from how far the deck is, so a grazing crossing is spread over the budget instead of being
+// swallowed by a handful of enormous strides. See marchLayer.
+static const float CLOUD_STEP_MIN = 24.0;
+static const float CLOUD_STEP_MAX = 400.0;
 
 // How far along a ray clouds are still worth sampling. Beyond this the shell is below the horizon for any
 // upward ray and the remaining crossing is grazing, where the march would spend its whole budget on a
@@ -420,21 +427,49 @@ float lowCloudPuffWeight(float type) {
  * continuously. This function belongs only to the low volumetric deck; high clouds use the two
  * relightable optical-depth textures below.
  */
-float evolvingCloudShape(CloudLayer layer, float3 pw, float type) {
+float evolvingCloudShape(CloudLayer layer, float3 pw, float type, float footprint) {
     float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);
-    float macro = cloudNoise.SampleLevel(pw / layer.baseScale, 0.0).r;
+    float macro = cloudNoise.SampleLevel(pw / layer.baseScale,
+                                        cloudNoiseLod(footprint, layer.baseScale)).r;
     float puffWeight = lowCloudPuffWeight(type);
     if (puffWeight <= 0.0) {
         return macro;
     }
-    float puffs = cloudNoise.SampleLevel(detailPw / (layer.baseScale * 0.36), 0.0).r;
+    float puffs = cloudNoise.SampleLevel(detailPw / (layer.baseScale * 0.36),
+                                        cloudNoiseLod(footprint, layer.baseScale * 0.36)).r;
     // Zero-mean displacement keeps coverage stable while moving the iso-density boundary into many
     // small rounded protrusions and hollows. The bound (0.34) is below the macro field's full range, so
     // the weather map remains the owner of where a cloud system exists.
     return saturate(macro + (puffs - 0.5) * (0.34 * puffWeight));
 }
 
-float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
+/**
+ * Which mip of the noise a sample of the given footprint should read.
+ *
+ * <p>PREFILTERING, which is the half of the distant-cloud fix that adding steps cannot do. A step is a
+ * segment of the ray, and point-sampling a field whose features are finer than that segment is plain
+ * aliasing -- the sample says "cloud" or "no cloud" with nothing in between, and neighbouring samples
+ * disagree violently. Reading a mip whose texels are the size of the step replaces that point sample with
+ * the field's average over it, which is the quantity the integral actually wants.
+ *
+ * <p>The high-cloud patches have selected a mip by ray distance since D163; this is the low deck finally
+ * doing the same thing. It is also why the step bound above matters: prefiltering to a step LARGER than a
+ * cloud averages whole clouds away, so the two have to be fixed together or neither works.
+ *
+ * <p>A NAMED APPROXIMATION. The correct prefilter for a medium is not a linear average of density --
+ * transmittance is exp(-tau), and the mean of an exponential is not the exponential of the mean, which is
+ * why the high-cloud KTX2 mips average exp(-tau) and convert back. That cannot be done here: this volume
+ * is a shape field that only becomes a density after coverage, the height profile and erosion have been
+ * applied, so there is no optical depth at bake time to preserve. A linear mip chain is what the technique
+ * uses in practice and it is recorded as an approximation rather than presented as the exact thing.
+ */
+float cloudNoiseLod(float footprint, float scale) {
+    // texels of this volume, at the world scale this particular lookup uses
+    float blocksPerTexel = max(scale, 1.0) / float(CLOUD_NOISE_DIM);
+    return max(0.0, log2(max(footprint / blocksPerTexel, 1.0)));
+}
+
+float cloudDensity(CloudLayer layer, float3 p, bool cheap, float footprint) {
     float3 pw = worldIn(layer, p);
     if (pw.y < layer.bottom || pw.y > layer.bottom + layer.thickness) {
         return 0.0; // outside the deck: no type can put cloud here
@@ -448,7 +483,7 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
     if (profile <= 0.0) {
         return 0.0;
     }
-    float shape = evolvingCloudShape(layer, pw, type);
+    float shape = evolvingCloudShape(layer, pw, type, footprint);
     // Coverage raises the whole field rather than masking it, so a cloud grows from its centre outward
     // instead of appearing with hard edges where the mask crosses a threshold.
     float density = saturate(shape + coverage - 1.0) * profile;
@@ -461,7 +496,8 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
         return density * gain;
     }
     float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);
-    float erosion = cloudNoise.SampleLevel(detailPw / layer.detailScale, 0.0).g;
+    float erosion = cloudNoise.SampleLevel(detailPw / layer.detailScale,
+                                          cloudNoiseLod(footprint, layer.detailScale)).g;
     // Erosion only bites where the cloud is already thin, so the body keeps its shape while the edges
     // break up. Subtracting everywhere would hollow the cloud out.
     return saturate(density - erosion * 0.35 * (1.0 - density)) * gain;
@@ -520,7 +556,7 @@ float sunOpticalDepth(CloudLayer layer, float3 p, float3 lightDir, int steps, in
         // Sample at the step's midpoint, offset by the jitter — midpoint because a one-sample estimate of
         // an interval's average is least wrong there.
         float3 q = p + lightDir * (t + step * (0.35 + 0.3 * jitter));
-        tau += cloudDensity(layer, q, true) * step;
+        tau += cloudDensity(layer, q, true, step) * step;
         t += step;
         step *= 2.0;
     }
@@ -651,8 +687,25 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     // of discrete layers.
     //
     // Costs nothing: same schedule, same step count, different starting phase.
-    float firstStep = max(24.0, tEnter * 0.125);
-    float t = tEnter + rndf(marchSeed) * min(firstStep, tExit - tEnter);
+    // THE STEP COMES FROM THIS RAY'S CROSSING, not from how far away the deck is.
+    //
+    // It used to be max(24, t * 0.125) -- a cone-footprint heuristic, and a sound one about how finely
+    // the field is worth SAMPLING LATERALLY at that distance. It was being used as the length of a step
+    // THROUGH the medium, which is a different question with a different answer: how long a step may be
+    // is set by how much optical depth it accumulates, not by how big a pixel is. At twenty kilometres it
+    // gave a 2500-block step, tau around 24, and 1 - exp(-tau) = 1.0000 -- an estimator with no gradient
+    // left in it, which is why distant cloud arrived as a stack of opaque slabs.
+    //
+    // Dividing the crossing by the budget spends the steps where the ray actually is inside the deck. A
+    // grazing crossing of fourteen kilometres becomes 152-block steps at tau 1.5 instead of nine strides
+    // at tau 12, and one step spans a fifth of a cloud rather than one and a half of them.
+    //
+    // The lateral half of the old heuristic did not go away, it moved to where it belongs: cloudNoiseLod
+    // now selects a mip by this same step. Filtering and stepping are two questions and this file was
+    // answering both with one number.
+    float crossing = tExit - tEnter;
+    float stepBase = clamp(crossing / float(max(budget.maxSteps, 1)), CLOUD_STEP_MIN, CLOUD_STEP_MAX);
+    float t = tEnter + rndf(marchSeed) * min(stepBase, crossing);
 
     float transmittance = 1.0;
     float3 gathered = float3(0.0, 0.0, 0.0);
@@ -664,9 +717,9 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     for (int i = 0; i < budget.maxSteps && t < tExit; ++i) {
         // The closed-form source integration is exact only for the interval it is actually handed.
         // Charge only the interval actually traversed; this also keeps the final low-cloud step unbiased.
-        float step = min(max(24.0, t * 0.125), tExit - t);
+        float step = min(stepBase, tExit - t);
         float3 p = ro + rd * t;
-        float density = cloudDensity(layer, p, true);
+        float density = cloudDensity(layer, p, true, step);
         if (density <= 0.0) {
             // Nothing here. Step long, and keep stepping long while the emptiness holds.
             emptySteps++;
@@ -690,7 +743,7 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
         emptySteps = 0;
         lastSkip = 0.0;
         if (budget.erosion) {
-            density = cloudDensity(layer, p, false);
+            density = cloudDensity(layer, p, false, step);
         }
         if (density > 0.0) {
             float sigmaT = density * layer.extinction;
@@ -968,7 +1021,7 @@ public float3 cloudDebugProbe(float3 ro, float3 rd) {
             maxProfile = max(maxProfile, cloudHeightProfile(low, pw.y, type));
             maxShape = max(maxShape, cloudNoise.SampleLevel(pw / low.baseScale, 0.0).r);
         }
-        float d = cloudDensity(low, p, true);
+        float d = cloudDensity(low, p, true, 0.0);
         maxDensity = max(maxDensity, d);
         tau += d * low.extinction * step;
     }

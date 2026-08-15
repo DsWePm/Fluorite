@@ -38,10 +38,14 @@ final class RtCloudShapeContractTest {
         String cloud = source("shaders/world/cloud.slang");
 
         assertTrue(cloud.contains("float lowCloudPuffWeight(float type)"));
-        assertTrue(cloud.contains("float evolvingCloudShape(CloudLayer layer, float3 pw, float type)"));
+        // The footprint rides along because the mip is chosen from the march step -- see cloudNoiseLod.
+        assertTrue(cloud.contains(
+                "float evolvingCloudShape(CloudLayer layer, float3 pw, float type, float footprint)"));
         assertTrue(cloud.contains("float profile = cloudHeightProfile(layer, pw.y, type);"));
         assertTrue(cloud.contains("float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);"));
-        assertTrue(cloud.contains("float erosion = cloudNoise.SampleLevel(detailPw / layer.detailScale, 0.0).g;"));
+        // Same fetch, now prefiltered to the march step rather than always reading level 0.
+        assertTrue(cloud.contains("float erosion = cloudNoise.SampleLevel(detailPw / layer.detailScale,"));
+        assertTrue(cloud.contains("cloudNoiseLod(footprint, layer.detailScale)).g;"));
     }
 
     @Test

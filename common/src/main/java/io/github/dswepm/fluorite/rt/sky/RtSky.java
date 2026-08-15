@@ -4,6 +4,7 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
+import org.lwjgl.vulkan.VkImageBlit;
 import org.lwjgl.vulkan.VkImageMemoryBarrier;
 import org.lwjgl.vulkan.VkImageSubresourceRange;
 import org.lwjgl.vulkan.VkClearColorValue;
@@ -205,8 +206,16 @@ public final class RtSky {
     private RtOverlayPipelines.AccelStructureSet waterObstacleTlas;
     private int waterPhase;
     private boolean waterObstacleReady;
-    /** Must equal CLOUD_NOISE_DIM in cloud_noise.comp.slang, and numthreads there. */
+    /** Must equal CLOUD_NOISE_DIM in cloud_field.slang, and numthreads in the bake. */
     private static final int CLOUD_NOISE_DIM = 128;
+    /**
+     * Full chain, 128 down to 1.
+     *
+     * <p>The march picks a level from its own step length, so the field is prefiltered to whatever the
+     * step is rather than point-sampled at a scale far below it. Costs one eighth of the base level and
+     * then a sixty-fourth and so on -- 8/7 of 8 MB, about 1.1 MB.
+     */
+    private static final int CLOUD_NOISE_LEVELS = 8;
     /** Must equal CLOUD_WEATHER_DIM in cloud_weather.comp.slang. */
     private static final int CLOUD_WEATHER_DIM = 128;
     private static final int CLOUD_NOISE_GROUP = 4;
@@ -433,8 +442,10 @@ public final class RtSky {
             // 128^3 RGBA8, 8 MB. Eight bits per channel because both channels are a density in [0,1]
             // read through a filter -- the octaves are summed at bake time, so nothing here needs range.
             sky.cloudNoise = ctx.createStorageImage3D(CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_DIM,
-                    VK10.VK_FORMAT_R8G8B8A8_UNORM, "cloud noise volume");
-            writeStorageImage(vk, stack, cloudNoiseBake.descriptorSet(), 0, sky.cloudNoise.view);
+                    VK10.VK_FORMAT_R8G8B8A8_UNORM, "cloud noise volume", CLOUD_NOISE_LEVELS);
+            // Mip 0 only: a storage view may name exactly one level. The chain below it is filled by blit
+            // after the bake, and the shading reads the full view.
+            writeStorageImage(vk, stack, cloudNoiseBake.descriptorSet(), 0, sky.cloudNoise.storageView);
             // R broad variation, G detail, both signed-zero-mean after decode. One RGBA8 volume rather
             // than the old plan's 128^3 + 32^3 pair: one filtered fetch carries both frequencies.
             sky.fogNoise = ctx.createStorageImage3D(FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_DIM,
@@ -1108,6 +1119,7 @@ public final class RtSky {
             // between them because neither reads what another bake writes.
             dispatch3D(cmd, stack, cloudNoiseBake,
                     CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_DIM, CLOUD_NOISE_GROUP);
+            generateMips3D(cmd, stack, cloudNoise, CLOUD_NOISE_DIM);
             dispatch3D(cmd, stack, fogNoiseBake,
                     FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_DIM, FOG_NOISE_GROUP);
             // Reads nothing any other bake writes, so it joins them with no barrier.
@@ -1378,6 +1390,71 @@ public final class RtSky {
         skyViewBake.destroy(vk);
         multiScatterBake.destroy(vk);
         transmittanceBake.destroy(vk);
+    }
+
+    /**
+     * Fill a 3D image's mip chain by successive halving blits.
+     *
+     * <p>A LINEAR AVERAGE, and that is a named approximation rather than the exact thing. The correct
+     * prefilter for a participating medium averages transmittance, not density -- exp() does not commute
+     * with a mean, which is why the high-cloud KTX2 mips average exp(-tau) and convert back. It cannot be
+     * done here: this volume holds a SHAPE field that only becomes a density after coverage, the height
+     * profile and erosion have been applied, so there is no optical depth at this point to preserve. The
+     * bias is toward slightly thinner distant cloud, and it is the filter the technique uses in practice.
+     *
+     * <p>Blit rather than a compute downsample because the image already carries TRANSFER_SRC/DST for its
+     * own creation-time clear, so this needs no new usage bit, no second pipeline and no descriptor.
+     */
+    private static void generateMips3D(VkCommandBuffer cmd, MemoryStack stack, RtImage image, int dim) {
+        if (image == null || image.levels <= 1) {
+            return;
+        }
+        VkImageMemoryBarrier.Buffer barrier = VkImageMemoryBarrier.calloc(1, stack);
+        int size = dim;
+        for (int level = 1; level < image.levels; level++) {
+            // The level just written has to finish before it is read as this one's source. Both stay in
+            // GENERAL: they are read and written by compute and sampled by the trace, and transitioning
+            // per level would buy nothing on a path that runs once at startup.
+            barrier.get(0).sType$Default()
+                    .oldLayout(VK10.VK_IMAGE_LAYOUT_GENERAL).newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                    .srcAccessMask(VK10.VK_ACCESS_SHADER_WRITE_BIT | VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                    .dstAccessMask(VK10.VK_ACCESS_TRANSFER_READ_BIT)
+                    .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                    .image(image.image);
+            barrier.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                    .baseMipLevel(level - 1).levelCount(1).baseArrayLayer(0).layerCount(1);
+            VK10.vkCmdPipelineBarrier(cmd,
+                    VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, barrier);
+
+            int next = Math.max(1, size / 2);
+            VkImageBlit.Buffer blit = VkImageBlit.calloc(1, stack);
+            blit.get(0).srcSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                    .mipLevel(level - 1).baseArrayLayer(0).layerCount(1);
+            blit.get(0).dstSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                    .mipLevel(level).baseArrayLayer(0).layerCount(1);
+            blit.get(0).srcOffsets(1).set(size, size, size);
+            blit.get(0).dstOffsets(1).set(next, next, next);
+            VK10.vkCmdBlitImage(cmd,
+                    image.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                    image.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                    blit, VK10.VK_FILTER_LINEAR);
+            size = next;
+        }
+        // Everything the trace samples must be visible to it.
+        VkImageMemoryBarrier.Buffer done = VkImageMemoryBarrier.calloc(1, stack);
+        done.get(0).sType$Default()
+                .oldLayout(VK10.VK_IMAGE_LAYOUT_GENERAL).newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                .srcAccessMask(VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT)
+                .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                .image(image.image);
+        done.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                .baseMipLevel(0).levelCount(image.levels).baseArrayLayer(0).layerCount(1);
+        VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, null, null, done);
     }
 
     private static void dispatch(VkCommandBuffer cmd, MemoryStack stack, Bake bake, int w, int h) {

@@ -379,15 +379,33 @@ public final class RtContext {
      * treats a 2D view of a 3D image as a different thing entirely.
      */
     public RtImage createStorageImage3D(int width, int height, int depth, int format, String label) {
+        return createStorageImage3D(width, height, depth, format, label, 1);
+    }
+
+    /**
+     * A 3D storage image with a mip chain, for a field that is SAMPLED AT VARYING FOOTPRINTS.
+     *
+     * <p>Two views, because Vulkan will not let one serve both jobs: a storage view must name exactly one
+     * level and a sampled view wants all of them. The bake writes through the mip-0 view; the shading
+     * reads through the full one and chooses a level.
+     *
+     * <p>The upper levels are not filled here -- see RtSky, which blits the chain down after the bake has
+     * written level 0. An image whose upper levels stayed at the clear value would read as clouds
+     * dissolving with distance rather than as an error, so that step is not optional.
+     */
+    public RtImage createStorageImage3D(int width, int height, int depth, int format, String label,
+                                        int mipLevels) {
         int usage = VK10.VK_IMAGE_USAGE_STORAGE_BIT | VK10.VK_IMAGE_USAGE_SAMPLED_BIT
                 | VK10.VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK10.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        final int levels = Math.max(1, mipLevels);
         long image;
         long allocation;
         long view;
+        long storageView;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
                     .imageType(VK10.VK_IMAGE_TYPE_3D).format(format)
-                    .mipLevels(1).arrayLayers(1).samples(VK10.VK_SAMPLE_COUNT_1_BIT)
+                    .mipLevels(levels).arrayLayers(1).samples(VK10.VK_SAMPLE_COUNT_1_BIT)
                     .tiling(VK10.VK_IMAGE_TILING_OPTIMAL).usage(usage)
                     .sharingMode(VK10.VK_SHARING_MODE_EXCLUSIVE)
                     .initialLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED);
@@ -402,13 +420,23 @@ public final class RtContext {
 
             VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
                     .image(image).viewType(VK10.VK_IMAGE_VIEW_TYPE_3D).format(format);
-            vci.subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
+            vci.subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                    .levelCount(levels).layerCount(1);
             LongBuffer pView = stack.mallocLong(1);
             check(VK10.vkCreateImageView(vk, vci, null, pView), "vkCreateImageView(3D)");
             view = pView.get(0);
             RtDebugLabels.nameImageView(this, view, label + " view");
+            if (levels > 1) {
+                vci.subresourceRange().levelCount(1);
+                check(VK10.vkCreateImageView(vk, vci, null, pView), "vkCreateImageView(3D storage)");
+                storageView = pView.get(0);
+                RtDebugLabels.nameImageView(this, storageView, label + " storage view");
+            } else {
+                storageView = view;
+            }
         }
         long imageFinal = image;
+        final int levelsFinal = levels;
         submitSync(cmd -> {
             try (MemoryStack stack = MemoryStack.stackPush();
                  RtDebugLabels.Scope ignored = RtDebugLabels.scope(this, cmd, "init " + label)) {
@@ -418,16 +446,18 @@ public final class RtContext {
                         .srcAccessMask(0).dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_SHADER_WRITE_BIT)
                         .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
                         .image(imageFinal);
-                b.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
+                b.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                        .levelCount(levelsFinal).layerCount(1);
                 VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                         VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, null, null, b);
                 VkClearColorValue clear = VkClearColorValue.calloc(stack); // transparent black, as for 2D
                 VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
-                range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
+                range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                        .levelCount(levelsFinal).layerCount(1);
                 VK10.vkCmdClearColorImage(cmd, imageFinal, VK10.VK_IMAGE_LAYOUT_GENERAL, clear, range);
             }
         });
-        return new RtImage(vma, vk, image, allocation, view, width, height);
+        return new RtImage(vma, vk, image, allocation, view, storageView, levels, width, height);
     }
 
     public RtImage createStorageImage(int width, int height, int format, String label, int extraUsage) {

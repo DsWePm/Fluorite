@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Structural contract for the D160 experiment's rollback and its retained last-step correction. */
@@ -17,8 +18,17 @@ final class RtCloudMarchContractTest {
 
         assertTrue(raygen.contains(
                 "float cloudMaxT = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;"));
+        // The step now comes from THIS RAY'S crossing rather than from how far away the deck is. The
+        // clipping half of this test's name is the part that must not regress: whatever the schedule, the
+        // last step may not run past tExit, because the closed-form source integration is exact only for
+        // the interval it is handed.
+        assertTrue(cloud.contains("float step = min(stepBase, tExit - t);"));
         assertTrue(cloud.contains(
-                "float step = min(max(24.0, t * 0.125), tExit - t);"));
+                "float stepBase = clamp(crossing / float(max(budget.maxSteps, 1)),"
+                        + " CLOUD_STEP_MIN, CLOUD_STEP_MAX);"));
+        assertFalse(cloud.contains("max(24.0, t * 0.125)"));
+        // Filtering and stepping are two questions; the mip is selected by the same step.
+        assertTrue(cloud.contains("float cloudNoiseLod(float footprint, float scale)"));
         assertTrue(cloud.contains(
                 "float sigmaT = density * layer.extinction;"));
     }
