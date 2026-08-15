@@ -95,7 +95,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | 介质 | `medium.slang` / `volume.slang` / `volume_source.slang` | Medium 参数、段积分、跨 compute/RT 的纯源数学 |
 | 大气 | `atmosphere*.slang` / `sky_*.comp.slang` | transmittance、multi-scatter、sky-view、reduction、froxel |
 | 可见性 | `volume_visibility*.slang` | 世界空间太阳/天顶可见性网格 |
-| 云 | `cloud.slang` / `cloud_noise.comp.slang` | 世界锚定低层 3D 体积 march、两层解析高云、共享 Radiance 光照和二次光线预算 |
+| 云 | `cloud.slang` / `cloud_field.slang` / `cloud_noise.comp.slang` / `cloud_weather.comp.slang` / `cloud_warp.comp.slang` | 世界锚定低层 3D 体积 march、单层解析高云、共享 Radiance 光照和二次光线预算。`cloud_field` 是**无入口无绑定的场模块**：三个 bake 共用同一份构造，两份拷贝一旦被单独编辑就会悄悄改变整片天空 |
 | 雾 | `fog_noise.comp.slang` | 128³ 结构雾一次性烘焙 |
 | 降雨暴露 | `rain_exposure.comp.slang` | 世界锚定、沿全局雨向的首命中深度图；供所有路径顶点与可见雨丝共享 |
 | 水 | `water.slang` / `water_wave.slang` | 水材质、波场、法线、焦散 |
@@ -140,7 +140,7 @@ timestamp 时才触发，二者都会回退原版。`RtPostProcessingContractTes
 | --- | --- | --- | --- |
 | `PackedPathSegment` | 48 B | `RtPathSegmentLayoutTest` | 只剩一个空 uint lane；进位到 64 B 在 1440p 约 +118 MB，优先使用 `pathFlags` bit |
 | `WorldPushConstantsData` | 112 B | `RtMaterialLayoutTest` | 12 个 64-bit 地址；Vulkan 128 B 保证下只余 16 B，每个新增字段由 closest-hit 高频读取 |
-| `WorldPushData` | 1088 B | `RtSkyMediumLayoutTest` | 独立 GPU 数据，不受 128 B push-constant 限制；`cloudEvolution` 是独立 16 B lane，M21 使用 8 个降雨向量；构造是 positional，Java/Slang 必须同步 |
+| `WorldPushData` | 1104 B | `RtSkyMediumLayoutTest` | 独立 GPU 数据，不受 128 B push-constant 限制；`cloudEvolution` 与 D173 的 `cloudWarp` 各是独立 16 B lane，M21 使用 8 个降雨向量；构造是 positional，Java/Slang 必须同步 |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移钉死 |
 | `MaterialExtensionData` | 64 B | `RtMaterialExtensionLayoutTest` | Disney 与 format-3 天气响应 lanes 逐位钉死 |
 | `Light` | 32 B | `RtDynamicLightContractTest`、`RtLightHierarchyTest` | 32 B 对齐 cache line；bit31=动态球灯，半轴/半径按类型解释；矩形面积由 halfU/halfV 反推 |
@@ -245,7 +245,7 @@ M18 的已批准边界是“收集但不采样”：动态记录使用同一 32 
 - 云太阳源为 `E·phase`，恢复 `4π` 会让无源云反照率超过 1。
 - 关闭 cloud multi-scatter 必须删除整项扩散源，不能只把衰减率设成 1。
 - 高云两层总光学厚度相加并按 `T=exp(-τ)` 合成；旧高云 3D morphology/march 已删除，不得把其参数语义接回。
-- 未来二维云影必须沿太阳对当前云光学模型求 Beer transmittance：低云积分 3D 密度，高云累加两张薄层 `τ`；禁止直接拿 raw coverage/shape noise 当阴影。
+- 未来二维云影必须沿太阳对当前云光学模型求 Beer transmittance：低云积分 3D 密度，高云取那一张薄层的 `τ`；禁止直接拿 raw coverage/shape noise 当阴影。**低云的密度现在还要过 D173 的域扭曲**，绕开它会让阴影与投下它的云不是同一个形状。
 
 ### 3.6 Wavefront、Vulkan 与资源生命周期
 
@@ -429,7 +429,7 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 | --- | --- |
 | 路径记录/寄存器 | 48 B segment 只余一 lane；raygen 仍可能撞 VGPR 台阶，任何新增热路径都实测 |
 | R18 云相机依赖 | 当前规则有效；未来阴影图也必须世界锚定，不能把相机位置写回云密度 |
-| R19 云成本 | 低层 march、两张高云表和 secondary 从未正式定价；高云常驻原始载荷约 23.1 MiB，默认查询为一个上层读取加下层 3×3 候选算术/通常 1 次纹理读取；不得把候选循环误报成固定 9 次读取，也不得未测就扩预算 |
+| R19 云成本 | 低层 march、高云表和 secondary 从未正式定价；高云常驻原始载荷约 **13.98 MiB**（D169 删除上层后从 23.1 降下来），默认查询为 3×3 候选算术/通常 1 次纹理读取；不得把候选循环误报成固定 9 次读取，也不得未测就扩预算。**D172/D173 又各加了一笔未量化的代价**：掠射穿薄云且不饱和的射线最坏跑满 96 步，域扭曲每次非 cheap 密度多一次 3D fetch |
 | R20 参考常数 | D61 已证明 4π 错误会跨雾/水/云扩散；所有新源项先做能量契约测试 |
 | R24 Slang 错编 | D27 规避层保留；升级版本不自动删除 |
 | 水形变内存 | `deform-mode=all` 消除重建闪烁，但含水 section 放弃压缩并常驻输入；海洋场景未测 |
@@ -479,7 +479,7 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 - 完整物理大气是代码默认；未知或无效的模组维度自动取得完整大气，不做 `dimensionType()` 启发式降级。
 - `RtSkyPreset` 从 `assets/fluorite/fluorite/sky/<namespace>/<dimension>.json` 加载，允许资源包覆盖；format 版本、逐文件隔离、有限值/范围/能量校验是加载契约。
 - 参数所有权顺序固定为：preset 基础值 → 该 preset 允许时的 D70 天气/时间 forcing → 用户全局修正 → 玩家逐维度修正。资源包负责物理基线；全局开关仍有最终总门控权，逐维度页只关闭或缩放一个明确维度。
-- M14 的 `WorldPush.skyProvider/environmentFlags` 当时花掉既有 8 B padding，结构大小保持 944 B；M21 加入降雨向量后达到 1072 B，D161 的独立 `cloudEvolution` lane 后当前为 1088 B。shader 只按能力分支；`environmentFlags[8..15]` 是 resource-epoch 环境数组 layer，低位仍是介质能力。
+- M14 的 `WorldPush.skyProvider/environmentFlags` 当时花掉既有 8 B padding，结构大小保持 944 B；M21 加入降雨向量后达到 1072 B，D161 的独立 `cloudEvolution` lane 后为 1088 B，D173 的 `cloudWarp` lane 后当前为 1104 B。shader 只按能力分支；`environmentFlags[8..15]` 是 resource-epoch 环境数组 layer，低位仍是介质能力。
 - 雾 `heightScale<=0` 是明确的均匀介质编码；高度雾必须为正。关闭结构时必须在纹理 fetch 和数值 march 前退出。
 - 大气表、云噪声和雾噪声当前共用一次性静态 bake。内置地狱三者都不需要，因此完全跳过；资源包的非大气维度若开启云或结构雾，会为保证纹理已初始化而顺带烘焙暂时不用的大气表。只有实测首次加载成本值得优化时才拆生命周期。
 - `light_sampling.slang` 是 RT 与 froxel 共用的 32 B `Light`、alias、局部 grid 采样接口；维度不能复制一套光源格式。
@@ -606,7 +606,7 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 
 ### 8.10 云向地面、水面与焦散投影
 
-当前云只有云内自阴影。目标接口是概念上的 `cloudSunTransmittance(worldPosition)`，统一给地面、水面和焦散查询太阳透射率；它必须覆盖低层 3D 云和 D163–D168 的两张高云薄层。
+当前云只有云内自阴影。目标接口是概念上的 `cloudSunTransmittance(worldPosition)`，统一给地面、水面和焦散查询太阳透射率；它必须覆盖低层 3D 云和 D163/D169 的**单层**高云薄层。
 
 #### 后端一：云体太阳阴影 march
 
@@ -618,7 +618,7 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 
 #### 后端二：太阳方向二维 Beer 透射率图
 
-预先沿太阳方向对同一云光学模型积分，生成世界/太阳空间二维 `T` 图；低云来自 3D 密度，高云来自两张薄层光学厚度，消费者约一次纹理采样。
+预先沿太阳方向对同一云光学模型积分，生成世界/太阳空间二维 `T` 图；低云来自 3D 密度，高云来自那一张薄层的光学厚度，消费者约一次纹理采样。
 
 - 性能适合大面积地面、水面和高频焦散查询。
 - 分辨率、覆盖、更新频率和投影会损失局部视差；太阳移动时需要更新。
@@ -630,7 +630,7 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 
 ### 8.11 测量欠账
 
-- M11：云开关、低云自阴影步数、两张解析高云、secondary 三项成本与约 23.1 MiB 高云资源常驻。
+- M11：云开关、低云自阴影步数（D171 后低太阳最多 +3 步）、单层解析高云、secondary 三项成本；常驻资源现为高云约 13.98 MiB + 噪声体 9.14 MiB（D172 的 mip 链 8/7）+ 天气图 32 KB + 扭曲体 128 KB。另加 D172 的步数预算与 D173 的每样本 fetch。
 - M12.5：海洋场景 refit、显存和 all/near 档。
 - M13：结构雾 0/A/0 和 12/24 步。
 - M16：默认非零太阳角半径跨日出/日落连续性与成本。
