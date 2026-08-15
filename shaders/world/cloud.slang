@@ -40,6 +40,8 @@ import cloud_field;   // CLOUD_NOISE_DIM: the LOD below is in texels of that vol
 // volume. Reuses the descriptor slot the retired upper high-cloud sheet left free, so this costs no
 // binding.
 [[vk::binding(27, 0)]] Sampler2D cloudWeather;
+// D173's domain-warp vector field: curl noise, signed, encoded into RGB. See cloud_warp.comp.slang.
+[[vk::binding(28, 0)]] Sampler3D cloudWarp;
 
 static const float HIGH_CLOUD_PATCH_TAU_RANGE = 4.0;
 
@@ -469,6 +471,39 @@ float cloudNoiseLod(float footprint, float scale) {
     return max(0.0, log2(max(footprint / blocksPerTexel, 1.0)));
 }
 
+/**
+ * Displace WHERE the density field is read, so the cloud's surface itself folds.
+ *
+ * <p>THIS IS NOT EROSION AND THE DIFFERENCE IS THE WHOLE POINT. Subtracting a noise from the density
+ * removes material from a boundary: the cloud gets thinner and its edge frays, but the boundary is still
+ * the base field's shape, which is why a deck driven by erosion alone reads as rounded blobs however hard
+ * the erosion is pushed. Moving the sample position moves the iso-surface, so it grows folds, protrusions
+ * and hollows that the base field never contained.
+ *
+ * <p>ITS OWN DRIFT (cloudWarp.zw), and that is what makes cloud GROW rather than merely pass by. The shape
+ * field already advects with the layer origin; a warp carried at the same speed would deform each cloud
+ * once, permanently, and then translate it. A different speed slides the warp through the shape, so the
+ * displaced boundary is continuously re-formed and lobes appear and dissolve where they stand.
+ *
+ * <p>STRONGER HIGH IN THE CLOUD. A cumulus is turbulent where it is rising and flat where it is not, so
+ * the warp is faded in with height through the deck. Warping the base as hard as the top would lift the
+ * flat bottoms that make a cloud read as sitting on a layer of air.
+ *
+ * <p>Zero amplitude returns the position untouched, without the fetch -- bit-for-bit the field before this.
+ */
+float3 cloudWarpPosition(CloudLayer layer, float3 pw) {
+    float amplitude = worldPush.cloudWarp.x;
+    if (amplitude <= 0.0) {
+        return pw;
+    }
+    float scale = max(worldPush.cloudWarp.y, 1.0);
+    float3 wp = pw + float3(worldPush.cloudWarp.z, 0.0, worldPush.cloudWarp.w);
+    float3 warp = cloudWarp.SampleLevel(wp / scale, 0.0).xyz * 2.0 - 1.0;
+    // Normalised height through the deck, faded so the base keeps its flat underside.
+    float h = saturate((pw.y - layer.bottom) / max(layer.thickness, 1.0));
+    return pw + warp * (amplitude * smoothstep(0.05, 0.55, h));
+}
+
 float cloudDensity(CloudLayer layer, float3 p, bool cheap, float footprint) {
     float3 pw = worldIn(layer, p);
     if (pw.y < layer.bottom || pw.y > layer.bottom + layer.thickness) {
@@ -483,7 +518,7 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap, float footprint) {
     if (profile <= 0.0) {
         return 0.0;
     }
-    float shape = evolvingCloudShape(layer, pw, type, footprint);
+    float shape = evolvingCloudShape(layer, cloudWarpPosition(layer, pw), type, footprint);
     // Coverage raises the whole field rather than masking it, so a cloud grows from its centre outward
     // instead of appearing with hard edges where the mask crosses a threshold.
     float density = saturate(shape + coverage - 1.0) * profile;

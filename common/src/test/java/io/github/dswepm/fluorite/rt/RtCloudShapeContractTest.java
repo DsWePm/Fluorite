@@ -91,6 +91,27 @@ final class RtCloudShapeContractTest {
         assertTrue(config.contains("FILE.remove(\"volumetrics.cloud-cirrus-furry-strength\")"));
     }
 
+    @Test
+    void lowCloudShapeIsDisplacedRatherThanOnlyEroded() throws IOException {
+        String cloud = source("shaders/world/cloud.slang");
+        String config = source(
+                "common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
+
+        // The warp displaces the SHAPE lookup only. Coverage and the height profile decide where a cloud
+        // system stands and how tall it is; displacing those would move the weather rather than the cloud.
+        assertTrue(cloud.contains(
+                "float shape = evolvingCloudShape(layer, cloudWarpPosition(layer, pw), type, footprint);"));
+        assertTrue(cloud.contains("float3 cloudWarpPosition(CloudLayer layer, float3 pw)"));
+        assertTrue(cloud.contains("[[vk::binding(28, 0)]] Sampler3D cloudWarp;"));
+        // Its own advection is what makes cloud grow instead of pass by unchanged. Sharing the shape
+        // field's drift would deform each cloud once and then translate it rigidly.
+        assertTrue(cloud.contains("float3(worldPush.cloudWarp.z, 0.0, worldPush.cloudWarp.w)"));
+        // Zero amplitude must skip the fetch and leave the field bit-for-bit as it was.
+        assertTrue(cloud.contains("if (amplitude <= 0.0)"));
+        assertTrue(config.contains("\"volumetrics.cloud-warp-amount\""));
+        assertTrue(config.contains("\"volumetrics.cloud-warp-scale\""));
+    }
+
     private static String source(String relativePath) throws IOException {
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         while (root != null && !Files.isRegularFile(root.resolve("settings.gradle"))) {

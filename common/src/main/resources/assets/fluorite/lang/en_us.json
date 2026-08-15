@@ -653,5 +653,9 @@
   "fluorite.options.rt.preset.error": "No configuration was partially applied.\n%s",
   "fluorite.options.rt.resetDefaults.confirm.title": "Restore All Defaults?",
   "fluorite.options.rt.resetDefaults.confirm.message": "This replaces every Fluorite setting and clears pending restart choices. This cannot be undone unless you exported a preset first.",
-  "fluorite.options.rt.resetDefaults.confirm.accept": "Restore Defaults"
+  "fluorite.options.rt.resetDefaults.confirm.accept": "Restore Defaults",
+  "fluorite.options.rt.cloudWarpAmount": "Cloud Billowing",
+  "fluorite.options.rt.cloudWarpAmount.tooltip": "How far a cloud's shape is pushed around before it is drawn, in blocks. This displaces the cloud's surface rather than eating into it, which is the difference between clouds that billow and clouds that are round blobs with frayed edges. The warp drifts at its own speed, so shapes grow and dissolve as the sky moves instead of sliding past unchanged. Zero turns it off entirely.",
+  "fluorite.options.rt.cloudWarpScale": "Billow Size",
+  "fluorite.options.rt.cloudWarpScale.tooltip": "How large the billows are, in blocks. Large values reshape whole lobes of a cloud; small values fray its edges into wisps."
 }

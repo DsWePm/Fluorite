@@ -1433,6 +1433,28 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.cloudCirrusPatchSpacing",
                             "volumetrics.cloud-cirrus-patch-spacing", 16000f, 1000f, 80000f);
 
+            /**
+             * How far the low deck's density field is displaced before it is sampled, in blocks.
+             *
+             * <p>DISPLACEMENT, NOT SUBTRACTION, and that is the whole difference. Eroding a cloud removes
+             * material from its edge: it gets thinner and dimmer but keeps the base field's shape, which is
+             * why a deck driven by erosion alone reads as rounded blobs however hard the erosion is pushed.
+             * Displacing where the field is sampled moves the surface itself, so it grows folds, filaments
+             * and hollows that were never in the base field.
+             *
+             * <p>The right order of magnitude is one feature of the field being displaced -- displace by far
+             * less and nothing visible happens, by far more and the cloud stops being the shape the weather
+             * map placed there. Zero skips the fetch and is bit-for-bit the field without any of this.
+             */
+            public static final FloatSetting CLOUD_WARP_AMOUNT =
+                    clampedFloat("fluorite.rt.fog.cloudWarpAmount",
+                            "volumetrics.cloud-warp-amount", 28f, 0f, 200f);
+
+            /** How large the warp's own swirls are, in blocks. Larger reshapes whole lobes; smaller frays edges. */
+            public static final FloatSetting CLOUD_WARP_SCALE =
+                    clampedFloat("fluorite.rt.fog.cloudWarpScale",
+                            "volumetrics.cloud-warp-scale", 900f, 50f, 8000f);
+
             /** Optical-depth multiplier for the high-cloud sheet. */
             public static final FloatSetting CLOUD_CIRRUS_DENSITY =
                     clampedFloat("fluorite.rt.fog.cloudCirrusDensity",

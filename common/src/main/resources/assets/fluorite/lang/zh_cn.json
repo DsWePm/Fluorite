@@ -653,5 +653,9 @@
   "fluorite.options.rt.preset.error": "没有任何配置被部分应用。\n%s",
   "fluorite.options.rt.resetDefaults.confirm.title": "恢复全部默认值？",
   "fluorite.options.rt.resetDefaults.confirm.message": "这会替换全部 Fluorite 设置并清除等待重启的选择。除非已提前导出预设，否则无法撤销。",
-  "fluorite.options.rt.resetDefaults.confirm.accept": "恢复默认值"
+  "fluorite.options.rt.resetDefaults.confirm.accept": "恢复默认值",
+  "fluorite.options.rt.cloudWarpAmount": "云的翻卷",
+  "fluorite.options.rt.cloudWarpAmount.tooltip": "云的形状在绘制前被推动多远，单位为方块。它**位移云的表面**而不是啃食它——这正是「翻卷的云」和「边缘毛糙的圆团」之间的差别。扭曲场按自己的速度飘移，所以天空移动时形状会**生长与消散**，而不是原样滑过去。为零则完全关闭。",
+  "fluorite.options.rt.cloudWarpScale": "翻卷尺度",
+  "fluorite.options.rt.cloudWarpScale.tooltip": "翻卷的尺度，单位为方块。数值大会重塑云的整片瓣状结构；数值小则把边缘撕成丝缕。"
 }

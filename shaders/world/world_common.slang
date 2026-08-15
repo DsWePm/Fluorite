@@ -237,6 +237,24 @@ public struct WorldPush {
     // shallow-puddle extra darkening and roughness and will be baked to constants after visual sign-off.
     public float4   rainCalibration0;    // wet darkening gain, wet coat gain, puddle layer gain, puddle alpha
     public float4   rainCalibration1;    // puddle extra darkening, normal flattening, ripple width, wet-film normal flatten
+    /**
+     * D173 low-cloud domain warp: displace WHERE the density field is sampled, rather than subtract from
+     * what it returns.
+     *
+     * <p>Subtracting an erosion band thins and dims a boundary but leaves its SHAPE the base field's, which
+     * is why the deck reads as rounded blobs however hard the erosion is driven. Displacing the sample
+     * position moves the iso-surface itself, so it grows folds, filaments and hollows the base field never
+     * had. The renderer already relies on this for the water wave field.
+     *
+     * <p>zw is the warp's OWN advection, and it is what makes clouds grow rather than merely drift. Sharing
+     * the shape field's drift would carry the warp along rigidly: the cloud would be permanently deformed
+     * in one fixed way and then translate. A different speed slides the warp through the shape, so the
+     * displaced boundary is continuously re-formed -- lobes appear and dissolve. Same mechanism as the
+     * differential detail offset above it, which is where the idea is already proven.
+     *
+     * <p>x = 0 skips the fetch and is bit-for-bit the field without any of this.
+     */
+    public float4   cloudWarp;          // x amplitude (blocks), y feature scale (blocks), zw own drift
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

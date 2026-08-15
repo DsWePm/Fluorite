@@ -714,6 +714,27 @@ public final class RtComposite {
         return new Float4((float) -low[0], (float) -low[1], 0f, 0f);
     }
 
+    /**
+     * D173 low-cloud domain warp: amplitude, feature scale, and the warp's OWN wind drift.
+     *
+     * <p>The drift is the load-bearing part. The shape field already advects with the layer origin, so a
+     * warp carried at the same speed would deform each cloud once and then translate it unchanged -- the
+     * sky would move without ever growing. Advecting the warp at a DIFFERENT speed slides it through the
+     * shape, so the displaced boundary is continuously re-formed and lobes appear and dissolve in place.
+     * That is the same mechanism as the low deck's differential detail offset, which is already proven.
+     *
+     * <p>The fraction is larger than that offset's 18%, because a warp has to travel a whole feature to
+     * change the shape while a detail sample only has to travel its own width.
+     */
+    private static Float4 cloudWarp(RtEnvironmentForcing.Frame environment) {
+        double[] drift = windDrift(environment,
+                FluoriteConfig.Rt.Volumetrics.CLOUD_WIND_SPEED.value() * 0.45f,
+                FluoriteConfig.Rt.Volumetrics.cloudWindAngle());
+        return new Float4(FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_AMOUNT.value(),
+                FluoriteConfig.Rt.Volumetrics.CLOUD_WARP_SCALE.value(),
+                (float) -drift[0], (float) -drift[1]);
+    }
+
     private static Float4 cloudRebase(RtTerrain terrain, RtEnvironmentForcing.Frame environment) {
         // The wind's accumulated drift, subtracted from the origin. Sampling a field at p + (origin -
         // drift) is the same thing as sampling a drifting field at p, and doing it this way means the
@@ -1998,6 +2019,7 @@ public final class RtComposite {
             // Same tiling sampler as the volume: the weather map is read by dividing world
             // coordinates by an authored span and letting it repeat, exactly as the slices did.
             worldPipeline.setCloudWeather(skyLuts.cloudWeatherView(), tilingSampler(ctx));
+            worldPipeline.setCloudWarp(skyLuts.cloudWarpView(), tilingSampler(ctx));
             worldPipeline.setFogNoise(skyLuts.fogNoiseView(), tilingSampler(ctx));
             // Clamped, not repeating: the height field is a finite domain that follows the player, and
             // wrapping it would put the far shore's ripples on the near one. The sampler's clamp is a
@@ -2804,7 +2826,8 @@ public final class RtComposite {
                     rainExposure.surface(),
                     rainExposure.puddle(),
                     rainExposure.calibration0(),
-                    rainExposure.calibration1()
+                    rainExposure.calibration1(),
+                    cloudWarp(environment)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
