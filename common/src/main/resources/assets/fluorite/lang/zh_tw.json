@@ -246,6 +246,8 @@
   "fluorite.options.rt.cloudCirrusFieldScale.tooltip": "卷雲層自己的成团與放晴相隔多遠。**獨立的場**，與下面的積雲層無關。",
   "fluorite.options.rt.cloudCirrusDensity": "卷雲密度",
   "fluorite.options.rt.cloudCirrusDensity.tooltip": "縮放卷雲層的密度，與下面的積雲層互不影響。",
+  "fluorite.options.rt.cloudCirrusMorphology": "高雲形態",
+  "fluorite.options.rt.cloudCirrusMorphology.tooltip": "在 0 的纖維狀卷雲與 1 的圓潤卷積雲小雲包之間混合。中間值保留條縷，同時把它們打散成更小的雲包。",
   "fluorite.options.rt.cloudCirrusWindSpeed": "卷雲風速",
   "fluorite.options.rt.cloudCirrusWindSpeed.tooltip": "卷雲層漂移的速度，单位方塊/秒。**是它自己的，不是積雲層的**：卷雲高出好幾公里，那里風更快 —— 兩層以不同速度相互滑过，正是天空顯得有縱深而不像一个畫好的穹頂的主要原因。",
   "fluorite.options.rt.cloudCirrus": "卷云层",
@@ -381,5 +383,11 @@
   "fluorite.options.rt.fogNoiseWindOffset": "霧場風向偏轉",
   "fluorite.options.rt.fogNoiseWindOffset.tooltip": "近地霧相對全域風向偏轉多少。霧速仍與兩層雲各自獨立。",
   "fluorite.options.rt.fogNoiseMarchSteps": "霧步進上限",
-  "fluorite.options.rt.fogNoiseMarchSteps.tooltip": "一個連續數值區間最多讀取多少次密度。提高它能解析更遠光線中的結構，但會增加 froxel、反射與 GI 成本。"
+  "fluorite.options.rt.fogNoiseMarchSteps.tooltip": "一個連續數值區間最多讀取多少次密度。提高它能解析更遠光線中的結構，但會增加 froxel、反射與 GI 成本。",
+  "fluorite.options.rt.cloudWarpAmount": "雲的翻捲",
+  "fluorite.options.rt.cloudWarpAmount.tooltip": "雲的形狀在繪製前被推動多遠，單位為方塊。它**位移雲的表面**而不是啃食它——這正是「翻捲的雲」和「邊緣毛糙的圓團」之間的差別。扭曲場按自己的速度飄移，所以天空移動時形狀會**生長與消散**，而不是原樣滑過去。為零則完全關閉。",
+  "fluorite.options.rt.cloudWarpScale": "翻捲尺度",
+  "fluorite.options.rt.cloudWarpScale.tooltip": "翻捲的尺度，單位為方塊。數值大會重塑雲的整片瓣狀結構；數值小則把邊緣撕成絲縷。",
+  "fluorite.options.rt.cloudEvolutionSpeed": "雲的演變",
+  "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "雲的**形狀**變化有多快，與它飄得多快是兩回事。雲是被**對流**重塑的而不是被風——無風的午後積雲照樣鼓起又消散、並不去往任何地方——所以這一項**不跟隨風速**，把風速調到 0 也不會讓天空凍住。數值越大瓣狀結構生長與消散越快；過高則雲會「沸騰」而不是生長。"
 }

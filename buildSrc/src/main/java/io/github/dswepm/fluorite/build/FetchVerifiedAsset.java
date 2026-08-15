@@ -27,6 +27,7 @@ import java.util.Locale;
 public abstract class FetchVerifiedAsset extends DefaultTask {
     @Input public abstract Property<String> getSourceUrl();
     @Input public abstract Property<String> getSha256();
+    @Input public abstract Property<String> getAssetName();
     @OutputFile public abstract RegularFileProperty getOutputFile();
 
     @TaskAction
@@ -39,8 +40,9 @@ public abstract class FetchVerifiedAsset extends DefaultTask {
                     ? "Downloaded and verified {} ({})"
                     : "Reused verified external asset {} ({})", output, expected);
         } catch (IOException exception) {
-            throw new GradleException("Could not obtain verified End HDR source. Supply the exact asset with "
-                    + "-PendHdrSource=<path>; expected SHA-256 " + expected, exception);
+            throw new GradleException("Could not obtain verified " + getAssetName().get()
+                    + ". Supply its exact source through the matching Gradle property; expected SHA-256 "
+                    + expected, exception);
         }
     }
 

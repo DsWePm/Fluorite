@@ -95,13 +95,23 @@ Spheremaps](https://www.spacespheremaps.com/hdr-spheremaps/), released under
 thank you for making this space artwork available. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 
+Fluorite's high-cloud shapes use **Clouds with Transparency** by
+[WickedInsignia](https://opengameart.org/content/clouds-with-transparency),
+released under CC0. The build converts it into shape-only optical-depth
+textures; the original colour, sun, ground and baked lighting are not used at
+runtime. Thank you to the creator for making this cloud source freely
+available. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the exact
+sources, hashes and modifications.
+
 Parts of the work in this fork were written with the assistance of Anthropic's
 Claude. Copyright in those contributions rests with the project's authors, not
 with the tool.
 
 ## TODO List
 
-- [ ] Nether/End sky, weather, volumetric fog/clouds
+- [ ] Visually validate the D163–D168 analytic high-cloud replacement and redesign low-cloud growth/detail separately
+- [ ] Replace the End's technical Kerr provider with the planned Blender-rendered looping HDR environment when the source sequence is ready
+- [ ] Project cloud shadows onto terrain/water and feed the shared 2D Beer-transmittance result to underwater caustics
 - [ ] NRD + FSR for non-NVIDIA GPUs
 - [ ] LOD
 - [ ] ReSTIR

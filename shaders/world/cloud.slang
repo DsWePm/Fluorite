@@ -1,4 +1,4 @@
-// Volumetric clouds as a PURE RAY FUNCTION (M11, decision D33).
+// Clouds as a PURE RAY FUNCTION (M11, D33; high-cloud redesign D163-D168).
 //
 // WHERE THIS RUNS. On the segment that escapes to sky, before the raygen breaks out of its bounce loop.
 // That placement is what puts clouds in reflections and in secondary bounces: a mirror's ray escapes too.
@@ -21,8 +21,8 @@
 // above them, unreachable, and the whole pattern jumped whenever the origin reset. worldOf() adds the
 // origin back; nothing else in this file may sample the field or test an altitude without it.
 //
-// Structure is HPVolumeCloud's (weather map x 3D noise x height profile, adaptive stepping); no constant
-// is. See R20: its Intensity carries units of m^-2 and every number here is chosen for this world's scale.
+// The low deck retains a world-anchored 3D density march. The two high sheets are world-anchored optical
+// depth fields and use analytic Beer integration, so the old high-cloud volume path must not return.
 
 module cloud;
 
@@ -31,8 +31,30 @@ import atmosphere_lut;  // mediumSkyRadiance lives in WorldPush, read via world_
 import math;
 import world_common;
 import world_core;
+import cloud_field;   // CLOUD_NOISE_DIM: the LOD below is in texels of that volume
 
 [[vk::binding(17, 0)]] Sampler3D cloudNoise;
+[[vk::binding(26, 0)]] Sampler2DArray highCloudPatchTau;
+// Where cloud systems stand (R) and which family they are (G). Two-dimensional fields, in a
+// two-dimensional texture -- see cloud_weather.comp.slang for why they stopped being slices of the body
+// volume. Reuses the descriptor slot the retired upper high-cloud sheet left free, so this costs no
+// binding.
+[[vk::binding(27, 0)]] Sampler2D cloudWeather;
+// D173's domain-warp vector field: curl noise, signed, encoded into RGB. See cloud_warp.comp.slang.
+[[vk::binding(28, 0)]] Sampler3D cloudWarp;
+
+static const float HIGH_CLOUD_PATCH_TAU_RANGE = 4.0;
+
+// The march's step bounds, in blocks. The step is now chosen from how far THIS RAY crosses the deck
+// rather than from how far the deck is, so a grazing crossing is spread over the budget instead of being
+// swallowed by a handful of enormous strides. See marchLayer.
+// The stratus band's upper support, as a fraction of the deck. Named because TWO things depend on it:
+// cloudHeightProfile draws the sheet up to here, and cloudDepthFraction uses it as the floor on how
+// shallow any cloud may be. If the profile's stratus band moves, this moves with it.
+static const float CLOUD_STRATUS_TOP = 0.18;
+
+static const float CLOUD_STEP_MIN = 24.0;
+static const float CLOUD_STEP_MAX = 400.0;
 
 // How far along a ray clouds are still worth sampling. Beyond this the shell is below the horizon for any
 // upward ray and the remaining crossing is grazing, where the march would spend its whole budget on a
@@ -51,7 +73,7 @@ float cloudTypeScale() { return cloudFieldScale() * 2.9; }
 //   cloudParams   = (coverage bias, density scale, type bias, extinction per block at full density)
 //   cloudShape    = (deck bottom altitude, deck thickness, base feature size, detail feature size)
 //   cloudLighting = (phase g, single-scattering albedo, sun-march steps, diffuse source A/(4*pi))
-//   cloudHigh     = (cirrus altitude, thickness, coverage bias, extinction per block)
+//   cloudHigh     = (high-cloud bottom altitude, sheet separation, coverage bias, extinction per block)
 // Authored rather than constant because the vanilla weather system has to be able to move them — see
 // RtComposite.cloudParams, where rain drives coverage and thunder drives type.
 
@@ -158,16 +180,11 @@ CloudResult overCloud(CloudResult front, CloudResult back) {
 }
 
 /**
- * One deck of cloud: where it sits, how big its features are, and how it is lit.
+ * Shared geometry and authored parameters for the low volume and high sheets.
  *
- * <p>Two instances exist. The LOW deck is convective — it has a cloud-type dimension, real depth, and
- * self-shadowing worth marching. The HIGH one is cirrus: ice crystals sheared into streaks, thin enough
- * that its optical depth never gets far from zero, so it has no type, no self-shadow march, and a bound
- * on how long a crossing it may hand the march.
- *
- * <p>One struct rather than two code paths because everything downstream of the density field — the
- * march, the phase function, the diffusion term, the compositing — is the same physics either way. What
- * differs is which numbers go in.
+ * <p>The low instance is the only one accepted by cloudDensity() and marchLayer(). The high instance is
+ * only a compact carrier for two spherical-sheet intersections, texture scale, weather forcing and
+ * optical coefficients. Keeping the authored data together does not imply a shared estimator.
  */
 struct CloudLayer {
     float bottom;
@@ -178,12 +195,12 @@ struct CloudLayer {
     float detailScale;
     float fieldScale;
     float densityScale;
-    // Where this layer's field sits, in absolute blocks: the terrain rebase minus THIS layer's own wind
-    // drift. Per layer rather than shared because the two layers are in different wind -- cirrus sits
-    // kilometres higher, where it moves faster and often from a different quarter.
+    // Where this field sits, in absolute blocks: terrain rebase minus this field's own global-wind drift.
     float3 origin;
+    // A small movement relative to origin, authored on the CPU in the same wind direction. Keeping it
+    // separate is what lets cloudlets grow through the macro body without making the weather map boil.
+    float2 detailOffset;
     int   sunSteps;
-    bool  cirrus;
 };
 
 float3 worldIn(CloudLayer layer, float3 p) { return p + layer.origin; }
@@ -199,38 +216,37 @@ CloudLayer lowLayer() {
     l.fieldScale = max(worldPush.cloudRebase.w, 1.0);
     l.densityScale = worldPush.cloudParams.y;
     l.origin = worldPush.cloudRebase.xyz;
+    l.detailOffset = worldPush.cloudEvolution.xy;
     l.sunSteps = clamp(int(worldPush.cloudLighting.z + 0.5), 0, 8);
-    l.cirrus = false;
     return l;
 }
 
 /**
- * Cirrus, placed above the convective deck rather than at an authored absolute altitude.
+ * The high-cloud sheet, placed above the convective deck rather than at an authored absolute altitude.
  *
  * <p>The clamp is what keeps the two shells DISJOINT, and that is what makes ordering them by entry
- * distance correct: with the high shell strictly outside the low one, a ray meets one span entirely
- * before the other from every origin and direction. Overlapping shells would need the two marches
- * interleaved by depth, and getting that wrong shows up as one layer drawn in front of the other from
- * some angles and behind it from others.
+ * distance correct: with the high sheet strictly outside the low volume, a ray meets one region entirely
+ * before the other from every origin and direction. Overlap would require depth-interleaved estimators,
+ * and getting that wrong shows up as one cloud drawn in front from some angles and behind from others.
  */
 CloudLayer highLayer() {
     CloudLayer l;
     CloudLayer low = lowLayer();
+    // Still the reference thickness the sheet's optical depth is authored against. It no longer also
+    // means the separation between two sheets, because there is no second sheet to separate from.
     l.thickness = max(worldPush.cloudHigh.y, 1.0);
     l.bottom = max(worldPush.cloudHigh.x, low.bottom + low.thickness + 16.0);
     l.coverageBias = worldPush.cloudHigh.z;
     l.extinction = worldPush.cloudHigh.w;
-    // Authored, not derived. These used to be multiples of the deck's, which meant making the cumulus
-    // smaller also made the cirrus smaller -- two layers of different weather moving as one control.
+    // Authored, not derived. These lanes now mean patch diameter and patch spacing.
     l.baseScale = max(worldPush.cloudHighShape.x, 1.0);
-    l.detailScale = max(worldPush.cloudHighShape.y, 1.0);
+    l.detailScale = 1.0; // unused: the sheet is sprites on a grid, not a periodic field with a span
     l.fieldScale = max(worldPush.cloudHighOrigin.w, 1.0);
     l.densityScale = worldPush.cloudHighShape.z;
     l.origin = worldPush.cloudHighOrigin.xyz;
-    // No self-shadow march. Its optical depth barely leaves zero, so exp(-tau) is within a hair of one
-    // everywhere in it, and marching to establish that would be the most expensive nothing in the frame.
+    l.detailOffset = float2(0.0, 0.0); // D163 high clouds are two 2D sheets, not evolving 3D detail
+    // High sheets never enter cloudBudget()/marchLayer(); initialise the shared carrier defensively.
     l.sunSteps = 0;
-    l.cirrus = true;
     return l;
 }
 
@@ -325,14 +341,37 @@ float2 cloudShellSpan(CloudLayer layer, float3 ro, float3 rd) {
  * <p>Blended in two halves rather than by a single lerp between the extremes, so the middle of the range
  * is cumulus rather than a half-height average of a sheet and a tower.
  */
-float cloudHeightProfile(CloudLayer layer, float altitude, float type) {
-    float t = saturate((altitude - layer.bottom) / layer.thickness);
-    if (layer.cirrus) {
-        // Cirrus has no type dimension: it is one shape, a sheet, and the only question is how thick.
-        // Symmetric, unlike every convective profile above, because it does not condense at a base and
-        // grow upward — it is ice that formed where the air was already cold enough.
-        return saturate(smoothstep(0.0, 0.25, t) * (1.0 - smoothstep(0.75, 1.0, t)));
-    }
+/**
+ * How deep THIS cloud is, as a fraction of the authored maximum.
+ *
+ * <p>FLAT BASES, VARYING TOPS, which is the shape the atmosphere actually produces. A cloud's underside
+ * sits at the lifting condensation level -- the altitude where rising air reaches saturation -- and that
+ * altitude is a property of the air mass, so it is the same across a region. That is why a field of
+ * cumulus has famously level bases. A cloud's TOP is wherever that particular parcel ran out of buoyancy,
+ * and that differs from one cell to the next. So the authored thickness is a CEILING rather than a
+ * height everything is issued with.
+ *
+ * <p>DRIVEN BY COVERAGE, which needs no new field and is not a convenience. Vigorous convection makes a
+ * cloud both deeper and broader, so depth and coverage are correlated in the real thing. The by-product is
+ * the part worth having: coverage falls off toward the edge of a cloud system, so its clouds are shallow at
+ * the fringe and deep in the middle -- a domed top thinning to the sides, which is what a cumulus looks
+ * like from the ground.
+ *
+ * <p>THE FLOOR IS THE STRATUS SHEET, and that is where the physics stops rather than a number chosen to
+ * look right. A stratus band is the thinnest thing this profile system can represent: below it there is no
+ * shape left to have, only a slab getting thinner, and a cloud field of slabs is what this whole change
+ * exists to get away from. Expressed relative to the type's own top so the floor means the same depth in
+ * blocks whichever family stands here.
+ */
+float cloudDepthFraction(float coverage, float type) {
+    float top = max(cloudProfileTop(type), 1.0e-3);
+    return lerp(saturate(CLOUD_STRATUS_TOP / top), 1.0, saturate(coverage));
+}
+
+float cloudHeightProfile(CloudLayer layer, float altitude, float type, float depth) {
+    // Dividing the DEPTH rather than offsetting the base is what keeps the underside flat: t still starts
+    // at zero on the deck floor, it just reaches the profile's top sooner.
+    float t = saturate((altitude - layer.bottom) / (layer.thickness * max(depth, 1.0e-3)));
     float stratus = smoothstep(0.0, 0.03, t) * (1.0 - smoothstep(0.07, 0.18, t));
     float cumulus = smoothstep(0.0, 0.05, t) * (1.0 - smoothstep(0.30, 0.62, t));
     float anvil = smoothstep(0.60, 0.78, t) * (1.0 - smoothstep(0.92, 1.0, t));
@@ -367,12 +406,8 @@ float cloudProfileTop(float type) {
  * same ground as the ray that finds it moves — which is the property the whole file exists to protect.
  */
 float cloudCoverage(CloudLayer layer, float3 p) {
-    // The high layer reads the same weather map from a different slice: same map because a cirrus sheet
-    // and the cumulus under it belong to the same weather system, different slice because they are not
-    // the same clouds and reading it identically would paste a cirrus shadow over every cumulus. The
-    // period and the origin are the LAYER'S OWN -- it has its own field scale and drifts in its own wind.
     float2 w = worldIn(layer, p).xz / layer.fieldScale;
-    float m = cloudNoise.SampleLevel(float3(w.x, layer.cirrus ? 0.81 : 0.37, w.y), 0.0).r;
+    float m = cloudWeather.SampleLevel(w, 0.0).r;
     // Re-centred for the Perlin-Worley body. The old (m - 0.42) * 2.6 was fitted to pure Worley, whose
     // mean sits at 0.486; the normalised Perlin-Worley field is wider and centred differently, and
     // keeping the old numbers against it overcasts 96% of the sky at neutral bias. Both halves were
@@ -397,7 +432,7 @@ float cloudCoverage(CloudLayer layer, float3 p) {
  */
 float cloudType(float3 p) {
     float2 w = worldIn(lowLayer(), p).xz / cloudTypeScale();
-    float m = cloudNoise.SampleLevel(float3(w.x, 0.61, w.y), 0.0).b;
+    float m = cloudWeather.SampleLevel(w, 0.0).g;
     // Scaled below 1 so fair weather stays in the sheet-to-heap half of the range and the tower is
     // something the weather has to ask for.
     return saturate(m * 0.75 + worldPush.cloudParams.z);
@@ -410,12 +445,105 @@ float cloudType(float3 p) {
  * <p>ORDERED BY COST, and that ordering is load-bearing rather than tidy. Every factor below multiplies,
  * so any one of them reaching zero ends the function — which makes it worth asking the free question
  * first and the expensive one last. The deck bounds are arithmetic on p.y and reject the majority of
- * steps along the majority of rays; coverage is one fetch and rejects most of what survives; type is a
- * second fetch and cannot reject anything by itself, so it is deliberately NOT hoisted above the height
+ * steps along the majority of rays; coverage is one 2D fetch into the weather map and rejects most of what survives; type is a
+ * second such fetch and cannot reject anything by itself, so it is deliberately NOT hoisted above the height
  * test even though the height profile now takes it as an argument. Hoisting it would charge every empty
  * step in the sky for a texture read that only matters inside a cloud.
  */
-float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
+/** Cumulus and cumulonimbus get rounded sub-cells; stratus deliberately remains a broad sheet. */
+float lowCloudPuffWeight(float type) {
+    return smoothstep(0.12, 0.48, type) * lerp(0.55, 0.80, saturate(type));
+}
+
+/**
+ * The macro body and its smaller cloudlets are two samples of our own baked Perlin-Worley field.
+ *
+ * <p>The second sample is not a cross-fade between unrelated frames. It is a persistent world-space
+ * structure with a slightly different advection speed, so lobes enter and leave the macro envelope
+ * continuously. This function belongs only to the low volumetric deck; high clouds use the two
+ * relightable optical-depth textures below.
+ */
+float evolvingCloudShape(CloudLayer layer, float3 pw, float type, float footprint) {
+    float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);
+    float macro = cloudNoise.SampleLevel(pw / layer.baseScale,
+                                        cloudNoiseLod(footprint, layer.baseScale)).r;
+    float puffWeight = lowCloudPuffWeight(type);
+    if (puffWeight <= 0.0) {
+        return macro;
+    }
+    float puffs = cloudNoise.SampleLevel(detailPw / (layer.baseScale * 0.36),
+                                        cloudNoiseLod(footprint, layer.baseScale * 0.36)).r;
+    // Zero-mean displacement keeps coverage stable while moving the iso-density boundary into many
+    // small rounded protrusions and hollows. The bound (0.34) is below the macro field's full range, so
+    // the weather map remains the owner of where a cloud system exists.
+    return saturate(macro + (puffs - 0.5) * (0.34 * puffWeight));
+}
+
+/**
+ * Which mip of the noise a sample of the given footprint should read.
+ *
+ * <p>PREFILTERING, which is the half of the distant-cloud fix that adding steps cannot do. A step is a
+ * segment of the ray, and point-sampling a field whose features are finer than that segment is plain
+ * aliasing -- the sample says "cloud" or "no cloud" with nothing in between, and neighbouring samples
+ * disagree violently. Reading a mip whose texels are the size of the step replaces that point sample with
+ * the field's average over it, which is the quantity the integral actually wants.
+ *
+ * <p>The high-cloud patches have selected a mip by ray distance since D163; this is the low deck finally
+ * doing the same thing. It is also why the step bound above matters: prefiltering to a step LARGER than a
+ * cloud averages whole clouds away, so the two have to be fixed together or neither works.
+ *
+ * <p>A NAMED APPROXIMATION. The correct prefilter for a medium is not a linear average of density --
+ * transmittance is exp(-tau), and the mean of an exponential is not the exponential of the mean, which is
+ * why the high-cloud KTX2 mips average exp(-tau) and convert back. That cannot be done here: this volume
+ * is a shape field that only becomes a density after coverage, the height profile and erosion have been
+ * applied, so there is no optical depth at bake time to preserve. A linear mip chain is what the technique
+ * uses in practice and it is recorded as an approximation rather than presented as the exact thing.
+ */
+float cloudNoiseLod(float footprint, float scale) {
+    // texels of this volume, at the world scale this particular lookup uses
+    float blocksPerTexel = max(scale, 1.0) / float(CLOUD_NOISE_DIM);
+    return max(0.0, log2(max(footprint / blocksPerTexel, 1.0)));
+}
+
+/**
+ * Displace WHERE the density field is read, so the cloud's surface itself folds.
+ *
+ * <p>THIS IS NOT EROSION AND THE DIFFERENCE IS THE WHOLE POINT. Subtracting a noise from the density
+ * removes material from a boundary: the cloud gets thinner and its edge frays, but the boundary is still
+ * the base field's shape, which is why a deck driven by erosion alone reads as rounded blobs however hard
+ * the erosion is pushed. Moving the sample position moves the iso-surface, so it grows folds, protrusions
+ * and hollows that the base field never contained.
+ *
+ * <p>ITS OWN CLOCK (cloudWarp.z), and that is what makes cloud GROW rather than merely pass by. The shape
+ * field advects with the layer origin, so a warp locked to it would deform each cloud once, permanently,
+ * and then translate it. Walking the lookup along the warp volume's vertical axis steps through slices
+ * that are uncorrelated with one another, so the displacement at a fixed point in a fixed cloud simply
+ * becomes a different displacement: lobes swell and subside where they stand.
+ *
+ * <p>NOT a horizontal drift, which is what this tried first. Sliding the warp sideways makes the
+ * deformation pattern sweep across the cloud, and a sweep reads as translation -- the very thing the warp
+ * exists to stop being the only motion in the sky. Horizontally the warp now travels WITH the shape.
+ *
+ * <p>STRONGER HIGH IN THE CLOUD. A cumulus is turbulent where it is rising and flat where it is not, so
+ * the warp is faded in with height through the deck. Warping the base as hard as the top would lift the
+ * flat bottoms that make a cloud read as sitting on a layer of air.
+ *
+ * <p>Zero amplitude returns the position untouched, without the fetch -- bit-for-bit the field before this.
+ */
+float3 cloudWarpPosition(CloudLayer layer, float3 pw) {
+    float amplitude = worldPush.cloudWarp.x;
+    if (amplitude <= 0.0) {
+        return pw;
+    }
+    float scale = max(worldPush.cloudWarp.y, 1.0);
+    float3 wp = pw + float3(0.0, worldPush.cloudWarp.z, 0.0);
+    float3 warp = cloudWarp.SampleLevel(wp / scale, 0.0).xyz * 2.0 - 1.0;
+    // Normalised height through the deck, faded so the base keeps its flat underside.
+    float h = saturate((pw.y - layer.bottom) / max(layer.thickness, 1.0));
+    return pw + warp * (amplitude * smoothstep(0.05, 0.55, h));
+}
+
+float cloudDensity(CloudLayer layer, float3 p, bool cheap, float footprint) {
     float3 pw = worldIn(layer, p);
     if (pw.y < layer.bottom || pw.y > layer.bottom + layer.thickness) {
         return 0.0; // outside the deck: no type can put cloud here
@@ -424,20 +552,12 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
     if (coverage <= 0.0) {
         return 0.0;
     }
-    float type = layer.cirrus ? 0.0 : cloudType(p);
-    float profile = cloudHeightProfile(layer, pw.y, type);
+    float type = cloudType(p);
+    float profile = cloudHeightProfile(layer, pw.y, type, cloudDepthFraction(coverage, type));
     if (profile <= 0.0) {
         return 0.0;
     }
-    // Cirrus is SHEARED. Ice crystals falling out of a sheet are drawn into streaks by the wind gradient
-    // they fall through, which is why cirrus looks combed and cumulus looks heaped — so the volume is
-    // sampled anisotropically, stretched along one horizontal axis and compressed vertically. A fixed
-    // world axis stands in for a wind direction the renderer does not model; it is world-anchored, which
-    // is the property that matters here, and a per-frame direction would make the sky crawl.
-    float3 shapeUv = layer.cirrus
-            ? pw / (layer.baseScale * float3(3.5, 0.35, 1.0))
-            : pw / layer.baseScale;
-    float shape = cloudNoise.SampleLevel(shapeUv, 0.0).r;
+    float shape = evolvingCloudShape(layer, cloudWarpPosition(layer, pw), type, footprint);
     // Coverage raises the whole field rather than masking it, so a cloud grows from its centre outward
     // instead of appearing with hard edges where the mask crosses a threshold.
     float density = saturate(shape + coverage - 1.0) * profile;
@@ -449,7 +569,9 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap) {
     if (density <= 0.0 || cheap) {
         return density * gain;
     }
-    float erosion = cloudNoise.SampleLevel(pw / layer.detailScale, 0.0).g;
+    float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);
+    float erosion = cloudNoise.SampleLevel(detailPw / layer.detailScale,
+                                          cloudNoiseLod(footprint, layer.detailScale)).g;
     // Erosion only bites where the cloud is already thin, so the body keeps its shape while the edges
     // break up. Subtracting everywhere would hollow the cloud out.
     return saturate(density - erosion * 0.35 * (1.0 - density)) * gain;
@@ -477,17 +599,38 @@ float sunOpticalDepth(CloudLayer layer, float3 p, float3 lightDir, int steps, in
     // reach = s0 * (2^steps - 1) with doubling steps, so s0 is chosen to keep the reach fixed as the
     // step count moves. Quality then costs steps without also changing what is being integrated.
     float s0 = layer.thickness / max(exp2(float(steps)) - 1.0, 1.0);
+    // ONE DECK THICKNESS MEASURED VERTICALLY, not one deck thickness along the ray.
+    //
+    // The reach used to be a fixed distance in the light's direction, which is right only for a sun
+    // overhead. Sunlight arriving at elevation theta crosses H/sin(theta) of deck, so a fixed reach of H
+    // integrates a sin(theta) FRACTION of the path: half of it at 30 degrees, a sixth at 10, a twelfth at
+    // 5. Clouds were therefore least self-shadowed exactly at sunrise and sunset, where they are most
+    // back-lit and where the error is most visible -- the lit face keeps a brightness it has not earned.
+    //
+    // The same file already does this correctly one function away: the high sheet converts its vertical
+    // optical depth with a sun secant and caps it. This is that, on the deck that marches.
+    //
+    // PAID IN STEPS, NOT IN RESOLUTION. With a doubling schedule, reaching 2^k further costs exactly k
+    // more steps at the SAME s0, so the near field -- where the boundary between a cloud's lit and shaded
+    // face is decided, and the reason the first step is short -- is sampled exactly as finely as before.
+    // Scaling s0 instead would have bought the reach by blurring the one part that has to stay sharp.
+    // Capped at three doublings, so a sun on the horizon costs three extra density samples rather than an
+    // unbounded march through air that holds no cloud.
+    float secant = 1.0 / max(abs(lightDir.y), 0.125); // 0.125 -> the cap below binds first anyway
+    int extra = int(clamp(ceil(log2(max(secant, 1.0))), 0.0, 3.0));
+    // Overhead sun: secant is 1, extra is 0, and this is the schedule that shipped, step for step.
+    int totalSteps = steps + extra;
     // Jittered start for the same reason the primary march jitters: an unjittered shadow lattice draws
     // itself as bands across a cloud's shaded face.
     float jitter = rndf(seed);
     float tau = 0.0;
     float t = 0.0;
     float step = s0;
-    for (int i = 0; i < steps; ++i) {
+    for (int i = 0; i < totalSteps; ++i) {
         // Sample at the step's midpoint, offset by the jitter — midpoint because a one-sample estimate of
         // an interval's average is least wrong there.
         float3 q = p + lightDir * (t + step * (0.35 + 0.3 * jitter));
-        tau += cloudDensity(layer, q, true) * step;
+        tau += cloudDensity(layer, q, true, step) * step;
         t += step;
         step *= 2.0;
     }
@@ -542,26 +685,7 @@ CloudBudget cloudBudget(CloudLayer layer, bool secondary) {
 }
 
 /**
- * How long a crossing this layer may hand the march, in blocks.
- *
- * <p>NOT A FADE, and the difference matters. An earlier version dissolved the cirrus sheet as a ray
- * approached it, taken from the plan's "camera-proximity fade" -- but that was describing vanilla's flat
- * cloud TEXTURE, which vanishes when you fly into it. A volumetric cloud has no reason to disappear when
- * approached, and being able to fly into one is most of the point of having them.
- *
- * <p>What the fade was covering for is real and stays, in the shape the problem actually has: a ray that
- * begins its crossing at its own origin is grazing ALONG the sheet rather than passing through it, so the
- * crossing is enormously long, the adaptive step grows to match, and neighbouring pixels disagree wildly
- * about a sheet that is only tens of blocks thick. That is a march-budget problem and it gets a budget --
- * the crossing is capped at a multiple of the layer's own thickness, which is as far through a sheet as a
- * ray can travel and still be describing that sheet.
- */
-float layerCrossingLimit(CloudLayer layer) {
-    return layer.cirrus ? layer.thickness * 24.0 : CLOUD_MAX_DIST;
-}
-
-/**
- * March one layer and return what it added and what of the sky survives it.
+ * March the low convective layer and return what it added and what of the sky survives it.
  *
  * <p>The source is the three terms a cloud actually has, all in radiance units. The celestial buffer is
  * irradiance E, so direct single scattering is E*p(omega), where the normalised phase already contains
@@ -604,8 +728,7 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     if (tExit <= tEnter) {
         return result;
     }
-    // Grazing rays get a bounded crossing rather than a dissolve -- see layerCrossingLimit.
-    tExit = min(tExit, tEnter + layerCrossingLimit(layer));
+    tExit = min(tExit, tEnter + CLOUD_MAX_DIST);
 
     float3 ambient = worldPush.mediumSkyRadiance.xyz;
     float3 lightDir = worldPush.lightDir.xyz;
@@ -624,7 +747,39 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     // Jittered entry, for the same reason every other estimator here jitters: a fixed start puts the
     // step lattice at the same depth on neighbouring pixels and draws it as banding, and this renderer
     // would rather have noise a denoiser can integrate than structure it cannot.
-    float t = tEnter + rndf(marchSeed) * min(64.0, (tExit - tEnter) * 0.1);
+    //
+    // OVER ONE WHOLE STEP, which is what that sentence actually requires and what an absolute cap of 64
+    // blocks stopped delivering the moment the clouds were far away. The step grows as t/8, so at a
+    // kilometre out it is already 125 blocks and at twenty it is 2500; a 64-block offset moved the lattice
+    // by 3% of a step and left it, for every practical purpose, in the same place on every pixel.
+    //
+    // What that looked like is worth writing down, because the cause is invisible in the symptom. Sample
+    // depths are tEnter * 1.125^n, so an unjittered lattice is a set of smooth shells in the world. One
+    // step at that distance is optically opaque -- 1250 blocks at the authored extinction is tau ~ 12, so
+    // 1 - exp(-tau) is 1.0000 -- which means a pixel shows either a full slab of cloud or none of it,
+    // with no gradient in between. Coherent shells plus a binary decision drew distant cloud as a stack
+    // of discrete layers.
+    //
+    // Costs nothing: same schedule, same step count, different starting phase.
+    // THE STEP COMES FROM THIS RAY'S CROSSING, not from how far away the deck is.
+    //
+    // It used to be max(24, t * 0.125) -- a cone-footprint heuristic, and a sound one about how finely
+    // the field is worth SAMPLING LATERALLY at that distance. It was being used as the length of a step
+    // THROUGH the medium, which is a different question with a different answer: how long a step may be
+    // is set by how much optical depth it accumulates, not by how big a pixel is. At twenty kilometres it
+    // gave a 2500-block step, tau around 24, and 1 - exp(-tau) = 1.0000 -- an estimator with no gradient
+    // left in it, which is why distant cloud arrived as a stack of opaque slabs.
+    //
+    // Dividing the crossing by the budget spends the steps where the ray actually is inside the deck. A
+    // grazing crossing of fourteen kilometres becomes 152-block steps at tau 1.5 instead of nine strides
+    // at tau 12, and one step spans a fifth of a cloud rather than one and a half of them.
+    //
+    // The lateral half of the old heuristic did not go away, it moved to where it belongs: cloudNoiseLod
+    // now selects a mip by this same step. Filtering and stepping are two questions and this file was
+    // answering both with one number.
+    float crossing = tExit - tEnter;
+    float stepBase = clamp(crossing / float(max(budget.maxSteps, 1)), CLOUD_STEP_MIN, CLOUD_STEP_MAX);
+    float t = tEnter + rndf(marchSeed) * min(stepBase, crossing);
 
     float transmittance = 1.0;
     float3 gathered = float3(0.0, 0.0, 0.0);
@@ -634,9 +789,11 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     // INTEGRATING ANY OF IT, and that has to be undone rather than accepted.
     float lastSkip = 0.0;
     for (int i = 0; i < budget.maxSteps && t < tExit; ++i) {
-        float step = max(24.0, t * 0.125);
+        // The closed-form source integration is exact only for the interval it is actually handed.
+        // Charge only the interval actually traversed; this also keeps the final low-cloud step unbiased.
+        float step = min(stepBase, tExit - t);
         float3 p = ro + rd * t;
-        float density = cloudDensity(layer, p, true);
+        float density = cloudDensity(layer, p, true, step);
         if (density <= 0.0) {
             // Nothing here. Step long, and keep stepping long while the emptiness holds.
             emptySteps++;
@@ -660,7 +817,7 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
         emptySteps = 0;
         lastSkip = 0.0;
         if (budget.erosion) {
-            density = cloudDensity(layer, p, false);
+            density = cloudDensity(layer, p, false, step);
         }
         if (density > 0.0) {
             float sigmaT = density * layer.extinction;
@@ -673,9 +830,13 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
             // sample, taking the local density as representative of the column. Bounded by the type's own
             // profile rather than by the deck, so a stratus sheet is not buried under the empty three
             // hundred blocks a cumulonimbus would have filled.
-            float ownTop = layer.cirrus
-                    ? layer.bottom + layer.thickness
-                    : layer.bottom + cloudProfileTop(cloudType(p)) * layer.thickness;
+            // The top of THIS cloud, which now includes how deep this one happens to be. Reading the
+            // type's full top here while the density used a shallower one would bury a shallow cloud
+            // under the air above it and turn its own underside black.
+            float ownType = cloudType(p);
+            float ownTop = layer.bottom
+                    + cloudProfileTop(ownType) * cloudDepthFraction(cloudCoverage(layer, p), ownType)
+                            * layer.thickness;
             float tauUp = sigmaT * max(ownTop - worldIn(layer, p).y, 0.0);
 
             // Isotropic, so no phase factor: light that has scattered often enough for diffusion to
@@ -704,12 +865,150 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     return result;
 }
 
+/** Distance to one infinitesimally thin spherical high-cloud sheet, or -1 when it is not reached. */
+float highCloudSheetIntersection(float altitude, float3 ro, float3 rd) {
+    float3 centreRelative = ro + float3(0.0, PLANET_R + worldPush.cloudRebase.y, 0.0);
+    float radius = PLANET_R + altitude;
+    float originRadius = length(centreRelative);
+    if (abs(originRadius - radius) < 0.25) {
+        return 0.0;
+    }
+    float2 roots = raySphere(centreRelative, rd, radius);
+    float t = roots.x > 0.0 ? roots.x : roots.y;
+    return t >= 0.0 && t <= CLOUD_MAX_DIST ? t : -1.0;
+}
+
+float3 highCloudSheetNormal(float altitude, float3 ro, float3 rd, float t) {
+    float3 centreRelative = ro + float3(0.0, PLANET_R + worldPush.cloudRebase.y, 0.0);
+    return normalize(centreRelative + rd * t);
+}
+
+uint highCloudCellHash(int2 cell) {
+    uint h = asuint(cell.x) * 0x8DA6B343u;
+    h ^= asuint(cell.y) * 0xD8163841u;
+    h ^= 0xCB1AB31Fu;
+    return pcg(h);
+}
+
+float highCloudHash01(inout uint state) {
+    state = pcg(state);
+    return float(state >> 8u) * (1.0 / 16777216.0);
+}
+
 /**
- * Both layers, composited in the order THIS RAY meets them.
+ * Lower high-cloud sheet: deterministic texture bombing over a fixed world grid.
  *
- * <p>SLICE THREE OF THREE (D35). The convective deck and the cirrus above it are two shells around the
- * same centre, kept disjoint by highLayer()'s clamp, so a ray crosses one entirely before the other and
- * comparing entry distances is enough to order them.
+ * <p>The 3x3 loop is a candidate search, not nine unconditional texture reads. Hash arithmetic rejects
+ * every sprite whose rotated square does not contain this point before SampleLevel executes; at the
+ * approved diameter/spacing the ordinary path reads one texture, occasionally two near an overlap.
+ * No ray seed enters this function, so primary, reflection and later-frame rays ask the same world field.
+ */
+float highCloudPatchShape(float2 worldXZ, float t, CloudLayer high) {
+    float spacing = max(high.fieldScale, 1.0);
+    float2 gridPosition = worldXZ / spacing;
+    int2 baseCell = int2(floor(gridPosition));
+    float tau = 0.0;
+    [unroll]
+    for (int dz = -1; dz <= 1; ++dz) {
+        [unroll]
+        for (int dx = -1; dx <= 1; ++dx) {
+            int2 cell = baseCell + int2(dx, dz);
+            uint hash = highCloudCellHash(cell);
+            float2 jitter = float2(highCloudHash01(hash), highCloudHash01(hash)) - 0.5;
+            float2 centre = (float2(cell) + 0.5 + jitter * 0.56) * spacing;
+            float scale = lerp(0.75, 1.25, highCloudHash01(hash));
+            float diameter = max(high.baseScale * scale, 1.0);
+            float angle = highCloudHash01(hash) * (2.0 * PI);
+            float cosine = cos(angle);
+            float sine = sin(angle);
+            float2 delta = worldXZ - centre;
+            float2 local = float2(cosine * delta.x + sine * delta.y,
+                                  -sine * delta.x + cosine * delta.y);
+            float2 uv = local / diameter + 0.5;
+            if (all(uv > 0.0) && all(uv < 1.0)) {
+                float layer = float(hash % 10u);
+                float lod = clamp(log2(max(t / diameter, 1.0)), 0.0, 10.0);
+                tau += highCloudPatchTau.SampleLevel(float3(uv, layer), lod).r
+                        * HIGH_CLOUD_PATCH_TAU_RANGE;
+            }
+        }
+    }
+    return max(tau + high.coverageBias, 0.0);
+}
+
+/** Exact Beer integration through one thin sheet with the shared cloud Radiance sources. */
+CloudResult shadeHighCloudSheet(float verticalTau, float altitude,
+                                float3 ro, float3 rd, float t) {
+    CloudResult result = noClouds();
+    if (verticalTau <= 0.0 || t < 0.0) {
+        return result;
+    }
+    float3 normal = highCloudSheetNormal(altitude, ro, rd, t);
+    // The old volumetric high layer capped a grazing crossing at 24 sheet thicknesses. The delta-sheet
+    // equivalent is the same bound on sec(theta), retaining finite horizon energy without a hidden fade.
+    float raySecant = min(1.0 / max(abs(dot(rd, normal)), 1.0e-5), 24.0);
+    float tauRay = verticalTau * raySecant;
+    float transmittance = exp(-tauRay);
+
+    float3 lightDir = worldPush.lightDir.xyz;
+    float sunSecant = min(1.0 / max(abs(dot(lightDir, normal)), 1.0e-5), 24.0);
+    float tauSunMidpoint = verticalTau * sunSecant * 0.5;
+    bool multiScatter = cloudMultiScatterOn();
+    float diffusionRate = multiScatter ? cloudDiffusionRate() : 1.0;
+    float diffuse = multiScatter
+            ? cloudDiffuseSourceScale() * exp(-diffusionRate * tauSunMidpoint) : 0.0;
+    float phase = cloudPhase(dot(rd, lightDir), cloudPhaseG());
+    float3 source = worldPush.mediumSkyRadiance.xyz
+                    * exp(-diffusionRate * verticalTau * 0.5)
+            + worldPush.lightRadiance.xyz
+                    * (exp(-tauSunMidpoint) * phase + diffuse);
+    result.inScatter = source * (1.0 - transmittance);
+    result.transmittance = transmittance;
+    return result;
+}
+
+/**
+ * D163: the CC0 alpha-mask patches, on one sheet.
+ *
+ * <p>ONE SHEET, NOT TWO. The upper sheet sampled a single periodic equirectangular HDRI, and the two
+ * were never the same kind of thing: these patches are discrete sprites scattered over a world grid, so
+ * they have edges, gaps and sky between them, while a periodic field covers everything everywhere and
+ * can only vary in how thick it is. Stacking the second one behind the first meant every gap the patches
+ * left was filled by the sheet above, which is the one property a cirrus sky must not have.
+ *
+ * <p>`thickness` stays in the optical depth below rather than being folded away: it is the reference
+ * thickness this sheet's tau is authored against, and only its second use -- the separation between the
+ * two sheets -- has gone.
+ */
+CloudResult traceHighClouds(float3 ro, float3 rd, float tMax) {
+    CloudLayer high = highLayer();
+    if (!layerEnabled(high)) {
+        return noClouds();
+    }
+    float altitude = high.bottom;
+    float t = highCloudSheetIntersection(altitude, ro, rd);
+    if (t < 0.0 || t > tMax) {
+        return noClouds();
+    }
+    float2 worldXZ = worldIn(high, ro + rd * t).xz;
+    float shapeTau = highCloudPatchShape(worldXZ, t, high);
+    float verticalTau = shapeTau * high.extinction * high.thickness * 0.5
+            * high.densityScale * max(worldPush.cloudHighShape.w, 0.0);
+    return shadeHighCloudSheet(verticalTau, altitude, ro, rd, t);
+}
+
+float highCloudFirstIntersection(float3 ro, float3 rd) {
+    CloudLayer high = highLayer();
+    if (!layerEnabled(high)) return CLOUD_MAX_DIST + 1.0;
+    float t = highCloudSheetIntersection(high.bottom, ro, rd);
+    return t < 0.0 ? CLOUD_MAX_DIST + 1.0 : t;
+}
+
+/**
+ * Low volume and one high sheet, composited in the order THIS RAY meets them.
+ *
+ * <p>The convective deck and the high sheet are disjoint spherical regions around the same centre, so
+ * comparing this ray's first entry distance is sufficient to order their results.
  *
  * <p>That comparison is the point. The reference implementation ordered its layers by the CAMERA's
  * altitude, which is right for the camera's own view and wrong for every other ray in the frame: a ray
@@ -732,10 +1031,10 @@ public CloudResult traceClouds(float3 ro, float3 rd, float tMax, uint seed, bool
     CloudLayer low = lowLayer();
     CloudLayer high = highLayer();
     float lowEnter = cloudShellSpan(low, ro, rd).x;
-    float highEnter = cloudShellSpan(high, ro, rd).x;
+    float highEnter = highCloudFirstIntersection(ro, rd);
 
     CloudResult lowResult = marchLayer(low, cloudBudget(low, secondary), ro, rd, tMax, marchSeed);
-    CloudResult highResult = marchLayer(high, cloudBudget(high, secondary), ro, rd, tMax, marchSeed);
+    CloudResult highResult = traceHighClouds(ro, rd, tMax);
     return lowEnter <= highEnter ? overCloud(lowResult, highResult)
                                  : overCloud(highResult, lowResult);
 }
@@ -798,11 +1097,15 @@ public float3 cloudDebugProbe(float3 ro, float3 rd) {
         if (pw.y >= low.bottom && pw.y <= low.bottom + low.thickness) {
             inDeck += 1.0;
             float type = cloudType(p);
-            maxCoverage = max(maxCoverage, cloudCoverage(low, p));
-            maxProfile = max(maxProfile, cloudHeightProfile(low, pw.y, type));
+            // The SAME depth the shading uses. A probe that reported the type's full profile while the
+            // density used a per-cloud shallower one would disagree with the thing it exists to explain.
+            float coverageHere = cloudCoverage(low, p);
+            maxCoverage = max(maxCoverage, coverageHere);
+            maxProfile = max(maxProfile, cloudHeightProfile(low, pw.y, type,
+                                                           cloudDepthFraction(coverageHere, type)));
             maxShape = max(maxShape, cloudNoise.SampleLevel(pw / low.baseScale, 0.0).r);
         }
-        float d = cloudDensity(low, p, true);
+        float d = cloudDensity(low, p, true, 0.0);
         maxDensity = max(maxDensity, d);
         tau += d * low.extinction * step;
     }

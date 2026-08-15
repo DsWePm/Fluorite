@@ -85,3 +85,29 @@ The 10K mother asset is not stored in Fluorite's Git repository. The build
 downloads it into an ignored local Gradle cache only when absent and rejects any
 download whose SHA-256 differs from the value above. A builder may instead
 supply the same pinned bytes with `-PendHdrSource=<path>`.
+
+## High-cloud shape sources
+
+Fluorite's high-cloud renderer derives shape-only optical-depth textures from
+two CC0 sources. Neither source's RGB colour nor baked lighting is sampled by the
+game; Fluorite's current sun and sky Radiance relight both high-cloud sheets.
+
+### Clouds with Transparency
+
+The lower high-cloud sheet uses modified alpha shapes from **Clouds with
+Transparency**, created by **WickedInsignia**:
+
+- Source page: <https://opengameart.org/content/clouds-with-transparency>
+- Direct build source: <https://opengameart.org/sites/default/files/fx_cloudalphas.zip>
+- Pinned source SHA-256: `83514a391c765819bc159b7f9ab61ec9f06c0caa2b5865af20a5bd3b2a14cca4`
+- License: [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/)
+
+The deterministic build reads the ten 2048x2048 alpha images, downsamples them
+in transmittance space, converts alpha to optical depth, normalises their
+integrated optical depth, generates Beer-preserving mipmaps, and packs a ten-layer 1024x1024
+R8_UNORM KTX2 array. The original RGB channels are discarded.
+
+The source assets are not stored in Fluorite's Git repository. Gradle downloads
+them into an ignored cache only when absent and rejects bytes whose SHA-256 does
+not match the values above. Builders may provide the same pinned bytes with
+`-PhighCloudPatchSource=<path>`.

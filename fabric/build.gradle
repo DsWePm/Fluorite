@@ -125,6 +125,7 @@ sourceSets.main.java.srcDir(files(rootProject.ext.fluoriteShaderRecordsDir).buil
 sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteShaderSpirvDir).builtBy(":compileShaders"))
 sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteNgxNativesDir).builtBy(":bundleNgxNatives"))
 sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteEndEnvironmentDir).builtBy(":generateEndEnvironment"))
+sourceSets.main.resources.srcDir(files(rootProject.ext.fluoriteHighCloudDir).builtBy(":generateHighCloudAssets"))
 
 processResources {
 	inputs.property "version", project.version

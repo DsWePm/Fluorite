@@ -18,7 +18,7 @@ final class RtKtx2 {
     private static final int HEADER_BYTES = 80;
     private static final int MAX_BYTES = 256 * 1024 * 1024;
 
-    record Image(int vkFormat, int typeSize, int width, int height,
+    record Image(int vkFormat, int typeSize, int width, int height, int layers,
                  List<byte[]> levels, Map<String, String> metadata) {
         Image {
             levels = List.copyOf(levels);
@@ -51,11 +51,21 @@ final class RtKtx2 {
         long sgdOffset = in.getLong();
         long sgdLength = in.getLong();
 
-        if (vkFormat != 122 && vkFormat != 97) throw new IOException("Unsupported KTX2 VkFormat " + vkFormat);
-        int expectedTypeSize = vkFormat == 122 ? 4 : 2;
+        int bytesPerPixel = switch (vkFormat) {
+            case 9 -> 1;   // R8_UNORM
+            case 76 -> 2;  // R16_SFLOAT
+            case 122 -> 4; // B10G11R11_UFLOAT_PACK32
+            case 97 -> 8;  // R16G16B16A16_SFLOAT
+            default -> throw new IOException("Unsupported KTX2 VkFormat " + vkFormat);
+        };
+        int expectedTypeSize = switch (vkFormat) {
+            case 9 -> 1;
+            case 122 -> 4;
+            default -> 2;
+        };
         if (typeSize != expectedTypeSize) throw new IOException("KTX2 typeSize does not match VkFormat");
-        if (width <= 0 || height <= 0 || depth != 0 || layers != 0 || faces != 1) {
-            throw new IOException("Only ordinary 2D KTX2 images are supported");
+        if (width <= 0 || height <= 0 || depth != 0 || layers < 0 || layers > 64 || faces != 1) {
+            throw new IOException("Only 2D and 2D-array KTX2 images are supported");
         }
         if (levelCount <= 0 || levelCount > 32) throw new IOException("Invalid KTX2 level count");
         if (supercompression != 0 || sgdOffset != 0 || sgdLength != 0) {
@@ -79,12 +89,13 @@ final class RtKtx2 {
             lengths[level] = in.getLong(HEADER_BYTES + level * 24 + 8);
             uncompressed[level] = in.getLong(HEADER_BYTES + level * 24 + 16);
         }
-        int bytesPerPixel = vkFormat == 122 ? 4 : 8;
+        int arrayLayers = Math.max(layers, 1);
         List<byte[]> levelData = new ArrayList<>(levelCount);
         int levelWidth = width;
         int levelHeight = height;
         for (int level = 0; level < levelCount; level++) {
-            long expected = Math.multiplyExact(Math.multiplyExact((long) levelWidth, levelHeight), bytesPerPixel);
+            long expected = Math.multiplyExact(Math.multiplyExact(
+                    Math.multiplyExact((long) levelWidth, levelHeight), bytesPerPixel), arrayLayers);
             if (lengths[level] != expected || uncompressed[level] != expected) {
                 throw new IOException("KTX2 level " + level + " has " + lengths[level]
                         + " bytes; expected " + expected);
@@ -96,7 +107,7 @@ final class RtKtx2 {
             levelWidth = Math.max(1, levelWidth / 2);
             levelHeight = Math.max(1, levelHeight / 2);
         }
-        return new Image(vkFormat, typeSize, width, height, levelData,
+        return new Image(vkFormat, typeSize, width, height, arrayLayers, levelData,
                 kvdLength == 0 ? Map.of() : parseMetadata(bytes, (int) kvdOffset, (int) kvdLength));
     }
 
