@@ -48,6 +48,11 @@ static const float HIGH_CLOUD_PATCH_TAU_RANGE = 4.0;
 // The march's step bounds, in blocks. The step is now chosen from how far THIS RAY crosses the deck
 // rather than from how far the deck is, so a grazing crossing is spread over the budget instead of being
 // swallowed by a handful of enormous strides. See marchLayer.
+// The stratus band's upper support, as a fraction of the deck. Named because TWO things depend on it:
+// cloudHeightProfile draws the sheet up to here, and cloudDepthFraction uses it as the floor on how
+// shallow any cloud may be. If the profile's stratus band moves, this moves with it.
+static const float CLOUD_STRATUS_TOP = 0.18;
+
 static const float CLOUD_STEP_MIN = 24.0;
 static const float CLOUD_STEP_MAX = 400.0;
 
@@ -336,8 +341,37 @@ float2 cloudShellSpan(CloudLayer layer, float3 ro, float3 rd) {
  * <p>Blended in two halves rather than by a single lerp between the extremes, so the middle of the range
  * is cumulus rather than a half-height average of a sheet and a tower.
  */
-float cloudHeightProfile(CloudLayer layer, float altitude, float type) {
-    float t = saturate((altitude - layer.bottom) / layer.thickness);
+/**
+ * How deep THIS cloud is, as a fraction of the authored maximum.
+ *
+ * <p>FLAT BASES, VARYING TOPS, which is the shape the atmosphere actually produces. A cloud's underside
+ * sits at the lifting condensation level -- the altitude where rising air reaches saturation -- and that
+ * altitude is a property of the air mass, so it is the same across a region. That is why a field of
+ * cumulus has famously level bases. A cloud's TOP is wherever that particular parcel ran out of buoyancy,
+ * and that differs from one cell to the next. So the authored thickness is a CEILING rather than a
+ * height everything is issued with.
+ *
+ * <p>DRIVEN BY COVERAGE, which needs no new field and is not a convenience. Vigorous convection makes a
+ * cloud both deeper and broader, so depth and coverage are correlated in the real thing. The by-product is
+ * the part worth having: coverage falls off toward the edge of a cloud system, so its clouds are shallow at
+ * the fringe and deep in the middle -- a domed top thinning to the sides, which is what a cumulus looks
+ * like from the ground.
+ *
+ * <p>THE FLOOR IS THE STRATUS SHEET, and that is where the physics stops rather than a number chosen to
+ * look right. A stratus band is the thinnest thing this profile system can represent: below it there is no
+ * shape left to have, only a slab getting thinner, and a cloud field of slabs is what this whole change
+ * exists to get away from. Expressed relative to the type's own top so the floor means the same depth in
+ * blocks whichever family stands here.
+ */
+float cloudDepthFraction(float coverage, float type) {
+    float top = max(cloudProfileTop(type), 1.0e-3);
+    return lerp(saturate(CLOUD_STRATUS_TOP / top), 1.0, saturate(coverage));
+}
+
+float cloudHeightProfile(CloudLayer layer, float altitude, float type, float depth) {
+    // Dividing the DEPTH rather than offsetting the base is what keeps the underside flat: t still starts
+    // at zero on the deck floor, it just reaches the profile's top sooner.
+    float t = saturate((altitude - layer.bottom) / (layer.thickness * max(depth, 1.0e-3)));
     float stratus = smoothstep(0.0, 0.03, t) * (1.0 - smoothstep(0.07, 0.18, t));
     float cumulus = smoothstep(0.0, 0.05, t) * (1.0 - smoothstep(0.30, 0.62, t));
     float anvil = smoothstep(0.60, 0.78, t) * (1.0 - smoothstep(0.92, 1.0, t));
@@ -519,7 +553,7 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap, float footprint) {
         return 0.0;
     }
     float type = cloudType(p);
-    float profile = cloudHeightProfile(layer, pw.y, type);
+    float profile = cloudHeightProfile(layer, pw.y, type, cloudDepthFraction(coverage, type));
     if (profile <= 0.0) {
         return 0.0;
     }
@@ -796,7 +830,13 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
             // sample, taking the local density as representative of the column. Bounded by the type's own
             // profile rather than by the deck, so a stratus sheet is not buried under the empty three
             // hundred blocks a cumulonimbus would have filled.
-            float ownTop = layer.bottom + cloudProfileTop(cloudType(p)) * layer.thickness;
+            // The top of THIS cloud, which now includes how deep this one happens to be. Reading the
+            // type's full top here while the density used a shallower one would bury a shallow cloud
+            // under the air above it and turn its own underside black.
+            float ownType = cloudType(p);
+            float ownTop = layer.bottom
+                    + cloudProfileTop(ownType) * cloudDepthFraction(cloudCoverage(layer, p), ownType)
+                            * layer.thickness;
             float tauUp = sigmaT * max(ownTop - worldIn(layer, p).y, 0.0);
 
             // Isotropic, so no phase factor: light that has scattered often enough for diffusion to
@@ -1057,8 +1097,12 @@ public float3 cloudDebugProbe(float3 ro, float3 rd) {
         if (pw.y >= low.bottom && pw.y <= low.bottom + low.thickness) {
             inDeck += 1.0;
             float type = cloudType(p);
-            maxCoverage = max(maxCoverage, cloudCoverage(low, p));
-            maxProfile = max(maxProfile, cloudHeightProfile(low, pw.y, type));
+            // The SAME depth the shading uses. A probe that reported the type's full profile while the
+            // density used a per-cloud shallower one would disagree with the thing it exists to explain.
+            float coverageHere = cloudCoverage(low, p);
+            maxCoverage = max(maxCoverage, coverageHere);
+            maxProfile = max(maxProfile, cloudHeightProfile(low, pw.y, type,
+                                                           cloudDepthFraction(coverageHere, type)));
             maxShape = max(maxShape, cloudNoise.SampleLevel(pw / low.baseScale, 0.0).r);
         }
         float d = cloudDensity(low, p, true, 0.0);

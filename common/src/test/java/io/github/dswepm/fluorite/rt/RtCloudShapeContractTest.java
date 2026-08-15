@@ -41,7 +41,15 @@ final class RtCloudShapeContractTest {
         // The footprint rides along because the mip is chosen from the march step -- see cloudNoiseLod.
         assertTrue(cloud.contains(
                 "float evolvingCloudShape(CloudLayer layer, float3 pw, float type, float footprint)"));
-        assertTrue(cloud.contains("float profile = cloudHeightProfile(layer, pw.y, type);"));
+        // The authored thickness is a CEILING now: each cloud gets its own depth, floored at the
+        // stratus sheet, so a deck is no longer everything issued with one height.
+        assertTrue(cloud.contains(
+                "float profile = cloudHeightProfile(layer, pw.y, type, cloudDepthFraction(coverage, type));"));
+        assertTrue(cloud.contains("float cloudDepthFraction(float coverage, float type)"));
+        // The floor and the profile's own stratus band must move together or the floor stops
+        // meaning "the thinnest cloud this system can represent".
+        assertTrue(cloud.contains("static const float CLOUD_STRATUS_TOP = 0.18;"));
+        assertTrue(cloud.contains("(1.0 - smoothstep(0.07, 0.18, t))"));
         assertTrue(cloud.contains("float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);"));
         // Same fetch, now prefiltered to the march step rather than always reading level 0.
         assertTrue(cloud.contains("float erosion = cloudNoise.SampleLevel(detailPw / layer.detailScale,"));
