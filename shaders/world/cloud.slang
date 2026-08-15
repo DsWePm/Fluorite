@@ -489,13 +489,34 @@ float sunOpticalDepth(CloudLayer layer, float3 p, float3 lightDir, int steps, in
     // reach = s0 * (2^steps - 1) with doubling steps, so s0 is chosen to keep the reach fixed as the
     // step count moves. Quality then costs steps without also changing what is being integrated.
     float s0 = layer.thickness / max(exp2(float(steps)) - 1.0, 1.0);
+    // ONE DECK THICKNESS MEASURED VERTICALLY, not one deck thickness along the ray.
+    //
+    // The reach used to be a fixed distance in the light's direction, which is right only for a sun
+    // overhead. Sunlight arriving at elevation theta crosses H/sin(theta) of deck, so a fixed reach of H
+    // integrates a sin(theta) FRACTION of the path: half of it at 30 degrees, a sixth at 10, a twelfth at
+    // 5. Clouds were therefore least self-shadowed exactly at sunrise and sunset, where they are most
+    // back-lit and where the error is most visible -- the lit face keeps a brightness it has not earned.
+    //
+    // The same file already does this correctly one function away: the high sheet converts its vertical
+    // optical depth with a sun secant and caps it. This is that, on the deck that marches.
+    //
+    // PAID IN STEPS, NOT IN RESOLUTION. With a doubling schedule, reaching 2^k further costs exactly k
+    // more steps at the SAME s0, so the near field -- where the boundary between a cloud's lit and shaded
+    // face is decided, and the reason the first step is short -- is sampled exactly as finely as before.
+    // Scaling s0 instead would have bought the reach by blurring the one part that has to stay sharp.
+    // Capped at three doublings, so a sun on the horizon costs three extra density samples rather than an
+    // unbounded march through air that holds no cloud.
+    float secant = 1.0 / max(abs(lightDir.y), 0.125); // 0.125 -> the cap below binds first anyway
+    int extra = int(clamp(ceil(log2(max(secant, 1.0))), 0.0, 3.0));
+    // Overhead sun: secant is 1, extra is 0, and this is the schedule that shipped, step for step.
+    int totalSteps = steps + extra;
     // Jittered start for the same reason the primary march jitters: an unjittered shadow lattice draws
     // itself as bands across a cloud's shaded face.
     float jitter = rndf(seed);
     float tau = 0.0;
     float t = 0.0;
     float step = s0;
-    for (int i = 0; i < steps; ++i) {
+    for (int i = 0; i < totalSteps; ++i) {
         // Sample at the step's midpoint, offset by the jitter — midpoint because a one-sample estimate of
         // an interval's average is least wrong there.
         float3 q = p + lightDir * (t + step * (0.35 + 0.3 * jitter));
@@ -616,7 +637,22 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
     // Jittered entry, for the same reason every other estimator here jitters: a fixed start puts the
     // step lattice at the same depth on neighbouring pixels and draws it as banding, and this renderer
     // would rather have noise a denoiser can integrate than structure it cannot.
-    float t = tEnter + rndf(marchSeed) * min(64.0, (tExit - tEnter) * 0.1);
+    //
+    // OVER ONE WHOLE STEP, which is what that sentence actually requires and what an absolute cap of 64
+    // blocks stopped delivering the moment the clouds were far away. The step grows as t/8, so at a
+    // kilometre out it is already 125 blocks and at twenty it is 2500; a 64-block offset moved the lattice
+    // by 3% of a step and left it, for every practical purpose, in the same place on every pixel.
+    //
+    // What that looked like is worth writing down, because the cause is invisible in the symptom. Sample
+    // depths are tEnter * 1.125^n, so an unjittered lattice is a set of smooth shells in the world. One
+    // step at that distance is optically opaque -- 1250 blocks at the authored extinction is tau ~ 12, so
+    // 1 - exp(-tau) is 1.0000 -- which means a pixel shows either a full slab of cloud or none of it,
+    // with no gradient in between. Coherent shells plus a binary decision drew distant cloud as a stack
+    // of discrete layers.
+    //
+    // Costs nothing: same schedule, same step count, different starting phase.
+    float firstStep = max(24.0, tEnter * 0.125);
+    float t = tEnter + rndf(marchSeed) * min(firstStep, tExit - tEnter);
 
     float transmittance = 1.0;
     float3 gathered = float3(0.0, 0.0, 0.0);
