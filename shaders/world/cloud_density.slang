@@ -640,3 +640,36 @@ public float3 cloudShadowTexelPoint(CloudShadowFrame f, uint2 texel) {
     float2 ls = f.origin + (float2(texel) + 0.5) * CLOUD_SHADOW_BLOCKS_PER_TEXEL;
     return f.right * ls.x + f.up * ls.y;
 }
+
+/** Bit 31 (Rt.Volumetrics.CLOUD_SHADOWS), nested under bit 30 the way the diffusion term is. */
+public bool cloudShadowsOn(WorldPush wp) {
+    return (wp.flags & (1u << 31u)) != 0u;
+}
+
+/**
+ * How much of the sun survives the cloud on its way to a point — 8.10's `cloudSunTransmittance`.
+ *
+ * <p>ONE TEXTURE READ, through the same projection the bake used to decide what to write, so what comes
+ * back is the value written for THIS point rather than for one near it.
+ *
+ * <p>WHICH POINT TO PASS is the caller's, and there is exactly one case where it is not the shaded
+ * surface: an UNDERWATER receiver. Light reaches it along a refracted path, so the ray carrying the
+ * cloud's shadow is the one above the water, and where that ray left the air -- which the caustic term
+ * already computes -- is where this map has to be asked. Passing the receiver instead would displace
+ * its cloud shadow by the refraction offset, which is small at the surface and grows with depth.
+ *
+ * <p>Returns exactly 1.0 when the feature is off, and the early return is deliberate on both counts: the
+ * off state has to equal the published behaviour bit for bit (255/255 does, but the branch says so), and
+ * keeping the read itself out of the off state is what lets an A/B measure the whole feature rather than
+ * everything except its texture traffic.
+ *
+ * <p>Nothing here re-tests whether there are clouds, or whether the sun is above the horizon. The bake
+ * writes clear sky in all of those cases, so this map is ALWAYS a valid transmittance -- see its header.
+ */
+public float cloudSunTransmittance(Sampler2D map, WorldPush wp, float3 p) {
+    if (!cloudShadowsOn(wp)) {
+        return 1.0;
+    }
+    CloudShadowFrame f = cloudShadowFrame(wp.lightDir.xyz, wp.camOffset);
+    return map.SampleLevel(cloudShadowUv(f, p), 0.0).r;
+}

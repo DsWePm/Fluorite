@@ -191,7 +191,24 @@ final class RtEnvironmentForcing {
                     ? FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE.value() * fogDensityScale()
                     : 1f;
 
-            boolean cloudsOn = FluoriteConfig.Rt.Volumetrics.CLOUDS.value();
+            // D176 REPLACES THE CLOUD INPUT HERE, and the reason is that this term and the shadow map
+            // would otherwise both be doing the same job, badly and twice.
+            //
+            // What this scalar does is fade caustic CONTRAST -- the pattern moves toward flat 1 while
+            // its mean irradiance is preserved. That was the right proxy while the renderer had no idea
+            // where the clouds were: an overcast sky was represented by "the caustics go away". It is
+            // not what the physics says. A cloud removes energy from the direct beam; the fraction that
+            // survives is still collimated, so it still focuses just as sharply, only dimmer. That
+            // fraction is exactly the shadow map, and it is applied to the sun's irradiance, which is
+            // the honest place for an energy loss.
+            //
+            // So when the map is live the cloud terms drop out of this scalar and the map does the work
+            // per location instead of as one number for the whole world. When the map is off they come
+            // back, because the off state of a switch has to be the behaviour that shipped. The fog's
+            // load stays either way: fog genuinely decollimates light along the path, and there is no
+            // equivalent map for it.
+            boolean cloudsOn = FluoriteConfig.Rt.Volumetrics.CLOUDS.value()
+                    && !FluoriteConfig.Rt.Volumetrics.CLOUD_SHADOWS.value();
             float finalCloudDensity = cloudsOn
                     ? FluoriteConfig.Rt.Volumetrics.CLOUD_DENSITY.value() * cloudDensityScale()
                     : 1f;

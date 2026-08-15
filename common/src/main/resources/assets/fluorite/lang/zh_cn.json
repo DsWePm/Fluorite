@@ -422,6 +422,8 @@
   "fluorite.options.rt.cloudCirrusPatchStrength.tooltip": "下层随机圆润云片的独立光学厚度倍率。0 只移除这一层。",
   "fluorite.options.rt.cloudCirrusWindSpeed": "高云风速",
   "fluorite.options.rt.cloudCirrusWindSpeed.tooltip": "两份高云形状场漂移的速度，单位方块/秒；它与下方对流云层的风互相独立。",
+  "fluorite.options.rt.cloudShadows": "云阴影",
+  "fluorite.options.rt.cloudShadows.tooltip": "让云向地面、水面以及一切受阳光照射的东西投下阴影。数值来自每帧沿太阳方向烘焙一次的透射率图，而那张图用的是与头顶云朵完全相同的密度场——因此阴影不会落在没有云的地方。每个太阳采样一次纹理读取。关闭时也会恢复旧的全局天气水下焦散衰减——那个近似本来就是本项的替代品。",
   "fluorite.options.rt.cloudCirrus": "高云",
   "fluorite.options.rt.cloudCirrus.tooltip": "主云层上方的两层解析高云：下层是确定性撒布的圆润 CC0 云片，上层是无缝条缕云幕。两者只保存光学厚度并由当前太阳和天空重新照明，不再运行旧的高云体积行进。",
   "fluorite.options.rt.cloudCirrusCoverage": "高云量",

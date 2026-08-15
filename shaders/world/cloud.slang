@@ -42,6 +42,10 @@ import cloud_field;   // CLOUD_NOISE_DIM: the LOD below is in texels of that vol
 [[vk::binding(27, 0)]] Sampler2D cloudWeather;
 // D173's domain-warp vector field: curl noise, signed, encoded into RGB. See cloud_warp.comp.slang.
 [[vk::binding(28, 0)]] Sampler3D cloudWarp;
+// D176's light-space sun-transmittance map, baked by cloud_shadow.comp.slang out of the same density
+// field this file marches. Bound here rather than in world.rgen because it belongs to the cloud, and
+// because the wrapper below is the only thing that should ever read it.
+[[vk::binding(29, 0)]] Sampler2D cloudShadowMap;
 
 // The march's step bounds, in blocks. The step is now chosen from how far THIS RAY crosses the deck
 // rather than from how far the deck is, so a grazing crossing is spread over the budget instead of being
@@ -256,6 +260,18 @@ float cloudDensity(CloudLayer layer, float3 p, bool cheap, float footprint) {
 }
 float sunOpticalDepth(CloudLayer layer, float3 p, float3 lightDir, int steps, inout uint seed) {
     return sunOpticalDepth(cloudTextures(), layer, p, lightDir, steps, seed);
+}
+
+/**
+ * D176: how much of the sun reaches a point through the cloud, for a surface to attenuate its sun term.
+ *
+ * <p>NOT for the cloud's own shading. A cloud that dimmed its own sun term by this map would shadow
+ * itself twice -- sunOpticalDepth above already integrates the deck along the light from inside it and
+ * at the sample's own altitude, which is precisely what a map indexed by light-space position alone
+ * cannot do.
+ */
+public float cloudSunTransmittance(float3 p) {
+    return cloudSunTransmittance(cloudShadowMap, worldPush, p);
 }
 
 /**

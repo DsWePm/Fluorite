@@ -422,6 +422,8 @@
   "fluorite.options.rt.cloudCirrusPatchStrength.tooltip": "Independent optical-depth multiplier for the lower sheet of scattered rounded cloud patches. 0 removes only that sheet.",
   "fluorite.options.rt.cloudCirrusWindSpeed": "High-cloud Wind Speed",
   "fluorite.options.rt.cloudCirrusWindSpeed.tooltip": "How fast both high-cloud shape fields drift, in blocks per second. Their wind is independent from the convective deck below.",
+  "fluorite.options.rt.cloudShadows": "Cloud Shadows",
+  "fluorite.options.rt.cloudShadows.tooltip": "Let clouds shade the ground, water and everything else the sun lights. Read from a transmittance map baked once a frame along the sun's direction, out of the same density field the clouds overhead are drawn from -- so a shadow cannot end up somewhere its cloud is not. One texture read per sun sample. Off also restores the old global weather fade on underwater caustics, which existed to stand in for this.",
   "fluorite.options.rt.cloudCirrus": "High Clouds",
   "fluorite.options.rt.cloudCirrus.tooltip": "Two analytic high-cloud sheets above the main deck: deterministic rounded CC0 patches below and a seamless wispy field above. Both store optical depth only and are relit by the current sun and sky; neither runs the old high-cloud volume march.",
   "fluorite.options.rt.cloudCirrusCoverage": "High-cloud Coverage",

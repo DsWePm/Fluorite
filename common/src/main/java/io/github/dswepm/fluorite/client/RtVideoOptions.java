@@ -117,8 +117,8 @@ public final class RtVideoOptions {
                                 cloudWarpAmount(), cloudWarpScale(), cloudEvolutionSpeed(),
                                 cloudWindSpeed(), cloudWindOffset()),
                         Section.titled("fluorite.options.rt.section.cloudLighting",
-                                cloudSunSteps(), cloudMultiScatter(), cloudPhaseG(), cloudAlbedo(),
-                                cloudSecondary()),
+                                cloudSunSteps(), cloudMultiScatter(), cloudShadows(), cloudPhaseG(),
+                                cloudAlbedo(), cloudSecondary()),
                         // D163-D168 high clouds are two analytic optical-depth sheets. Their shape scale,
                         // shared weather controls and wind remain independent from the low volume.
                         Section.titled("fluorite.options.rt.section.cloudCirrus",
@@ -1657,6 +1657,11 @@ public final class RtVideoOptions {
     private static OptionInstance<Boolean> cloudMultiScatter() {
         return bool("fluorite.options.rt.cloudMultiScatter",
                 FluoriteConfig.Rt.Volumetrics.CLOUD_MULTI_SCATTER);
+    }
+
+    private static OptionInstance<Boolean> cloudShadows() {
+        return bool("fluorite.options.rt.cloudShadows",
+                FluoriteConfig.Rt.Volumetrics.CLOUD_SHADOWS);
     }
 
     private static OptionInstance<Boolean> cloudCirrus() {

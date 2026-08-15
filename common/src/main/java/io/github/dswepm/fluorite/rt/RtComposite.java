@@ -2692,6 +2692,14 @@ public final class RtComposite {
                 // dial only — every ray intersects the same world-anchored shells from its own origin,
                 // so this cannot move a cloud in a reflection relative to the one overhead.
                 flags |= (FluoriteConfig.Rt.Volumetrics.cloudSecondaryId() & 0b11) << 2;
+                if (FluoriteConfig.Rt.Volumetrics.CLOUD_SHADOWS.value()) {
+                    // Bit 31: D176's shadow map is read by receiving surfaces. Nested under the clouds
+                    // for the same reason bit 29 is -- there is nothing to cast a shadow otherwise, and
+                    // the pair's off state should be one state rather than two that differ only in dead
+                    // work. The BAKE tests this bit as well, so switching it off costs neither the march
+                    // nor the read.
+                    flags |= 1 << 31;
+                }
                 if (FluoriteConfig.Rt.Volumetrics.CLOUD_MULTI_SCATTER.value()) {
                     // Bit 29: the diffusion term that keeps a thick cloud's interior bright. Nested under
                     // the clouds themselves rather than independent, so the off state of the pair is one

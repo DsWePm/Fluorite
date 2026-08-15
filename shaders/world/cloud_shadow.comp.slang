@@ -143,7 +143,10 @@ void main(uint3 id: SV_DispatchThreadID) {
     // that stayed on the ground after the cloud was switched off.
     CloudShadowFrame frame = cloudShadowFrame(wp.lightDir.xyz, wp.camOffset);
     CloudLayer low = lowCloudLayer(wp);
-    if (!frame.valid || !cloudsOn(wp) || low.extinction <= 0.0) {
+    // The feature's own switch is tested HERE as well as at the lookup, and the two are not redundant.
+    // Here it skips the march, which is what makes the off state cost nothing; there it skips the read,
+    // which is what makes an A/B measure the whole feature. Both call the same function.
+    if (!frame.valid || !cloudsOn(wp) || !cloudShadowsOn(wp) || low.extinction <= 0.0) {
         cloudShadowOut[int2(id.xy)] = 1.0;
         return;
     }

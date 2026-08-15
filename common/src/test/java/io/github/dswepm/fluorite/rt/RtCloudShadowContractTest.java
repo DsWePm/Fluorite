@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -86,7 +87,8 @@ final class RtCloudShadowContractTest {
         // has gone, and the alternative -- making every consumer ask whether the map may be trusted --
         // is a condition each of them can get wrong independently.
         assertTrue(bake.contains("cloudShadowOut[int2(id.xy)] = 1.0;"));
-        assertTrue(bake.contains("!frame.valid || !cloudsOn(wp) || low.extinction <= 0.0"));
+        assertTrue(bake.contains(
+                "!frame.valid || !cloudsOn(wp) || !cloudShadowsOn(wp) || low.extinction <= 0.0"));
         // Which is only true if the dispatch is unconditional. Gating it on the CPU would reintroduce
         // exactly the stale-texture case the shader-side write exists to remove.
         assertTrue(composite.contains("skyLuts.recordCloudShadowBake(cmd, pushBuf.deviceAddress);"));
@@ -99,6 +101,53 @@ final class RtCloudShadowContractTest {
         // attenuates its sun term by. Light the cloud scattered rather than absorbed is not missing from
         // the world, it arrives as skylight, and mediumSkyRadiance already carries it.
         assertTrue(bake.contains("exp(-tau)"));
+    }
+
+    @Test
+    void theShadowLandsOnTheSunsIrradianceAndNowhereElse() throws IOException {
+        String rgen = source("shaders/world/world.rgen.slang");
+        String cloud = source("shaders/world/cloud.slang");
+        String volume = source("shaders/world/volume.slang");
+
+        // ON THE IRRADIANCE, not on the shadow ray's transmittance. "Less sun arrives here" is a
+        // different statement from "something is in the way", and putting it on the irradiance is what
+        // makes one line cover the diffuse term, the specular term and the back-face transmission that
+        // reuses the same quantity two hundred lines further down.
+        assertTrue(rgen.contains("sampledLightIrradiance *= cloudSunTransmittance(p);"));
+        assertTrue(rgen.contains("sampledLightIrradiance *= cloudSunTransmittance(hitPos);"));
+
+        // NOT the fog. Its segments routinely run above the deck, where a map that integrates the whole
+        // light ray would shadow a point with cloud that is underneath it.
+        assertFalse(volume.contains("cloudSunTransmittance"));
+        // NOT the cloud's own shading either -- sunOpticalDepth already marches the deck from inside it,
+        // at the sample's own altitude, and doing both would shadow every cloud twice. Counted rather
+        // than searched: the map may appear in cloud.slang exactly where it is declared and exactly
+        // where the wrapper reads it, and a third mention would be the march having helped itself.
+        assertEquals(2, cloud.split("cloudShadowMap", -1).length - 1,
+                "cloud.slang may name cloudShadowMap only at its binding and in the wrapper");
+    }
+
+    @Test
+    void offRestoresWhatShippedIncludingTheProxyItReplaces() throws IOException {
+        String config = source(
+                "common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
+        String composite = source(
+                "common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
+        String forcing = source(
+                "common/src/main/java/io/github/dswepm/fluorite/rt/RtEnvironmentForcing.java");
+
+        assertTrue(config.contains("\"volumetrics.cloud-shadows\""));
+        // Nested under the clouds, like the diffusion term: without a cloud there is nothing to cast a
+        // shadow, so the pair's off state should be one state and not two that differ in dead work.
+        assertTrue(composite.contains("flags |= 1 << 31;"));
+
+        // THE PROXY AND THE MAP MUST NEVER BOTH BE LIVE. D73's global weather scalar fades caustic
+        // CONTRAST to stand in for clouds the renderer could not locate; the map removes the beam's
+        // ENERGY where the cloud actually is. Both at once darkens and flattens underwater caustics
+        // twice over. Off has to bring the proxy back, or the switch's off state would not be the
+        // behaviour that shipped.
+        assertTrue(forcing.contains(
+                "&& !FluoriteConfig.Rt.Volumetrics.CLOUD_SHADOWS.value()"));
     }
 
     @Test
