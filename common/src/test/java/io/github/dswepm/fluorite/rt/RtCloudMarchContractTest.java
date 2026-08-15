@@ -15,6 +15,8 @@ final class RtCloudMarchContractTest {
     void escapedSkySegmentsKeepTheEstablishedBudgetAndClipTheirLastStep() throws IOException {
         String raygen = source("shaders/world/world.rgen.slang");
         String cloud = source("shaders/world/cloud.slang");
+        // The density field moved to a bindings-free module so the shadow bake can share it.
+        String density = source("shaders/world/cloud_density.slang");
 
         assertTrue(raygen.contains(
                 "float cloudMaxT = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;"));
@@ -28,7 +30,7 @@ final class RtCloudMarchContractTest {
                         + " CLOUD_STEP_MIN, CLOUD_STEP_MAX);"));
         assertFalse(cloud.contains("max(24.0, t * 0.125)"));
         // Filtering and stepping are two questions; the mip is selected by the same step.
-        assertTrue(cloud.contains("float cloudNoiseLod(float footprint, float scale)"));
+        assertTrue(density.contains("public float cloudNoiseLod(float footprint, float scale)"));
         assertTrue(cloud.contains(
                 "float sigmaT = density * layer.extinction;"));
     }
