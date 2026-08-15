@@ -38,14 +38,6 @@ import world_core;
 // upward ray and the remaining crossing is grazing, where the march would spend its whole budget on a
 // sliver of nearly transparent volume.
 public static const float CLOUD_MAX_DIST = 40000.0;
-// The finite importance budget must end continuously. The previous 10,000-block hard stop made the
-// first reachable point of a high shell jump from cloud to clear sky at one zenith angle. Starting the
-// convergence at 80% preserves the useful far field while putting its zero in the atmospheric horizon.
-public static const float CLOUD_FADE_START = 32000.0;
-
-float cloudDistanceWeight(float distance) {
-    return 1.0 - smoothstep(CLOUD_FADE_START, CLOUD_MAX_DIST, distance);
-}
 
 // How far apart the sky's clumps and clearings are, in blocks — the FIELD, distinct from how big a single
 // cloud within a clump is (cloudShape.z). Authored, because those are two different questions and
@@ -715,11 +707,7 @@ CloudResult marchLayer(CloudLayer layer, CloudBudget budget, float3 ro, float3 r
             density = cloudDensity(layer, p, false);
         }
         if (density > 0.0) {
-            // This is an estimator-importance taper, not a change to the world-space density sampled by
-            // the sun shadow. Applying it to sigmaT attenuates extinction and in-scatter together, so the
-            // finite cloud budget cannot create an energy seam at CLOUD_MAX_DIST.
-            float distanceWeight = cloudDistanceWeight(t);
-            float sigmaT = density * layer.extinction * distanceWeight;
+            float sigmaT = density * layer.extinction;
             float stepT = exp(-sigmaT * step);
 
             // How buried this sample is, from the light's side and from the sky's.
