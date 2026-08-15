@@ -40,6 +40,11 @@ public struct WorldPushConstants {
     public uint64_t lightGridSpanAddr;   // packed weighted section spans referenced by cell headers
     public uint64_t pathQueueAddr;       // packed primary -> indirect continuation records
     public uint64_t waterProbeAddr;      // optional host-visible WaterMediumProbe (0 = diagnostic off)
+    // One uint per 4x4-block column: rain, snow, none or not-yet-streamed. The shading needs it because
+    // snow and rain share the exposure map -- a roof shelters a doorway from both -- while only rain
+    // wets anything, so "has an exposure depth" stopped being the same question as "is getting wet".
+    // 120 bytes with this; the guaranteed push-constant floor is 128, so there is room for one more.
+    public uint64_t rainPrecipitationAddr;
     public uint frameIndex;
     public uint debugView;
     // Shading switches the CLOSEST-HIT needs. They live here rather than in WorldPush because the hit

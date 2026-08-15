@@ -144,7 +144,8 @@ public final class RtVideoOptions {
                                 wetFilmNormalFlattening(), rainRippleWidth()),
                         Section.titled("fluorite.options.rt.section.weatherRainParticles",
                                 rainParticlesEnabled(), rainStreakQuality(), rainStreakDensity(),
-                                rainStreakSpeed(), rainStreakLength(), rainSplashTarget(),
+                                rainStreakSpeed(), rainStreakLength(),
+                                snowFallSpeed(), snowFlakeSize(), rainSplashTarget(),
                                 rainSplashSize(), rainSplashOpacity(), rainSplashBrightness()),
                         Section.titled("fluorite.options.rt.section.weatherFog",
                                 fogTimeGain(), fogWeatherGain(), fogThunderDensityGain(),
@@ -1234,6 +1235,18 @@ public final class RtVideoOptions {
     private static OptionInstance<Integer> rainStreakLength() {
         return floatRangeSlider("fluorite.options.rt.rainStreakLength",
                 FluoriteConfig.Rt.Weather.RAIN_STREAK_LENGTH, 1, 20, 0.1f, " blocks");
+    }
+
+    /** Tenths of a block per second: a snowflake's terminal velocity is around 1, rain's is nearer 9. */
+    private static OptionInstance<Integer> snowFallSpeed() {
+        return floatRangeSlider("fluorite.options.rt.snowFallSpeed",
+                FluoriteConfig.Rt.Weather.SNOW_FALL_SPEED, 2, 120, 0.1f, " blocks/s");
+    }
+
+    /** Hundredths of a block. Every game oversizes flakes enormously; this is how much. */
+    private static OptionInstance<Integer> snowFlakeSize() {
+        return floatRangeSlider("fluorite.options.rt.snowFlakeSize",
+                FluoriteConfig.Rt.Weather.SNOW_FLAKE_SIZE, 2, 40, 0.01f, " blocks");
     }
 
     private static OptionInstance<Integer> rainSplashTarget() {

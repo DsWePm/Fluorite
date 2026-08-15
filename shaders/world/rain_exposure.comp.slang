@@ -10,6 +10,7 @@
 // dry biomes cannot become wet merely because their geometry is open to the sky.
 
 import world_common;
+import precipitation;
 
 struct RainExposurePush {
     uint64_t worldPushAddr;
@@ -28,7 +29,6 @@ struct RainExposurePush {
 // Ordinary secondary-visible geometry plus first-person self. Eye-origin shadow rays exclude self to
 // avoid hitting the camera body; sky-origin rain rays have no such hazard and held items may get wet.
 static const uint RAIN_SHADOW_MASK = 0x05u;
-static const uint RAIN_PRECIP_UNKNOWN = 2u;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -43,13 +43,20 @@ void main(uint3 id : SV_DispatchThreadID) {
     uint coarseX = min(updateTile.x >> 2u, rainPush.coarseDim - 1u);
     uint coarseY = min(updateTile.y >> 2u, rainPush.coarseDim - 1u);
     uint precipitation = ConstPtr<uint>(rainPush.precipitationAddr)[coarseY * rainPush.coarseDim + coarseX];
-    if (precipitation == RAIN_PRECIP_UNKNOWN) {
+    if (precipitation == PRECIP_UNKNOWN) {
         // Client chunk streaming has not supplied this biome yet. Keep history pending rather than
-        // converting a temporary lack of CPU data into a permanent dry/snow classification.
+        // converting a temporary lack of CPU data into a permanent dry classification.
         rainDepth[int2(updateTile)] = -2.0;
         return;
     }
-    if (precipitation == 0u) {
+    // SNOW TRACES THE SAME RAY. What this map answers is "where does falling precipitation first land",
+    // and that question has the same geometry whichever form is falling -- a roof shelters a doorway from
+    // snow exactly as it does from rain. Snow used to be lumped in with NONE, which is why a blizzard
+    // rendered as nothing at all; the difference between the two is now carried by the class, and every
+    // consumer that cares reads it. In particular the WETNESS path must keep excluding snow, which is
+    // precipitationWets()'s whole job -- a valid depth here is what would otherwise have started soaking
+    // the world during a snowstorm.
+    if (!precipitationFalls(precipitation)) {
         rainDepth[int2(updateTile)] = -1.0;
         return;
     }
