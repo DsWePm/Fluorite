@@ -1387,6 +1387,21 @@ public final class FluoriteConfig {
             public static final BooleanSetting CLOUD_MULTI_SCATTER =
                     bool("fluorite.rt.fog.cloudMultiScatter", "volumetrics.cloud-multi-scatter", true);
 
+            /**
+             * D176: clouds cast their shadow onto the ground, water and everything the sun lights.
+             *
+             * <p>Read from a light-space transmittance map baked once a frame out of the same density
+             * field the clouds themselves are drawn from, so a shadow cannot disagree with the cloud
+             * casting it. One texture read per sun sample; the bake is about 1% of the primary trace by
+             * arithmetic, which {@code gpu.cloudShadow} exists to check.
+             *
+             * <p>Off restores exactly what shipped, which takes two things rather than one: the map is
+             * not read, and D73's global weather proxy for caustic contrast comes back — that scalar
+             * exists to stand in for this map and the two must never both be live.
+             */
+            public static final BooleanSetting CLOUD_SHADOWS =
+                    bool("fluorite.rt.fog.cloudShadows", "volumetrics.cloud-shadows", true);
+
             /** Two analytic optical-depth sheets far above the convective deck; no high-cloud march. */
             public static final BooleanSetting CLOUD_CIRRUS =
                     bool("fluorite.rt.fog.cloudCirrus", "volumetrics.cloud-cirrus", true);

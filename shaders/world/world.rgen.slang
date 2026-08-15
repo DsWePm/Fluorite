@@ -415,6 +415,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 }
                 sampledLightIrradiance = sampleProviderCelestialIrradiance(
                         worldPush, undyedCelestialIrradiance, lightDir);
+                // D176's cloud shadow, on the same terms as the terrain's below. A particle standing in
+                // a cloud's shadow that stayed lit while the ground around it went dark would read as
+                // the particle glowing, so this is not an optional extension of the routing.
+                sampledLightIrradiance *= cloudSunTransmittance(hitPos);
             }
             // Billboards are effectively two-sided receivers. Bias from the side facing the light; shadow
             // rays exclude particles anyway, but this keeps the origin sane when the light is behind the
@@ -564,6 +568,22 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // one sample just as direction, BRDF and shadow already are.
             sampledLightIrradiance = sampleProviderCelestialIrradiance(
                     worldPush, undyedCelestialIrradiance, lightDir);
+            // D176: what the cloud leaves of the sun here. ON THE IRRADIANCE rather than on the shadow
+            // ray's transmittance, which is the difference between "less sun arrives" and "something is
+            // in the way", and it is the reason one line covers every consumer of this quantity --
+            // diffuse, specular, and the back-face transmission term two hundred lines down.
+            //
+            // NOT applied to the fog or to the cloud itself. The fog's segments routinely run ABOVE the
+            // deck, where a map that integrates the whole light ray would shadow a point with cloud that
+            // is beneath it; the cloud's own sun term already marches the deck from inside it, at the
+            // sample's own altitude, which is exactly what this map cannot do.
+            //
+            // The same map serves an underwater receiver, at the receiver's own position rather than at
+            // the water exit above it, and the refraction offset that ignores is worth a number: at 30
+            // blocks depth under a 45-degree sun it is 11 blocks, against a 16-block texel. It only
+            // reaches a texel's width past about 45 blocks of water, by which point the sun term this
+            // multiplies has been absorbed to nothing anyway.
+            sampledLightIrradiance *= cloudSunTransmittance(p);
         }
         float ndl = celestialOn ? max(0.0, dot(n, lightDir)) : 0.0;
         if (ndl > 0.0) {

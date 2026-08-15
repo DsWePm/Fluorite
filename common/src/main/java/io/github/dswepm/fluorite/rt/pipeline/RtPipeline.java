@@ -112,6 +112,7 @@ public final class RtPipeline {
     private final int highCloudPatchBinding;
     private final int cloudWeatherBinding;
     private final int cloudWarpBinding;
+    private final int cloudShadowBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
@@ -122,7 +123,7 @@ public final class RtPipeline {
                         int environmentTransferBinding, int environmentDiskEntryBinding,
                         int environmentDiskExitBinding, int rainExposureBinding,
                         int rainWetHistoryBinding, int highCloudPatchBinding,
-                        int cloudWeatherBinding, int cloudWarpBinding) {
+                        int cloudWeatherBinding, int cloudWarpBinding, int cloudShadowBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -163,6 +164,7 @@ public final class RtPipeline {
         this.highCloudPatchBinding = highCloudPatchBinding;
         this.cloudWeatherBinding = cloudWeatherBinding;
         this.cloudWarpBinding = cloudWarpBinding;
+        this.cloudShadowBinding = cloudShadowBinding;
     }
 
     /**
@@ -279,13 +281,20 @@ public final class RtPipeline {
             // displaces, so it shares the tiling sampler.
             int cloudWarpBinding = skyAtlas ? cloudWeatherBinding + cloudWeatherSamplers : -1;
             int cloudWarpSamplers = skyAtlas ? 1 : 0;
+            // D176's light-space cloud shadow map, binding 29. Baked every frame by a compute pass out
+            // of the same cloud_density field the sky is drawn from, so the shading reads a shadow that
+            // cannot disagree with the cloud casting it. Clamped, not tiled: outside its 8192-block
+            // square there is no answer to extrapolate, so the edge texel is the honest fallback.
+            int cloudShadowBinding = skyAtlas ? cloudWarpBinding + cloudWarpSamplers : -1;
+            int cloudShadowSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers
                     + cloudNoiseSamplers + waterHeightSamplers + fogNoiseSamplers
                     + environmentRadianceSamplers + environmentTransferSamplers
                     + environmentDiskEntrySamplers + environmentDiskExitSamplers
                     + rainExposureSamplers + rainWetHistorySamplers
-                    + highCloudPatchSamplers + cloudWeatherSamplers + cloudWarpSamplers;
+                    + highCloudPatchSamplers + cloudWeatherSamplers + cloudWarpSamplers
+                    + cloudShadowSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -357,6 +366,9 @@ public final class RtPipeline {
                 binds.get(cloudWarpBinding).binding(cloudWarpBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(cloudShadowBinding).binding(cloudShadowBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -370,7 +382,8 @@ public final class RtPipeline {
                     + fogNoiseSamplers + environmentRadianceSamplers + environmentTransferSamplers
                     + environmentDiskEntrySamplers + environmentDiskExitSamplers
                     + rainExposureSamplers + rainWetHistorySamplers
-                    + highCloudPatchSamplers + cloudWeatherSamplers + cloudWarpSamplers;
+                    + highCloudPatchSamplers + cloudWeatherSamplers + cloudWarpSamplers
+                    + cloudShadowSamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -561,7 +574,7 @@ public final class RtPipeline {
                     environmentRadianceBinding, environmentTransferBinding,
                     environmentDiskEntryBinding, environmentDiskExitBinding, rainExposureBinding,
                     rainWetHistoryBinding, highCloudPatchBinding, cloudWeatherBinding,
-                    cloudWarpBinding);
+                    cloudWarpBinding, cloudShadowBinding);
         }
     }
 
@@ -730,13 +743,16 @@ public final class RtPipeline {
         writeCurrentAtlasBinding(rainWetHistoryBinding, imageView, sampler);
     }
 
-    /** Bind D163's deterministic ten-layer transparent-cloud optical-depth array. */
     public void setCloudWeather(long imageView, long sampler) {
         writeAtlasBinding(cloudWeatherBinding, imageView, sampler);
     }
 
     public void setCloudWarp(long imageView, long sampler) {
         writeAtlasBinding(cloudWarpBinding, imageView, sampler);
+    }
+
+    public void setCloudShadow(long imageView, long sampler) {
+        writeAtlasBinding(cloudShadowBinding, imageView, sampler);
     }
 
     public void setHighCloudPatches(long imageView, long sampler) {

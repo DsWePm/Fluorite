@@ -250,6 +250,8 @@
   "fluorite.options.rt.cloudCirrusMorphology.tooltip": "在 0 的纖維狀卷雲與 1 的圓潤卷積雲小雲包之間混合。中間值保留條縷，同時把它們打散成更小的雲包。",
   "fluorite.options.rt.cloudCirrusWindSpeed": "卷雲風速",
   "fluorite.options.rt.cloudCirrusWindSpeed.tooltip": "卷雲層漂移的速度，单位方塊/秒。**是它自己的，不是積雲層的**：卷雲高出好幾公里，那里風更快 —— 兩層以不同速度相互滑过，正是天空顯得有縱深而不像一个畫好的穹頂的主要原因。",
+  "fluorite.options.rt.cloudShadows": "雲陰影",
+  "fluorite.options.rt.cloudShadows.tooltip": "讓雲向地面、水面以及一切受陽光照射的東西投下陰影。數值來自每幀沿太陽方向烘焙一次的透射率圖，而那張圖用的是與頭頂雲朵完全相同的密度場——因此陰影不會落在沒有雲的地方。每個太陽採樣一次紋理讀取。關閉時也會恢復舊的全域天氣水下焦散衰減——那個近似本來就是本項的替代品。",
   "fluorite.options.rt.cloudCirrus": "卷云层",
   "fluorite.options.rt.cloudCirrus.tooltip": "主云层之上很高处的一层薄冰云，被下落途中的风切变梳成条缕。开销很小：它薄到光几乎直穿而过，因此完全不跑自阴影行进，射线也只穿过它一次。",
   "fluorite.options.rt.cloudCirrusCoverage": "卷云量",

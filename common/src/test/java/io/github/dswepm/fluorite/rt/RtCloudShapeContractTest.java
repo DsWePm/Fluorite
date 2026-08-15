@@ -20,40 +20,47 @@ final class RtCloudShapeContractTest {
                 .toList();
         String common = source("shaders/world/world_common.slang");
         String cloud = source("shaders/world/cloud.slang");
+        String density = source("shaders/world/cloud_density.slang");
         String composite = source(
                 "common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
 
         assertTrue(fields.contains("cloudEvolution"), fields.toString());
         assertTrue(common.contains("public float4   cloudEvolution;"));
-        assertTrue(cloud.contains("l.detailOffset = worldPush.cloudEvolution.xy;"));
+        // The layer is assembled in the bindings-free module now, from a WorldPush passed as an
+        // argument, so that the shadow bake builds its deck from the SAME lanes the sky is drawn from.
+        assertTrue(density.contains("l.detailOffset = wp.cloudEvolution.xy;"));
         assertTrue(composite.contains("cloudEvolution(environment)"));
         // z carried the retired upper sheet's gain. The LANE stays -- removing it would move every field
         // after it in a push buffer whose Java record is positional -- but nothing may read it again, or
-        // it becomes a lane that is zero on the CPU and meaningful in the shader.
+        // it becomes a lane that is zero on the CPU and meaningful in the shader. Both files, because
+        // the read would now most naturally be written in the module and spell the struct differently.
         assertFalse(cloud.contains("worldPush.cloudEvolution.z"));
+        assertFalse(density.contains("wp.cloudEvolution.z"));
     }
 
     @Test
     void convectiveCloudsKeepTheirTypeProfileWhileAddingDifferentialPuffs() throws IOException {
         String cloud = source("shaders/world/cloud.slang");
+        String density = source("shaders/world/cloud_density.slang");
 
-        assertTrue(cloud.contains("float lowCloudPuffWeight(float type)"));
+        assertTrue(density.contains("public float lowCloudPuffWeight(float type)"));
         // The footprint rides along because the mip is chosen from the march step -- see cloudNoiseLod.
-        assertTrue(cloud.contains(
-                "float evolvingCloudShape(CloudLayer layer, float3 pw, float type, float footprint)"));
+        assertTrue(density.contains(
+                "float evolvingCloudShape(CloudTextures tex, CloudLayer layer, float3 pw, float type,"
+                        + " float footprint)"));
         // The authored thickness is a CEILING now: each cloud gets its own depth, floored at the
         // stratus sheet, so a deck is no longer everything issued with one height.
-        assertTrue(cloud.contains(
+        assertTrue(density.contains(
                 "float profile = cloudHeightProfile(layer, pw.y, type, cloudDepthFraction(coverage, type));"));
-        assertTrue(cloud.contains("float cloudDepthFraction(float coverage, float type)"));
+        assertTrue(density.contains("public float cloudDepthFraction(float coverage, float type)"));
         // The floor and the profile's own stratus band must move together or the floor stops
         // meaning "the thinnest cloud this system can represent".
-        assertTrue(cloud.contains("static const float CLOUD_STRATUS_TOP = 0.18;"));
-        assertTrue(cloud.contains("(1.0 - smoothstep(0.07, 0.18, t))"));
-        assertTrue(cloud.contains("float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);"));
+        assertTrue(density.contains("public static const float CLOUD_STRATUS_TOP = 0.18;"));
+        assertTrue(density.contains("(1.0 - smoothstep(0.07, 0.18, t))"));
+        assertTrue(density.contains("float3 detailPw = pw + float3(layer.detailOffset.x, 0.0, layer.detailOffset.y);"));
         // Same fetch, now prefiltered to the march step rather than always reading level 0.
-        assertTrue(cloud.contains("float erosion = cloudNoise.SampleLevel(detailPw / layer.detailScale,"));
-        assertTrue(cloud.contains("cloudNoiseLod(footprint, layer.detailScale)).g;"));
+        assertTrue(density.contains("float erosion = tex.noise.SampleLevel(detailPw / layer.detailScale,"));
+        assertTrue(density.contains("cloudNoiseLod(footprint, layer.detailScale)).g;"));
     }
 
     @Test
@@ -67,6 +74,7 @@ final class RtCloudShapeContractTest {
         String pipeline = source(
                 "common/src/main/java/io/github/dswepm/fluorite/rt/pipeline/RtPipeline.java");
         String cloud = source("shaders/world/cloud.slang");
+        String density = source("shaders/world/cloud_density.slang");
         String english = source("common/src/main/resources/assets/fluorite/lang/en_us.json");
         String chinese = source("common/src/main/resources/assets/fluorite/lang/zh_cn.json");
 
@@ -102,23 +110,39 @@ final class RtCloudShapeContractTest {
     @Test
     void lowCloudShapeIsDisplacedRatherThanOnlyEroded() throws IOException {
         String cloud = source("shaders/world/cloud.slang");
+        String density = source("shaders/world/cloud_density.slang");
         String config = source(
                 "common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
 
         // The warp displaces the SHAPE lookup only. Coverage and the height profile decide where a cloud
         // system stands and how tall it is; displacing those would move the weather rather than the cloud.
-        assertTrue(cloud.contains(
-                "float shape = evolvingCloudShape(layer, cloudWarpPosition(layer, pw), type, footprint);"));
-        assertTrue(cloud.contains("float3 cloudWarpPosition(CloudLayer layer, float3 pw)"));
+        assertTrue(density.contains(
+                "float shape = evolvingCloudShape(tex, layer, cloudWarpPosition(tex, layer, pw),"
+                        + " type, footprint);"));
+        assertTrue(density.contains("float3 cloudWarpPosition(CloudTextures tex, CloudLayer layer, float3 pw)"));
         assertTrue(cloud.contains("[[vk::binding(28, 0)]] Sampler3D cloudWarp;"));
         // Its own advection is what makes cloud grow instead of pass by unchanged. Sharing the shape
         // field's drift would deform each cloud once and then translate it rigidly.
         // Along the warp volume's own axis, not horizontally: a sideways drift makes the deformation
         // SWEEP across the cloud, and a sweep reads as translation -- the one motion the warp exists to
         // stop being the only thing in the sky.
-        assertTrue(cloud.contains("float3(0.0, worldPush.cloudWarp.z, 0.0)"));
+        assertTrue(density.contains("float3(0.0, layer.warpClock, 0.0)"));
         // Zero amplitude must skip the fetch and leave the field bit-for-bit as it was.
-        assertTrue(cloud.contains("if (amplitude <= 0.0)"));
+        assertTrue(density.contains("if (amplitude <= 0.0)"));
+        // THE SPLIT ITSELF. A shadow is only right if it is cast by the same density the cloud is drawn
+        // from, so the field lives in a module with no bindings that both the shading and the shadow bake
+        // import. Two copies would agree the day they were written and diverge the first time one was
+        // edited alone, and "the shadow is not under its cloud" is not attributable from a screenshot.
+        assertFalse(density.contains("[[vk::binding"));
+        // NO DESCRIPTOR SET, which is not the same rule as no data, and the distinction is what makes the
+        // module usable. `worldPush` is a GLOBAL behind world_core's set, so a compute pass importing it
+        // would have to declare a raygen layout it never uses; the WorldPush struct passed as an argument
+        // carries no bindings at all, which is how lowCloudLayer gives both callers one deck. The banner
+        // says the word, so this looks for the global's USE -- a member access, not the string.
+        assertFalse(density.contains("worldPush."));
+        assertTrue(density.contains("public CloudLayer lowCloudLayer(WorldPush wp)"));
+        assertTrue(cloud.contains("import cloud_density;"));
+        assertTrue(cloud.contains("CloudLayer lowLayer() { return lowCloudLayer(worldPush); }"));
         assertTrue(config.contains("\"volumetrics.cloud-warp-amount\""));
         assertTrue(config.contains("\"volumetrics.cloud-warp-scale\""));
         // The rate is its OWN setting, not a fraction of the wind. As a fraction it was proportional to
