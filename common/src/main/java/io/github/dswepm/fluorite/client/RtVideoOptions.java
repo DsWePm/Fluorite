@@ -142,11 +142,16 @@ public final class RtVideoOptions {
                                 wetDarkeningGain(), wetCoatGain(), puddleLayerGain(), puddleRoughness(),
                                 puddleExtraDarkening(), puddleNormalFlattening(),
                                 wetFilmNormalFlattening(), rainRippleWidth()),
+                        // SPLIT THREE WAYS along what each knob actually controls, because the old
+                        // single "Visible Rain" section held all of it and every name said "rain" --
+                        // including the three that have always driven snow as well.
+                        Section.titled("fluorite.options.rt.section.weatherPrecipitationParticles",
+                                rainParticlesEnabled(), rainStreakQuality(), rainStreakDensity()),
                         Section.titled("fluorite.options.rt.section.weatherRainParticles",
-                                rainParticlesEnabled(), rainStreakQuality(), rainStreakDensity(),
-                                rainStreakSpeed(), rainStreakLength(),
-                                snowFallSpeed(), snowFlakeSize(), rainSplashTarget(),
+                                rainStreakSpeed(), rainStreakLength(), rainSplashTarget(),
                                 rainSplashSize(), rainSplashOpacity(), rainSplashBrightness()),
+                        Section.titled("fluorite.options.rt.section.weatherSnow",
+                                snowFallSpeed(), snowFlakeSize()),
                         Section.titled("fluorite.options.rt.section.weatherFog",
                                 fogTimeGain(), fogWeatherGain(), fogThunderDensityGain(),
                                 fogTimeStructureGain(), fogRainStructureGain(),

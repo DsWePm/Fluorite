@@ -239,7 +239,11 @@ final class RtRainSurfaceContractTest {
         assertTrue(lighting.contains("DevicePtr<float4> radiance = DevicePtr<float4>(push.radianceAddr)"));
         assertTrue(lighting.contains("radiance[instanceId]"));
         assertFalse(lighting.contains("float3(0.015"));
-        assertTrue(vertex.contains("ConstPtr<float4>(push.radianceAddr)[instanceId].xyz"));
+        // The whole float4, because its w is the "this instance was actually shaded" flag. An instance
+        // the lighting pass frustum-culled keeps the cleared zero, and under straight-alpha over a zero
+        // particle does not vanish -- it subtracts, which is what made snow render as black specks.
+        assertTrue(vertex.contains("float4 lit = ConstPtr<float4>(push.radianceAddr)[instanceId];"));
+        assertTrue(vertex.contains("|| lit.w <= 0.0"));
         assertFalse(vertex.contains("float3(0.015"));
         assertFalse(vertex.contains("wp.mediumSkyRadiance.xyz * 0.45"));
         assertTrue(streaks.contains("vkCmdDispatch"));

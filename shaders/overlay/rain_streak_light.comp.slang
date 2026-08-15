@@ -17,12 +17,28 @@ static const float RAIN_INV_FOUR_PI = 0.079577471546;
 // The old direct-celestial term was E*0.004. With a normalised isotropic phase E/(4*pi), multiplying by
 // 0.004*4*pi preserves that daytime energy while allowing sky and local emitters to share the same units.
 static const float RAIN_STREAK_SCATTER_RESPONSE = 0.05026548246;
-// Snow scatters far harder than rain per particle, and the two reasons compound: an aggregate flake is
-// several millimetres across against a raindrop's one, so its geometric cross-section is close to an
-// order of magnitude larger, and its ice facets reflect near-white where a drop mostly refracts light
-// onward. NAMED AS A FIT, exactly as the rain response above is -- neither is derived, and pretending
-// otherwise is how a number nobody can re-derive ends up load-bearing.
-static const float SNOW_STREAK_SCATTER_RESPONSE = RAIN_STREAK_SCATTER_RESPONSE * 3.5;
+/**
+ * Snow's response is its ALBEDO, and unlike the rain constant above this one is derived rather than fit.
+ *
+ * <p>A raindrop is transparent: it refracts most of what reaches it onward and scatters a little toward
+ * the viewer, which is what the small fitted number above encodes. A snowflake is the opposite -- an
+ * aggregate of ice crystals that is opaque and very nearly white, so the honest model is a small diffuse
+ * particle rather than a thin scatterer.
+ *
+ * <p>For a Lambertian particle bathed in isotropic radiance L, the irradiance is pi*L and the outgoing
+ * radiance is albedo*(pi*L)/pi = albedo*L. And `source` below is already exactly that mean incident
+ * radiance: mediumSkyRadiance is a 1/(4*pi) sphere integral, while the sun arrives as E/(4*pi), which is
+ * also what a diffuse SPHERE averages over its surface (cross-section pi*r^2 over area 4*pi*r^2). So the
+ * source assembly needs nothing changed and the response is simply the albedo. Fresh snow's broadband
+ * albedo is 0.8 to 0.9.
+ *
+ * <p>WHY THIS WAS A BUG AND NOT A DIM SETTING. The streaks composite with straight-alpha over, so a
+ * fragment contributes alpha*(L_particle - L_background): when the particle is darker than what is
+ * behind it, drawing it SUBTRACTS light. At the thin-scatterer response a flake was about a fifth of the
+ * sky's radiance while covering the pixel at 0.55 alpha, so snow against an overcast sky rendered as
+ * black specks. Rain hid the same arithmetic because its streaks are hairline and its alpha is lower.
+ */
+static const float SNOW_STREAK_SCATTER_RESPONSE = 0.9;
 
 bool rainStreakOccluded(float3 p, float3 direction, float tMax) {
     RayDesc ray;

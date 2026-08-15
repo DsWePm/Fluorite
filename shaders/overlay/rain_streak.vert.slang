@@ -91,8 +91,13 @@ VertexOut main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID) {
         point = centre + (along - 0.5) * wp.rainDirection.xyz * push.length * nearCamera
                 + side * sideSign * halfWidth;
     }
+    // UNLIT INSTANCES MUST NOT DRAW. The lighting pass skips lattice cells outside its own frustum test
+    // and leaves their radiance at the cleared zero, which is not "invisible" under straight-alpha over
+    // -- it is a particle darker than everything behind it, so it subtracts. The cleared alpha is
+    // already the signal: the pass writes w = 1 for every instance it actually shaded.
+    float4 lit = ConstPtr<float4>(push.radianceAddr)[instanceId];
     float4 clip = mul(wp.curViewProj, float4(point - wp.camOffset, 1.0));
-    if (exposure <= 0.0 || clip.w <= 0.0) {
+    if (exposure <= 0.0 || clip.w <= 0.0 || lit.w <= 0.0) {
         clip = float4(2.0, 2.0, 0.0, 1.0);
     }
     o.position = clip;
@@ -103,6 +108,6 @@ VertexOut main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID) {
     o.exposure = exposure * (snow ? smoothstep(0.1, 0.6, rawDistanceToCamera) : nearCamera);
     // One value per instance, written by rain_streak_light.comp. Keeping lighting out of this six-vertex
     // stage avoids tracing the same two shadow rays six times for one procedural line.
-    o.radiance = ConstPtr<float4>(push.radianceAddr)[instanceId].xyz;
+    o.radiance = lit.xyz;
     return o;
 }
