@@ -41,6 +41,33 @@ final class RtCelestialMediumSamplingTest {
         assertFalse(visibility.contains("occluded(p, wp.lightDir.xyz)"));
     }
 
+    @Test
+    void theVisibilityGridClampsAtItsFacesInsteadOfReportingOpenSky() throws IOException {
+        String visibility = shader("volume_visibility.slang");
+
+        // A SPATIAL CACHE MISSES BY CLAMPING, NOT BY RESETTING. The grid reaches about 32 blocks
+        // horizontally at the default cell, and every fog or underwater sample past that used to be told
+        // the sky was wide open -- which is why distant cave fog glowed while nearby fog was correct.
+        // Asking the boundary instead costs nothing and, in a cave, the boundary is roofed.
+        assertTrue(visibility.contains("saturate((p - worldPush.visGridOrigin.xyz) / extent)"));
+
+        // The two things that made the miss wrong, and neither may come back on its own:
+        //
+        // The out-of-bounds early return, which IS the reset.
+        assertFalse(visibility.contains("any(uvw > float3(1.0, 1.0, 1.0))"));
+        // And the fade toward 1 over the outermost cells, which existed only to hide the seam that reset
+        // created. With clamping the function is continuous by construction, so the fade has nothing left
+        // to smooth -- and it had become a defect in its own right, brightening the answer as a sample
+        // approached the faces, which underground is exactly the wrong direction.
+        assertFalse(visibility.contains("VIS_EDGE_FADE"));
+        assertFalse(visibility.contains("lerp(1.0, v.g,"));
+
+        // The one remaining path that still answers "lit" is a grid that was never published, and there
+        // is genuinely nothing to clamp to there. It must stay 1 rather than 0: outdoors, and before this
+        // grid existed at all, lit is the correct answer, and defaulting to 0 would black out the world.
+        assertTrue(visibility.contains("if (cell <= 0.0)"));
+    }
+
     private static String shader(String name) throws IOException {
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         while (root != null && !Files.isRegularFile(root.resolve("settings.gradle"))) {
