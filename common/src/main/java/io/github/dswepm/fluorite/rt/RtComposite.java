@@ -3671,6 +3671,19 @@ public final class RtComposite {
             }
             atlasSampler = 0L;
         }
+        // The atmosphere LUT sampler, which every other sampler in this block already had and this one
+        // did not. It is the most widely bound of them -- transmittance, multi-scatter, both sky-view
+        // tables, aerial perspective, the visibility grid, the water height field, the rain exposure
+        // depth and the cloud shadow map all read through this single handle -- so being bound in nine
+        // places is exactly why its absence here was invisible: nothing stops working, the handle is
+        // simply never given back, once per device recreation.
+        if (lutSampler != 0L) {
+            RtContext ctx = RtContext.currentOrNull();
+            if (ctx != null) {
+                VK10.vkDestroySampler(ctx.vk(), lutSampler, null);
+            }
+            lutSampler = 0L;
+        }
         if (tilingSampler != 0L) {
             RtContext ctx = RtContext.currentOrNull();
             if (ctx != null) {

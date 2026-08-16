@@ -234,6 +234,17 @@ float rainPuddleMaskAt(float3 p, bool topReceiver) {
     return puddleMask;
 }
 
+// M21's two debug views, named HERE rather than beside the others in world.rgen because these two are
+// the only ones both raygen stages have to agree about. Pass A draws them; pass B has to recognise 26
+// and bail so it does not overwrite pass A's image. Entry files cannot import each other, so the number
+// lived as a bare literal in two places -- change one, and the other silently keeps painting. Both
+// stages already import this module, and it owns the surfaces these views are of.
+//
+// The 1..25 constants stay in world.rgen: they are consumed only there, and moving them would put a
+// pile of unrelated names into every importer of this file.
+public static const uint DEBUG_VIEW_RAIN_SURFACE = 26u;
+public static const uint DEBUG_VIEW_RAIN_PUDDLE = 27u;
+
 /** M21 diagnostic: R retained storage, G procedural/slope basin, B final material response. */
 public float3 rainPuddleDebugAt(float3 p, MaterialExtension ext, bool topReceiver) {
     float4 history = rainTopHistoryAt(p);
