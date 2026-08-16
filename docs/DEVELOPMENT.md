@@ -75,13 +75,12 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | 外层目录 | 内容 | 谁依赖它 |
 | --- | --- | --- |
 | `Fluorite/` | 本仓库 | `~/.gradle` 的 `dlssSdk` 指向其 `third_party/DLSS` |
-| `toolchain/` | 独立 Slang 2026.14 | `~/.gradle` 的 `slangcPath`；**临时**，见 §5.1 |
 | `reference/` | HPWater / HPVolumeCloud 净室参考 | §6 参考项目政策 |
 | `game/` | HMCL 游戏安装，与开发无关 | 无 |
 | `mods/` · `assets/` | 手动装的 mod jar、素材母版 | 无 |
 | `evidence/` | 故障调查日志归档 | 无 |
 
-外层 `toolchain/` 曾叫 `tools/`，与仓库内的 `tools/`（三个开发脚本）同名不同职，已改名消歧。
+外层一度还有个 `toolchain/`（原名 `tools/`，与仓库内的 `tools/` 同名不同职）放独立 Slang 2026.14，已于 2026-08-16 随 slangc pin 一并删除，见 §5.1。
 
 **四个 `src` 根是构建工具强制的，不是设计失误，不要改名**：
 
@@ -442,7 +441,11 @@ Windows：
 .\gradlew.bat :neoforge:processResources :neoforge:compileJava
 ```
 
-slangc 解析顺序：Gradle `-P<name>Path` → 环境变量 → `$VULKAN_SDK/Bin` → PATH；当前独立工具链位于 `F:\MC\Shader\toolchain\slang-2026.14`，由 `~/.gradle/gradle.properties` 的 `slangcPath` 钉住。**这个 pin 是临时的**：CI 用 SDK 1.4.350.0 自带的 slangc、无任何 override，所以 CI 绿本身就是「1.4.350.0 的 Slang 够新」的证明；本地 SDK 升到 1.4.350.0 后应删掉 pin 与 `toolchain/` 目录。
+slangc 解析顺序：Gradle `-P<name>Path` → 环境变量 → `$VULKAN_SDK/Bin` → PATH。**当前无任何 override**：本地 Vulkan SDK 1.4.350.0（与 CI 同版本）自带 Slang **2026.8**，走第三档解析，本地与 CI 因此用同一个编译器。
+
+2026-08-16 之前这里钉着一份独立 Slang 2026.14（`slangcPath` 指向 `F:\MC\Shader\toolchain\`），因为当时本地 SDK 是 1.4.341.1、只带 Slang 2026.1，**解析不了 `world_common.slang` 的四参数 `Ptr<T, Access, AddressSpace, Layout>`**（报 `too many arguments to call`）。升级到 1.4.350.0 后 pin 与那份工具链一并删除。
+
+**注意 `≥ 2026.14` 不是真实下限**，那只是当时手头验证过的版本；实测 2026.8 即可，`-warnings-as-errors all` 全过且反射产出的 ABI 与 2026.14 逐字节一致（`WorldPush` 1104 B、`WorldPushConstants` 120 B）。真正的下限是「CI 那版 SDK 自带的 Slang」。
 
 当前 D93A-R `generateEndEnvironment` 冷生成实测约 8 分 32 秒，输入未变时由 Gradle 增量缓存跳过。D87C 裁决为不把 89 MiB 母版放进 Git/LFS：默认由 `fetchEndHdr` 下载到已忽略且不受 `clean` 影响的 `.gradle/fluorite-assets/`，并严格校验 SHA-256 `dad11594…fd393d90`；来源不可用时可用 `-PendHdrSource=<path>` 提供同一哈希的本地副本。生成物进入 loader 的资源 classpath/jar，运行时只校验和上传，不重新追踪 Kerr，也没有“首次进游戏后落盘的 LUT 缓存”。旧生成器耗时与被替换路线见 M14 开发日志。
 

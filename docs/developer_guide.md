@@ -28,16 +28,18 @@ which is too old; CI pins SDK 1.4.350.0. If your SDK's copy is behind, download 
 `~/.gradle/gradle.properties`:
 
 ```properties
-slangcPath=F:/MC/Shader/toolchain/slang-2026.14/bin/slangc.exe
+slangcPath=C:/path/to/slang/bin/slangc.exe
 ```
 
-**Treat that pin as temporary.** CI compiles the world shaders with SDK 1.4.350.0's own `slangc` and no
-override, so a green CI is standing proof that the bundled Slang at that version is new enough. Once
-your local SDK reaches 1.4.350.0, delete the property and the standalone toolchain directory with it —
-carrying a second Slang around is only worth it while the SDK is genuinely behind.
+**You probably do not need this.** SDK 1.4.350.0 — the version CI installs — ships Slang 2026.8, which
+compiles every world shader with `-warnings-as-errors all` and produces byte-identical reflection ABI.
+Installing that SDK or newer and letting the `$VULKAN_SDK/Bin` fallback find `slangc` keeps your local
+toolchain identical to CI's, which is worth more than pinning a newer Slang. Reach for the override only
+if your SDK is genuinely behind 1.4.350.0.
 
 Note that `compileShaders` passes `-warnings-as-errors all`, so a newer `slangc` can also fail the
-build on diagnostics an older one never emitted.
+build on diagnostics an older one never emitted — which is the other reason to match CI rather than
+chase the latest Slang release.
 
 ## Windows
 
