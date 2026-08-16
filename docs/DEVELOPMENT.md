@@ -50,7 +50,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | M18 | 手持、实体火焰、发光模型层和粒子 cell 已统一编码为未绑定的 32 B 动态球灯，并写入稳定 source key；真正采样等待 ReSTIR。 | [动态光源数据层](devlog/M18-dynamic-light-data.md) |
 | M19 | 受伤 overlay、实体火焰和近似 glint 已进入路径追踪并通过视觉验收。 | [实体 overlay](devlog/M19-M20-entities-particles.md#m19实体-overlay) |
 | M20.1–20.3 | 粒子发光、stochastic alpha 和可选阴影完成；阴影默认关。 | [粒子](devlog/M19-M20-entities-particles.md#m20粒子) |
-| M21 | 世界锚定降雨暴露、连续湿润历史、程序化水坑/涟漪、RT 水花与受统一光源照明的 HDR 雨丝完成并通过功能视觉验收。 | [雨天表面系统](devlog/M21-rain.md) |
+| M21 | 世界锚定降雨暴露、连续湿润历史、程序化水坑/涟漪、RT 水花与受统一光源照明的 HDR 雨丝完成并通过功能视觉验收；D177 补上降雪（飘雪，不含地面积雪与湿润）。 | [雨天表面系统](devlog/M21-rain.md) |
 | M22 | ACES 2、分区调色、镜头效果、RGB 颗粒、Bloom/Flare 与 EV 域自动曝光完成并通过功能视觉验收。 | [后处理与镜头效果](devlog/M22-post-processing.md) |
 | M23 | 完整可移植 TOML 预设、严格事务导入、LIVE/RESTART 分层和原生文件交互完成并通过功能验收。 | [配置预设](devlog/M23-config-presets.md) |
 
@@ -97,7 +97,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | 可见性 | `volume_visibility*.slang` | 世界空间太阳/天顶可见性网格 |
 | 云 | `cloud.slang` / **`cloud_density.slang`** / `cloud_field.slang` / `cloud_noise.comp.slang` / `cloud_weather.comp.slang` / `cloud_warp.comp.slang` / `cloud_shadow.comp.slang` | 世界锚定低层 3D 体积 march、单层解析高云、共享 Radiance 光照和二次光线预算。**两个无绑定模块，理由相同**：`cloud_field` 让三个 bake 共用同一份噪声构造；`cloud_density` 让**着色与云影烘焙共用同一个密度场、同一套 CloudLayer 构造、同一份高云 τ**。`cloud.slang` 持有 set-0 绑定并读全局 `worldPush`，compute pass 无法 import 它——与 `water_wave.slang` 横幅所记的是同一个问题。两份拷贝写下来那天一致，第一次被单独编辑就分叉，而「阴影不在云下面」从截图无法归因 |
 | 雾 | `fog_noise.comp.slang` | 128³ 结构雾一次性烘焙 |
-| 降雨暴露 | `rain_exposure.comp.slang` | 世界锚定、沿全局雨向的首命中深度图；供所有路径顶点与可见雨丝共享 |
+| 降水暴露 | `rain_exposure.comp.slang` / `precipitation.slang` | 世界锚定、沿全局降水方向的首命中深度图；供所有路径顶点与可见降水粒子共享。`precipitation` 是**无绑定分类模块**：雨/雪/无/未加载四类由**三条管线的四个消费者**读取（暴露烘焙、湿润漏斗、湿润水库、雨雪粒子两阶段），一份实现——`precipitationWets()` 是「只有雨会打湿」这条不变量的唯一落点 |
 | 水 | `water.slang` / `water_wave.slang` | 水材质、波场、法线、焦散 |
 | 水仿真 | `water_sim.comp.slang` / `water_obstacle.comp.slang` / `water_deform.comp.slang` | 高度场、障碍、顶点位移与 refit 输入 |
 | 追踪 | `trace.slang` / `trace_ser.slang` / `segment.slang` | 普通/SER TraceRay、分段数据 |
@@ -139,7 +139,7 @@ timestamp 时才触发，二者都会回退原版。`RtPostProcessingContractTes
 | 结构 | 当前大小 | 闸门 | 危险点 |
 | --- | --- | --- | --- |
 | `PackedPathSegment` | 48 B | `RtPathSegmentLayoutTest` | 只剩一个空 uint lane；进位到 64 B 在 1440p 约 +118 MB，优先使用 `pathFlags` bit |
-| `WorldPushConstantsData` | 112 B | `RtMaterialLayoutTest` | 12 个 64-bit 地址；Vulkan 128 B 保证下只余 16 B，每个新增字段由 closest-hit 高频读取 |
+| `WorldPushConstantsData` | **120 B** | `RtMaterialLayoutTest` | 13 个 64-bit 地址（D177 增 `rainPrecipitationAddr`）；Vulkan 128 B 保证下**只余 8 B**——再加一个地址精确顶到 128、一个字节不剩，**再下一个在只提供最小值的硬件上放不下，而 AMD 恰好只给最小值**。第 14 个地址应当考虑改放 `WorldPush`（BDA，无此上限，代价一次解引用）。每个新增字段由 closest-hit 高频读取 |
 | `WorldPushData` | 1104 B | `RtSkyMediumLayoutTest` | 独立 GPU 数据，不受 128 B push-constant 限制；`cloudEvolution` 与 D173 的 `cloudWarp` 各是独立 16 B lane，M21 使用 8 个降雨向量；构造是 positional，Java/Slang 必须同步 |
 | `MaterialHeaderData` | 80 B | `RtMaterialLayoutTest` | 逐字段偏移钉死 |
 | `MaterialExtensionData` | 64 B | `RtMaterialExtensionLayoutTest` | Disney 与 format-3 天气响应 lanes 逐位钉死 |
@@ -559,7 +559,11 @@ D115A–D120A 把首版的全图逐帧 RayQuery 和单一全局储量改为分�
 
 可见降雨采用混合方案：密集雨丝在 RR 之后、曝光之前进入 HDR 独立 pass，低/中/高实例上限为 2048/4096/8192（默认 4096），另有 0–2 密度倍率，默认速度 24 方块/秒、长度 0.7 方块。D129A 在绘制前以 compute 每实例计算一次直接光，位置函数由 compute 与六顶点程序化几何共享，禁止在每个顶点重复追踪。天空使用 GPU 归约的 `mediumSkyRadiance`；天体辐照度与统一 `Light`/alias/grid 选出的一个局部面光源均使用归一化各向同性相位 `1/(4π)`，并各自最多发射一条不透明阴影线。响应系数 `0.004×4π` 保持旧太阳项的能量尺度，旧的固定白色辐亮度下限已经删除，因此无天空、无天体、无局部光时必须输出黑。该模型是稳定而廉价的单次散射近似：支持昼夜、色温、火把/方块/生物/粒子光与直接遮挡，但不追踪雨滴 GI、反射中的雨丝，也不模拟球形水滴的高频焦散或方向性闪光。
 
-涟漪与 RT 水花共享 D127A 确定性事件定义：Java 与 Slang 使用相同的 0.5 方块周期格、4096 方块世界周期、整数溢出哈希、事件时钟、落点和种子；密集涟漪仍在着色点局部求值，CPU 只从刚进入活动期的事件中分批选择水花子集，因此不增加 GPU 事件缓冲或 readback。CPU 用高度图反投同一倾斜雨向，只接受靠近事件中心的向上碰撞面，`Fluid.ANY` 让原生水面也能命中；最终水花 XZ 保持事件中心。设置控制相机附近活动池的目标数量 0–256（默认 96），约以 `目标数/10` 条成功碰撞线每 tick 维持；碰撞失败、遮挡、视锥和总粒子预算会让实际屏幕数量低于目标。水花生成 Fluorite 自有的中性程序化水冠与小水滴，不再主动生成原版蓝色 `ParticleTypes.RAIN`，并在 RT 粒子捕获处排除 `ClientLevel` 独立生成的 `WaterDropParticle`，避免新旧水花重叠。水花复用现有粒子 BLAS，当前只进入主摄像机光线与可选阴影，不进入反射/GI；96/256 个水花分别约为 2688/7168 个三角形。M21 不实现雪。
+涟漪与 RT 水花共享 D127A 确定性事件定义：Java 与 Slang 使用相同的 0.5 方块周期格、4096 方块世界周期、整数溢出哈希、事件时钟、落点和种子；密集涟漪仍在着色点局部求值，CPU 只从刚进入活动期的事件中分批选择水花子集，因此不增加 GPU 事件缓冲或 readback。CPU 用高度图反投同一倾斜雨向，只接受靠近事件中心的向上碰撞面，`Fluid.ANY` 让原生水面也能命中；最终水花 XZ 保持事件中心。设置控制相机附近活动池的目标数量 0–256（默认 96），约以 `目标数/10` 条成功碰撞线每 tick 维持；碰撞失败、遮挡、视锥和总粒子预算会让实际屏幕数量低于目标。水花生成 Fluorite 自有的中性程序化水冠与小水滴，不再主动生成原版蓝色 `ParticleTypes.RAIN`，并在 RT 粒子捕获处排除 `ClientLevel` 独立生成的 `WaterDropParticle`，避免新旧水花重叠。水花复用现有粒子 BLAS，当前只进入主摄像机光线与可选阴影，不进入反射/GI；96/256 个水花分别约为 2688/7168 个三角形。
+
+**D177 补上了降雪**（原「M21 不实现雪」已作废）。范围是**只做飘雪**：地面变白由 MC 自己的雪层方块提供，渲染器不重复做。雪与雨共用同一个 streak pass、同一份实例预算与同一张暴露图（屋檐挡雪与挡雨是同一条射线），但**几何、速度与散射模型都不同**：雪按每帧位移只有 0.04 格，没有运动模糊可画，因此是朝向相机的小方片而非长条；散射响应取**反照率 0.9 并且是推导的**（朗伯粒子在各向同性辐亮度 L 下出射 albedo·L，而 `source` 已经就是那个平均入射辐亮度），不同于雨那个拟合出来的 `0.004×4π`。飘动取 `cloud_field.curlNoise` 的**解析求值**（不绑那张 32³ 烘焙体：每片每帧只求一次，绑两条管线比 ALU 贵），场世界锚定且静态，使相邻雪花成片一起旋。
+
+**雪不打湿任何东西**，这一条是本项最大的回归面：让雪拿到真实暴露深度的同时也把整台湿润机器指向了它，因为那台机器把「有深度」当成「正在被淋湿」。三个湿润入口（着色漏斗、`rain_history` 水库、以及暴露烘焙自身）必须**各自**测 `precipitationWets`，契约测试把三处绑在一起断言。雪同样不产生水花、不进反射/GI。
 
 视觉验收前保留一组明确标注的临时校准项：全局湿润变暗（0–8×）、水膜覆盖、水坑层覆盖、水坑粗糙度、水坑额外压暗（0–25%，默认 8%）、水坑法线压平、水膜法线压平、涟漪宽度，以及 RT 水花尺寸/可见度/颜色明暗。涟漪原有强度项明确为法线扰动强度并扩为 0–3×。这些旋钮不得被误当成长期配置 ABI；验收确定数值后固化为常数并删除对应临时设置与 `rainCalibration0/1`。D127A 的目标水花数是性能/密度设置，不随美术固化一起删除。
 
@@ -647,6 +651,7 @@ ReSTIR 之前进行一次通盘 review，而不是零散顺手修：
 - M17：`bench-water-top`。
 - M18：固定燃烧实体、external-fullbright/材质发光实体和密集发光粒子场景，记录动态附着光、粒子 cell、上传阶段中位数及条目/字节上限。
 - M20.3：`bench-particles`、1024 上限和 reflection/GI 位。
+- **D177 降雪**：雪与雨共用实例预算，因此**上限没变**；但每实例多了一次降水分类的缓冲读取，雪还多一次解析 curl（六次 Perlin）。两者都在 `gpu.rainStreak` 里，可用现有时间区按下雪/下雨/无天气三档比值法量。另外 `precipitationWets` 现在插在着色期湿润的唯一漏斗上，每个湿润查询多一次缓冲读取——**这一笔连不下雪时也付**。
 
 ### 8.12 首个正式版后再评估
 
