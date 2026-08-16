@@ -20,7 +20,7 @@ import static io.github.dswepm.fluorite.rt.RtContext.check;
 
 /** M21 full-resolution HDR rain streaks, recorded after RR and before exposure. */
 public final class RtRainStreaks {
-    private static final int PUSH_BYTES = 96;
+    private static final int PUSH_BYTES = 112;
     private static final int LIGHT_GROUP = 64;
     private static final int MAX_INSTANCES = 16_384; // high quality (8192) at the maximum 2x density
 
@@ -31,6 +31,16 @@ public final class RtRainStreaks {
     private RtOverlayPipelines.AccelStructureSet lightingTlas;
     private ComputePipeline lightingPipeline;
     private RtBuffer radiance;
+    /**
+     * Each flake's finished world position, plus whether it is snow, written by the lighting pass and
+     * read by the six vertices.
+     *
+     * <p>Rain's position is a closed form of its phase, so the two stages could each derive it and be
+     * certain of agreeing. Snow's is not -- it needs its column's precipitation class, which is a buffer
+     * read, and a curl evaluation after that. Publishing it once is cheaper than doing both twice and is
+     * the only version where the lit flake and the drawn flake cannot end up in different places.
+     */
+    private RtBuffer placement;
 
     private record ComputePipeline(long layout, long handle) {
         void destroy(org.lwjgl.vulkan.VkDevice vk) {
@@ -44,6 +54,7 @@ public final class RtRainStreaks {
                        long transmittanceSampler, long tlas,
                        int width, int height, long worldPushAddr, int frameIndex,
                        int instanceCount, float speed, float length, float density,
+                       float snowSpeed, float snowSize, long precipitationAddr,
                        long lightBufAddr, long lightAliasAddr, long lightLocalAliasAddr,
                        long lightGridCellAddr, long lightGridSpanAddr,
                        RtGpuExecutor.GraphicsUse graphicsUse) {
@@ -58,7 +69,8 @@ public final class RtRainStreaks {
             transmittance.bind(context, transmittanceView, transmittanceSampler);
             long tlasSet = lightingTlas.bind(context, tlas, graphicsUse);
             ByteBuffer push = writePush(stack, worldPushAddr, frameIndex, drawCount, speed, length, density,
-                    width, height, lightBufAddr, lightAliasAddr, lightLocalAliasAddr,
+                    snowSpeed, snowSize, precipitationAddr, width, height,
+                    lightBufAddr, lightAliasAddr, lightLocalAliasAddr,
                     lightGridCellAddr, lightGridSpanAddr);
 
             // One invocation shades one procedural instance. It reuses the same Light/alias/grid records
@@ -83,7 +95,9 @@ public final class RtRainStreaks {
     }
 
     private ByteBuffer writePush(MemoryStack stack, long worldPushAddr, int frameIndex, int instanceCount,
-                                 float speed, float length, float density, int width, int height,
+                                 float speed, float length, float density,
+                                 float snowSpeed, float snowSize, long precipitationAddr,
+                                 int width, int height,
                                  long lightBufAddr, long lightAliasAddr, long lightLocalAliasAddr,
                                  long lightGridCellAddr, long lightGridSpanAddr) {
         ByteBuffer push = stack.malloc(PUSH_BYTES);
@@ -91,8 +105,14 @@ public final class RtRainStreaks {
                 .putLong(24, lightLocalAliasAddr).putLong(32, lightGridCellAddr)
                 .putLong(40, lightGridSpanAddr).putLong(48, radiance.deviceAddress);
         push.putInt(56, instanceCount).putInt(60, frameIndex);
-        push.putFloat(64, speed).putFloat(68, length).putFloat(72, density).putFloat(76, 0f);
-        push.putFloat(80, width).putFloat(84, height).putFloat(88, 0f).putFloat(92, 0f);
+        // 76 was reserved; snow needs a fall speed of its own because rain's default is about twenty
+        // times a snowflake's terminal velocity.
+        push.putFloat(64, speed).putFloat(68, length).putFloat(72, density).putFloat(76, snowSpeed);
+        push.putFloat(80, width).putFloat(84, height);
+        // 88 was the second reserved float pair, and it is eight-byte aligned, so the placement address
+        // lands there without growing the struct at all.
+        push.putLong(88, placement.deviceAddress).putLong(96, precipitationAddr);
+        push.putFloat(104, snowSize).putFloat(108, 0f);
         return push;
     }
 
@@ -107,6 +127,8 @@ public final class RtRainStreaks {
                     context, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "rain streak lighting TLAS");
             radiance = context.createBuffer((long) MAX_INSTANCES * 4L * Float.BYTES,
                     VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, "rain streak radiance");
+            placement = context.createBuffer((long) MAX_INSTANCES * 4L * Float.BYTES,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, "rain streak placement");
             lightingPipeline = createComputePipeline(context, transmittance.layout, lightingTlas.layout);
             pipeline = new RtOverlayPipelines.Spec("rain_streak.vert.spv", "rain_streak.frag.spv")
                     .blend(RtOverlayPipelines.Blend.ALPHA)
@@ -175,6 +197,7 @@ public final class RtRainStreaks {
             transmittance.destroy(ctx.vk());
             lightingTlas.destroy(ctx.vk());
             radiance.destroy();
+            placement.destroy();
         }
         pipeline = null;
         images = null;
@@ -182,6 +205,7 @@ public final class RtRainStreaks {
         transmittance = null;
         lightingTlas = null;
         radiance = null;
+        placement = null;
         ctx = null;
     }
 }

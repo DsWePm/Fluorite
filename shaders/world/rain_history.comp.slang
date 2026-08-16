@@ -3,9 +3,13 @@
 // Two ping-pong images therefore hold two associated surfaces in 4 MiB at 512^2.
 
 import world_common;
+import precipitation;
 
 struct RainHistoryPush {
     uint64_t worldPushAddr;
+    // What is falling on each column. Snow now gets a real exposure depth so its flakes can be sheltered
+    // by a roof, which means this pass can no longer read "has a depth" as "is getting wet".
+    uint64_t precipitationAddr;
     uint resolution;
     uint clearPrevious;
     float elapsedSeconds;
@@ -86,6 +90,16 @@ void main(uint3 id : SV_DispatchThreadID) {
     WetLayer previous = emptyLayer();
 
     float newDepth = exposureDepth.Load(int3(int2(id.xy), 0));
+    // SNOW IS DRY. It reaches the ground exactly as rain does -- same map, same depth, same roofs -- and
+    // lies there as a solid, which Minecraft renders with its own snow-layer blocks. Reducing it to the
+    // "nothing falls here" depth is what keeps this whole reservoir untouched by a blizzard, and it is
+    // done by rewriting the depth rather than by branching below so that the drying, the layer matching
+    // and the roof-change handling all continue to see exactly one case.
+    uint precipitation = precipitationAtTexel(rainHistoryPush.precipitationAddr,
+            float2(id.xy) + 0.5, float(rainHistoryPush.resolution));
+    if (!precipitationWets(precipitation)) {
+        newDepth = precipitation == PRECIP_UNKNOWN ? -2.0 : -1.0;
+    }
     if (newDepth < -1.5) {
         // Exposure is progressively rebuilding this tile after a map/direction change. Preserve the
         // shifted history until a real receiver depth or the resolved no-precipitation marker arrives.

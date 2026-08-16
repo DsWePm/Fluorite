@@ -391,5 +391,22 @@
   "fluorite.options.rt.cloudWarpScale": "翻捲尺度",
   "fluorite.options.rt.cloudWarpScale.tooltip": "翻捲的尺度，單位為方塊。數值大會重塑雲的整片瓣狀結構；數值小則把邊緣撕成絲縷。",
   "fluorite.options.rt.cloudEvolutionSpeed": "雲的演變",
-  "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "雲的**形狀**變化有多快，與它飄得多快是兩回事。雲是被**對流**重塑的而不是被風——無風的午後積雲照樣鼓起又消散、並不去往任何地方——所以這一項**不跟隨風速**，把風速調到 0 也不會讓天空凍住。數值越大瓣狀結構生長與消散越快；過高則雲會「沸騰」而不是生長。"
+  "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "雲的**形狀**變化有多快，與它飄得多快是兩回事。雲是被**對流**重塑的而不是被風——無風的午後積雲照樣鼓起又消散、並不去往任何地方——所以這一項**不跟隨風速**，把風速調到 0 也不會讓天空凍住。數值越大瓣狀結構生長與消散越快；過高則雲會「沸騰」而不是生長。",
+  "fluorite.options.rt.snowFallSpeed": "落雪速度",
+  "fluorite.options.rt.snowFallSpeed.tooltip": "雪的下落速度。它不能與雨共用一個旋鈕：雨預設 24 格/秒，而雪花的終端速度約 1–1.5 格/秒，一個滑桿同時管兩者必然有一個是錯的。預設值下一片雪花約需二十秒穿過下落跨度——正因為它在視野裡停留這麼久，它的飄動才取自共享的亂流場而不是每片各自的抖動。",
+  "fluorite.options.rt.snowFlakeSize": "雪花大小",
+  "fluorite.options.rt.snowFlakeSize.tooltip": "雪花繪製的寬度。純粹是風格：真實的聚合雪花只有 2–10 毫米，在任何算繪距離下都遠小於一個像素，所以所有遊戲都把它畫得極度誇大，本項決定誇大多少。永遠不小於一個像素，因此遠處的雪是逐漸變稀而不是閃爍。",
+  "fluorite.options.rt.section.weatherPrecipitationParticles": "降水粒子（雨與雪共用）",
+  "fluorite.options.rt.section.weatherRainParticles": "僅雨",
+  "fluorite.options.rt.section.weatherSnow": "僅雪",
+  "fluorite.options.rt.rainParticlesEnabled": "降水粒子",
+  "fluorite.options.rt.rainParticlesEnabled.tooltip": "繪製下落的降水——雨絲**和**雪花，以及雨的水花。一個開關是因為它們本來就是同一個 pass：某一列落下的是什麼由該列的生物群系決定，而不是由設定決定。",
+  "fluorite.options.rt.rainStreakQuality": "降水粒子預算",
+  "fluorite.options.rt.rainStreakQuality.tooltip": "同時存在的下落粒子數上限。雨與雪共用：無論落的是哪一種，都從同一份預算裡取，因此成本相同。",
+  "fluorite.options.rt.rainStreakDensity": "降水粒子密度",
+  "fluorite.options.rt.rainStreakDensity.tooltip": "最大降雨或降雪時實際用掉多少預算。雨與雪共用——調低會同時讓兩者變稀。",
+  "fluorite.options.rt.rainSlantDegrees": "降水傾角",
+  "fluorite.options.rt.rainSlantDegrees.tooltip": "降水沿風向偏離垂直方向的角度。雨與雪共用；它同時也是遮蔽圖追蹤的方向，因此決定了什麼算「在屋簷下」。",
+  "fluorite.options.rt.rainExposureQuality": "降水遮蔽圖",
+  "fluorite.options.rt.rainExposureQuality.tooltip": "判斷何處暴露在天氣中的貼圖解析度。共用：它遮蔽雪花與遮蔽雨滴是同一件事，也是屋簷下的表面保持乾燥的原因。"
 }

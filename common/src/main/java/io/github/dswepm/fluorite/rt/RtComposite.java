@@ -3039,7 +3039,7 @@ public final class RtComposite {
                         rainExposure.resolution(), rainExposure.direction().x(),
                         rainExposure.direction().y(), rainExposure.direction().z(), pushSlot, graphicsUse);
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
-                skyLuts.recordRainHistory(cmd, pushBuf.deviceAddress,
+                skyLuts.recordRainHistory(cmd, pushBuf.deviceAddress, pushSlot,
                         rainExposure.originX(), rainExposure.originZ(), rainExposure.resolution(),
                         rainSurface.elapsedSeconds(),
                         FluoriteConfig.Rt.Weather.WET_FILL_SECONDS.value(),
@@ -3099,6 +3099,10 @@ public final class RtComposite {
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
                     waterProbeEnabled ? selectedPushSlot.waterProbe.deviceAddress : 0L,
+                    // Snow shares the exposure map with rain but must not wet anything, so the shading
+                    // reads the class per column. Positional, like every constructor generated from
+                    // shader reflection -- this argument follows waterProbeAddr in world_common.
+                    skyLuts.rainPrecipitationAddress(pushSlot),
                     (int) frameCounter, debugView, shadeFlags()).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
@@ -3161,6 +3165,9 @@ public final class RtComposite {
                     pushBuf.deviceAddress, (int) frameCounter, rainStreakCount,
                     FluoriteConfig.Rt.Weather.RAIN_STREAK_SPEED.value(),
                     FluoriteConfig.Rt.Weather.RAIN_STREAK_LENGTH.value(), rainStreakDensity,
+                    FluoriteConfig.Rt.Weather.SNOW_FALL_SPEED.value(),
+                    FluoriteConfig.Rt.Weather.SNOW_FLAKE_SIZE.value(),
+                    skyLuts.rainPrecipitationAddress(pushSlot),
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), graphicsUse);

@@ -1963,6 +1963,35 @@ public final class FluoriteConfig {
             public static final FloatSetting RAIN_STREAK_LENGTH =
                     clampedFloat("fluorite.rt.weather.rainStreakLength",
                             "weather.rain-streak-length", 0.7f, 0.1f, 2f);
+
+            /**
+             * How fast snow falls, in blocks per second.
+             *
+             * <p>Its own setting because it cannot share rain's: the default there is 24 blocks a second
+             * against a snowflake's terminal velocity of roughly 1 to 1.5, and one dial moving both would
+             * make any value wrong for one of them. The default is deliberately a little above the
+             * physical figure — rain is stylised fast by the same kind of margin, and matching that keeps
+             * the two reading as the same weather system rather than as two unrelated effects.
+             *
+             * <p>The consequence worth knowing: at this speed a flake takes about twenty seconds to cross
+             * the 48-block fall span, so it is on screen long enough to be watched, which is why its
+             * drift is a curl field rather than a per-flake wobble.
+             */
+            public static final FloatSetting SNOW_FALL_SPEED =
+                    clampedFloat("fluorite.rt.weather.snowFallSpeed",
+                            "weather.snow-fall-speed", 2.4f, 0.2f, 12f);
+
+            /**
+             * How wide a snowflake is drawn, in blocks.
+             *
+             * <p>Pure style. A real aggregate flake is two to ten millimetres, which at any sane render
+             * distance is far below a pixel; every game draws them enormously oversized, and the only
+             * question is how much. Floored at the streak's screen-space minimum so distant snow thins
+             * out smoothly instead of flickering with sub-pixel coverage.
+             */
+            public static final FloatSetting SNOW_FLAKE_SIZE =
+                    clampedFloat("fluorite.rt.weather.snowFlakeSize",
+                            "weather.snow-flake-size", 0.09f, 0.02f, 0.4f);
             public static final IntSetting RAIN_SPLASH_TARGET =
                     clampedInt("fluorite.rt.weather.rainSplashTarget",
                             "weather.rain-splash-target", 96, 0, 256);

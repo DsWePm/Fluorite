@@ -4,6 +4,7 @@
 import world_common;
 import world_core;
 import math;
+import precipitation;
 
 [[vk::binding(24, 0)]] Sampler2D<float> rainExposureDepth;
 [[vk::binding(25, 0)]] Sampler2D<uint2> rainWetHistory;
@@ -123,6 +124,14 @@ float rainExposureAtWarp(float3 p, float2 texelWarp) {
     float resolution = worldPush.rainExposureOrigin.w;
     c.texel += texelWarp;
     if (any(c.texel < 0.0) || any(c.texel >= resolution)) {
+        return 0.0;
+    }
+    // ONLY RAIN WETS, and this is the single funnel every wetness query passes through -- the retained
+    // history, the wet film and the diagnostic view all reach the map through here. Snow shares the
+    // exposure depth because it is sheltered by the same roofs, so without this a snowstorm would soak
+    // the world; putting the test at the funnel rather than at each caller is what makes that
+    // impossible to forget at a fourth call site.
+    if (!precipitationWets(precipitationAtTexel(pc.rainPrecipitationAddr, c.texel, resolution))) {
         return 0.0;
     }
     float2 centre = c.texel - 0.5;

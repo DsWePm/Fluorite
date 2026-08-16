@@ -3,6 +3,7 @@
 
 import atmosphere;
 import light_sampling;
+import precipitation;
 import rain_streak_common;
 import world_common;
 
@@ -16,6 +17,28 @@ static const float RAIN_INV_FOUR_PI = 0.079577471546;
 // The old direct-celestial term was E*0.004. With a normalised isotropic phase E/(4*pi), multiplying by
 // 0.004*4*pi preserves that daytime energy while allowing sky and local emitters to share the same units.
 static const float RAIN_STREAK_SCATTER_RESPONSE = 0.05026548246;
+/**
+ * Snow's response is its ALBEDO, and unlike the rain constant above this one is derived rather than fit.
+ *
+ * <p>A raindrop is transparent: it refracts most of what reaches it onward and scatters a little toward
+ * the viewer, which is what the small fitted number above encodes. A snowflake is the opposite -- an
+ * aggregate of ice crystals that is opaque and very nearly white, so the honest model is a small diffuse
+ * particle rather than a thin scatterer.
+ *
+ * <p>For a Lambertian particle bathed in isotropic radiance L, the irradiance is pi*L and the outgoing
+ * radiance is albedo*(pi*L)/pi = albedo*L. And `source` below is already exactly that mean incident
+ * radiance: mediumSkyRadiance is a 1/(4*pi) sphere integral, while the sun arrives as E/(4*pi), which is
+ * also what a diffuse SPHERE averages over its surface (cross-section pi*r^2 over area 4*pi*r^2). So the
+ * source assembly needs nothing changed and the response is simply the albedo. Fresh snow's broadband
+ * albedo is 0.8 to 0.9.
+ *
+ * <p>WHY THIS WAS A BUG AND NOT A DIM SETTING. The streaks composite with straight-alpha over, so a
+ * fragment contributes alpha*(L_particle - L_background): when the particle is darker than what is
+ * behind it, drawing it SUBTRACTS light. At the thin-scatterer response a flake was about a fifth of the
+ * sky's radiance while covering the pixel at 0.55 alpha, so snow against an overcast sky rendered as
+ * black specks. Rain hid the same arithmetic because its streaks are hairline and its alpha is lower.
+ */
+static const float SNOW_STREAK_SCATTER_RESPONSE = 0.9;
 
 bool rainStreakOccluded(float3 p, float3 direction, float tMax) {
     RayDesc ray;
@@ -91,7 +114,15 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     WorldPush wp = ConstPtr<WorldPush>(push.worldPushAddr)[0];
     RainStreakPlacement placement = rainStreakPlacement(
-            wp, instanceId, push.instanceCount, push.speed);
+            wp, push.precipitationAddr, instanceId, push.instanceCount, push.speed, push.snowSpeed);
+    bool snow = placement.precipitation == PRECIP_SNOW;
+
+    // PUBLISHED BEFORE THE FRUSTUM TEST, not after. This buffer is where the geometry stage learns where
+    // its flake is, so it has to be written for every instance the draw will touch -- including the ones
+    // this pass then declines to light. Returning early with a stale position would leave last frame's
+    // flake standing in this frame's sky.
+    DevicePtr<float4> placementOut = DevicePtr<float4>(push.placementAddr);
+    placementOut[instanceId] = float4(placement.centre, snow ? 1.0 : 0.0);
 
     // Do not cast rays for lattice cells outside the current view. The margin retains long streaks whose
     // centre is just beyond the edge while avoiding most of the otherwise invisible shadow work.
@@ -105,6 +136,6 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 source = wp.mediumSkyRadiance.xyz;
     source += rainStreakCelestialSource(wp, placement.centre);
     source += rainStreakLocalSource(wp, placement.centre, placement.worldCell);
-    radiance[instanceId] = float4(
-            max(source * RAIN_STREAK_SCATTER_RESPONSE, float3(0.0, 0.0, 0.0)), 1.0);
+    float response = snow ? SNOW_STREAK_SCATTER_RESPONSE : RAIN_STREAK_SCATTER_RESPONSE;
+    radiance[instanceId] = float4(max(source * response, float3(0.0, 0.0, 0.0)), 1.0);
 }

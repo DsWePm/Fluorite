@@ -88,11 +88,20 @@ public final class RtSky {
     private static final int RAIN_EXPOSURE_TILES_PER_FRAME = 8;
     private static final int RAIN_EXPOSURE_NEAR_TILES = 9;
     private static final int RAIN_EXPOSURE_NEAR_TILES_PER_FRAME = 4;
-    private static final int RAIN_HISTORY_PUSH_BYTES = 56;
+    private static final int RAIN_HISTORY_PUSH_BYTES = 64;
     private static final int RAIN_PRECIP_CELL = 4;
     private static final int RAIN_PRECIP_MAX_DIM = RAIN_EXPOSURE_MAX / RAIN_PRECIP_CELL;
     private static final int RAIN_PRECIP_NONE = 0;
     private static final int RAIN_PRECIP_RAIN = 1;
+    /**
+     * Snow. Must equal PRECIP_SNOW in precipitation.slang.
+     *
+     * <p>It used to be folded into NONE, and that is exactly why a snowstorm rendered as an empty sky:
+     * the exposure bake read "not rain" as "nothing falls here" and wrote the marker that culls every
+     * flake. Snow falls, is sheltered by the same roofs, and does NOT wet anything -- three facts that
+     * one boolean could not carry.
+     */
+    private static final int RAIN_PRECIP_SNOW = 3;
     private static final int RAIN_PRECIP_UNKNOWN = 2;
     /** Matches RtComposite's push ring; each slot is host-written only after its prior GPU use completes. */
     private static final int RAIN_PRECIP_RING = 6;
@@ -649,6 +658,18 @@ public final class RtSky {
         return rainHistorySampler;
     }
 
+    /**
+     * The precipitation classes for one ring slot, as a device address.
+     *
+     * <p>Read by four things in three pipelines: the exposure bake, the wet history, the streak lighting
+     * and the shading's wetness funnel. They cannot share a descriptor set, so the buffer travels by
+     * address and precipitation.slang owns the decoding.
+     */
+    public long rainPrecipitationAddress(int slot) {
+        return rainPrecipitation == null || slot < 0 || slot >= rainPrecipitation.length
+                ? 0L : rainPrecipitation[slot].deviceAddress;
+    }
+
     /** Index this frame's history compute will publish; written into rainPuddle.z before dispatch. */
     public int rainWetHistoryTargetIndex() {
         return 1 - rainWetHistoryRead;
@@ -777,9 +798,16 @@ public final class RtSky {
                 // altitude; a fixed sea-level query would turn mountain snow into rain.
                 int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING, worldX, worldZ);
                 pos.set(worldX, y, worldZ);
-                rainPrecipitationCpu[index] =
-                        level.getPrecipitationAt(pos) == Biome.Precipitation.RAIN
-                                ? RAIN_PRECIP_RAIN : RAIN_PRECIP_NONE;
+                Biome.Precipitation falling = level.getPrecipitationAt(pos);
+                // Queried at the MOTION_BLOCKING surface, which is what puts a snow line on a mountain:
+                // Minecraft lowers a biome's temperature with altitude, so one biome rains at sea level
+                // and snows on its peaks. Reading a fixed sea-level height here would have made a whole
+                // region one or the other.
+                rainPrecipitationCpu[index] = switch (falling) {
+                    case RAIN -> RAIN_PRECIP_RAIN;
+                    case SNOW -> RAIN_PRECIP_SNOW;
+                    default -> RAIN_PRECIP_NONE;
+                };
                 rainPrecipitationResolved[index] = true;
                 queries++;
             }
@@ -1053,7 +1081,7 @@ public final class RtSky {
     }
 
     /** Update and swap the compressed two-layer world-column wetness history. */
-    public void recordRainHistory(VkCommandBuffer cmd, long worldPushAddr,
+    public void recordRainHistory(VkCommandBuffer cmd, long worldPushAddr, int slot,
                                   int originX, int originZ, int resolution,
                                   float elapsedSeconds, float wetFillSeconds, float wetDrySeconds,
                                   float puddleFillSeconds, float puddleDrySeconds, float dryingScale) {
@@ -1072,11 +1100,15 @@ public final class RtSky {
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
                     rainHistoryBake.pipelineLayout(), 0, stack.longs(rainHistoryBake.descriptorSet()), null);
             ByteBuffer push = stack.malloc(RAIN_HISTORY_PUSH_BYTES);
-            push.putLong(0, worldPushAddr).putInt(8, resolution).putInt(12, clear ? 1 : 0);
-            push.putFloat(16, elapsedSeconds).putFloat(20, wetFillSeconds)
-                    .putFloat(24, wetDrySeconds).putFloat(28, puddleFillSeconds)
-                    .putFloat(32, puddleDrySeconds).putFloat(36, dryingScale);
-            push.putInt(40, shiftX).putInt(44, shiftZ).putInt(48, 0).putInt(52, 0);
+            // The precipitation class rides beside the WorldPush address, and every offset below moved
+            // eight bytes for it. This reservoir keys on "does this column have an exposure depth", and
+            // snow now has one -- so without the class a blizzard would fill the puddles.
+            push.putLong(0, worldPushAddr).putLong(8, rainPrecipitationAddress(slot));
+            push.putInt(16, resolution).putInt(20, clear ? 1 : 0);
+            push.putFloat(24, elapsedSeconds).putFloat(28, wetFillSeconds)
+                    .putFloat(32, wetDrySeconds).putFloat(36, puddleFillSeconds)
+                    .putFloat(40, puddleDrySeconds).putFloat(44, dryingScale);
+            push.putInt(48, shiftX).putInt(52, shiftZ).putInt(56, 0).putInt(60, 0);
             VK10.vkCmdPushConstants(cmd, rainHistoryBake.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (resolution + RAIN_EXPOSURE_GROUP - 1) / RAIN_EXPOSURE_GROUP,

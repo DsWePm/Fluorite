@@ -207,9 +207,15 @@ final class RtRainSurfaceContractTest {
 
         assertTrue(shared.contains("rainCellSeed"));
         assertTrue(shared.contains("int2 worldCell"));
-        assertTrue(streak.contains("rainStreakPlacement"));
+        assertTrue(shared.contains("rainStreakPlacement"));
         assertTrue(streak.contains("minEndpointDistance"));
         assertFalse(shared.contains("rainRandom(instanceId"));
+        // THE GEOMETRY NO LONGER DERIVES THE POSITION. Rain's is a closed form of its phase, so both
+        // stages could compute it and be sure of matching; snow's needs its column's precipitation class
+        // and a curl evaluation, so the lighting pass computes it once and publishes it. A vertex stage
+        // that went back to deriving its own would put the lit flake and the drawn flake in two places.
+        assertFalse(streak.contains("rainStreakPlacement("));
+        assertTrue(streak.contains("ConstPtr<float4>(push.placementAddr)[instanceId]"));
     }
 
     @Test
@@ -233,14 +239,19 @@ final class RtRainSurfaceContractTest {
         assertTrue(lighting.contains("DevicePtr<float4> radiance = DevicePtr<float4>(push.radianceAddr)"));
         assertTrue(lighting.contains("radiance[instanceId]"));
         assertFalse(lighting.contains("float3(0.015"));
-        assertTrue(vertex.contains("ConstPtr<float4>(push.radianceAddr)[instanceId].xyz"));
+        // The whole float4, because its w is the "this instance was actually shaded" flag. An instance
+        // the lighting pass frustum-culled keeps the cleared zero, and under straight-alpha over a zero
+        // particle does not vanish -- it subtracts, which is what made snow render as black specks.
+        assertTrue(vertex.contains("float4 lit = ConstPtr<float4>(push.radianceAddr)[instanceId];"));
+        assertTrue(vertex.contains("|| lit.w <= 0.0"));
         assertFalse(vertex.contains("float3(0.015"));
         assertFalse(vertex.contains("wp.mediumSkyRadiance.xyz * 0.45"));
         assertTrue(streaks.contains("vkCmdDispatch"));
         assertTrue(streaks.contains("VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT"));
         assertTrue(streaks.contains("VK_PIPELINE_STAGE_VERTEX_SHADER_BIT"));
         assertTrue(streaks.contains("RtOverlayPipelines.accelStructureSet"));
-        assertTrue(streaks.contains("PUSH_BYTES = 96"));
+        assertTrue(streaks.contains("PUSH_BYTES = 112"));
+        assertTrue(streaks.contains("putLong(88, placement.deviceAddress)"));
         assertTrue(streaks.contains("MAX_INSTANCES = 16_384"));
         assertTrue(streaks.contains("putLong(48, radiance.deviceAddress)"));
         assertTrue(streaks.contains("putInt(56, instanceCount).putInt(60, frameIndex)"));
@@ -270,10 +281,64 @@ final class RtRainSurfaceContractTest {
         assertTrue(sky.contains("rainPrecipitationResolved"));
         assertTrue(sky.contains("refreshRainPrecipitationTiles"));
         assertTrue(sky.contains("getChunkSource().hasChunk"));
-        assertTrue(bake.contains("precipitation == RAIN_PRECIP_UNKNOWN"));
+        assertTrue(bake.contains("precipitation == PRECIP_UNKNOWN"));
         assertTrue(bake.contains("rainDepth[int2(updateTile)] = -2.0"));
         assertTrue(mesher.contains("PRIM_RAIN_PASS"));
         assertTrue(mesher.contains("PRIM_RAIN_FOLIAGE"));
+    }
+
+    @Test
+    void snowFallsAndIsShelteredLikeRainButWetsNothing() throws IOException {
+        String precip = source("shaders/world/precipitation.slang");
+        String bake = source("shaders/world/rain_exposure.comp.slang");
+        String surface = source("shaders/world/rain_surface.slang");
+        String history = source("shaders/world/rain_history.comp.slang");
+        String sky = source("common/src/main/java/io/github/dswepm/fluorite/rt/sky/RtSky.java");
+
+        // THE REGRESSION THIS CHANGE COULD HAVE CAUSED, and the reason all three sites are asserted
+        // together. Snow used to be folded into "nothing falls here", which is why a blizzard rendered
+        // as an empty sky. Giving it a real exposure depth fixes that -- and simultaneously points the
+        // whole wetness machine at it, because that machine reads "has a depth" as "is getting wet".
+        // A snowstorm filling the puddles is not a crash and not a warning; it just looks like rain.
+        assertTrue(precip.contains("public static const uint PRECIP_SNOW = 3u;"));
+        assertTrue(sky.contains("private static final int RAIN_PRECIP_SNOW = 3;"));
+        assertTrue(bake.contains("if (!precipitationFalls(precipitation))"));
+        // The shading's single funnel: every wetness query in the file reaches the map through it.
+        assertTrue(surface.contains("precipitationWets(precipitationAtTexel(pc.rainPrecipitationAddr"));
+        // ...and the retained reservoir, which the funnel above does not cover.
+        assertTrue(history.contains("if (!precipitationWets(precipitation))"));
+        // Only rain. If this ever grows a second case the two lines above stop protecting anything.
+        assertTrue(precip.contains("return precipitation == PRECIP_RAIN;"));
+
+        // Classified at the surface height, which is what puts a snow line partway up a mountain --
+        // Minecraft lowers biome temperature with altitude, so one biome does both.
+        assertTrue(sky.contains("Heightmap.Types.MOTION_BLOCKING"));
+        assertTrue(sky.contains("case SNOW -> RAIN_PRECIP_SNOW;"));
+    }
+
+    @Test
+    void snowIsDrawnAsAPointBecauseItDoesNotMotionBlur() throws IOException {
+        String shared = source("shaders/world/rain_streak_common.slang");
+        String vertex = source("shaders/overlay/rain_streak.vert.slang");
+        String frag = source("shaders/overlay/rain_streak.frag.slang");
+        String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
+
+        // A streak IS motion blur: rain at the authored 24 blocks a second crosses 0.4 blocks in a
+        // frame. Snow covers about three centimetres, so an elongated quad would draw a smear the
+        // physics does not contain -- hence a camera-facing flake and a round falloff.
+        assertTrue(vertex.contains("float3 up = cross(right, view);"));
+        assertTrue(frag.contains("i.flake > 0.5"));
+        // Its own speed, because rain's default is about twenty times a snowflake's terminal velocity
+        // and one dial moving both would be wrong for one of them.
+        assertTrue(config.contains("\"weather.snow-fall-speed\""));
+        assertTrue(config.contains("\"weather.snow-flake-size\""));
+
+        // Curl, evaluated rather than fetched, and the reason is in the module: the flutter has to be
+        // SPATIALLY CORRELATED or a flake on screen for twenty seconds reads as an independently
+        // twitching dot rather than as snow in wind. Curl specifically because it is divergence-free,
+        // so drifting by it shears without piling flakes up where the field converges.
+        assertTrue(shared.contains("curlNoise(field / SNOW_EDDY_SCALE, SNOW_EDDY_PERIOD)"));
+        assertTrue(shared.contains("import cloud_field;"));
     }
 
     @Test
