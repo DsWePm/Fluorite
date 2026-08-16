@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Locale;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
+import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 
 /**
@@ -93,7 +94,7 @@ public final class RtVideoOptions {
                 // finds them under Fog and concludes their water is unaffected has been misled by the
                 // menu.
                 case TRACING -> List.of(
-                        Section.of(spp(), maxBounces(), sunSize(), entities(), particles(),
+                        Section.of(spp(), maxBounces(), restirReuseDepth(), sunSize(), entities(), particles(),
                                 particleShadows()),
                         Section.titled("fluorite.options.rt.section.media",
                                 volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
@@ -720,6 +721,28 @@ public final class RtVideoOptions {
             (caption, value) -> Options.genericValueLabel(caption, value),
             new OptionInstance.IntRange(2, 8),
             Math.clamp(setting.value(), 2, 8),
+            setting::set);
+    }
+
+    /**
+     * How many bounce vertices keep a persistent ReSTIR reservoir. 0 is off and is the shipped default.
+     *
+     * <p>In Tracing rather than Diagnostics, because it is not a diagnostic — it changes what the
+     * renderer does. It is a slider rather than a toggle because the memory it costs is per depth, and
+     * whether the deep ones earn it is the open question: each depth is two frame halves of one
+     * reservoir per render pixel, which is 265 MB per depth at 1920x1080.
+     */
+    private static OptionInstance<Integer> restirReuseDepth() {
+        IntSetting setting = FluoriteConfig.Rt.Composite.RESTIR_REUSE_DEPTH;
+        return new OptionInstance<>(
+            "fluorite.options.rt.restirReuseDepth",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.restirReuseDepth.tooltip")),
+            (caption, value) -> value == 0
+                    ? Options.genericValueLabel(caption, CommonComponents.OPTION_OFF)
+                    : Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(0, 8),
+            Math.clamp(setting.value(), 0, 8),
             setting::set);
     }
 

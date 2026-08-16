@@ -204,6 +204,8 @@
   "fluorite.options.rt.spp.tooltip": "Path-tracing samples taken per pixel each frame. Higher is cleaner but more demanding.",
   "fluorite.options.rt.maxBounces": "Path Bounces",
   "fluorite.options.rt.maxBounces.tooltip": "Maximum number of secondary path-tracing bounces after the primary hit. Higher captures more indirect light but costs more.",
+  "fluorite.options.rt.restirReuseDepth": "ReSTIR Reuse Depth",
+  "fluorite.options.rt.restirReuseDepth.tooltip": "How many path bounces keep a reservoir between frames. 0 disables ReSTIR reuse. Each depth stores two frames of one reservoir per rendered pixel — about 265 MB per depth at 1920x1080 — so raising this trades video memory for less direct-lighting noise.",
   "fluorite.options.rt.sunSize": "Sun Size",
   "fluorite.options.rt.sunSize.tooltip": "Angular radius of the sun and moon disk. Larger discs cast softer shadow penumbrae.",
   "fluorite.options.rt.entities": "Ray-Traced Entities",

@@ -2244,10 +2244,18 @@ public final class RtComposite {
     private void ensureOutput(RtContext ctx, int width, int height) {
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
+        // The reuse depth belongs in this condition, not merely in the allocation below it. Everything
+        // else here changes only with the window or the upscaler, so the first version of this checked
+        // only those -- and the reservoir knob then did nothing at all until something else forced a
+        // reallocation. A setting that silently takes effect one resize later is worse than one that
+        // does not exist, because the A/B it exists for would compare a tree against itself.
+        int wantReservoirDepth = Math.min(FluoriteConfig.Rt.Composite.RESTIR_REUSE_DEPTH.value(),
+                FluoriteConfig.Rt.Composite.MAX_BOUNCES.value());
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null && exposure.ready()
                 && displayW == width && displayH == height
-                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
+                && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
+                && reservoirDepth == wantReservoirDepth) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -2299,8 +2307,7 @@ public final class RtComposite {
         // reservoir for a vertex deeper than the path ever goes is storage for something that never
         // exists. Two halves so temporal reuse can read last frame while writing this one, which is why
         // the depth dial doubles in memory rather than adding.
-        reservoirDepth = Math.min(FluoriteConfig.Rt.Composite.RESTIR_REUSE_DEPTH.value(),
-                FluoriteConfig.Rt.Composite.MAX_BOUNCES.value());
+        reservoirDepth = wantReservoirDepth;
         if (reservoirDepth > 0) {
             long reservoirBytes = Math.multiplyExact(
                     Math.multiplyExact(pixelRecords, 2L * reservoirDepth), RESERVOIR_BYTES);

@@ -204,6 +204,8 @@
   "fluorite.options.rt.spp.tooltip": "每帧对每个像素进行的路径追踪采样数。数值越高画面越干净，但负载也越高。",
   "fluorite.options.rt.maxBounces": "路径反弹",
   "fluorite.options.rt.maxBounces.tooltip": "主命中之后的二级路径追踪反弹最大次数。数值越高能捕捉更多间接光，但成本也越高。",
+  "fluorite.options.rt.restirReuseDepth": "ReSTIR 复用深度",
+  "fluorite.options.rt.restirReuseDepth.tooltip": "有多少层路径反弹在帧之间保留 reservoir。0 表示关闭 ReSTIR 复用。每一层深度都要为每个渲染像素存两帧的 reservoir——1920×1080 下每层约 265 MB——所以调高它是用显存换直接光噪声。",
   "fluorite.options.rt.sunSize": "太阳大小",
   "fluorite.options.rt.sunSize.tooltip": "太阳和月亮圆盘的角半径。圆盘越大，投射的半影越柔和。",
   "fluorite.options.rt.entities": "光追实体",
