@@ -10,7 +10,7 @@ Minecraft 26.2 的 Vulkan 硬件光追渲染 mod（Fabric + NeoForge，包名 `i
 2. **roughness 是线性的、就是 GGX alpha，永远不要平方**（`bsdf.slang` 顶部横幅）。
 3. `PackedPathSegment` 钉死 48 字节、只剩一个空 uint lane；动它之前先读 `RtPathSegmentLayoutTest` 的注释（+118 MB 的账）。新状态优先用 `pathFlags` 空位。
 4. `MediumStack` 深度 2、具名字段非数组；环境介质（空气/雾/云）**永不进栈**；阴影 payload 不许增长。
-5. `F:\MC\Shader\Reference` 下的 HPWater/HPVolumeCloud 是**净室参考**：只学思路与结构，代码与数值常数一个都不抄（R20：它们的常数围着能量误差调出来，照抄亮 ~12×）。
+5. `F:\MC\Shader\reference` 下的 HPWater/HPVolumeCloud 是**净室参考**：只学思路与结构，代码与数值常数一个都不抄（R20：它们的常数围着能量误差调出来，照抄亮 ~12×）。
 6. 未来云代码（`cloud.slang`）里**禁止出现相机位置**（R18）——云必须在反射里成立。
 7. 性能结论只认 **GPU 时间戳 + 同会话比值法**（固定位姿、同存档、中段窗口中位数、记录完整配置快照）；运行时隔离开关优先于 git checkout A/B。
 8. 每个开关的**关档必须等于已发布行为**，否则 A/B 无意义。
