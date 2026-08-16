@@ -331,11 +331,11 @@ void main() {
     DevicePtr<PackedPathSegment> queue = DevicePtr<PackedPathSegment>(pc.pathQueueAddr);
 
     seed = pcg(seed);
-    if (pc.debugView == 26u) {
+    if (pc.debugView == DEBUG_VIEW_RAIN_SURFACE) {
         outImage[pix] = float4(rainSurfaceDebug(origin, dir, rayConeSpread), 1.0);
         return;
     }
-    if (pc.debugView == 27u) {
+    if (pc.debugView == DEBUG_VIEW_RAIN_PUDDLE) {
         outImage[pix] = float4(rainPuddleDebug(origin, dir, rayConeSpread), 1.0);
         return;
     }

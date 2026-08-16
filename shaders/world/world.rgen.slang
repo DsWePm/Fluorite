@@ -1414,8 +1414,17 @@ void main() {
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
     bool compositePrefixDebug = pc.debugView == DEBUG_VIEW_COMPOSITE_PREFIX_AB;
     if (pc.debugView != 0u && !compositePrefixDebug) {
-        if (pc.debugView == 26u) {
-            return; // pass A owns the direct-hit rain material/film/exposure diagnostic
+        // Pass A owns both rain diagnostics -- the direct-hit material/film/exposure view and the puddle
+        // storage/basin/result view -- so this stage must not write over either.
+        //
+        // BOTH, and it used to be only 26. The chain below opens with `>= DEBUG_VIEW_SKY_TRANSMITTANCE`,
+        // which 27 satisfies; no ternary arm claims it, so it fell through to the froxel default and this
+        // pass painted the froxel over pass A's puddle image every frame. The view was simply wrong for
+        // as long as it has existed, and it reads as a plausible picture, which is why nothing caught it.
+        // Naming the two constants is what surfaced it: with bare literals there was nothing to notice
+        // that 26 was handled here and 27 was not.
+        if (pc.debugView == DEBUG_VIEW_RAIN_SURFACE || pc.debugView == DEBUG_VIEW_RAIN_PUDDLE) {
+            return;
         }
         if (pc.debugView == DEBUG_VIEW_CAMERA_PREFIX) {
             SegmentIntegral prefix = cameraPrefixIntegral(

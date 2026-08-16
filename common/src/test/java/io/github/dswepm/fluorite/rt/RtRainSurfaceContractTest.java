@@ -121,9 +121,11 @@ final class RtRainSurfaceContractTest {
         assertTrue(primary.contains("RainSurface rain = material == MATERIAL_OPAQUE"));
         assertTrue(primary.contains("? evaluateRainSurface(hitPos, ext"));
         assertTrue(indirect.contains("n = applyRainImpactRipples(hitPos, n, openWaterRainImpact"));
-        assertTrue(primary.contains("pc.debugView == 26u"));
+        // Named constants since the two views moved into rain_surface.slang; both stages have to agree
+        // about them, and bothRaygenStagesAgreeOnWhoOwnsTheRainDebugViews below is what enforces that.
+        assertTrue(primary.contains("pc.debugView == DEBUG_VIEW_RAIN_SURFACE"));
         assertTrue(primary.contains("rainSurfaceDebug"));
-        assertTrue(primary.contains("pc.debugView == 27u"));
+        assertTrue(primary.contains("pc.debugView == DEBUG_VIEW_RAIN_PUDDLE"));
         assertTrue(primary.contains("rainPuddleDebug"));
         assertTrue(options.contains("24, 25, 26, 27"));
         assertTrue(options.contains("Math.clamp(setting.value(), 0, 27)"));
@@ -411,6 +413,43 @@ final class RtRainSurfaceContractTest {
         assertTrue(config.contains("RAIN_SPLASH_TARGET"));
         assertTrue(config.contains("\"weather.rain-splash-target\", 96, 0, 256"));
         assertTrue(entities.contains("rainSplashColor()"));
+    }
+
+    /**
+     * Both raygen stages must agree about who draws the two rain debug views.
+     *
+     * <p>Pass A draws 26 and 27; pass B has to recognise both and bail. It used to bail on 26 only, and
+     * because pass B's dispatch opens with {@code >= DEBUG_VIEW_SKY_TRANSMITTANCE} and no arm claims 27,
+     * view 27 fell through to the froxel default — so pass B painted the froxel over pass A's puddle
+     * image every frame. It had been wrong since the view existed, and it went unnoticed because a froxel
+     * is a perfectly plausible-looking picture; nothing about it says "this is the wrong diagnostic".
+     *
+     * <p>The numbers now live in rain_surface.slang, which is the one module both stages import — entry
+     * files cannot import each other, which is why these two spent their life as bare literals in two
+     * places with nothing tying them together.
+     */
+    @Test
+    void bothRaygenStagesAgreeOnWhoOwnsTheRainDebugViews() throws IOException {
+        String rainSurface = source("shaders/world/rain_surface.slang");
+        String primary = source("shaders/world/world_primary.rgen.slang");
+        String world = source("shaders/world/world.rgen.slang");
+
+        assertTrue(rainSurface.contains("DEBUG_VIEW_RAIN_SURFACE = 26u"));
+        assertTrue(rainSurface.contains("DEBUG_VIEW_RAIN_PUDDLE = 27u"));
+
+        // Pass A draws them.
+        assertTrue(primary.contains("pc.debugView == DEBUG_VIEW_RAIN_SURFACE"));
+        assertTrue(primary.contains("pc.debugView == DEBUG_VIEW_RAIN_PUDDLE"));
+
+        // Pass B yields on BOTH. Dropping either half restores the overwrite.
+        assertTrue(world.contains("pc.debugView == DEBUG_VIEW_RAIN_SURFACE")
+                && world.contains("pc.debugView == DEBUG_VIEW_RAIN_PUDDLE"));
+
+        // And neither stage may go back to bare literals, which is what hid the asymmetry.
+        assertFalse(primary.contains("debugView == 26u"));
+        assertFalse(primary.contains("debugView == 27u"));
+        assertFalse(world.contains("debugView == 26u"));
+        assertFalse(world.contains("debugView == 27u"));
     }
 
     private static String source(String relativePath) throws IOException {
