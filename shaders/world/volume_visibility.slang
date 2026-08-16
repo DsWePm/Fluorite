@@ -70,9 +70,14 @@ public struct VolumeVisibilitySample {
  * </ul>
  *
  * <p>The no-grid fallback below is the one case this cannot help, because there is nothing to clamp to.
- * It is reached when volumetric fog is switched off, which also stops the bake — and the water medium
- * reads this same function, so switching fog off currently lights cave water. That coupling is a
- * separate fix; see issue #41.
+ * It is now reached only when VISIBILITY_CELL_SIZE is 0 — an explicit, informed opt out of the grid,
+ * whose documented meaning is "the renderer's behaviour before this grid existed".
+ *
+ * <p>It used to be reached by turning volumetric FOG off, which stopped the bake as a side effect. This
+ * function is not fog-only — the water medium's two enclosed sky terms read it too — so that made a fog
+ * switch light up cave water, and the fallback carried the blame for a coupling made in RtComposite. The
+ * bake now follows the grid's own knob instead (#41). Which leaves this fallback saying only what it
+ * always should have: no grid was asked for, so there is no measurement to report.
  */
 public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     VolumeVisibilitySample result;

@@ -208,8 +208,21 @@ public final class RtComposite {
      * VISIBILITY_CELL_SIZE for the measurement that established it.
      */
     private static Float4 visibilityGridOrigin(double camX, double camY, double camZ, RtTerrain terrain) {
+        // GOVERNED BY ITS OWN KNOB, not by the fog toggle, and that is issue #41's fix.
+        //
+        // This used to publish nothing when Volumetrics.ENABLED was false. But the grid is a VISIBILITY
+        // structure, not a fog structure, and fog is not its only reader: the water medium's two enclosed
+        // sky terms sample it half a block above the water surface (volume.slang's
+        // enclosedScatterVertexInScatter and enclosedSingleScatter). With no grid published every sampler
+        // returns "fully lit", so turning fog OFF made cave water glow -- a fog switch changing how water
+        // looks, which is exactly what iron law 8 forbids.
+        //
+        // VISIBILITY_CELL_SIZE is already the grid's own off switch, and its own documentation says so:
+        // "turning it off is not the same as turning fog scattering off". Zeroing it is an informed opt
+        // out of the grid, and the (1,1) fallback is the documented pre-grid behaviour that comes with
+        // it. Turning off FOG is not that request and must not silently perform it.
         float cell = FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value();
-        if (cell <= 0f || !FluoriteConfig.Rt.Volumetrics.ENABLED.value()) {
+        if (cell <= 0f) {
             return new Float4(0f, 0f, 0f, 0f);
         }
         double halfX = RtSky.VIS_GRID_W * 0.5 * cell;
@@ -3052,8 +3065,20 @@ public final class RtComposite {
             // w is 0, every sampler returns unoccluded, and the bake used to run anyway — 131k rays all
             // cast from the degenerate origin, paid every frame to fill a grid nobody would read. The
             // timer zone stays unconditional so gpu.visBake reads ~0 rather than going stale.
+            //
+            // "A GRID NOBODY WOULD READ" WAS THE PART THAT WAS WRONG, and it is why the fog toggle is no
+            // longer part of this condition (#41). It was written believing fog was the only consumer.
+            // The water medium reads the same sampler for its sky term, so with fog off this saved 131k
+            // rays by removing data that water was still using -- and cave water lit up. The saving is
+            // real only when the grid genuinely has no reader, which is what cell size 0 expresses and
+            // what this still honours.
+            //
+            // No attempt is made to run the bake only when water is actually in range. There is no cheap
+            // sound predicate for it: "camera submerged" is not it, because a ray can scatter inside a
+            // lake the camera is nowhere near, and anything better means new water-presence tracking in
+            // the terrain layer. Paying for a structure both consumers may read beats inventing a
+            // predicate that is wrong in the direction of the bug just fixed.
             if (FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
-                    && FluoriteConfig.Rt.Volumetrics.ENABLED.value()
                     && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED) {
                 skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
             }
