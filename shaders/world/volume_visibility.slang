@@ -57,10 +57,17 @@ public struct VolumeVisibilitySample {
  * being told the sky was wide open, which is why distant cave fog glowed while nearby fog was correct.
  * Clamping asks the boundary instead, and in a cave the boundary is roofed.
  *
- * <p>WHAT IT COSTS, named rather than discovered later: standing inside a cave mouth whose opening is
- * further than the grid reaches, the boundary in that direction is roofed, so genuinely open sky beyond
- * it is reported closed and distant outdoor fog is darkened. That is an error in the opposite direction
- * from the one being removed, and a far smaller one.
+ * <p>WHAT IT COSTS, named rather than discovered later. Two things, both bounded:
+ *
+ * <ul>
+ *   <li>Standing inside a cave mouth whose opening is further than the grid reaches, the boundary in
+ *       that direction is roofed, so genuinely open sky beyond it is reported closed and distant outdoor
+ *       fog darkens. Opposite direction to the error being removed, and far smaller.</li>
+ *   <li>Above the grid nothing is clamped (see the +Y note below), so a sample more than half the grid's
+ *       height overhead reads open. In a cavern taller than that, the air near its ceiling is lit. Same
+ *       direction as the original defect, over a much smaller region, and it is the price of the deep
+ *       water fix rather than an oversight.</li>
+ * </ul>
  *
  * <p>The no-grid fallback below is the one case this cannot help, because there is nothing to clamp to.
  * It is reached when volumetric fog is switched off, which also stops the bake — and the water medium
@@ -86,10 +93,29 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     // Cell (i,j,k) holds the answer for origin + (i+0.5)*cell, whose normalized coordinate is exactly
     // (i+0.5)/W. So this division IS the texture coordinate — no half-texel correction, because the bake
     // writes centres. If that convention ever changes, both sides move together or the field shifts.
+    float3 g = (p - worldPush.visGridOrigin.xyz) / extent;
+    // ABOVE THE GRID IS THE ONE DIRECTION THAT MUST NOT CLAMP, and the reason is a property of the
+    // quantity rather than a special case: sky openness is monotone non-decreasing as you rise. Going up
+    // you clear occluders; you never acquire one. So the top cell is a LOWER BOUND on everything above
+    // it, and clamping to it would assert a bound as though it were a measurement -- erring dark, with
+    // no ceiling on how wrong.
+    //
+    // That is not hypothetical. The underwater sky term samples half a block above the water SURFACE, so
+    // once the camera is deeper than the grid's vertical half-extent -- 16 blocks at the default cell --
+    // that query lands above the grid. The top cell there is still underwater, and this grid's zenith ray
+    // treats a water surface as an occluder like any other geometry, so clamping answered "roofed" and
+    // the scattering vanished. As a step, at a fixed depth, which is exactly how it was reported.
+    //
+    // Sideways and downward do clamp: laterally the world plausibly continues as it does here, and below
+    // the grid the bottom cell is an UPPER bound, so clamping there errs bright but bounded.
+    if (g.y > 1.0) {
+        return result;
+    }
     // Clamped HERE rather than left to the sampler. The descriptor happens to carry CLAMP_TO_EDGE today,
-    // so the fetch alone would do the right thing -- but that address mode is chosen in RtComposite, and
-    // a correctness property of this function must not depend on a decision made in another file.
-    float3 uvw = saturate((p - worldPush.visGridOrigin.xyz) / extent);
+    // so the fetch alone would do the right thing on the remaining axes -- but that address mode is
+    // chosen in RtComposite, and a correctness property of this function must not depend on a decision
+    // made in another file.
+    float3 uvw = saturate(g);
     float4 v = volumeVisibilityGrid.SampleLevel(uvw, 0.0);
     result.sun = v.r;
     result.sky = v.g;

@@ -49,7 +49,15 @@ final class RtCelestialMediumSamplingTest {
         // horizontally at the default cell, and every fog or underwater sample past that used to be told
         // the sky was wide open -- which is why distant cave fog glowed while nearby fog was correct.
         // Asking the boundary instead costs nothing and, in a cave, the boundary is roofed.
-        assertTrue(visibility.contains("saturate((p - worldPush.visGridOrigin.xyz) / extent)"));
+        assertTrue(visibility.contains("float3 uvw = saturate(g);"));
+
+        // ...EXCEPT UPWARD, and that asymmetry is a property of the quantity, not a special case: sky
+        // openness only increases as you rise, so the top cell is a lower BOUND on everything above it
+        // and clamping there would assert a bound as a measurement. Concretely, the underwater sky term
+        // samples just above the water SURFACE, so past the grid's 16-block vertical half-extent that
+        // query lands above the grid -- where the top cell is still underwater and reads roofed, which
+        // made underwater scattering vanish as a step at a fixed depth.
+        assertTrue(visibility.contains("if (g.y > 1.0)"));
 
         // The two things that made the miss wrong, and neither may come back on its own:
         //
