@@ -22,15 +22,13 @@ import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
-import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
 import io.github.dswepm.fluorite.rt.RtContext;
+import io.github.dswepm.fluorite.rt.RtShaderModules;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 import io.github.dswepm.fluorite.rt.RtGpuExecutor;
 import io.github.dswepm.fluorite.rt.RtFrameStats;
@@ -56,7 +54,6 @@ import static io.github.dswepm.fluorite.rt.RtContext.check;
  * half-written table or stale shared medium radiance.
  */
 public final class RtSky {
-    private static final String SHADER_DIR = "/fluorite/rt/";
     /** Must match SKY_TRANSMITTANCE_W/H in shaders/world/atmosphere.slang. */
     public static final int TRANSMITTANCE_W = 256;
     public static final int TRANSMITTANCE_H = 64;
@@ -1701,7 +1698,7 @@ public final class RtSky {
         long pipelineLayout = p.get(0);
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, pipelineLayout, label + " pipeline layout");
 
-        long module = loadModule(vk, stack, shader);
+        long module = RtShaderModules.load(vk, stack, shader);
         VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack)
                 .sType$Default().stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT).module(module)
                 .pName(stack.UTF8("main"));
@@ -1754,25 +1751,4 @@ public final class RtSky {
         VK10.vkUpdateDescriptorSets(vk, writes, null);
     }
 
-    private static long loadModule(VkDevice vk, MemoryStack stack, String name) {
-        byte[] bytes;
-        try (InputStream in = RtSky.class.getResourceAsStream(SHADER_DIR + name)) {
-            if (in == null) {
-                throw new IllegalStateException("missing shader " + SHADER_DIR + name);
-            }
-            bytes = in.readAllBytes();
-        } catch (IOException e) {
-            throw new IllegalStateException("failed to read shader " + name, e);
-        }
-        ByteBuffer code = MemoryUtil.memAlloc(bytes.length);
-        try {
-            code.put(bytes).flip();
-            VkShaderModuleCreateInfo ci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-            LongBuffer p = stack.mallocLong(1);
-            check(VK10.vkCreateShaderModule(vk, ci, null, p), "vkCreateShaderModule(" + name + ")");
-            return p.get(0);
-        } finally {
-            MemoryUtil.memFree(code);
-        }
-    }
 }

@@ -1,6 +1,7 @@
 package io.github.dswepm.fluorite.rt.overlay;
 
 import io.github.dswepm.fluorite.rt.RtContext;
+import io.github.dswepm.fluorite.rt.RtShaderModules;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 import io.github.dswepm.fluorite.rt.RtGpuExecutor;
 import io.github.dswepm.fluorite.rt.accel.RtBuffer;
@@ -158,7 +159,7 @@ public final class RtRainStreaks {
             RtDebugLabels.name(context, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                     layout, "rain streak lighting pipeline layout");
 
-            long module = RtOverlayPipelines.loadModule(
+            long module = RtShaderModules.load(
                     context.vk(), stack, "rain_streak_light.comp.spv");
             try {
                 VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack)

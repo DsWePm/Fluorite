@@ -18,17 +18,15 @@ import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkRayTracingPipelineCreateInfoKHR;
 import org.lwjgl.vulkan.VkRayTracingShaderGroupCreateInfoKHR;
-import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkStridedDeviceAddressRegionKHR;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 import org.lwjgl.vulkan.VkWriteDescriptorSetAccelerationStructureKHR;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
 import io.github.dswepm.fluorite.rt.RtContext;
+import io.github.dswepm.fluorite.rt.RtShaderModules;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 import io.github.dswepm.fluorite.rt.RtDeviceBringup;
 import io.github.dswepm.fluorite.rt.RtGpuExecutor;
@@ -61,7 +59,6 @@ import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkGetRayTracingShaderGroupH
  * supported by passing an array; {@code traceRayEXT}'s {@code missIndex} selects among them.
  */
 public final class RtPipeline {
-    private static final String SHADER_DIR = "/fluorite/rt/";
     /** Set 1: entity albedo plus three independently indexed canonical material-page arrays. */
     private static final int BINDLESS_BINDINGS = 4;
     private static final int ENTITY_ALBEDO_BINDING = 0;
@@ -482,17 +479,17 @@ public final class RtPipeline {
             int stageCount = raygenCount + missCount + 1 + (hasAhit ? 1 : 0);
             long[] mGen = new long[raygenCount];
             for (int g = 0; g < raygenCount; g++) {
-                mGen[g] = loadModule(vk, stack, rgen[g]);
+                mGen[g] = RtShaderModules.load(vk, stack, rgen[g]);
                 RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, mGen[g], label + " " + rgen[g]);
             }
             long[] mMiss = new long[missCount];
             for (int m = 0; m < missCount; m++) {
-                mMiss[m] = loadModule(vk, stack, rmiss[m]);
+                mMiss[m] = RtShaderModules.load(vk, stack, rmiss[m]);
                 RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, mMiss[m], label + " " + rmiss[m]);
             }
-            long mHit = loadModule(vk, stack, rchit);
+            long mHit = RtShaderModules.load(vk, stack, rchit);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, mHit, label + " " + rchit);
-            long mAhit = hasAhit ? loadModule(vk, stack, rahit) : 0L;
+            long mAhit = hasAhit ? RtShaderModules.load(vk, stack, rahit) : 0L;
             if (hasAhit) {
                 RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, mAhit, label + " " + rahit);
             }
@@ -881,25 +878,4 @@ public final class RtPipeline {
         return (v + a - 1) & ~(a - 1);
     }
 
-    private static long loadModule(VkDevice vk, MemoryStack stack, String name) {
-        byte[] bytes;
-        try (InputStream in = RtPipeline.class.getResourceAsStream(SHADER_DIR + name)) {
-            if (in == null) {
-                throw new IllegalStateException("missing SPIR-V resource: " + SHADER_DIR + name);
-            }
-            bytes = in.readAllBytes();
-        } catch (IOException e) {
-            throw new IllegalStateException("failed to read SPIR-V resource: " + SHADER_DIR + name, e);
-        }
-        ByteBuffer code = MemoryUtil.memAlloc(bytes.length).put(bytes);
-        code.flip();
-        try {
-            VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-            LongBuffer pModule = stack.mallocLong(1);
-            check(VK10.vkCreateShaderModule(vk, smci, null, pModule), "vkCreateShaderModule(" + name + ")");
-            return pModule.get(0);
-        } finally {
-            MemoryUtil.memFree(code);
-        }
-    }
 }

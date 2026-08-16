@@ -2,7 +2,6 @@ package io.github.dswepm.fluorite.rt.pipeline;
 
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import org.lwjgl.system.MemoryStack;
-import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
@@ -16,22 +15,19 @@ import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
-import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
 import io.github.dswepm.fluorite.rt.RtContext;
+import io.github.dswepm.fluorite.rt.RtShaderModules;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 
 import static io.github.dswepm.fluorite.rt.RtContext.check;
 
 /** Compute pass that grades display-res scene-linear HDR and applies the selected SDR/HDR output transform. */
 public final class RtDisplayPipeline {
-    private static final String SHADER_DIR = "/fluorite/rt/";
     /** Output, lens and grain fields mirrored by display_common.glsl. */
     private static final int PUSH_BYTES = 32 * Integer.BYTES;
 
@@ -282,7 +278,7 @@ public final class RtDisplayPipeline {
     private static long createComputePipeline(RtContext ctx, MemoryStack stack, long layout,
                                               String moduleName, String label) {
         VkDevice vk = ctx.vk();
-        long module = loadModule(vk, stack, moduleName);
+        long module = RtShaderModules.load(vk, stack, moduleName);
         try {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, module, label + " shader module");
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
@@ -323,25 +319,4 @@ public final class RtDisplayPipeline {
         destroyed = true;
     }
 
-    private static long loadModule(VkDevice vk, MemoryStack stack, String name) {
-        byte[] bytes;
-        try (InputStream in = RtDisplayPipeline.class.getResourceAsStream(SHADER_DIR + name)) {
-            if (in == null) {
-                throw new IllegalStateException("missing SPIR-V resource: " + SHADER_DIR + name);
-            }
-            bytes = in.readAllBytes();
-        } catch (IOException e) {
-            throw new IllegalStateException("failed to read SPIR-V resource: " + SHADER_DIR + name, e);
-        }
-        ByteBuffer code = MemoryUtil.memAlloc(bytes.length).put(bytes);
-        code.flip();
-        try {
-            VkShaderModuleCreateInfo smci = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-            LongBuffer pModule = stack.mallocLong(1);
-            check(VK10.vkCreateShaderModule(vk, smci, null, pModule), "vkCreateShaderModule(" + name + ")");
-            return pModule.get(0);
-        } finally {
-            MemoryUtil.memFree(code);
-        }
-    }
 }

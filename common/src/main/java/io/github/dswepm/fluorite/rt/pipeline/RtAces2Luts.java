@@ -2,10 +2,10 @@ package io.github.dswepm.fluorite.rt.pipeline;
 
 import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.rt.RtContext;
+import io.github.dswepm.fluorite.rt.RtShaderModules;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 import io.github.dswepm.fluorite.rt.accel.RtImage;
 import org.lwjgl.system.MemoryStack;
-import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
 import org.lwjgl.vulkan.VkDescriptorImageInfo;
@@ -20,11 +20,8 @@ import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
-import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
@@ -41,7 +38,6 @@ import static io.github.dswepm.fluorite.rt.RtContext.check;
 final class RtAces2Luts {
     static final int LUT_SIZE = 65;
     static final int LUT_COUNT = 5;
-    private static final String SHADER_DIR = "/fluorite/rt/";
 
     private final RtContext ctx;
     private final RtImage[] images;
@@ -165,7 +161,7 @@ final class RtAces2Luts {
                     "vkCreatePipelineLayout(ACES 2 LUT bake)");
             pipelineLayout = out.get(0);
 
-            module = loadModule(vk, stack, "aces2_lut_bake.comp.spv");
+            module = RtShaderModules.load(vk, stack, "aces2_lut_bake.comp.spv");
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
                     .stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
             VkComputePipelineCreateInfo.Buffer pipelineInfo = VkComputePipelineCreateInfo.calloc(1, stack);
@@ -210,23 +206,4 @@ final class RtAces2Luts {
         }
     }
 
-    private static long loadModule(VkDevice vk, MemoryStack stack, String name) {
-        byte[] bytes;
-        try (InputStream in = RtAces2Luts.class.getResourceAsStream(SHADER_DIR + name)) {
-            if (in == null) throw new IllegalStateException("missing SPIR-V resource: " + SHADER_DIR + name);
-            bytes = in.readAllBytes();
-        } catch (IOException e) {
-            throw new IllegalStateException("failed to read SPIR-V resource: " + SHADER_DIR + name, e);
-        }
-        ByteBuffer code = MemoryUtil.memAlloc(bytes.length).put(bytes);
-        code.flip();
-        try {
-            VkShaderModuleCreateInfo info = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-            LongBuffer out = stack.mallocLong(1);
-            check(VK10.vkCreateShaderModule(vk, info, null, out), "vkCreateShaderModule(" + name + ")");
-            return out.get(0);
-        } finally {
-            MemoryUtil.memFree(code);
-        }
-    }
 }

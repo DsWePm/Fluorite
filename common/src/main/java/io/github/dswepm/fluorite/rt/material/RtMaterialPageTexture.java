@@ -49,7 +49,7 @@ final class RtMaterialPageTexture {
                     .usage(Vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
             LongBuffer imageOut = stack.mallocLong(1);
             PointerBuffer allocationOut = stack.mallocPointer(1);
-            check(Vma.vmaCreateImage(vma, imageInfo, allocationInfo, imageOut, allocationOut, null),
+            RtContext.check(Vma.vmaCreateImage(vma, imageInfo, allocationInfo, imageOut, allocationOut, null),
                     "vmaCreateImage(material page)");
             createdImage = imageOut.get(0);
             createdAllocation = allocationOut.get(0);
@@ -61,7 +61,7 @@ final class RtMaterialPageTexture {
             viewInfo.subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
                     .baseMipLevel(0).levelCount(levels.size()).baseArrayLayer(0).layerCount(1);
             LongBuffer viewOut = stack.mallocLong(1);
-            check(VK10.vkCreateImageView(vk, viewInfo, null, viewOut), "vkCreateImageView(material page)");
+            RtContext.check(VK10.vkCreateImageView(vk, viewInfo, null, viewOut), "vkCreateImageView(material page)");
             createdView = viewOut.get(0);
             RtDebugLabels.nameImageView(ctx, createdView, label + " view");
 
@@ -147,7 +147,8 @@ final class RtMaterialPageTexture {
         destroyed = true;
     }
 
-    private static void check(int result, String operation) {
-        if (result != VK10.VK_SUCCESS) throw new IllegalStateException(operation + " failed: " + result);
-    }
+    // No local check() here. RtContext.check reports VK_ERROR_DEVICE_LOST to VulkanDiagnostics before it
+    // throws, and this file allocates and views images -- which is where a lost device actually surfaces.
+    // A private copy that only throws would switch that forensics off at the one call site most likely to
+    // need it, which is exactly what it used to do.
 }

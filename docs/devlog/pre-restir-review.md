@@ -259,10 +259,12 @@ Java 侧扫了整数除法、未检查的 `.get(0)`、以及除以变量的位�
 
 | | 项 | 理由 |
 |---|---|---|
-| **高** | R2 `check()` 弱拷贝 | 唯一一条**有行为后果**的：在最需要取证的路径上关掉了取证。三个文件，改动小 |
-| 中 | R4 水天空闸点 | 在刚修过的代码里，发散静默 |
-| 中 | R1 SPIR-V 载入器 | 13 份，纯样板，抽取零风险 |
-| 中 | R3 sampler 模板 | 已有测试兜底，但根因未除 |
-| 低 | R5 测试 helper | 只影响测试 |
-| 低 | R6 同值不同写法 | 纯一致性 |
+| **高** | R2 `check()` 弱拷贝 | ✅ **已修**。三处改用 `RtContext.check`；`RtVulkanErrorHandlingTest` 扫全部 Java 源，任何类再声明 `void check(int …)` 即构建失败，并同时钉住 `RtContext.check` 必须保留 device-lost 上报——否则删掉那一段，前面的断言会全部空转通过 |
+| 中 | R4 水天空闸点 | ✅ **已修**。抽为 `volume_visibility.slang` 的 `waterSurfaceSkyOpenness(p, skyDepth)`，`+0.5` 具名 `WATER_SKY_GATE_LIFT`，三段近似重复的理由合并一处。探针的上行**射线仍然独立**（那是刻意的重复），只有闸点算术共享 |
+| 中 | R1 SPIR-V 载入器 | ✅ **已修**。13 份 → `RtShaderModules.load`，**净减 281 行**。抽取前逐份 diff 确认差异只是变量名、大括号风格、错误文案和各自的 `.class`（绝对资源路径只经 classloader，同 jar 内等价） |
+| 中 | R3 sampler 模板 | 未做。`RtSamplerLifetimeTest` 兜住了后果，根因（11 份手写模板）未除 |
+| 低 | R5 测试 helper | 未做，只影响测试 |
+| 低 | R6 同值不同写法 | 未做，纯一致性 |
 | 缓 | C1 拆 `RtComposite` | 已裁决在 ReSTIR 之后 |
+
+**抽取过程中值得记的一条**：13 份载入器归一化后仍有 13 个不同哈希，一度像是「体内有真差异，不能合并」。逐份 diff 才看清全是变量名/文案/风格。**「看起来一样」和「diff 过是一样」之间隔着一个 bug**，这类合并必须走后者。
