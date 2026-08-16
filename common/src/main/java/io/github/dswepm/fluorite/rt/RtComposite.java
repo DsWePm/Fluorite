@@ -1523,6 +1523,15 @@ public final class RtComposite {
         boolean waterProbeArmed;
         RtTerrain.StreamingDiagnostics waterProbeTerrain;
         int waterProbeCpuFlags;
+        /**
+         * The simulation plane as it stood when THIS slot was written.
+         *
+         * <p>Snapshotted rather than read live for the same reason the terrain diagnostics beside it
+         * are: the probe is read back several frames later, once the slot's graphics timeline has
+         * completed, so a current-frame field would be compared against a GPU value from a different
+         * frame -- and a few frames is exactly the scale the disagreement being hunted lives at.
+         */
+        float waterProbeSimPlane;
 
         PushSlot(RtBuffer buffer, RtBuffer waterProbe) {
             this.buffer = buffer;
@@ -1576,7 +1585,15 @@ public final class RtComposite {
                         + " prefixLen={} prefixScatter=({},{},{}) prefixT=({},{},{}) prefixTLum={}"
                         + " leaf=({},{},{}) leafLum={} composite=({},{},{}) prefixFraction={}"
                         + " skySource=({},{},{}) skyOpen={} upWater={} skyDepth={} fallbackDepth={}"
-                        + " surfaceY={} firstSegmentLen={} firstScatter=({},{},{}) firstT=({},{},{})"
+                        // simPlane rides EVERY probe line, not just the fault path, because what is
+                        // wanted first is the distribution: how far these two answers for "where is the
+                        // water surface" normally sit apart. A fault threshold picked before seeing that
+                        // is a guess, and the existing one (1.5, borrowed from the shading's acceptance
+                        // window) is wider than the largest disagreement the two definitions can even
+                        // produce -- a fractional fluid top against a whole block top differ by at most
+                        // one block. Subtract these two when reading; do not add a threshold until the
+                        // numbers say where to put it.
+                        + " surfaceY={} simPlane={} firstSegmentLen={} firstScatter=({},{},{}) firstT=({},{},{})"
                         + " firstTLum={} firstHitT={} firstMaterial={} firstEscaped={} firstMediumProfile={}"
                         + " firstThroughput=({},{},{}) firstThroughputLum={}"
                         + " firstWeightedScatter=({},{},{}) firstWeightedScatterLum={}"
@@ -1595,6 +1612,7 @@ public final class RtComposite {
                 fmt(MemoryUtil.memGetFloat(sky + 12)),
                 fmt(MemoryUtil.memGetFloat(up)), fmt(MemoryUtil.memGetFloat(up + 4)),
                 fmt(MemoryUtil.memGetFloat(up + 8)), fmt(MemoryUtil.memGetFloat(up + 12)),
+                fmt(slot.waterProbeSimPlane),
                 fmt(MemoryUtil.memGetFloat(firstScatter + 12)),
                 fmt(MemoryUtil.memGetFloat(firstScatter)), fmt(MemoryUtil.memGetFloat(firstScatter + 4)),
                 fmt(MemoryUtil.memGetFloat(firstScatter + 8)),
@@ -2783,6 +2801,7 @@ public final class RtComposite {
             selectedPushSlot.waterProbeArmed = waterProbeEnabled;
             selectedPushSlot.waterProbeTerrain = terrain.streamingDiagnostics();
             selectedPushSlot.waterProbeCpuFlags = flags;
+            selectedPushSlot.waterProbeSimPlane = waterPlaneRebasedY;
             if (waterProbeEnabled) {
                 // A valid bit from an older use of this slot must not masquerade as a current sample if a
                 // trace aborts before the centre pixel writes. The four-byte flush is harmless on coherent
