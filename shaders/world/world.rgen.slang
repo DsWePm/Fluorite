@@ -1363,8 +1363,10 @@ void writeWaterMediumProbe(uint2 dispatchIndex, uint2 dimensions, PackedPathSegm
                                                float3(0.0, 1.0, 0.0), RAY_FAR);
         measuredUpWater = up.waterHitT;
         skyDepth = measuredUpWater > 0.0 ? measuredUpWater : fallbackDepth;
-        float3 gateP = float3(camera.origin.x, camera.origin.y + skyDepth + 0.5, camera.origin.z);
-        skyOpen = sampleVolumeVisibility(gateP).y;
+        // The gate point itself is NOT re-derived here, deliberately, and it is the opposite call from the
+        // ray above: the ray is duplicated so a change in the measurement is visible, the gate point is
+        // shared so the probe cannot drift into reporting a query the shading never makes.
+        skyOpen = waterSurfaceSkyOpenness(camera.origin, skyDepth);
     }
 
     bool finiteOutput = all(prefix.inScatter == prefix.inScatter)

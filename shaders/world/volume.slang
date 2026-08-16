@@ -1061,11 +1061,8 @@ float3 enclosedScatterVertexInScatter(ScatterVertex vertex, float3 sigmaT, uint 
         float3 skySigmaSource = multiScatterOn()
                 ? volumeDiffuseAttenuation(sigmaT, albedo, phaseG)
                 : sigmaT;
-        // Sampled a hand's breadth above the measured surface for the same reason as the stratified
-        // path: the grid's zenith ray treats the water surface as an occluder, so asked from below it
-        // answers "roofed" everywhere.
-        float3 gateP = float3(vertex.pos.x, vertex.pos.y + skyDepth + 0.5, vertex.pos.z);
-        source += worldPush.mediumSkyRadiance.xyz * sampleVolumeVisibility(gateP).y
+        // Asked above the surface rather than at this vertex; waterSurfaceSkyOpenness owns the reason.
+        source += worldPush.mediumSkyRadiance.xyz * waterSurfaceSkyOpenness(vertex.pos, skyDepth)
                 * exp(-skySigmaSource * skyDepth);
     }
 
@@ -1311,12 +1308,10 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
         // openness wants the grid because the grid interpolates, and "how much sky is up there" is a
         // quantity that should never step.
         //
-        // Sampled just above the surface, whose height the ray has now told us exactly. The grid's zenith
-        // ray treats the water surface as an occluder like any other geometry, so asked from underwater it
-        // would answer "roofed" everywhere; asked from a hand's breadth above the surface it answers the
-        // question actually being posed. That is also why this needs no instance mask for water.
-        float3 gateP = float3(ro.x, ro.y + skyDepth + 0.5, ro.z);
-        float skyOpen = sampleVolumeVisibility(gateP).y;
+        // Asked just above the surface, whose height the ray above has now told us exactly.
+        // waterSurfaceSkyOpenness owns the reason, including why depth comes from that ray and openness
+        // does not.
+        float skyOpen = waterSurfaceSkyOpenness(ro, skyDepth);
         total += worldPush.mediumSkyRadiance.xyz * skyOpen
                 * depthAttenuatedIntegral(skySigmaSource, sigmaT, skyDepth, rd.y, 1.0, tEnd);
     }

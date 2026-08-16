@@ -2,9 +2,9 @@ package io.github.dswepm.fluorite.rt.pipeline;
 
 import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import io.github.dswepm.fluorite.rt.RtContext;
+import io.github.dswepm.fluorite.rt.RtShaderModules;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 import org.lwjgl.system.MemoryStack;
-import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
@@ -18,11 +18,8 @@ import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
-import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import java.util.Arrays;
@@ -32,7 +29,6 @@ import static io.github.dswepm.fluorite.rt.RtContext.check;
 /** D149A's shared HDR bright pyramid and separate Bloom/Lens Flare composite. */
 public final class RtBloomFlarePipeline {
     public static final int LEVEL_COUNT = 5;
-    private static final String SHADER_DIR = "/fluorite/rt/";
     private static final int BINDING_COUNT = 4 + LEVEL_COUNT * 2;
     private static final int PUSH_BYTES = 56;
 
@@ -246,7 +242,7 @@ public final class RtBloomFlarePipeline {
 
     private static long createPipeline(RtContext ctx, MemoryStack stack, long layout) {
         VkDevice vk = ctx.vk();
-        long module = loadModule(vk, stack, "bloom_flare.comp.spv");
+        long module = RtShaderModules.load(vk, stack, "bloom_flare.comp.spv");
         try {
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack)
                     .sType$Default().stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT)
@@ -263,23 +259,4 @@ public final class RtBloomFlarePipeline {
         }
     }
 
-    private static long loadModule(VkDevice vk, MemoryStack stack, String name) {
-        byte[] bytes;
-        try (InputStream in = RtBloomFlarePipeline.class.getResourceAsStream(SHADER_DIR + name)) {
-            if (in == null) throw new IllegalStateException("missing SPIR-V resource: " + SHADER_DIR + name);
-            bytes = in.readAllBytes();
-        } catch (IOException e) {
-            throw new IllegalStateException("failed to read SPIR-V resource: " + SHADER_DIR + name, e);
-        }
-        ByteBuffer code = MemoryUtil.memAlloc(bytes.length).put(bytes);
-        code.flip();
-        try {
-            VkShaderModuleCreateInfo info = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-            LongBuffer out = stack.mallocLong(1);
-            check(VK10.vkCreateShaderModule(vk, info, null, out), "vkCreateShaderModule(" + name + ")");
-            return out.get(0);
-        } finally {
-            MemoryUtil.memFree(code);
-        }
-    }
 }

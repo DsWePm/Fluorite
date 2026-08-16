@@ -233,7 +233,7 @@ public final class RtEnvironmentTextures {
                         .usage(Vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
                 LongBuffer imageOut = stack.mallocLong(1);
                 PointerBuffer allocationOut = stack.mallocPointer(1);
-                check(Vma.vmaCreateImage(vma, imageInfo, allocationInfo, imageOut, allocationOut, null),
+                RtContext.check(Vma.vmaCreateImage(vma, imageInfo, allocationInfo, imageOut, allocationOut, null),
                         "vmaCreateImage(" + label + ")");
                 createdImage = imageOut.get(0);
                 createdAllocation = allocationOut.get(0);
@@ -245,7 +245,7 @@ public final class RtEnvironmentTextures {
                         .baseMipLevel(0).levelCount(first.levels().size())
                         .baseArrayLayer(0).layerCount(images.size());
                 LongBuffer viewOut = stack.mallocLong(1);
-                check(VK10.vkCreateImageView(vk, viewInfo, null, viewOut),
+                RtContext.check(VK10.vkCreateImageView(vk, viewInfo, null, viewOut),
                         "vkCreateImageView(" + label + ")");
                 createdView = viewOut.get(0);
                 RtDebugLabels.nameImageView(ctx, createdView, label + " view");
@@ -338,8 +338,7 @@ public final class RtEnvironmentTextures {
             destroyed = true;
         }
 
-        private static void check(int result, String operation) {
-            if (result != VK10.VK_SUCCESS) throw new IllegalStateException(operation + " failed: " + result);
-        }
+        // No local check() here -- see the note in RtMaterialPageTexture. RtContext.check reports a lost
+        // device to VulkanDiagnostics before throwing, and image allocation is where that shows up.
     }
 }

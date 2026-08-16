@@ -135,3 +135,38 @@ public float2 sampleVolumeVisibility(float3 p) {
     VolumeVisibilitySample result = sampleVolumeLightVisibility(p);
     return float2(result.sun, result.sky);
 }
+
+/**
+ * A hand's breadth. Lifts a sample from inside the water to just above its surface.
+ *
+ * <p>Named because the number is load-bearing and shared. Too small and float error at the interface can
+ * leave the sample on the wrong side of it; too large and the answer stops being about this point.
+ */
+public static const float WATER_SKY_GATE_LIFT = 0.5;
+
+/**
+ * Sky openness for a point inside water — asked from just above the surface, not from the point itself.
+ *
+ * <p><b>Why not from the point.</b> This grid's zenith ray treats a water surface as an occluder like any
+ * other geometry, so asked from underwater it answers "roofed" everywhere and the scattering vanishes.
+ * Asked from a hand's breadth above the surface it answers the question actually being posed: how much
+ * sky is above this column of water. That is also why the query needs no instance mask for water.
+ *
+ * <p><b>Why openness comes from the grid while the DEPTH comes from a ray.</b> The two are not
+ * interchangeable and the split is deliberate: depth wants a ray because a ray measures a length, and
+ * openness wants the grid because the grid interpolates. "How much sky is up there" is a quantity that
+ * must never step, and every attempt to answer it with a single binary ray has put a step where a
+ * gradient belongs. `skyDepth` is the caller's measured distance to the surface, from its own ray.
+ *
+ * <p><b>Why this is a function.</b> It was written out three times — twice in volume.slang for the
+ * stratified and scatter-vertex paths, once in world.rgen.slang for the water medium probe — each with
+ * its own copy of the paragraph above. Three copies of one expression is three chances to diverge, and
+ * divergence here is silent because each copy is defensible read alone. The probe copy mattered most:
+ * its whole job is to report what the shading does, so a gate point that drifts from the shading's makes
+ * the probe report a measurement nobody takes. Its up-RAY stays independent, which is the part that was
+ * deliberately duplicated (see the note at its call site); only this arithmetic is shared.
+ */
+public float waterSurfaceSkyOpenness(float3 p, float skyDepth) {
+    float3 gateP = float3(p.x, p.y + skyDepth + WATER_SKY_GATE_LIFT, p.z);
+    return sampleVolumeVisibility(gateP).y;
+}

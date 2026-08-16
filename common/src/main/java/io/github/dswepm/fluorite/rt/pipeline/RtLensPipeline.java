@@ -1,10 +1,10 @@
 package io.github.dswepm.fluorite.rt.pipeline;
 
 import io.github.dswepm.fluorite.rt.RtContext;
+import io.github.dswepm.fluorite.rt.RtShaderModules;
 import io.github.dswepm.fluorite.rt.RtDebugLabels;
 import org.joml.Matrix4fc;
 import org.lwjgl.system.MemoryStack;
-import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
@@ -19,11 +19,8 @@ import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
-import org.lwjgl.vulkan.VkShaderModuleCreateInfo;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
@@ -38,7 +35,6 @@ import static io.github.dswepm.fluorite.rt.RtContext.check;
  * descriptors when the GPU eventually executes them.
  */
 public final class RtLensPipeline {
-    private static final String SHADER_DIR = "/fluorite/rt/";
     private static final int PUSH_BYTES = 128;
     public static final int RR_TO_SCRATCH = 0;
     public static final int SCRATCH_TO_RR = 1;
@@ -257,7 +253,7 @@ public final class RtLensPipeline {
 
     private static long createPipeline(RtContext ctx, MemoryStack stack, long layout) {
         VkDevice vk = ctx.vk();
-        long module = loadModule(vk, stack, "lens_spatial.comp.spv");
+        long module = RtShaderModules.load(vk, stack, "lens_spatial.comp.spv");
         try {
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
                     .stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
@@ -273,23 +269,4 @@ public final class RtLensPipeline {
         }
     }
 
-    private static long loadModule(VkDevice vk, MemoryStack stack, String name) {
-        byte[] bytes;
-        try (InputStream in = RtLensPipeline.class.getResourceAsStream(SHADER_DIR + name)) {
-            if (in == null) throw new IllegalStateException("missing SPIR-V resource: " + SHADER_DIR + name);
-            bytes = in.readAllBytes();
-        } catch (IOException e) {
-            throw new IllegalStateException("failed to read SPIR-V resource: " + SHADER_DIR + name, e);
-        }
-        ByteBuffer code = MemoryUtil.memAlloc(bytes.length).put(bytes);
-        code.flip();
-        try {
-            VkShaderModuleCreateInfo info = VkShaderModuleCreateInfo.calloc(stack).sType$Default().pCode(code);
-            LongBuffer out = stack.mallocLong(1);
-            check(VK10.vkCreateShaderModule(vk, info, null, out), "vkCreateShaderModule(" + name + ")");
-            return out.get(0);
-        } finally {
-            MemoryUtil.memFree(code);
-        }
-    }
 }
