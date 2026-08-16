@@ -68,6 +68,33 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 
 ## 2. 架构地图
 
+### 2.0 仓库与目录布局
+
+**仓库根是 `F:\MC\Shader\Fluorite`，不是 `F:\MC\Shader`。** 外层那一圈不受版本控制，是工作区而非项目：
+
+| 外层目录 | 内容 | 谁依赖它 |
+| --- | --- | --- |
+| `Fluorite/` | 本仓库 | `~/.gradle` 的 `dlssSdk` 指向其 `third_party/DLSS` |
+| `toolchain/` | 独立 Slang 2026.14 | `~/.gradle` 的 `slangcPath`；**临时**，见 §5.1 |
+| `reference/` | HPWater / HPVolumeCloud 净室参考 | §6 参考项目政策 |
+| `game/` | HMCL 游戏安装，与开发无关 | 无 |
+| `mods/` · `assets/` | 手动装的 mod jar、素材母版 | 无 |
+| `evidence/` | 故障调查日志归档 | 无 |
+
+外层 `toolchain/` 曾叫 `tools/`，与仓库内的 `tools/`（三个开发脚本）同名不同职，已改名消歧。
+
+**四个 `src` 根是构建工具强制的，不是设计失误，不要改名**：
+
+| 目录 | 是什么 | 为什么不能改 |
+| --- | --- | --- |
+| `buildSrc/` | Gradle 构建逻辑（shader 编译、ABI 记录生成） | 名字由 Gradle 硬编码 |
+| `fabric/` · `neoforge/` | 两个加载器模块 | Loom / ModDevGradle 的 source set 约定 |
+| `common/` | 共享源码，**故意不是 Gradle 子项目** | 各加载器用 `srcDir` 把它编进自己那份 Minecraft 产物，从而不依赖「两套工具链产出二进制兼容 jar」这个假设。见 `settings.gradle` 与 `build.gradle` 顶部 |
+
+其余跟踪目录：`shaders/`（`world` / `overlay` / `display`）、`docs/`（`devlog` / `agents` / `gallery`）、`native/ngx_shim`、`tools/`、`.github/`。根目录出现的 `build/`、`.gradle/`、`run/`、`run-neoforge/`、`logs/`、`third_party/` 全部是 gitignore 的本地产物。
+
+**已知的结构债，在文件而不在目录**：`RtComposite.java` 4,344 行、`FluoriteConfig.java` 3,459 行、`RtEntities.java` 2,431 行、`RtTerrain.java` 2,152 行、`RtVideoOptions.java` 2,138 行。`RtComposite` 一个文件同时装着合成编排、水面探针、采样器生命周期、push slot 环、云参数授权和可见性网格摆放 —— pre-ReSTIR review 的三个发现全部落在它里面，不是巧合。**拆分尚未动工**：它会作废 §8.11 还没采集的测量基准和 review 的全部坐标，裁决为放在 ReSTIR 之后。
+
 ### 2.1 一帧如何流动
 
 `RtComposite` 是渲染编排中心：收集世界/实体/天气状态，更新 LUT、云雾和水仿真资源，构建追踪参数，依次录制 Pass A、Pass B、DLSS-RR、曝光、overlay 和显示合成。
@@ -415,7 +442,7 @@ Windows：
 .\gradlew.bat :neoforge:processResources :neoforge:compileJava
 ```
 
-slangc 解析顺序：Gradle `-P<name>Path` → 环境变量 → `$VULKAN_SDK/Bin` → PATH；当前独立工具链位于 `F:\MC\Shader\tools\slang-2026.14`。
+slangc 解析顺序：Gradle `-P<name>Path` → 环境变量 → `$VULKAN_SDK/Bin` → PATH；当前独立工具链位于 `F:\MC\Shader\toolchain\slang-2026.14`，由 `~/.gradle/gradle.properties` 的 `slangcPath` 钉住。**这个 pin 是临时的**：CI 用 SDK 1.4.350.0 自带的 slangc、无任何 override，所以 CI 绿本身就是「1.4.350.0 的 Slang 够新」的证明；本地 SDK 升到 1.4.350.0 后应删掉 pin 与 `toolchain/` 目录。
 
 当前 D93A-R `generateEndEnvironment` 冷生成实测约 8 分 32 秒，输入未变时由 Gradle 增量缓存跳过。D87C 裁决为不把 89 MiB 母版放进 Git/LFS：默认由 `fetchEndHdr` 下载到已忽略且不受 `clean` 影响的 `.gradle/fluorite-assets/`，并严格校验 SHA-256 `dad11594…fd393d90`；来源不可用时可用 `-PendHdrSource=<path>` 提供同一哈希的本地副本。生成物进入 loader 的资源 classpath/jar，运行时只校验和上传，不重新追踪 Kerr，也没有“首次进游戏后落盘的 LUT 缓存”。旧生成器耗时与被替换路线见 M14 开发日志。
 
@@ -461,7 +488,7 @@ debug 20/21/25 和水体 probe 属 review 候选，不是永久产品功能；�
 
 ## 6. 参考项目政策
 
-`F:\MC\Shader\Reference\HPWater` 与 `HPVolumeCloud` 只用于比较实现方法和物理选择。
+`F:\MC\Shader\reference\HPWater` 与 `HPVolumeCloud` 只用于比较实现方法和物理选择。
 
 硬规则：
 

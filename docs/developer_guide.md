@@ -28,8 +28,13 @@ which is too old; CI pins SDK 1.4.350.0. If your SDK's copy is behind, download 
 `~/.gradle/gradle.properties`:
 
 ```properties
-slangcPath=C:/tools/slang-2026.14/bin/slangc.exe
+slangcPath=F:/MC/Shader/toolchain/slang-2026.14/bin/slangc.exe
 ```
+
+**Treat that pin as temporary.** CI compiles the world shaders with SDK 1.4.350.0's own `slangc` and no
+override, so a green CI is standing proof that the bundled Slang at that version is new enough. Once
+your local SDK reaches 1.4.350.0, delete the property and the standalone toolchain directory with it —
+carrying a second Slang around is only worth it while the SDK is genuinely behind.
 
 Note that `compileShaders` passes `-warnings-as-errors all`, so a newer `slangc` can also fail the
 build on diagnostics an older one never emitted.
