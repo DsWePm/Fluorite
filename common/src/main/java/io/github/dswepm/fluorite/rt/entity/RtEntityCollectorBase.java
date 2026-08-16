@@ -862,10 +862,22 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         // mask of 1 resolves to no light whatsoever. Fire is a light-15 block whose sprites the emission
         // compiler already gives a real strength — so this is the same material the fire BLOCK is shaded
         // with, which is also the answer to "why should an entity's flames and a campfire's agree".
-        setSpriteMaterial(fire0, false);
-        int fire0Material = capture.currentMaterialId;
-        setSpriteMaterial(fire1, false);
-        int fire1Material = capture.currentMaterialId;
+        //
+        // THAT LAST SENTENCE USED TO BE FALSE, and flameMaterial exists to make it true. This resolved
+        // through setSpriteMaterial, which hardcodes emitting = false, while the fire BLOCK resolves with
+        // emitting = state.getLightEmission() > 0 -- true, for a light-15 block. Two different variant
+        // indices, so two different material ids for one sprite. On a pack whose fire sprite carries a
+        // LabPBR `_s` the two agree anyway and nothing showed; without one, the non-emitting variant's
+        // summary is compiled as EmissionSummary.NONE, so the flames you LOOK at had zero strength while
+        // the light proxy beside them read the emitting variant and lit the world correctly. A burning
+        // entity that illuminates its surroundings with dark flames.
+        //
+        // Resolved ONCE here and handed to the light proxy below, rather than resolved correctly in two
+        // places: the two agreeing is the property that matters, and shared code has it by construction
+        // where two correct call sites only have it until someone edits one.
+        int fire0Material = flameMaterial(fire0);
+        int fire1Material = flameMaterial(fire1);
+        capture.currentMaterialId = fire0Material;
 
         // Same construction as FlameFeatureRenderer.prepare, on a copy of the pose so the caller's stack
         // is left as we found it.
@@ -908,10 +920,28 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         }
     }
 
-    /** Use the emitting block-state material variant for the light proxy without changing flame shading. */
+    /**
+     * The one material a fire sprite resolves to — for the quad you see and for the light it casts.
+     *
+     * <p>Emitting, because fire is a light-15 block and that is the variant the fire BLOCK resolves to
+     * through {@code state.getLightEmission() > 0}. The generic sprite path hardcodes {@code emitting =
+     * false}, which is right for sprites whose block state does not emit and wrong for this one.
+     */
+    private static int flameMaterial(TextureAtlasSprite sprite) {
+        return RtMaterialRegistry.INSTANCE.requireSnapshot()
+                .resolve(sprite, RtMaterials.Profile.DEFAULT, false, true);
+    }
+
+    /**
+     * The side-band sphere light for one flame quad.
+     *
+     * <p>Reads the same material the quad is drawn with — see flameMaterial. It used to resolve its own,
+     * deliberately, because the visible quad's was wrong and M18 was scoped not to change the picture
+     * (D98A); with the visible path fixed there is one material and no reason for two lookups.
+     */
     private void recordFlameLightQuad(TextureAtlasSprite sprite, float[] x, float[] y, float[] z) {
         RtMaterialRegistry.Snapshot snapshot = RtMaterialRegistry.INSTANCE.requireSnapshot();
-        int materialId = snapshot.resolve(sprite, RtMaterials.Profile.DEFAULT, false, true);
+        int materialId = flameMaterial(sprite);
         RtMaterialDesc desc = snapshot.material(materialId);
         RtMaterialDesc.EmissionSummary summary = desc.emissionSummary();
         if (!summary.emissive() || desc.emissionSource() == RtMaterialDesc.EmissionSource.NONE) {
