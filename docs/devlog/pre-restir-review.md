@@ -168,3 +168,101 @@
 **debug view 27 一直是坏的。** 具名化 26/27 的时候才发现：pass A 画两张降雨图，pass B 只对 26 让路。pass B 的分发以 `>= DEBUG_VIEW_SKY_TRANSMITTANCE` 开头、27 满足，而没有任何三元支认领 27 —— 于是落到默认的 `froxelDebug`，**pass B 每帧把 froxel 覆写在 pass A 的水洼图上**。这个 view 自诞生起就错，而它显示的是一张真实、合理的图，只是**另一个诊断**，所以盯着看永远看不出来。
 
 这条值得记在方法论上：**两个裸字面量分居两个无法互相 import 的文件，中间没有任何东西约束它们一致。** 具名化本身只是整洁，但它让不对称第一次可见了。已配契约测试钉住两 stage 一致并禁止退回裸字面量。
+
+---
+
+# 第二轮：重复、耦合与边界条件
+
+第一轮查的是「说谎的东西」（过期文档、错的关档、能确认的 bug）。第二轮按用户要求查**代码本身的性质**：耦合过高、违反编程原则、重复、以及没考虑边界条件的地方。
+
+## 先说核查为干净的
+
+列在前面，是为了让第三轮不必重做这些。**每一条只对列出的检查成立**，不是对全仓库的泛泛断言。
+
+| 检查 | 方法 | 结果 |
+|---|---|---|
+| shader 数学定义域 | 抽出全部 `sqrt`/`log`/`acos`/`asin`，逐个看守卫 | **全部有守卫**。`fresnelDielectric` 的 `sinT2 >= 1.0` 提前返回、`raySphere` 的 `disc < 0.0`、`volumeExtinction` 的 `clamp(…, 1e-3, 1)`、`skyViewLutUv` 的 `clamp(dot, -1, 1)` |
+| shader 注释机械新鲜度 | 抽出注释里 550 个标识符候选，对代码验存 | **0 处悬空**（两个「未命中」是散文里的大写强调词 `REBASE space`、`colour ATTACHMENT`） |
+| 烘焙关档 | 枚举全部 `record*Bake`，逐个查 gate 与消费者 | **D179 之后全部正确**。可见性网格是唯一一处，已修 |
+| 水仿真关档 | 查 `waterSimHeightTex` 的全部读点 | **正确**：`waterSimSample` 在域退化时返回 false，消费者返回 0 位移 —— 关档 = 已发布行为 |
+| 日志限流 | 逐个查每帧路径上的 `LOGGER.*` 有无节流 | **正确**。水色日志是量化 + 1 秒间隔，且代码里留着一条注释记录**已修复的**每帧日志问题（「一个在被测量时才消耗渲染线程时间的仪器，比没有仪器更糟」） |
+
+**注意**：注释的「机械新鲜度」不等于语义新鲜度。注释可以提到全部真实存在的符号，却在描述已经变了的行为。后者无法机械检测，本轮没做。
+
+## 重复
+
+### R1. SPIR-V 载入器复制了 13 份
+
+`SHADER_DIR` 常量 13 处、`vkDestroyShaderModule` 14 处、整段「读资源 → 建 shader module」逐字复制 13 份，**只有局部变量名不同**（`info`/`smci`、`out`/`pModule`）。
+
+涉及：`RtOverlayPipelines`、`RtAces2Luts`、`RtBloomFlarePipeline`、`RtCreativeGradingLut`、`RtDepthOfFieldPipeline`、`RtDisplayPipeline`、`RtExposurePipeline`、`RtFilmGrainNoise`、`RtHdrCompositePipeline`、`RtLensPipeline`、`RtPipeline`、`RtSdrPresentPipeline`、`RtSky`。
+
+### R2. `check()` 的弱重实现 × 3 —— **这一条有行为后果**
+
+`RtContext.check` 在 `VK_ERROR_DEVICE_LOST` 时会调 `VulkanDiagnostics.reportDeviceLost(instance.device, what)`。以下三处各自重新实现了一个**只抛异常、不取证**的版本：
+
+- `rt/material/RtMaterialPageTexture.java:150`
+- `rt/sky/RtEnvironmentTextures.java:341`
+- `rt/sky/RtHighCloudTextures.java:214`
+
+三处**全在纹理上传路径上**，也就是设备丢失最可能发生的地方。而这个项目为设备丢失专门养了一个 `VulkanDiagnostics`（45 处日志）。13 个 pipeline 类反而都正确地用了 `RtContext.check`。
+
+这不是风格问题：**它在最需要取证的路径上把取证关掉了。**
+
+### R3. sampler 销毁模板 × 11 —— 这个重复**就是** `lutSampler` 泄漏的机制
+
+`RtComposite` 里 `RtContext ctx = RtContext.currentOrNull();` 出现 11 次，每次都是同一个五行模板。第一轮修的 `lutSampler` 泄漏，根因不是「有人粗心」，而是**这段模板必须被手写第七遍而没有任何东西会提醒**。`RtSamplerLifetimeTest` 是补的守卫，不是根治。
+
+### R4. 水的天空闸点 × 3
+
+`gateP = float3(p.x, p.y + skyDepth + 0.5, p.z)` 出现在三处：`volume.slang:1067`、`volume.slang:1318`、`world.rgen.slang:1366`，各自带一段解释 `+ 0.5` 为什么是「水面上方一掌宽」的近似重复注释。
+
+这正是 #41 刚碰过的表达式。三份拷贝就是三次发散机会，**而发散是静默的** —— 每一份单独看都成立。
+
+### R5. 测试的「找仓库根」helper × 12
+
+12 个测试文件各自复制了同一个 `while (root != null && !Files.isRegularFile(root.resolve("settings.gradle")))` 循环（我第一轮加的 `RtSamplerLifetimeTest` 是第 13 份，一并算账）。
+
+### R6. epsilon 无共同词汇
+
+约 250 个 epsilon 字面量，具名常量近乎为零。`1.0e-3` 与 `0.001` 各出现约 30 次 —— **同一个值两种写法**。
+
+**但不建议统一**：epsilon 在不同语境含义不同（分母守卫 / 距离阈值 / 收敛判据），一刀切会把无关的量绑在一起。值得做的只有「同值不同写法」那一类。
+
+## 耦合
+
+### C1. `RtComposite` 读取配置 245 次
+
+编排器直接认识系统里几乎每一个旋钮。这是 4,344 行那个体量的直接来源，也是第一轮三个发现全部落在这一个文件里的原因。
+
+拆分已裁决放在 ReSTIR 之后（见 §2.0），此处只记账。
+
+### C2.「开关掐掉共享机器」已发生两次
+
+- 水面涟漪求解器曾嵌在 `VISIBILITY_CELL_SIZE > 0 && Volumetrics.ENABLED` 内，关雾静默停掉涟漪
+- 可见性网格被雾开关掐掉，关雾点亮洞穴水（#41 / D179）
+
+本轮枚举全部烘焙确认**没有第三处**。但两次同形状说明这不是巧合，而是「gate 写在调用点、与被 gate 的东西的所有权无关」这个结构的产物。
+
+## 边界条件
+
+Java 侧扫了整数除法、未检查的 `.get(0)`、以及除以变量的位置。**绝大多数已守卫，而且守得讲究** —— 例如 `RtDynamicLightAccumulator.finish` 用 `!(effectiveArea > AREA_EPS) || !(centreWeight > 0.0)`，这种否定形式能正确处理 NaN，是刻意写法。
+
+两处**契约在调用方、不是防御式**：
+
+- `RtEntities.particleCenter`：`cx / vc` 无守卫，`vc == 0` 会得到 NaN 质心。调用方在 `if (vertAfter == vertBefore) continue;` 挡住了，所以当前不可达。
+- `RtEntities.fitYawTransform`：`1f / vc` 同样依赖调用方保证 `vc > 0`。
+
+不是 bug，但两处都是「删掉调用方一行 if 就变成 NaN 且不报错」的形状。
+
+## 优先级建议
+
+| | 项 | 理由 |
+|---|---|---|
+| **高** | R2 `check()` 弱拷贝 | 唯一一条**有行为后果**的：在最需要取证的路径上关掉了取证。三个文件，改动小 |
+| 中 | R4 水天空闸点 | 在刚修过的代码里，发散静默 |
+| 中 | R1 SPIR-V 载入器 | 13 份，纯样板，抽取零风险 |
+| 中 | R3 sampler 模板 | 已有测试兜底，但根因未除 |
+| 低 | R5 测试 helper | 只影响测试 |
+| 低 | R6 同值不同写法 | 纯一致性 |
+| 缓 | C1 拆 `RtComposite` | 已裁决在 ReSTIR 之后 |
