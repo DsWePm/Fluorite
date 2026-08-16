@@ -865,6 +865,26 @@ public final class FluoriteConfig {
             public static final IntSetting SPP = intAtLeast("fluorite.rt.spp", "composite.spp", 1, 1);
             public static final IntSetting MAX_BOUNCES =
                     clampedInt("fluorite.rt.maxBounces", "composite.max-bounces", 4, 2, 8);
+
+            /**
+             * How many bounce vertices keep a persistent reservoir. 0 disables ReSTIR reuse entirely.
+             *
+             * <p><b>This knob is the memory dial, and it is the reason the store is measured before it is
+             * compressed.</b> Every depth costs {@code 2 x 64 B x renderWidth x renderHeight} — two frame
+             * halves for temporal reuse — which at a 1920x1080 render resolution is 265 MB per depth. At
+             * the default 4 that is a gigabyte, and the whole point of shipping it uncompressed first is
+             * to find out whether the depths past the first two ever pay for themselves.
+             *
+             * <p>They may well not. A reservoir is only reusable if this frame's vertex at that depth is
+             * the same surface as last frame's, and at depth 3 that is rarely true — the stored sample is
+             * paid for every frame and rejected almost every frame. RtRestirStats reports the acceptance
+             * rate per depth so the answer is measured rather than argued; see §8.11.
+             *
+             * <p>Clamped to MAX_BOUNCES' own ceiling because a reservoir past the last bounce is storage
+             * for a vertex that never exists.
+             */
+            public static final IntSetting RESTIR_REUSE_DEPTH =
+                    clampedInt("fluorite.rt.restirReuseDepth", "composite.restir-reuse-depth", 0, 0, 8);
             public static final BooleanSetting WATER_WAVES =
                     bool("fluorite.rt.waterWaves", "composite.water-waves", true);
             public static final FloatSetting SUN_ANGULAR_RADIUS =

@@ -115,6 +115,8 @@ public final class RtComposite {
     // Generated from the shader's own std430 layout rather than hand-copied, like every other ABI size
     // here. It was a literal 48 that nothing checked against the struct it describes.
     private static final long PATH_RECORD_BYTES = PackedPathSegmentData.BYTE_SIZE;
+    /** Must match RESERVOIR_BYTES in restir.slang; the allocation and the shader layout move together. */
+    private static final long RESERVOIR_BYTES = 64L;
     // ---- Ambient participating medium.
     //
     // The active dimension preset supplies the baseline. Weather/time forcing is applied only when that
@@ -1507,6 +1509,16 @@ public final class RtComposite {
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
     private RtBuffer continuationQueue;
+    /**
+     * Persistent ReSTIR reservoirs: two frame halves x reuse depth x one per render pixel.
+     *
+     * <p>Null whenever RESTIR_REUSE_DEPTH is 0, and the push constant then carries address 0, which the
+     * shading reads as "no reuse" and falls back to single-frame RIS. That is the published off state and
+     * it is byte-identical to the behaviour before this buffer existed — the point of an isolation switch
+     * (iron law 8), and here also the only way to A/B a gigabyte.
+     */
+    private RtBuffer reservoirStore;
+    private int reservoirDepth;
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
     // enabled. When the PQ swapchain is active, the combined UI overlay is composited over this image, then
@@ -2253,6 +2265,11 @@ public final class RtComposite {
             continuationQueue.destroy();
             continuationQueue = null;
         }
+        if (reservoirStore != null) {
+            reservoirStore.destroy();
+            reservoirStore = null;
+            reservoirDepth = 0;
+        }
         destroyGuideImages();
 
         displayW = width;
@@ -2278,6 +2295,22 @@ public final class RtComposite {
         continuationQueue = ctx.createBuffer(continuationBytes,
                 VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
                 "path continuation queue " + renderW + "x" + renderH + "x2");
+        // The reservoir store, sized by the reuse-depth knob and clamped to the bounce budget: a
+        // reservoir for a vertex deeper than the path ever goes is storage for something that never
+        // exists. Two halves so temporal reuse can read last frame while writing this one, which is why
+        // the depth dial doubles in memory rather than adding.
+        reservoirDepth = Math.min(FluoriteConfig.Rt.Composite.RESTIR_REUSE_DEPTH.value(),
+                FluoriteConfig.Rt.Composite.MAX_BOUNCES.value());
+        if (reservoirDepth > 0) {
+            long reservoirBytes = Math.multiplyExact(
+                    Math.multiplyExact(pixelRecords, 2L * reservoirDepth), RESERVOIR_BYTES);
+            reservoirStore = ctx.createBuffer(reservoirBytes,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+                    "ReSTIR reservoirs " + renderW + "x" + renderH + "x" + reservoirDepth + "x2");
+            FluoriteMod.LOGGER.info(
+                    "RT ReSTIR reservoir store: {}x{} x depth {} x 2 halves = {} MiB ({} B each)",
+                    renderW, renderH, reservoirDepth, reservoirBytes / (1024L * 1024L), RESERVOIR_BYTES);
+        }
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
         hdrDisplayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
@@ -3164,6 +3197,9 @@ public final class RtComposite {
                     // reads the class per column. Positional, like every constructor generated from
                     // shader reflection -- this argument follows waterProbeAddr in world_common.
                     skyLuts.rainPrecipitationAddress(pushSlot),
+                    // 0 when the reuse-depth knob is 0, which the shading reads as "no reservoir store"
+                    // and answers with the single-frame RIS that predates this buffer.
+                    reservoirStore != null ? reservoirStore.deviceAddress : 0L,
                     (int) frameCounter, debugView, shadeFlags()).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
@@ -3629,6 +3665,11 @@ public final class RtComposite {
         if (continuationQueue != null) {
             continuationQueue.destroy();
             continuationQueue = null;
+        }
+        if (reservoirStore != null) {
+            reservoirStore.destroy();
+            reservoirStore = null;
+            reservoirDepth = 0;
         }
         destroyGuideImages();
         exposure.destroy();

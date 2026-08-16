@@ -45,6 +45,14 @@ public struct WorldPushConstants {
     // wets anything, so "has an exposure depth" stopped being the same question as "is getting wet".
     // 120 bytes with this; the guaranteed push-constant floor is 128, so there is room for one more.
     public uint64_t rainPrecipitationAddr;
+    // Persistent ReSTIR reservoirs, both frame halves (0 = reuse off, and the shading falls back to
+    // single-frame RIS exactly as before). See restir.slang for the layout and the slot arithmetic.
+    //
+    // THIS WAS THE LAST FREE ADDRESS. 14*8 + 12 = 124, rounded to 128, which is exactly Vulkan's
+    // guaranteed push-constant floor. The next device buffer to need reaching from a raygen stage
+    // cannot come here -- it goes in WorldPush, which is itself a device-address buffer and has no
+    // such ceiling, at the cost of one indirection.
+    public uint64_t reservoirAddr;
     public uint frameIndex;
     public uint debugView;
     // Shading switches the CLOSEST-HIT needs. They live here rather than in WorldPush because the hit
