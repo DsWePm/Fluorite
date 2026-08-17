@@ -123,17 +123,72 @@ final class RtRestirReuseContractTest {
         String restir = code(source("shaders/world/restir.slang"));
         String combine = between(restir, "public Reservoir combineStoredReservoir(", "\n}");
 
-        assertTrue(combine.contains("evalSampleContrib(bc, prev.pos, prev.lnrm, prev.le, prev.area, phatPrev)"),
+        assertTrue(combine.contains("evalSampleContrib(bc, prev.pos, prev.lnrm, prev.le, prev.area, phatCurAtPrev)"),
                 "the stored sample must be re-evaluated against this vertex");
-        assertTrue(combine.contains("float wPrev = phatPrev * prev.W * mPrev;"));
         assertTrue(combine.contains("min(prev.M, REUSE_M_CAP)"), "history must be capped or it stops responding");
-        assertTrue(combine.contains("r.wSum + wPrev"),
-                "this frame's weight is the wSum risInitial left; a second formula is a second thing to drift");
-        assertTrue(combine.contains("wSum / (m * r.phat)"));
 
         String unpack = between(restir, "public Reservoir unpackReservoir(", "\n}");
         assertTrue(unpack.contains("r.wSum = 0.0;") && unpack.contains("r.phat = 0.0;"),
                 "storage must not hand back a plausible stale target");
+        // The stored target IS carried, in its own lane and under its own name, because it answers a
+        // different question: not "what is this sample worth here" but "could the domain that produced it
+        // have produced it". Reaching it through unpackReservoir is what would merge the two.
+        assertFalse(unpack.contains("storedSourceTarget"),
+                "the source domain's target must not arrive as the reusing vertex's phat");
+        assertTrue(restir.contains("public float storedSourceTarget(PackedReservoir p) { return p.misc.w; }"));
+        assertTrue(restir.contains("asfloat(r.lightIndex), r.phat);"),
+                "packReservoir must record the target measured at the storing vertex");
+    }
+
+    /**
+     * The MIS combination, and the one property that says the algebra is right.
+     *
+     * <p>Plain ReSTIR weights each reservoir by M_i/M. Those sum to one, so they are legal MIS weights —
+     * but only across domains that could have produced the chosen sample. A light below the other vertex's
+     * horizon has zero target there, so that domain could not have produced it, and handing it M_prev/M of
+     * the credit anyway leaves the total under one. That is the darkening. The generalized balance
+     * heuristic is zero exactly where a domain's target is zero, so it always sums to one over the domains
+     * that count.
+     *
+     * <p>With the MIS weight doing the normalising, W is wSum/phat with NO division by M. Dividing again is
+     * the mistake this pins: it would apply the normalisation twice and darken everything by a factor of M.
+     */
+    @Test
+    void theMisWeightIsTheBalanceHeuristicAndReducesToTheOldFormWhenDomainsAgree() throws IOException {
+        String combine = between(code(source("shaders/world/restir.slang")),
+                "public Reservoir combineStoredReservoir(", "\n}");
+
+        assertTrue(combine.contains("float denomCur = mCur * phatCurAtCur + mPrev * phatPrevAtCur;"));
+        assertTrue(combine.contains("float denomPrev = mCur * phatCurAtPrev + mPrev * phatPrevAtPrev;"));
+        assertTrue(combine.contains("(mCur * phatCurAtCur / denomCur) * phatCurAtCur * current.W"));
+        assertTrue(combine.contains("(mPrev * phatPrevAtPrev / denomPrev) * phatCurAtPrev * prev.W"));
+        assertTrue(combine.contains("r.W = r.phat > 0.0 ? wSum / r.phat : 0.0;"),
+                "the MIS weight already normalises; dividing by M as well darkens by a factor of M");
+        assertFalse(combine.contains("wSum / (m * r.phat)"), "the plain-ReSTIR denominator must be gone");
+        // The other domain's target comes from the lane it was stored in, not from a third evaluation.
+        assertTrue(combine.contains("float phatPrevAtPrev = storedSourceTarget(stored);"));
+        assertEquals(2, combine.split("evalSampleContrib\\(", -1).length - 1,
+                "two target evaluations: the stored sample here, and this sample there");
+
+        // The algebra, checked rather than asserted in prose. When both domains share a target function
+        // the balance heuristic collapses to M_i/M, and the estimator must land on exactly the number the
+        // plain combination produced — same samples, same weights, same W.
+        for (double phatCur : new double[] {0.4, 3.0, 17.5}) {
+            for (double phatPrev : new double[] {0.9, 2.2}) {
+                for (double mCur : new double[] {1, 8, 32}) {
+                    for (double mPrev : new double[] {0, 1, 20}) {
+                        double wCurMis = (mCur * phatCur / (mCur * phatCur + mPrev * phatCur)) * phatCur * 1.7;
+                        double wPrevMis = (mPrev * phatPrev / (mCur * phatPrev + mPrev * phatPrev)) * phatPrev * 2.3;
+                        double misW = (wCurMis + wPrevMis) / phatCur;
+                        // Plain ReSTIR over the same two candidates: wSum = sum(phat_here * W * M), /(M*phat).
+                        double plainW = (phatCur * 1.7 * mCur + phatPrev * 2.3 * mPrev)
+                                / ((mCur + mPrev) * phatCur);
+                        assertEquals(plainW, misW, Math.abs(plainW) * 1e-12,
+                                "balance heuristic must reduce to M_i/M when the domains share a target");
+                    }
+                }
+            }
+        }
     }
 
     /**

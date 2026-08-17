@@ -31,13 +31,14 @@ import math;       // rndf, for the weighted choice between history and this fra
  * area with its sample point, W with the radiance it weights, the receiver's normal with its position.
  * `misc` holds what is left: M, the emitter normal folded octahedrally into one lane -- which is what
  * made room for the receiver position -- and the emitter's index in the light buffer, which is how a
- * stored sample can be asked whether its light still exists. One lane spare. Nothing is padding.
+ * stored sample can be asked whether its light still exists, and the last lane carries the target value
+ * of the domain that produced it, which is what S2's MIS weights are built from. Nothing is padding.
  */
 public struct PackedReservoir {
     public float4 lightPosArea; // xyz = light sample point (rebased world space), w = emitter area
     public float4 leW;          // xyz = emitter radiance,                         w = W
     public float4 recvPosNrm;   // xyz = RECEIVING vertex position,                w = its packed normal
-    public float4 misc;         // x = M, y = packed emitter normal, z = light index (uint), w = spare
+    public float4 misc;         // x = M, y = packed emitter normal, z = light index (uint), w = source target
 };
 
 /** Matches RtSky.RESERVOIR_BYTES on the Java side; the allocation and this must move together. */
@@ -85,7 +86,7 @@ public PackedReservoir packReservoir(Reservoir r, float3 receiverPos, float3 rec
     p.lightPosArea = float4(r.pos, r.area);
     p.leW = float4(r.le, r.W);
     p.recvPosNrm = float4(receiverPos, packReservoirNormal(receiverNormal));
-    p.misc = float4(r.M, packReservoirNormal(r.lnrm), asfloat(r.lightIndex), 0.0);
+    p.misc = float4(r.M, packReservoirNormal(r.lnrm), asfloat(r.lightIndex), r.phat);
     return p;
 }
 
@@ -109,6 +110,21 @@ public Reservoir unpackReservoir(PackedReservoir p) {
 
 /** An unwritten slot. M == 0 is the emptiness test; every real reservoir has counted at least one candidate. */
 public bool storedReservoirEmpty(PackedReservoir p) { return !(p.misc.x > 0.0); }
+
+/**
+ * The target function of the domain that PRODUCED this sample, evaluated at its own vertex.
+ *
+ * <p>Deliberately not reachable through unpackReservoir, which still reports phat as zero, and named for
+ * the domain rather than for the quantity. These are two numbers a careless reader would merge: the
+ * estimator's denominator is the target at the vertex REUSING the sample and has to be recomputed there
+ * -- that is the mistake D181 was written about -- while this is the other domain's target at its own
+ * vertex, and it exists only to weigh how much that domain deserves the credit for the sample.
+ *
+ * <p>Storing it beats reconstructing it on both counts. Reconstruction would evaluate the stored geometry
+ * against THIS vertex's material; the value here was computed against the real one. And it saves an
+ * evalSampleContrib at every reusing vertex. It costs the last spare lane, which is what the lane was for.
+ */
+public float storedSourceTarget(PackedReservoir p) { return p.misc.w; }
 public float3 storedReceiverPos(PackedReservoir p) { return p.recvPosNrm.xyz; }
 public float3 storedReceiverNormal(PackedReservoir p) { return unpackReservoirNormal(p.recvPosNrm.w); }
 
@@ -162,6 +178,11 @@ public static const float REUSE_MIN_NORMAL_AGREEMENT = 0.9; // cos, about 26 deg
  * switches off keeps being resampled because its weight was earned over hundreds of frames. Twenty is
  * the usual starting point in the literature; it is a starting point here too, and §8.11 owns pricing
  * it against the noise it buys.
+ *
+ * <p>Under the MIS combination this reads more honestly than it did under the plain one. M no longer sits
+ * in the estimator's denominator at all -- it appears only inside `m_i(y)`, where it says how loudly each
+ * domain argues for its own candidate. Capping it is therefore exactly "how far the past may outvote the
+ * present", rather than a correction factor with a cap bolted on.
  */
 public static const float REUSE_M_CAP = 20.0;
 
@@ -276,40 +297,72 @@ public bool reservoirReusable(PackedReservoir stored, float3 receiverPos, float3
  * from the vertex that produced it is the classic way to make temporal reuse wrong, and it is why
  * unpackReservoir refuses to hand one back (restir.slang's banner).
  *
- * <p>The current reservoir's own unnormalised weight is `wSum` exactly as risInitial left it -- which is
- * `phat * W * M` by construction, so history and present are weighted by the same expression and there
- * is no second formula to drift.
+ * <p>WHERE THE BIAS WAS. The plain ReSTIR combination weights each contributing reservoir by `M_i / M`.
+ * Those weights do sum to one, so they are a legal MIS weighting -- but only over the domains that could
+ * actually have produced the chosen sample. When a light sits below the OTHER vertex's horizon its target
+ * there is zero, that domain could not have produced the sample, and giving it `M_prev / M` of the credit
+ * anyway leaves the total under one. The result is too dark, at silhouettes and grazing angles and
+ * anywhere else the 26-degree normal window lets a horizon cross between the two vertices.
  *
- * <p><b>This combination is biased, and S2 is what fixes it.</b> The stored reservoir's M candidates were
- * drawn at LAST frame's vertex, and counting them as candidates at this one is the plain ReSTIR
- * combination without MIS weights. Where the two vertices see the light differently -- silhouettes,
- * grazing angles, anything the 26-degree normal test lets through -- the M grows while the weight does
- * not, and the result is slightly too dark. The receiver test is what keeps that small; the MIS weights
- * S2 adds are what remove it. A "skip M when the stored sample contributes nothing here" patch would
- * hide the darkening and replace it with an unprincipled brightening, so it is deliberately absent.
+ * <p>WHAT REPLACES IT is the generalized balance heuristic: `m_i(y) = M_i phat_i(y) / sum_j M_j phat_j(y)`,
+ * which is zero exactly where a domain could not have produced `y` and therefore always sums to one over
+ * the domains that could. The estimator then reads `W = wSum / phat(y)` with no division by M at all --
+ * the MIS weight has already done that normalisation, and dividing again would double it.
+ *
+ * <p>It reduces EXACTLY to the old expression when the two domains agree, which is both the check on this
+ * implementation and the reason the temporal correction alone is expected to be nearly invisible: the
+ * receiver test admits only vertices within 0.05 blocks and 26 degrees, so `phat_prev` and `phat_cur`
+ * usually are the same function. That is the point of doing it here first -- the machinery is verified
+ * against a case whose answer is predictable before spatial reuse applies it to one that is not.
+ *
+ * <p>No shadow ray enters any of this. The target is the UNSHADOWED contribution and visibility is applied
+ * once, later, by shadeReservoir; RIS is unbiased for any target positive on the support of the integrand,
+ * and the unshadowed contribution is positive wherever the shadowed one is.
+ *
+ * <p>Two target evaluations, not the previous one: the stored sample at this vertex (the estimator needs
+ * it regardless) and this vertex's sample at the stored geometry (the new one). The third the formula
+ * appears to want -- the stored sample at its own vertex -- was measured when it was stored and travels in
+ * the reservoir's last lane.
  */
 public Reservoir combineStoredReservoir(BsdfContext bc, Reservoir current, PackedReservoir stored,
                                         inout uint seed) {
     Reservoir prev = unpackReservoir(stored);
-    float phatPrev;
-    evalSampleContrib(bc, prev.pos, prev.lnrm, prev.le, prev.area, phatPrev);
     float mPrev = min(prev.M, REUSE_M_CAP);
-    float wPrev = phatPrev * prev.W * mPrev;
+    float mCur = current.M;
+
+    // The other domain, as far as it survives: its geometry is stored, its material is taken to be this
+    // vertex's. See retargetBsdfContext for what that approximation is worth.
+    BsdfContext prevCtx = retargetBsdfContext(bc, storedReceiverPos(stored), storedReceiverNormal(stored));
+
+    float phatCurAtPrev; // stored sample, this vertex -- the estimator's denominator if it wins
+    evalSampleContrib(bc, prev.pos, prev.lnrm, prev.le, prev.area, phatCurAtPrev);
+    float phatPrevAtCur; // this vertex's sample, the other vertex -- could that domain have produced it?
+    evalSampleContrib(prevCtx, current.pos, current.lnrm, current.le, current.area, phatPrevAtCur);
+    float phatCurAtCur = current.phat;
+    float phatPrevAtPrev = storedSourceTarget(stored);
+
+    float denomCur = mCur * phatCurAtCur + mPrev * phatPrevAtCur;
+    float denomPrev = mCur * phatCurAtPrev + mPrev * phatPrevAtPrev;
+    // m_i(y_i) * phat_here(y_i) * W_i. A zero denominator means no domain could have produced that
+    // candidate, which also means its own target is zero, so the weight is zero either way.
+    float wCur = denomCur > 0.0
+            ? (mCur * phatCurAtCur / denomCur) * phatCurAtCur * current.W : 0.0;
+    float wPrev = denomPrev > 0.0
+            ? (mPrev * phatPrevAtPrev / denomPrev) * phatCurAtPrev * prev.W : 0.0;
 
     Reservoir r = current;
-    float wSum = r.wSum + wPrev;
-    float m = r.M + mPrev;
+    float wSum = wCur + wPrev;
     if (wSum > 0.0 && rndf(seed) * wSum < wPrev) {
         r.pos = prev.pos;
         r.lnrm = prev.lnrm;
         r.le = prev.le;
         r.area = prev.area;
-        r.phat = phatPrev;
+        r.phat = phatCurAtPrev;
         r.lightIndex = prev.lightIndex;
     }
-    r.M = m;
+    r.M = mCur + mPrev;
     r.wSum = wSum;
-    r.W = r.phat > 0.0 ? wSum / (m * r.phat) : 0.0;
+    r.W = r.phat > 0.0 ? wSum / r.phat : 0.0;
     return r;
 }
 
