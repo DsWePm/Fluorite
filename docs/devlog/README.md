@@ -20,6 +20,7 @@
 | [M21：雨天表面系统](M21-rain.md) | 世界锚定降雨暴露、湿润历史、水膜/水坑/涟漪、RT 水花和受光雨丝 | D105–D129 |
 | [M22：后处理、输出变换与镜头效果](M22-post-processing.md) | ACES 2、分区调色、景深/动态模糊、颗粒、Bloom/Flare 与 EV 域自动曝光 | D130–D155 |
 | [M23：TOML 配置预设](M23-config-presets.md) | 完整可移植预设、严格 schema、事务替换、LIVE/RESTART 分层与浮点边界修复 | D156–D159 |
+| [M24：ReSTIR 整合](M24-restir.md)**（进行中）** | reservoir 持久存储、64 B 布局与可替换边界、复用判据；当前状态以主文档 §8.9 为准 | D180– |
 | [测量、诊断与失败经验](lessons-and-measurements.md) | 基准纪律、GPU 日志、observer effect、设备故障取证、F/R 索引 | F1–F28、R1–R24 |
 
 ## 维护规则

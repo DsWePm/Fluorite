@@ -22,10 +22,13 @@ final class RtSkyMediumLayoutTest {
         // calibration vectors and reaches 1072. D161A gives cloud detail advection its own vector rather
         // than borrowing a water clock, reaching 1088. D173 adds the low deck's domain-warp vector -- its
         // amplitude, feature scale and its OWN advection, which is the half that makes clouds grow rather
-        // than merely drift -- reaching 1104. This buffer is not the
+        // than merely drift -- reaching 1104. M24 adds the ReSTIR reservoir store's device address and its
+        // two shape words, reaching 1120 -- and that address is here rather than in the push-constant block
+        // because the block filled at Vulkan's guaranteed 128-byte floor one commit earlier, which is what
+        // this buffer being unbounded is for. This buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
         // but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(1104, WorldPushData.BYTE_SIZE);
+        assertEquals(1120, WorldPushData.BYTE_SIZE);
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

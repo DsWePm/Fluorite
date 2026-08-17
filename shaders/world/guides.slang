@@ -59,11 +59,8 @@ public SpecSurface makeSpecSurface(float3 camRel, float3 normal, float3 motionPr
     return makeSpecSurface(camRel, normal, normal, normal, motionPrev, roughness, albedo);
 }
 // angle can land behind the eye even though the reflector itself is comfortably in view.
-public float2 projectPrevNdc(float3 worldPos, out bool valid) {
-    float4 clip = mul(worldPush.prevViewProj, float4(worldPos - worldPush.camOffset + worldPush.camDelta, 1.0));
-    valid = clip.w > 0.0;
-    return valid ? clip.xy / clip.w : float2(0.0, 0.0);
-}
+// projectPrevNdc moved to world_core when pass B needed the same reprojection to find a reservoir's
+// previous screen position; guides is not on that pass's include list, and one definition is the point.
 
 // Previous-frame screen position of a planar reflection. The reflected image of a world point P seen
 // in a planar reflector is the MIRROR image V = mirror(P) across the surface plane: the eye sees V

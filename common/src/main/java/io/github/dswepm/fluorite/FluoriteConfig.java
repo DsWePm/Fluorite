@@ -865,6 +865,37 @@ public final class FluoriteConfig {
             public static final IntSetting SPP = intAtLeast("fluorite.rt.spp", "composite.spp", 1, 1);
             public static final IntSetting MAX_BOUNCES =
                     clampedInt("fluorite.rt.maxBounces", "composite.max-bounces", 4, 2, 8);
+
+            /**
+             * How many bounce vertices keep a persistent reservoir. 0 disables ReSTIR reuse entirely.
+             *
+             * <p><b>This knob is the memory dial, and it is the reason the store is measured before it is
+             * compressed.</b> Every depth costs {@code 2 x paths x 64 B x renderWidth x renderHeight} —
+             * two frame halves for temporal reuse, and one plane per path, where paths is {@code spp x 2}
+             * because pass B runs the bounce loop once per sample and once more for the transmission
+             * split. At 1920x1080 and the default spp of 1 that is 530 MB per depth, so 2.1 GB at depth 4;
+             * the whole point of shipping it uncompressed first is to find out whether the depths past the
+             * first two ever pay for themselves.
+             *
+             * <p><b>They do not, and it has now been measured.</b> Acceptance at the primary hit is 95–99%
+             * with the view still; at every depth past it, it is under 1%. The reason is structural rather
+             * than a matter of tuning: the continuation direction is reseeded every frame, so last frame's
+             * bounce vertex is an independent random point metres away, and the sub-1% is the rate at which
+             * two such points coincide. Loosening the rejection thresholds cannot help — it would only mean
+             * applying last frame's lighting to different geometry.
+             *
+             * <p>So <b>1 is the useful setting</b> and anything above it buys storage for data that is
+             * rejected every frame. The dial still goes to 8 because S2's SPATIAL reuse does not require a
+             * vertex to survive between frames — only a neighbouring pixel's vertex to be similar this
+             * frame — so depth 1 is worth re-measuring once that lands. {@code diagnostics.restir-stats}
+             * reports the rate per depth; see §8.9.
+             *
+             * <p>Clamped to MAX_BOUNCES' own ceiling because a reservoir past the last bounce is storage
+             * for a vertex that never exists, and again to whatever keeps the store under 4 GiB — the slot
+             * index reaching it is 32 bits wide. See {@code RtComposite.reservoirDepthThatFits}.
+             */
+            public static final IntSetting RESTIR_REUSE_DEPTH =
+                    clampedInt("fluorite.rt.restirReuseDepth", "composite.restir-reuse-depth", 0, 0, 8);
             public static final BooleanSetting WATER_WAVES =
                     bool("fluorite.rt.waterWaves", "composite.water-waves", true);
             public static final FloatSetting SUN_ANGULAR_RADIUS =
@@ -3057,6 +3088,13 @@ public final class FluoriteConfig {
              * reused, so it does not introduce a readback stall. */
             public static final BooleanSetting WATER_MEDIUM_TRACE =
                     bool("fluorite.rt.waterMediumTrace", "diagnostics.water-medium-trace", false);
+
+            /** Per-depth acceptance rate for ReSTIR temporal reuse — the measurement
+             * {@code composite.restir-reuse-depth} exists to be judged by. Costs one nibble of register
+             * arithmetic per shading vertex plus a handful of atomics on one pixel in sixteen, and does
+             * nothing at all while the reuse depth is 0. See {@code RtRestirStats}. */
+            public static final BooleanSetting RESTIR_STATS =
+                    bool("fluorite.rt.restirStats", "diagnostics.restir-stats", false);
 
             /** Heavy driver-side crash diagnostics: vendor diagnostics-config extensions (shader debug
              * info, resource tracking, automatic checkpoints, shader error reporting) and the

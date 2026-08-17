@@ -36,6 +36,7 @@ import trace_ser;
 #endif
 import subsurface;
 import lighting;
+import restir; // temporal reservoir reuse at both RIS vertices
 // The transmittance table. Raygen already has binding 10 in its stage flags — the NEE consumers below
 // are next in line for it — and debugView 12 reads it here.
 import atmosphere;
@@ -70,9 +71,15 @@ FirstSegmentTrace emptyFirstSegmentTrace(PathSegment seg, uint activeMediumFlags
 // showed that lowering changed nested Medium.flags from WATER (1) to WATER|AMBIENT (3). An explicit
 // `ref` bypasses that copy/lowering seam. Treat the referenced record as immutable: its transport fields
 // are copied once into primitive active state below, which is the only representation mutated by bounces.
+// `sampleIndex` is also the reservoir store's PATH index: main() forms it as `s + leaf * spp`, which is
+// exactly the plane numbering restir.slang needs to keep this invocation's history separate from the
+// other spp samples of this pixel and from the refraction split's. The two uses are the same number for
+// the same reason -- it identifies which of a pixel's paths this is -- so it is deliberately not a
+// second parameter.
 public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
-                        uint2 pix, uint sampleIndex, bool captureFirst,
-                        out FirstSegmentTrace firstTrace) {
+                        uint2 pix, uint sampleIndex, uint2 renderSize,
+                        bool captureFirst, out FirstSegmentTrace firstTrace,
+                        inout uint2 reuseCounts) {
     firstTrace = emptyFirstSegmentTrace(seg, activeMediumFlags);
     float3 L = float3(0.0, 0.0, 0.0);
     float3 ro = seg.ro;
@@ -443,6 +450,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 BsdfContext bc = makeBsdfContext(hitPos, n, v, rd, albedo,
                                                  float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
                 Reservoir r = risInitial(bc, seed, proposalSeed);
+                r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pix, renderSize,
+                                seed, reuseCounts);
                 L += throughput * shadeReservoir(
                         currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
                         bc, materialExtension(payload.flags), r);
@@ -657,13 +666,20 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             }
         }
 
-        // RIS direct lighting from block emitters (single-frame only, no temporal reservoir reuse).
+        // RIS direct lighting from block emitters, then M24's temporal reuse of the reservoir it built.
         // Front lobe + SSS backlighting are resampled together and share ONE shadow ray — a light can
         // only be in front of n or behind it, never both, so combining them into one target function is
         // exact, not an approximation. The SSS term is gated off past MAX_SSS_INDIRECT_DEPTH by passing
         // sss=0 there (falls back to plain front-only RIS).
+        //
+        // hitDepth, not bounce, keys the reservoir: it counts SHADING vertices from zero on both queued
+        // branches, which is the thing a reservoir is one of. bounce starts wherever pass A left the
+        // split record, so it would leave slot 0 unused on that branch and run off the end of a store
+        // sized by depth.
         if (risOn) {
             Reservoir r = risInitial(bc, seed, proposalSeed);
+            r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pix, renderSize,
+                            seed, reuseCounts);
             L += throughput * shadeReservoir(
                     currentExtinction, activeCurrentMediumFlags(activeMediumFlags), bc, ext, r);
         }
@@ -1501,6 +1517,10 @@ void main() {
     SegmentIntegral prefix = cameraPrefixIntegral(
             dispatchIndex, dimensions, queue[pixelIndex], pixelIndex);
 
+    // One nibble per reuse depth: .x counts where a stored reservoir was looked at, .y where it was
+    // accepted. Accumulated across every path of this pixel and folded into the frame's totals once,
+    // below, so the per-pixel cost of the diagnostic is register arithmetic and nothing else.
+    uint2 reuseCounts = uint2(0u, 0u);
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];
         // tracePath owns primitive active state and leaves this transport record unchanged, so all SPP
@@ -1510,8 +1530,8 @@ void main() {
             bool captureFirst = captureProbe && leaf == 0u && s == 0u;
             FirstSegmentTrace tracedFirst;
             frameRadiance += tracePath(segment, unpackActiveMediumFlags(packed.pathFlags),
-                                       uint2(pix), s + leaf * spp,
-                                       captureFirst, tracedFirst);
+                                       uint2(pix), s + leaf * spp, dimensions,
+                                       captureFirst, tracedFirst, reuseCounts);
             if (captureFirst) {
                 actualFirstTrace = tracedFirst;
             }
@@ -1540,6 +1560,7 @@ void main() {
             compositeRadiance = includePrefix ? compositeRadiance : leafRadiance;
         }
     }
+    restirStatsAccumulate(reuseCounts, pixelIndex);
     writeWaterMediumProbe(dispatchIndex, dimensions, queue[pixelIndex], prefix,
                           leafRadiance, prefix.inScatter + leafRadiance, actualFirstTrace);
     outImage[pix] = float4(compositeRadiance, 1.0);
