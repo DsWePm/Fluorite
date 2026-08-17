@@ -896,6 +896,26 @@ public final class FluoriteConfig {
              */
             public static final IntSetting RESTIR_REUSE_DEPTH =
                     clampedInt("fluorite.rt.restirReuseDepth", "composite.restir-reuse-depth", 0, 0, 8);
+
+            /**
+             * How many screen-space neighbours each reused vertex borrows a reservoir from.
+             *
+             * <p>Costs no memory at all: a neighbour is read from a slot that already exists, so this dial
+             * buys samples with arithmetic rather than with video memory — two target-function evaluations
+             * and one 64-byte read apiece, and none of the light-buffer pointer chasing that makes an
+             * ordinary RIS candidate expensive.
+             *
+             * <p>Neighbours come from the PREVIOUS frame's half, the same one temporal reuse reads. There is
+             * no point in this dispatch where every reservoir is written and nothing is shaded yet — shading
+             * is inline in the bounce loop — so this frame's neighbours would be whatever they had got to.
+             * The consequence is that a spatial neighbour is also a frame old.
+             *
+             * <p>0 leaves temporal reuse exactly as it was measured, which is this knob's off state. It does
+             * nothing at all unless {@code RESTIR_REUSE_DEPTH} is non-zero.
+             */
+            public static final IntSetting RESTIR_SPATIAL_NEIGHBOURS =
+                    clampedInt("fluorite.rt.restirSpatialNeighbours",
+                            "composite.restir-spatial-neighbours", 0, 0, 8);
             public static final BooleanSetting WATER_WAVES =
                     bool("fluorite.rt.waterWaves", "composite.water-waves", true);
             public static final FloatSetting SUN_ANGULAR_RADIUS =

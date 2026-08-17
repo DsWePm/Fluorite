@@ -3058,7 +3058,11 @@ public final class RtComposite {
                     // than out of FluoriteConfig. Both knobs can move between ensureOutput and here, and
                     // pass B indexes a buffer, not a preference.
                     reservoirStore != null ? reservoirDepth : 0,
-                    reservoirStore != null ? reservoirPaths : 0
+                    reservoirStore != null ? reservoirPaths : 0,
+                    // Not read back out of an allocation, because it allocates nothing: a neighbour is a
+                    // read of a slot that already exists, so this one can follow the knob directly.
+                    reservoirStore != null
+                            ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

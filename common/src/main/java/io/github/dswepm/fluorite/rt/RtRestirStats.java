@@ -33,8 +33,8 @@ import java.util.Locale;
 public final class RtRestirStats {
     /** Depths a pixel can account for. Matches RESTIR_MAX_STAT_DEPTH in restir.slang and the knob's cap. */
     public static final int MAX_DEPTH = 8;
-    /** Attempts, then accepts. Matches RESTIR_STAT_LANES. */
-    public static final int LANES = 2;
+    /** Temporal attempts and accepts, then spatial attempts and accepts. Matches RESTIR_STAT_LANES. */
+    public static final int LANES = 4;
     public static final long BYTE_SIZE = (long) MAX_DEPTH * LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -136,15 +136,14 @@ public final class RtRestirStats {
     private void report(int slot) {
         RtBuffer src = readback[slot];
         src.invalidate(0L, BYTE_SIZE);
-        long[] attempts = new long[armedDepth[slot]];
-        long[] accepts = new long[armedDepth[slot]];
+        long[][] lane = new long[LANES][armedDepth[slot]];
         long total = 0L;
-        for (int d = 0; d < attempts.length; d++) {
-            attempts[d] = Integer.toUnsignedLong(
-                    MemoryUtil.memGetInt(src.mapped + (long) (d * LANES) * Integer.BYTES));
-            accepts[d] = Integer.toUnsignedLong(
-                    MemoryUtil.memGetInt(src.mapped + (long) (d * LANES + 1) * Integer.BYTES));
-            total += attempts[d];
+        for (int d = 0; d < armedDepth[slot]; d++) {
+            for (int l = 0; l < LANES; l++) {
+                lane[l][d] = Integer.toUnsignedLong(
+                        MemoryUtil.memGetInt(src.mapped + (long) (d * LANES + l) * Integer.BYTES));
+            }
+            total += lane[0][d];
         }
         // Read before throttling, and skip an empty frame WITHOUT spending the interval on it. A frame that
         // shaded no reservoir vertex at all — the menu, a loading screen, a pure-sky view — carries no
@@ -158,18 +157,29 @@ public final class RtRestirStats {
         }
         loggedAt = now;
         StringBuilder line = new StringBuilder();
-        for (int d = 0; d < attempts.length; d++) {
+        for (int d = 0; d < armedDepth[slot]; d++) {
             if (d > 0) {
                 line.append(' ');
             }
-            // The attempt count travels with the rate: a depth almost nothing reaches can post a
+            // The attempt count travels with each rate: a depth almost nothing reaches can post a
             // flattering percentage off a handful of vertices, and the pair is what makes that visible.
-            line.append('d').append(d).append('=');
-            line.append(attempts[d] == 0L ? "--"
-                    : String.format(Locale.ROOT, "%.1f%%", 100.0 * accepts[d] / attempts[d]));
-            line.append('(').append(attempts[d]).append(')');
+            // The two rates are reported apart because they answer different questions -- "was this the
+            // same point" and "was this the same surface" -- and averaging them would report neither.
+            line.append('d').append(d).append("=t");
+            appendRate(line, lane[0][d], lane[1][d]);
+            if (lane[2][d] != 0L) {
+                line.append("/s");
+                appendRate(line, lane[2][d], lane[3][d]);
+            }
         }
-        FluoriteMod.LOGGER.info("RT ReSTIR reuse acceptance (1/16 pixel sample): {}", line);
+        FluoriteMod.LOGGER.info("RT ReSTIR reuse acceptance (1/16 pixel sample, t=temporal s=spatial): {}",
+                line);
+    }
+
+    private static void appendRate(StringBuilder line, long attempts, long accepts) {
+        line.append(attempts == 0L ? "--"
+                : String.format(Locale.ROOT, "%.1f%%", 100.0 * accepts / attempts));
+        line.append('(').append(attempts).append(')');
     }
 
     public void destroy() {

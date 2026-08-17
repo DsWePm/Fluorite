@@ -172,6 +172,28 @@ public static const float REUSE_MAX_POSITION_DRIFT = 0.05; // blocks
 public static const float REUSE_MIN_NORMAL_AGREEMENT = 0.9; // cos, about 26 degrees
 
 /**
+ * The SPATIAL predicate, which has to ask a different question: a neighbouring pixel was never the same
+ * point, so "did this point move" is meaningless there and only "is this the same surface" survives.
+ *
+ * <p>Three parts. Off-plane distance rejects a neighbour that is on a different surface behind or in front
+ * of this one -- the case that would paste a wall's lighting onto the floor in front of it. Normal
+ * agreement is shared with the temporal test. And a LATERAL bound, without which a large flat floor lets
+ * any pixel reuse any other pixel on it, which is no longer reuse of a neighbourhood but of the whole
+ * plane, at whatever variance the MIS weights happen to leave.
+ *
+ * <p>The lateral bound is measured in PIXEL FOOTPRINTS rather than blocks. A fixed distance is wrong at
+ * both ends -- it covers a fraction of a pixel across the room and a dozen pixels underfoot -- while the
+ * ray cone's width at the vertex, divided by the incidence cosine, is exactly the surface area one pixel
+ * covers there. Neighbours are chosen within a screen-space radius, so bounding the world separation by a
+ * multiple of that radius' worth of footprint is the same statement in the space the search happens in.
+ *
+ * <p>Deliberately NOT applied to the temporal test, which keeps the absolute drift bound it was measured
+ * with. Changing both at once would leave the next measurement unable to say which one moved it.
+ */
+public static const float REUSE_MAX_PLANE_OFFSET = 0.05;   // blocks off this vertex's tangent plane
+public static const float REUSE_LATERAL_FOOTPRINTS = 24.0; // pixel footprints, uncalibrated (§8.11)
+
+/**
  * How much history one reservoir may accumulate, as a multiple of the candidates this frame supplied.
  *
  * <p>Without a cap M grows without bound and the reservoir stops responding to change -- a light that
@@ -277,6 +299,36 @@ public bool reservoirReusable(PackedReservoir stored, float3 receiverPos, float3
     if (dot(drift, drift) > REUSE_MAX_POSITION_DRIFT * REUSE_MAX_POSITION_DRIFT) {
         return false;
     }
+    return reservoirSampleUsable(stored, receiverNormal);
+}
+
+/**
+ * As above, but for a neighbouring pixel, where "the same point" was never the question.
+ *
+ * <p>`footprint` is what one pixel covers on this surface -- the ray cone's width at the vertex over the
+ * incidence cosine -- and it is what turns the lateral bound into a statement about the neighbourhood
+ * being searched rather than about a distance in blocks. See REUSE_LATERAL_FOOTPRINTS.
+ */
+public bool reservoirReusableSpatial(PackedReservoir stored, float3 receiverPos, float3 receiverNormal,
+                                     float footprint) {
+    if (storedReservoirEmpty(stored)) {
+        return false;
+    }
+    float3 delta = storedReceiverPos(stored) - receiverPos;
+    // Off-plane first: it is the one that rejects a different surface rather than a distant part of this
+    // one, and it is the cheaper of the two.
+    if (abs(dot(delta, receiverNormal)) > REUSE_MAX_PLANE_OFFSET) {
+        return false;
+    }
+    float lateral = REUSE_LATERAL_FOOTPRINTS * max(footprint, 1.0e-4);
+    if (dot(delta, delta) > lateral * lateral) {
+        return false;
+    }
+    return reservoirSampleUsable(stored, receiverNormal);
+}
+
+/** What both predicates share: the normal, the sample's own sanity, and whether its light still exists. */
+public bool reservoirSampleUsable(PackedReservoir stored, float3 receiverNormal) {
     if (dot(storedReceiverNormal(stored), receiverNormal) < REUSE_MIN_NORMAL_AGREEMENT) {
         return false;
     }
@@ -290,79 +342,121 @@ public bool reservoirReusable(PackedReservoir stored, float3 receiverPos, float3
     return storedLightStillPresent(stored);
 }
 
-/**
- * Combine one stored reservoir into the one this vertex just built, and return the result.
- *
- * <p>p-hat IS RE-EVALUATED HERE, at this vertex, against the stored sample. Carrying the value forward
- * from the vertex that produced it is the classic way to make temporal reuse wrong, and it is why
- * unpackReservoir refuses to hand one back (restir.slang's banner).
- *
- * <p>WHERE THE BIAS WAS. The plain ReSTIR combination weights each contributing reservoir by `M_i / M`.
- * Those weights do sum to one, so they are a legal MIS weighting -- but only over the domains that could
- * actually have produced the chosen sample. When a light sits below the OTHER vertex's horizon its target
- * there is zero, that domain could not have produced the sample, and giving it `M_prev / M` of the credit
- * anyway leaves the total under one. The result is too dark, at silhouettes and grazing angles and
- * anywhere else the 26-degree normal window lets a horizon cross between the two vertices.
- *
- * <p>WHAT REPLACES IT is the generalized balance heuristic: `m_i(y) = M_i phat_i(y) / sum_j M_j phat_j(y)`,
- * which is zero exactly where a domain could not have produced `y` and therefore always sums to one over
- * the domains that could. The estimator then reads `W = wSum / phat(y)` with no division by M at all --
- * the MIS weight has already done that normalisation, and dividing again would double it.
- *
- * <p>It reduces EXACTLY to the old expression when the two domains agree, which is both the check on this
- * implementation and the reason the temporal correction alone is expected to be nearly invisible: the
- * receiver test admits only vertices within 0.05 blocks and 26 degrees, so `phat_prev` and `phat_cur`
- * usually are the same function. That is the point of doing it here first -- the machinery is verified
- * against a case whose answer is predictable before spatial reuse applies it to one that is not.
- *
- * <p>No shadow ray enters any of this. The target is the UNSHADOWED contribution and visibility is applied
- * once, later, by shadeReservoir; RIS is unbiased for any target positive on the support of the integrand,
- * and the unshadowed contribution is positive wherever the shadowed one is.
- *
- * <p>Two target evaluations, not the previous one: the stored sample at this vertex (the estimator needs
- * it regardless) and this vertex's sample at the stored geometry (the new one). The third the formula
- * appears to want -- the stored sample at its own vertex -- was measured when it was stored and travels in
- * the reservoir's last lane.
- */
-public Reservoir combineStoredReservoir(BsdfContext bc, Reservoir current, PackedReservoir stored,
-                                        inout uint seed) {
-    Reservoir prev = unpackReservoir(stored);
-    float mPrev = min(prev.M, REUSE_M_CAP);
-    float mCur = current.M;
+// ---- Combining domains. One canonical reservoir (this vertex's own RIS) and k reused ones (last frame's
+// slot, plus however many neighbours), resampled into one survivor.
+//
+// WHERE THE BIAS WAS. Plain ReSTIR weights each contributing reservoir by M_i/M. Those sum to one, so they
+// ARE a MIS weighting -- what they get wrong is the set they sum over. A MIS weight has to sum to one
+// across the domains that could have produced the chosen sample, and a light below another vertex's
+// horizon has zero target there, so that domain could not have produced it. Handing it M_i/M of the credit
+// anyway leaves the total under one, and under one is darker. Silhouettes, grazing angles, anywhere a
+// normal turning inside the 26-degree window carries a light across the horizon.
+//
+// WHAT REPLACES IT is pairwise MIS against the canonical. For each reused domain i,
+//
+//     p_i(y) = M_i phat_i(y) / (M_i phat_i(y) + M_c phat_c(y)),        q_i(y) = 1 - p_i(y)
+//     m_i(y) = p_i(y) / k                     m_c(y) = (1/k) sum_i q_i(y)
+//
+// which sums to one by construction -- (1/k) sum_i (p_i + q_i) = 1 -- and is zero wherever a domain's
+// target is, which is exactly the property M_i/M lacked. The full balance heuristic over k+1 domains would
+// want phat_j(y_i) for every pair, k^2 target evaluations; this wants two per domain and k = 1 reproduces
+// the two-domain balance heuristic term for term.
+//
+// The estimator then reads W = wSum / phat(y) with NO division by M. The MIS weight has already done that
+// normalisation and dividing again would apply it twice.
+//
+// It collapses to plain ReSTIR's expression whenever the domains share a target function, which is both
+// the check on the algebra (RtRestirReuseContractTest evaluates it numerically) and the reason the
+// TEMPORAL correction alone was expected to be nearly invisible: the temporal predicate admits only
+// vertices within 0.05 blocks and 26 degrees, so the two targets usually are the same function. Spatial
+// reuse is where the domains genuinely differ and where this earns its cost.
+//
+// No shadow ray enters any of it. The target is the UNSHADOWED contribution and visibility is applied once
+// afterwards by shadeReservoir; RIS is unbiased for any target positive on the integrand's support, and
+// the unshadowed contribution is positive wherever the shadowed one is.
+
+public struct RestirCombine {
+    public Reservoir chosen;  // the survivor so far; starts as the canonical, which is streamed last
+    public float wSumRaw;     // sum of candidate weights, still carrying the 1/k the finish divides out
+    public float qSum;        // sum of q_i(y_canonical): how much of the canonical's credit survives
+    public float mTotal;      // canonical M plus every accepted domain's capped M
+    public uint domains;      // k
+};
+
+public RestirCombine restirCombineBegin(Reservoir canonical) {
+    RestirCombine s;
+    s.chosen = canonical;
+    s.wSumRaw = 0.0;
+    s.qSum = 0.0;
+    s.mTotal = canonical.M;
+    s.domains = 0u;
+    return s;
+}
+
+/** Fold one reused domain in. Two target evaluations; the third value rides in the stored lane. */
+public void restirCombineDomain(inout RestirCombine s, BsdfContext bc, Reservoir canonical,
+                                PackedReservoir stored, inout uint seed) {
+    Reservoir other = unpackReservoir(stored);
+    float mOther = min(other.M, REUSE_M_CAP);
+    float mCanon = canonical.M;
 
     // The other domain, as far as it survives: its geometry is stored, its material is taken to be this
     // vertex's. See retargetBsdfContext for what that approximation is worth.
-    BsdfContext prevCtx = retargetBsdfContext(bc, storedReceiverPos(stored), storedReceiverNormal(stored));
+    BsdfContext otherCtx = retargetBsdfContext(bc, storedReceiverPos(stored), storedReceiverNormal(stored));
 
-    float phatCurAtPrev; // stored sample, this vertex -- the estimator's denominator if it wins
-    evalSampleContrib(bc, prev.pos, prev.lnrm, prev.le, prev.area, phatCurAtPrev);
-    float phatPrevAtCur; // this vertex's sample, the other vertex -- could that domain have produced it?
-    evalSampleContrib(prevCtx, current.pos, current.lnrm, current.le, current.area, phatPrevAtCur);
-    float phatCurAtCur = current.phat;
-    float phatPrevAtPrev = storedSourceTarget(stored);
+    float phatCanonAtOther; // the stored sample here -- the estimator's denominator if it wins
+    evalSampleContrib(bc, other.pos, other.lnrm, other.le, other.area, phatCanonAtOther);
+    float phatOtherAtCanon; // this vertex's sample there -- could that domain have produced it?
+    evalSampleContrib(otherCtx, canonical.pos, canonical.lnrm, canonical.le, canonical.area,
+                      phatOtherAtCanon);
+    float phatOtherAtOther = storedSourceTarget(stored);
+    float phatCanonAtCanon = canonical.phat;
 
-    float denomCur = mCur * phatCurAtCur + mPrev * phatPrevAtCur;
-    float denomPrev = mCur * phatCurAtPrev + mPrev * phatPrevAtPrev;
-    // m_i(y_i) * phat_here(y_i) * W_i. A zero denominator means no domain could have produced that
-    // candidate, which also means its own target is zero, so the weight is zero either way.
-    float wCur = denomCur > 0.0
-            ? (mCur * phatCurAtCur / denomCur) * phatCurAtCur * current.W : 0.0;
-    float wPrev = denomPrev > 0.0
-            ? (mPrev * phatPrevAtPrev / denomPrev) * phatCurAtPrev * prev.W : 0.0;
+    float denomOther = mOther * phatOtherAtOther + mCanon * phatCanonAtOther;
+    float denomCanon = mOther * phatOtherAtCanon + mCanon * phatCanonAtCanon;
+    // A zero denominator means no domain could have produced that candidate, which also means its own
+    // target is zero, so the weight is zero either way.
+    float p = denomOther > 0.0 ? mOther * phatOtherAtOther / denomOther : 0.0;
+    float q = denomCanon > 0.0 ? mCanon * phatCanonAtCanon / denomCanon : 0.0;
 
-    Reservoir r = current;
-    float wSum = wCur + wPrev;
-    if (wSum > 0.0 && rndf(seed) * wSum < wPrev) {
-        r.pos = prev.pos;
-        r.lnrm = prev.lnrm;
-        r.le = prev.le;
-        r.area = prev.area;
-        r.phat = phatCurAtPrev;
-        r.lightIndex = prev.lightIndex;
+    s.qSum += q;
+    s.mTotal += mOther;
+    s.domains += 1u;
+
+    float w = p * phatCanonAtOther * other.W;
+    s.wSumRaw += w;
+    if (w > 0.0 && rndf(seed) * s.wSumRaw < w) {
+        s.chosen.pos = other.pos;
+        s.chosen.lnrm = other.lnrm;
+        s.chosen.le = other.le;
+        s.chosen.area = other.area;
+        s.chosen.phat = phatCanonAtOther;
+        s.chosen.lightIndex = other.lightIndex;
     }
-    r.M = mCur + mPrev;
-    r.wSum = wSum;
-    r.W = r.phat > 0.0 ? wSum / r.phat : 0.0;
+}
+
+/**
+ * Stream the canonical last, then normalise.
+ *
+ * <p>Last because its MIS weight is not known until every domain has been offered: `m_c` is the average of
+ * what each pairwise comparison left it, and a comparison that never happened leaves nothing.
+ *
+ * <p>`chosen` already holds the canonical, so selecting it here is a no-op assignment -- but the draw still
+ * has to happen, because the canonical competes for the survivor slot on the same terms as everyone else.
+ */
+public Reservoir restirCombineFinish(RestirCombine s, Reservoir canonical, inout uint seed) {
+    if (s.domains == 0u) {
+        return canonical; // nothing was reusable; this is the single-frame RIS untouched
+    }
+    float wCanon = s.qSum * canonical.phat * canonical.W;
+    float wSumRaw = s.wSumRaw + wCanon;
+    if (wCanon > 0.0 && rndf(seed) * wSumRaw < wCanon) {
+        s.chosen = canonical;
+    }
+    Reservoir r = s.chosen;
+    r.M = s.mTotal;
+    r.wSum = wSumRaw / float(s.domains);
+    r.W = r.phat > 0.0 ? r.wSum / r.phat : 0.0;
     return r;
 }
 
@@ -391,8 +485,15 @@ public void restirCountBump(inout uint packed, uint depth) {
     }
 }
 
-/** Two uints per depth: attempts then accepts. Matches RtRestirStats on the Java side. */
-public static const uint RESTIR_STAT_LANES = 2u;
+/**
+ * Four uints per depth: temporal attempts, temporal accepts, spatial attempts, spatial accepts. Matches
+ * RtRestirStats on the Java side.
+ *
+ * <p>Two rates rather than one because the two predicates ask different questions -- "is this the same
+ * point" against "is this the same surface" -- and a combined rate would report whichever one happened to
+ * dominate as though it described both.
+ */
+public static const uint RESTIR_STAT_LANES = 4u;
 
 /**
  * Fold one pixel's counts into the frame's per-depth totals.
@@ -407,7 +508,7 @@ public static const uint RESTIR_STAT_LANES = 2u;
  * subgroupSupportedStages, and a diagnostic that fails to compile on some driver is worse than one that
  * issues sixteen more atomics per sampled pixel.
  */
-public void restirStatsAccumulate(uint2 reuseCounts, uint pixelIndex) {
+public void restirStatsAccumulate(uint4 reuseCounts, uint pixelIndex) {
     if (worldPush.restirStatsAddr == 0 || ((pixelIndex ^ worldPush.frameIndex) & 15u) != 0u) {
         return;
     }
@@ -419,11 +520,19 @@ public void restirStatsAccumulate(uint2 reuseCounts, uint pixelIndex) {
         if (attempts == 0u) {
             continue; // this pixel's paths never reached this depth; not a rejection
         }
-        uint accepts = (reuseCounts.y >> shift) & 0xFu;
         uint base = d * RESTIR_STAT_LANES;
         InterlockedAdd(stats[base], attempts);
+        uint accepts = (reuseCounts.y >> shift) & 0xFu;
         if (accepts != 0u) {
             InterlockedAdd(stats[base + 1u], accepts);
+        }
+        uint spatialAttempts = (reuseCounts.z >> shift) & 0xFu;
+        if (spatialAttempts != 0u) {
+            InterlockedAdd(stats[base + 2u], spatialAttempts);
+        }
+        uint spatialAccepts = (reuseCounts.w >> shift) & 0xFu;
+        if (spatialAccepts != 0u) {
+            InterlockedAdd(stats[base + 3u], spatialAccepts);
         }
     }
 }
@@ -468,6 +577,29 @@ public bool restirPreviousPixel(float3 hitPos, uint2 renderSize, out uint prevPi
 }
 
 /**
+ * How far a spatial neighbour may be, in pixels, and where in that disk to look.
+ *
+ * <p>A screen-space radius rather than a world one, because the search is a screen-space search: the
+ * reservoirs are addressed by pixel and there is no spatial index over the world. What keeps a 12-pixel
+ * step from reaching across a room is the world-space predicate, not this.
+ *
+ * <p>Uniform over the DISK, not over the radius -- sqrt on the radial draw. Without it the samples pile up
+ * at the centre, where the neighbour is most likely to be the pixel already read and least likely to add
+ * anything the canonical reservoir does not already have.
+ *
+ * <p>Twelve is a starting point and is not calibrated (§8.11). It trades off against the lateral bound
+ * from the other end: too small and neighbours are redundant, too large and they are rejected before they
+ * are read, and only the acceptance rate can say which side it is on.
+ */
+public static const float RESTIR_SPATIAL_RADIUS_PIXELS = 12.0;
+
+public int2 spatialNeighbourOffset(inout uint seed) {
+    float angle = rndf(seed) * 6.28318530718;
+    float radius = sqrt(rndf(seed)) * RESTIR_SPATIAL_RADIUS_PIXELS;
+    return int2(round(float2(cos(angle), sin(angle)) * radius));
+}
+
+/**
  * The whole of temporal reuse at one shading vertex: read last frame's slot, validate it, combine it,
  * and leave the result where next frame will find it.
  *
@@ -487,11 +619,13 @@ public bool restirPreviousPixel(float3 hitPos, uint2 renderSize, out uint prevPi
  * instead, and the receiver test decides whether that is still the same surface. There is nothing to
  * clear: an old reservoir for a surface that has not moved is old, not wrong.
  *
- * <p>`reuseCounts.x` counts the depths where a stored reservoir was looked at, `reuseCounts.y` those where
- * it was accepted. That ratio, per depth, is the measurement the whole store is on trial for.
+ * <p>`reuseCounts` is four nibble words per depth: temporal attempts, temporal accepts, spatial attempts,
+ * spatial accepts. Split because the two predicates are different questions with different answers, and a
+ * single combined rate would hide whichever one is doing the work.
  */
 public Reservoir restirReuse(BsdfContext bc, Reservoir current, uint bounce, uint pathIndex,
-                             uint2 pix, uint2 renderSize, inout uint seed, inout uint2 reuseCounts) {
+                             uint2 pix, uint2 renderSize, float footprint,
+                             inout uint seed, inout uint4 reuseCounts) {
     uint depth = worldPush.restirReuseDepth;
     if (pc.reservoirAddr == 0 || depth == 0u || bounce >= depth) {
         return current;
@@ -510,17 +644,47 @@ public Reservoir restirReuse(BsdfContext bc, Reservoir current, uint bounce, uin
     DevicePtr<PackedReservoir> store = DevicePtr<PackedReservoir>(pc.reservoirAddr);
     uint parity = worldPush.frameIndex & 1u;
     uint slotCur = reservoirSlot(pixelIndex, pixelCount, pathIndex, paths, bounce, depth, parity);
+    RestirCombine combine = restirCombineBegin(current);
 
     restirCountBump(reuseCounts.x, bounce);
-    Reservoir r = current;
     if (haveHistory) {
         uint slotPrev = reservoirSlot(readPixel, pixelCount, pathIndex, paths, bounce, depth, parity ^ 1u);
         PackedReservoir stored = store[slotPrev];
         if (reservoirReusable(stored, bc.hitPos, bc.n)) {
-            r = combineStoredReservoir(bc, current, stored, seed);
+            restirCombineDomain(combine, bc, current, stored, seed);
             restirCountBump(reuseCounts.y, bounce);
         }
     }
+
+    // Neighbours, from the SAME half the temporal read came from. There is no seam in this dispatch where
+    // every reservoir is written and nothing is shaded yet -- shading is inline in the bounce loop -- so
+    // reading this frame's neighbours would be reading whatever they happened to have got to. Last frame's
+    // half is complete by definition, and it makes spatial and temporal one loop over reused domains
+    // rather than two mechanisms. The cost is that a neighbour is also a frame old.
+    //
+    // Centred on the REPROJECTED pixel where there is one, so the neighbourhood searched is the
+    // neighbourhood of this surface point rather than of this screen position.
+    uint neighbours = worldPush.restirSpatialNeighbours;
+    for (uint i = 0u; i < neighbours; i++) {
+        int2 centre = int2(int(readPixel % renderSize.x), int(readPixel / renderSize.x));
+        int2 q = centre + spatialNeighbourOffset(seed);
+        if (any(q < int2(0, 0)) || any(q >= int2(renderSize))) {
+            continue; // off screen: no neighbour there to reject
+        }
+        uint neighbourIndex = uint(q.y) * renderSize.x + uint(q.x);
+        if (neighbourIndex == readPixel) {
+            continue; // that is the temporal sample; counting it twice would double its say
+        }
+        restirCountBump(reuseCounts.z, bounce);
+        PackedReservoir stored = store[
+                reservoirSlot(neighbourIndex, pixelCount, pathIndex, paths, bounce, depth, parity ^ 1u)];
+        if (reservoirReusableSpatial(stored, bc.hitPos, bc.n, footprint)) {
+            restirCombineDomain(combine, bc, current, stored, seed);
+            restirCountBump(reuseCounts.w, bounce);
+        }
+    }
+
+    Reservoir r = restirCombineFinish(combine, current, seed);
     store[slotCur] = packReservoir(r, bc.hitPos, bc.n);
     return r;
 }

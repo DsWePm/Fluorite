@@ -36,6 +36,8 @@
   "fluorite.options.rt.maxBounces.tooltip": "主要命中之後的次級路徑追蹤反彈最大次數。數值越高能捕捉更多間接光，但成本也越高。",
   "fluorite.options.rt.restirReuseDepth": "ReSTIR 重用深度",
   "fluorite.options.rt.restirReuseDepth.tooltip": "有多少層路徑反彈在影格之間保留 reservoir。0 表示關閉 ReSTIR 重用。實測：第一層的接受率是 95–99%，之後每一層都不到 1%——反彈頂點每個影格重新隨機，上一個影格那個在完全不同的地方。**1 是唯一有用的檔位**。1920×1080、1 spp 下每層約 530 MB。",
+  "fluorite.options.rt.restirSpatialNeighbours": "ReSTIR 空間鄰居數",
+  "fluorite.options.rt.restirSpatialNeighbours.tooltip": "每個頂點向多少個鄰近像素借用光源 reservoir。0 表示關閉。不額外佔用顯示記憶體——鄰居讀取的是重用深度那個旋鈕已經付過的儲存空間——但每個鄰居有運算開銷。鄰居取自上一個影格，所以借來的樣本也是一個影格前的。重用深度為 0 時此項無效。",
   "fluorite.options.rt.restirStats": "ReSTIR 重用統計",
   "fluorite.options.rt.restirStats.tooltip": "每秒將各層深度的 ReSTIR 時間重用接受率寫入 latest.log。用它判斷某一層深度是否配得上那 265 MB，還是每個影格都在為被拒絕的資料付出代價。僅用於診斷；ReSTIR 重用深度為 0 時不做任何事。",
   "fluorite.options.rt.sunSize": "太陽大小",
