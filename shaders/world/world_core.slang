@@ -148,6 +148,18 @@ public static const float RAY_CONE_MIN_WIDTH = 1.0e-5;
 public static const float RAY_CONE_DIFFUSE_SPREAD = 0.25;
 public static const float RAY_CONE_GLOSSY_SPREAD_SCALE = 0.35;
 
+/**
+ * How much surface one pixel covers at this vertex: the cone's width there, spread over the incidence.
+ *
+ * <p>A cone of a given width lands on a patch that grows without bound as the surface turns edge-on, which
+ * is why the cosine divides rather than multiplies. The floor keeps a grazing hit from producing a patch
+ * the size of the world -- the same 0.12 the rain ripples have always used, hoisted here when ReSTIR's
+ * spatial reuse needed the identical quantity to bound how far a neighbour may be.
+ */
+public float surfaceFootprint(float coneWidth, float3 rd, float3 n) {
+    return coneWidth / max(abs(dot(rd, n)), 0.12);
+}
+
 // Stored roughness IS alpha (see payloadRoughness), so these compare against it directly.
 public static const float MIRROR_ALPHA_MAX = 4.0e-4; // LabPBR perceptual smoothness >= 0.98
 // Above this the specular lobe is too broad for a single mirrored reprojection to describe, so the

@@ -94,7 +94,8 @@ public final class RtVideoOptions {
                 // finds them under Fog and concludes their water is unaffected has been misled by the
                 // menu.
                 case TRACING -> List.of(
-                        Section.of(spp(), maxBounces(), restirReuseDepth(), sunSize(), entities(), particles(),
+                        Section.of(spp(), maxBounces(), restirReuseDepth(),
+                                restirSpatialNeighbours(), sunSize(), entities(), particles(),
                                 particleShadows()),
                         Section.titled("fluorite.options.rt.section.media",
                                 volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
@@ -740,6 +741,27 @@ public final class RtVideoOptions {
             "fluorite.options.rt.restirReuseDepth",
             OptionInstance.cachedConstantTooltip(
                     Component.translatable("fluorite.options.rt.restirReuseDepth.tooltip")),
+            (caption, value) -> value == 0
+                    ? Options.genericValueLabel(caption, CommonComponents.OPTION_OFF)
+                    : Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(0, 8),
+            Math.clamp(setting.value(), 0, 8),
+            setting::set);
+    }
+
+    /**
+     * How many screen-space neighbours each reused vertex borrows a reservoir from. 0 is off and shipped.
+     *
+     * <p>Beside the depth slider because they are the same feature seen from its two costs. Depth buys
+     * samples with video memory; this one buys them with arithmetic and no memory at all, since a
+     * neighbour is a read of a slot the depth dial already paid for. It does nothing while that dial is 0.
+     */
+    private static OptionInstance<Integer> restirSpatialNeighbours() {
+        IntSetting setting = FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.restirSpatialNeighbours",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.restirSpatialNeighbours.tooltip")),
             (caption, value) -> value == 0
                     ? Options.genericValueLabel(caption, CommonComponents.OPTION_OFF)
                     : Options.genericValueLabel(caption, value),

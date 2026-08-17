@@ -288,6 +288,10 @@ public struct WorldPush {
     public uint64_t restirStatsAddr;
     public uint     restirReuseDepth;
     public uint     restirPathCount;
+    // How many screen-space neighbours each reused vertex asks. 0 leaves temporal reuse exactly as it was
+    // measured, which is this knob's off state; the store is unaffected either way, since a neighbour is
+    // read from slots that already exist.
+    public uint     restirSpatialNeighbours;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

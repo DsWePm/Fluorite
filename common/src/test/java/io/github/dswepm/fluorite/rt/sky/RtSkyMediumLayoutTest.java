@@ -25,10 +25,12 @@ final class RtSkyMediumLayoutTest {
         // than merely drift -- reaching 1104. M24 adds the ReSTIR reservoir store's device address and its
         // two shape words, reaching 1120 -- and that address is here rather than in the push-constant block
         // because the block filled at Vulkan's guaranteed 128-byte floor one commit earlier, which is what
-        // this buffer being unbounded is for. This buffer is not the
+        // this buffer being unbounded is for. S2b's spatial neighbour count is a fourth ReSTIR word and
+        // lands in the struct's tail padding rather than beside it, so the 16-byte round-up carries this
+        // to 1136 and the next such word is free. This buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
         // but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(1120, WorldPushData.BYTE_SIZE);
+        assertEquals(1136, WorldPushData.BYTE_SIZE);
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

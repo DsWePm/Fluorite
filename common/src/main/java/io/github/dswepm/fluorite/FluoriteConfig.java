@@ -884,11 +884,19 @@ public final class FluoriteConfig {
              * two such points coincide. Loosening the rejection thresholds cannot help — it would only mean
              * applying last frame's lighting to different geometry.
              *
-             * <p>So <b>1 is the useful setting</b> and anything above it buys storage for data that is
-             * rejected every frame. The dial still goes to 8 because S2's SPATIAL reuse does not require a
-             * vertex to survive between frames — only a neighbouring pixel's vertex to be similar this
-             * frame — so depth 1 is worth re-measuring once that lands. {@code diagnostics.restir-stats}
-             * reports the rate per depth; see §8.9.
+             * <p><b>Spatial reuse changed that, and the reason is the predicate rather than the
+             * neighbour.</b> With {@code RESTIR_SPATIAL_NEIGHBOURS} on, depth 1 accepts about 15% and depth
+             * 2 about 9% — fifty times the temporal rate at the same vertices, measured over 62 frames at
+             * two resolutions. The temporal test asks whether a point moved more than 0.05 blocks, which
+             * two independent hemisphere draws never pass; the spatial one asks whether they are on the
+             * same surface, which two points on one wall do. So the earlier reading that these depths were
+             * structurally dead was measuring the test, not the opportunity.
+             *
+             * <p>What is still unmeasured is whether 15% is worth 530 MB. Acceptance says the predicate
+             * passed, not that the sample helped, and no image or frame-time comparison has been run — see
+             * §8.9, where that is recorded as a deliberate omission rather than an oversight. Until then: 1
+             * is the setting the evidence supports, and above it is an experiment.
+             * {@code diagnostics.restir-stats} reports both rates per depth.
              *
              * <p>Clamped to MAX_BOUNCES' own ceiling because a reservoir past the last bounce is storage
              * for a vertex that never exists, and again to whatever keeps the store under 4 GiB — the slot
@@ -896,6 +904,26 @@ public final class FluoriteConfig {
              */
             public static final IntSetting RESTIR_REUSE_DEPTH =
                     clampedInt("fluorite.rt.restirReuseDepth", "composite.restir-reuse-depth", 0, 0, 8);
+
+            /**
+             * How many screen-space neighbours each reused vertex borrows a reservoir from.
+             *
+             * <p>Costs no memory at all: a neighbour is read from a slot that already exists, so this dial
+             * buys samples with arithmetic rather than with video memory — two target-function evaluations
+             * and one 64-byte read apiece, and none of the light-buffer pointer chasing that makes an
+             * ordinary RIS candidate expensive.
+             *
+             * <p>Neighbours come from the PREVIOUS frame's half, the same one temporal reuse reads. There is
+             * no point in this dispatch where every reservoir is written and nothing is shaded yet — shading
+             * is inline in the bounce loop — so this frame's neighbours would be whatever they had got to.
+             * The consequence is that a spatial neighbour is also a frame old.
+             *
+             * <p>0 leaves temporal reuse exactly as it was measured, which is this knob's off state. It does
+             * nothing at all unless {@code RESTIR_REUSE_DEPTH} is non-zero.
+             */
+            public static final IntSetting RESTIR_SPATIAL_NEIGHBOURS =
+                    clampedInt("fluorite.rt.restirSpatialNeighbours",
+                            "composite.restir-spatial-neighbours", 0, 0, 8);
             public static final BooleanSetting WATER_WAVES =
                     bool("fluorite.rt.waterWaves", "composite.water-waves", true);
             public static final FloatSetting SUN_ANGULAR_RADIUS =

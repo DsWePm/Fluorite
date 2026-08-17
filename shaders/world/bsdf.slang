@@ -114,6 +114,50 @@ public BsdfContext makeBsdfContextAniso(float3 hitPos, float3 n, float3 v, float
     return c;
 }
 
+/**
+ * The same material, asked what it would do at a DIFFERENT point and normal.
+ *
+ * <p>ReSTIR's MIS weights need each participating domain's target function evaluated at every candidate
+ * sample, and a domain here is a shading vertex. A stored reservoir carries its vertex's position and
+ * normal but not its material, so this is the reconstruction: the geometry is the other vertex's, the
+ * material is the caller's. That approximation is why it lives next to the constructors rather than being
+ * spelled out at the call site — every normal-dependent derived term is re-derived by the same
+ * expressions the constructors use, so there is one place where the frame is built.
+ *
+ * <p>What the approximation costs depends on the caller. Temporal reuse validates the two vertices to
+ * within 0.05 blocks and 26 degrees, so the material is almost certainly literally the same one. Spatial
+ * reuse across a material boundary is where it can be wrong, and the error lands in the MIS weight rather
+ * than in the estimate, so it shows up as variance rather than as a wrong picture.
+ *
+ * <p>The anisotropic grain is re-seated on the new normal rather than rebuilt, because the payload bits it
+ * was decoded from belong to the other vertex and are not carried. Gram-Schmidt is well conditioned for
+ * any normal agreement worth reusing across (26 degrees leaves the tangent at least 64 off the new
+ * normal); the degenerate branch is there for callers that loosen that.
+ */
+public BsdfContext retargetBsdfContext(BsdfContext c, float3 hitPos, float3 n) {
+    BsdfContext o = c;
+    o.hitPos = hitPos;
+    o.n = n;
+    o.ndv = max(1.0e-4, dot(n, c.v));
+    // The frame, mirroring whichever constructor built the original: canonical when isotropic (where t/b
+    // are unused by every lobe anyway), the re-seated grain when not.
+    float3 tangent = c.aniso ? c.t - n * dot(c.t, n) : float3(0.0, 0.0, 0.0);
+    float tangentLength = length(tangent);
+    if (tangentLength > 1.0e-4) {
+        o.t = tangent / tangentLength;
+        o.b = cross(n, o.t);
+    } else {
+        canonicalTangentFrame(n, o.t, o.b);
+    }
+    // Selected by c.aniso, not by which branch above ran: a degenerate grain falls back to the canonical
+    // frame but keeps its anisotropic alphas, and evalSampleContrib branches on aniso alone. Pairing an
+    // isotropic g1v with anisotropic alphas is the kind of mismatch that shades a surface nobody authored.
+    o.g1v = c.aniso
+            ? ggxG1Aniso(dot(c.v, o.t), dot(c.v, o.b), o.ndv, c.alphaX, c.alphaY)
+            : ggxG1(o.ndv, c.rough);
+    return o;
+}
+
 // ---- M21 energy-layered rain film.
 
 public float rainFilmFresnel(float cosine) {

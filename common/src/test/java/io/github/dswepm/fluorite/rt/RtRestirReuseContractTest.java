@@ -21,6 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 final class RtRestirReuseContractTest {
 
+    /** End of a top-level Slang function body: a newline and the closing brace. */
+    private static final String CLOSE = "\n}";
+
     /**
      * The slot must be keyed by PATH, not only by pixel and bounce.
      *
@@ -121,19 +124,81 @@ final class RtRestirReuseContractTest {
     @Test
     void reuseRecomputesTheTargetFunctionAndNeverInheritsIt() throws IOException {
         String restir = code(source("shaders/world/restir.slang"));
-        String combine = between(restir, "public Reservoir combineStoredReservoir(", "\n}");
+        String combine = between(restir, "public void restirCombineDomain(", "\n}");
 
-        assertTrue(combine.contains("evalSampleContrib(bc, prev.pos, prev.lnrm, prev.le, prev.area, phatPrev)"),
+        assertTrue(combine.contains("evalSampleContrib(bc, other.pos, other.lnrm, other.le, other.area, phatCanonAtOther)"),
                 "the stored sample must be re-evaluated against this vertex");
-        assertTrue(combine.contains("float wPrev = phatPrev * prev.W * mPrev;"));
-        assertTrue(combine.contains("min(prev.M, REUSE_M_CAP)"), "history must be capped or it stops responding");
-        assertTrue(combine.contains("r.wSum + wPrev"),
-                "this frame's weight is the wSum risInitial left; a second formula is a second thing to drift");
-        assertTrue(combine.contains("wSum / (m * r.phat)"));
+        assertTrue(combine.contains("min(other.M, REUSE_M_CAP)"), "history must be capped or it stops responding");
 
         String unpack = between(restir, "public Reservoir unpackReservoir(", "\n}");
         assertTrue(unpack.contains("r.wSum = 0.0;") && unpack.contains("r.phat = 0.0;"),
                 "storage must not hand back a plausible stale target");
+        // The stored target IS carried, in its own lane and under its own name, because it answers a
+        // different question: not "what is this sample worth here" but "could the domain that produced it
+        // have produced it". Reaching it through unpackReservoir is what would merge the two.
+        assertFalse(unpack.contains("storedSourceTarget"),
+                "the source domain's target must not arrive as the reusing vertex's phat");
+        assertTrue(restir.contains("public float storedSourceTarget(PackedReservoir p) { return p.misc.w; }"));
+        assertTrue(restir.contains("asfloat(r.lightIndex), r.phat);"),
+                "packReservoir must record the target measured at the storing vertex");
+    }
+
+    /**
+     * The MIS combination, and the one property that says the algebra is right.
+     *
+     * <p>Plain ReSTIR weights each reservoir by M_i/M. Those sum to one, so they are legal MIS weights —
+     * but only across domains that could have produced the chosen sample. A light below the other vertex's
+     * horizon has zero target there, so that domain could not have produced it, and handing it M_prev/M of
+     * the credit anyway leaves the total under one. That is the darkening. The generalized balance
+     * heuristic is zero exactly where a domain's target is zero, so it always sums to one over the domains
+     * that count.
+     *
+     * <p>With the MIS weight doing the normalising, W is wSum/phat with NO division by M. Dividing again is
+     * the mistake this pins: it would apply the normalisation twice and darken everything by a factor of M.
+     */
+    @Test
+    void theMisWeightIsTheBalanceHeuristicAndReducesToTheOldFormWhenDomainsAgree() throws IOException {
+        String restir = code(source("shaders/world/restir.slang"));
+        String finish = between(restir, "public Reservoir restirCombineFinish(", CLOSE);
+        String combine = between(restir,
+                "public void restirCombineDomain(", "\n}");
+
+        assertTrue(combine.contains("float denomOther = mOther * phatOtherAtOther + mCanon * phatCanonAtOther;"));
+        assertTrue(combine.contains("float denomCanon = mOther * phatOtherAtCanon + mCanon * phatCanonAtCanon;"));
+        assertTrue(combine.contains("mOther * phatOtherAtOther / denomOther"), "p_i, the domain's own share");
+        assertTrue(combine.contains("mCanon * phatCanonAtCanon / denomCanon"), "q_i, what it leaves the canonical");
+        assertTrue(combine.contains("float w = p * phatCanonAtOther * other.W;"));
+        // m_c is the AVERAGE of what each pairwise comparison left the canonical, so the canonical cannot be
+        // weighed until every domain has been offered - hence qSum accumulating and the finish dividing.
+        assertTrue(finish.contains("float wCanon = s.qSum * canonical.phat * canonical.W;"));
+        assertTrue(finish.contains("r.wSum = wSumRaw / float(s.domains);"), "the 1/k the pairwise weights share");
+        assertTrue(finish.contains("r.W = r.phat > 0.0 ? r.wSum / r.phat : 0.0;"),
+                "the MIS weight already normalises; dividing by M as well darkens by a factor of M");
+        assertFalse(finish.contains("s.mTotal * r.phat"), "the plain-ReSTIR denominator must be gone");
+        // The other domain's target comes from the lane it was stored in, not from a third evaluation.
+        assertTrue(combine.contains("float phatOtherAtOther = storedSourceTarget(stored);"));
+        assertEquals(2, combine.split("evalSampleContrib\\(", -1).length - 1,
+                "two target evaluations per domain: the stored sample here, and this sample there");
+
+        // The algebra, checked rather than asserted in prose. When both domains share a target function
+        // the balance heuristic collapses to M_i/M, and the estimator must land on exactly the number the
+        // plain combination produced — same samples, same weights, same W.
+        for (double phatCur : new double[] {0.4, 3.0, 17.5}) {
+            for (double phatPrev : new double[] {0.9, 2.2}) {
+                for (double mCur : new double[] {1, 8, 32}) {
+                    for (double mPrev : new double[] {0, 1, 20}) {
+                        double wCurMis = (mCur * phatCur / (mCur * phatCur + mPrev * phatCur)) * phatCur * 1.7;
+                        double wPrevMis = (mPrev * phatPrev / (mCur * phatPrev + mPrev * phatPrev)) * phatPrev * 2.3;
+                        double misW = (wCurMis + wPrevMis) / phatCur;
+                        // Plain ReSTIR over the same two candidates: wSum = sum(phat_here * W * M), /(M*phat).
+                        double plainW = (phatCur * 1.7 * mCur + phatPrev * 2.3 * mPrev)
+                                / ((mCur + mPrev) * phatCur);
+                        assertEquals(plainW, misW, Math.abs(plainW) * 1e-12,
+                                "balance heuristic must reduce to M_i/M when the domains share a target");
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -195,6 +260,79 @@ final class RtRestirReuseContractTest {
         assertTrue(core.contains("public float2 projectPrevNdc(float3 worldPos, out bool valid) {"));
         assertFalse(guides.contains("float2 projectPrevNdc(float3 worldPos, out bool valid) {"),
                 "guides must not redeclare it");
+    }
+
+    /**
+     * A neighbour is a different point, so it gets a different question.
+     *
+     * <p>"Did this point move" is meaningless for a pixel that was never this pixel. What survives is
+     * whether it is the same SURFACE: off-plane distance, normal agreement, and a lateral bound without
+     * which a large flat floor lets any pixel reuse any other pixel on it.
+     *
+     * <p>The lateral bound is in pixel footprints rather than blocks because a fixed distance is wrong at
+     * both ends of the depth range — a fraction of a pixel across the room, a dozen pixels underfoot.
+     *
+     * <p>The temporal predicate deliberately keeps its absolute drift bound. Changing both at once would
+     * leave the next measurement unable to say which one moved it.
+     */
+    @Test
+    void aSpatialNeighbourIsJudgedBySurfaceAndATemporalOneByPosition() throws IOException {
+        String restir = code(source("shaders/world/restir.slang"));
+        String spatial = between(restir, "public bool reservoirReusableSpatial(", CLOSE);
+        String temporal = between(restir, "public bool reservoirReusable(", CLOSE);
+
+        assertTrue(spatial.contains("abs(dot(delta, receiverNormal)) > REUSE_MAX_PLANE_OFFSET"),
+                "off-plane distance is what rejects a different surface behind this one");
+        assertTrue(spatial.contains("REUSE_LATERAL_FOOTPRINTS * max(footprint, 1.0e-4)"),
+                "without a lateral bound a flat floor reuses across the whole plane");
+        assertFalse(spatial.contains("REUSE_MAX_POSITION_DRIFT"),
+                "a neighbour was never the same point; the drift test would reject every one of them");
+        assertTrue(temporal.contains("REUSE_MAX_POSITION_DRIFT * REUSE_MAX_POSITION_DRIFT"),
+                "temporal keeps the bound its measurement was taken with");
+        assertFalse(temporal.contains("REUSE_MAX_PLANE_OFFSET"), "one change at a time, or the A/B says nothing");
+
+        // Both predicates end in the same shared checks, so a light that stopped existing is rejected on
+        // either path. Two copies of that would be two places for the ghost-light hole to reopen.
+        assertTrue(spatial.contains("return reservoirSampleUsable(stored, receiverNormal);"));
+        assertTrue(temporal.contains("return reservoirSampleUsable(stored, receiverNormal);"));
+
+        // The footprint is the renderer's own, not a second estimate of the same thing.
+        String rgen = code(source("shaders/world/world.rgen.slang"));
+        assertTrue(code(source("shaders/world/world_core.slang"))
+                        .contains("public float surfaceFootprint(float coneWidth, float3 rd, float3 n)"),
+                "one definition of what a pixel covers");
+        assertTrue(rgen.contains("impactFootprint = surfaceFootprint(rayConeWidth, rd, n)"),
+                "the rain ripples' footprint and ReSTIR's must be the same expression");
+    }
+
+    /**
+     * Neighbours come from the frame half temporal reuse reads, and asking for none leaves it alone.
+     *
+     * <p>There is no point in this dispatch where every reservoir is written and nothing is shaded yet —
+     * shading is inline in the bounce loop — so reading this frame's neighbours would be reading whichever
+     * ones happened to have run. The previous half is complete by definition.
+     *
+     * <p>Zero neighbours must leave the estimator exactly as the temporal measurement found it. It is the
+     * same formula either way (pairwise MIS with k=1 IS the two-domain balance heuristic), so what this
+     * guards is that the loop cannot run a zeroth iteration or read a slot it should not.
+     */
+    @Test
+    void spatialNeighboursComeFromTheCompletedHalfAndZeroOfThemChangesNothing() throws IOException {
+        String reuse = between(code(source("shaders/world/restir.slang")), "public Reservoir restirReuse(", CLOSE);
+
+        assertTrue(reuse.contains("for (uint i = 0u; i < neighbours; i++)"),
+                "zero neighbours must not run an iteration");
+        assertTrue(reuse.contains("uint neighbours = worldPush.restirSpatialNeighbours;"));
+        // parity ^ 1u on BOTH reads. The current half is being written by this very dispatch.
+        assertEquals(2, reuse.split("parity \\^ 1u", -1).length - 1,
+                "temporal and spatial must both read the completed half");
+        assertTrue(reuse.contains("if (neighbourIndex == readPixel)"),
+                "the reprojected pixel is already counted; taking it twice doubles its say");
+        // Writes never follow the neighbour search, only the reprojection-free own pixel.
+        assertTrue(reuse.contains("uint slotCur = reservoirSlot(pixelIndex, pixelCount, pathIndex, paths, bounce, depth, parity);"));
+
+        assertEquals(0, FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.defaultValue(),
+                "off is the default, or the temporal measurement is not reproducible");
     }
 
     /**

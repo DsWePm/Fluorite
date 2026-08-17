@@ -79,7 +79,7 @@ FirstSegmentTrace emptyFirstSegmentTrace(PathSegment seg, uint activeMediumFlags
 public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                         uint2 pix, uint sampleIndex, uint2 renderSize,
                         bool captureFirst, out FirstSegmentTrace firstTrace,
-                        inout uint2 reuseCounts) {
+                        inout uint4 reuseCounts) {
     firstTrace = emptyFirstSegmentTrace(seg, activeMediumFlags);
     float3 L = float3(0.0, 0.0, 0.0);
     float3 ro = seg.ro;
@@ -313,7 +313,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                                     worldPush.waterParams.w, waterFootprint);
             }
             if (isWater) {
-                float impactFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.12);
+                float impactFootprint = surfaceFootprint(rayConeWidth, rd, geometricNormal);
                 n = applyRainImpactRipples(hitPos, n, openWaterRainImpact(hitPos), impactFootprint);
             }
 
@@ -451,7 +451,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                                                  float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
                 Reservoir r = risInitial(bc, seed, proposalSeed);
                 r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pix, renderSize,
-                                seed, reuseCounts);
+                                surfaceFootprint(rayConeWidth, rd, n), seed, reuseCounts);
                 L += throughput * shadeReservoir(
                         currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
                         bc, materialExtension(payload.flags), r);
@@ -476,7 +476,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         RainSurface rain = evaluateRainSurface(hitPos, ext,
                 payloadRainFilmReceiver(), payloadRainTopFace(), payloadRainPlant());
         n = applyRainLayerNormal(n, rain, payloadRainTopFace(), payloadRainPlant());
-        float impactFootprint = rayConeWidth / max(abs(dot(-rd, n)), 0.12);
+        float impactFootprint = surfaceFootprint(rayConeWidth, rd, n);
         n = applyRainImpactRipples(hitPos, n, rain.puddle, impactFootprint);
         albedo *= 1.0 - rain.darkening;
         float3 p = hitPos + n * SURF_BIAS;
@@ -679,7 +679,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         if (risOn) {
             Reservoir r = risInitial(bc, seed, proposalSeed);
             r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pix, renderSize,
-                            seed, reuseCounts);
+                            impactFootprint, seed, reuseCounts);
             L += throughput * shadeReservoir(
                     currentExtinction, activeCurrentMediumFlags(activeMediumFlags), bc, ext, r);
         }
@@ -1520,7 +1520,7 @@ void main() {
     // One nibble per reuse depth: .x counts where a stored reservoir was looked at, .y where it was
     // accepted. Accumulated across every path of this pixel and folded into the frame's totals once,
     // below, so the per-pixel cost of the diagnostic is register arithmetic and nothing else.
-    uint2 reuseCounts = uint2(0u, 0u);
+    uint4 reuseCounts = uint4(0u, 0u, 0u, 0u);
     for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
         PackedPathSegment packed = queue[recordIndex];
         // tracePath owns primitive active state and leaves this transport record unchanged, so all SPP
