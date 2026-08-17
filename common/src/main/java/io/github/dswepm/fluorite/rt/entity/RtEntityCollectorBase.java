@@ -140,6 +140,19 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     private BlockState activeHeldLightState;
     private RtDynamicLightAccumulator activeHeldLight;
     private int entityWorldBlockLight;
+    /**
+     * Why the last held-block candidate produced no emitter, or null if one was produced.
+     *
+     * <p>Six independent gates stand between "this entity is holding a light-emitting block" and a sphere
+     * record, and every one of them declines SILENTLY -- the item still renders, the entity still lights
+     * itself from the world, and nothing anywhere says which gate it was. That is how a single block can
+     * be the only one in the game that does not light its holder, with no error to go on.
+     *
+     * <p>Reported only when a candidate existed and produced nothing, so the normal case logs nothing at
+     * all and no switch has to be found before the anomaly can be seen.
+     */
+    private String heldLightReject;
+    private int heldLightQuadsSeen;
 
     /**
      * Point the collector at the capture buffer for the next {@code dispatcher.submit}, resetting the
@@ -171,6 +184,18 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         entityWorldBlockLight = Math.clamp(worldBlockLight, 0, 15);
         activeHeldLightState = null;
         activeHeldLight = null;
+        heldLightReject = left != null || right != null ? "no emissive quad was ever submitted" : null;
+        heldLightQuadsSeen = 0;
+    }
+
+    /** Why the held-block candidate produced no emitter this entity, or null if it produced one. */
+    public String heldLightReject() {
+        return heldLightReject;
+    }
+
+    /** How many item quads reached the held-light observer, before any of its gates. */
+    public int heldLightQuadsSeen() {
+        return heldLightQuadsSeen;
     }
 
     /** Append distinct left/right-held, flame and body spheres in the shared M18 record stream. */
@@ -554,14 +579,22 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     /** Observe one submitted item quad through its stateful block material without changing capture state. */
     private void recordHeldLightQuad(TextureAtlasSprite sprite, boolean transmissive, int tint,
                                      float[] x, float[] y, float[] z) {
-        if (activeHeldLight == null || activeHeldLightState == null || sprite == null
-                || !TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())) {
+        if (activeHeldLight == null || activeHeldLightState == null) {
+            return;
+        }
+        heldLightQuadsSeen++;
+        if (sprite == null || !TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())) {
+            heldLightReject = "quad is not on the block atlas ("
+                    + (sprite == null ? "no sprite" : String.valueOf(sprite.atlasLocation())) + ")";
             return;
         }
         RtMaterialRegistry.Snapshot snapshot = RtMaterialRegistry.INSTANCE.requireSnapshot();
         RtMaterialDesc desc = snapshot.material(snapshot.resolve(sprite, activeHeldLightState, transmissive));
         RtMaterialDesc.EmissionSummary summary = desc.emissionSummary();
         if (!summary.emissive()) {
+            heldLightReject = "the resolved material variant is not emissive (transmissive=" + transmissive
+                    + ", profile=" + RtMaterials.profile(activeHeldLightState)
+                    + ", sound=" + activeHeldLightState.getSoundType() + ")";
             return;
         }
         float stateEmission = activeHeldLightState.getLightEmission() / 15.0f;
@@ -571,8 +604,15 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             case NONE -> 0.0f;
         };
         if (!(factor > 0.0f)) {
+            heldLightReject = "emission factor is zero (source=" + desc.emissionSource()
+                    + ", stateEmission=" + stateEmission + ")";
             return;
         }
+        if (!(summary.coverage() > 0.0f)) {
+            heldLightReject = "the emissive coverage of this sprite is zero";
+            return;
+        }
+        heldLightReject = null;
         float scale = factor * desc.emissionStrength();
         float tintR = ((tint >>> 16) & 0xFF) * (1.0f / 255.0f);
         float tintG = ((tint >>> 8) & 0xFF) * (1.0f / 255.0f);
