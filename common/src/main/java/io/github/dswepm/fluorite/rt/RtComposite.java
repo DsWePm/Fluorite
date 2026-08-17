@@ -3062,7 +3062,17 @@ public final class RtComposite {
                     // Not read back out of an allocation, because it allocates nothing: a neighbour is a
                     // read of a slot that already exists, so this one can follow the knob directly.
                     reservoirStore != null
-                            ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0
+                            ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0,
+                    // M18's per-frame sphere emitters, finally reaching a shader. The address and count
+                    // come from the frame's own entity build rather than from any cached state: the buffer
+                    // is reallocated every frame, so a stale address here would be a use-after-free that
+                    // happens to render.
+                    fe.dynamicLightAddr(), fe.dynamicLightCount(),
+                    // Off unless there is something to propose. Publishing the knob while the buffer is
+                    // empty would have risInitial reserve candidates for an empty stratum and throw them
+                    // away, which reads as "RIS got worse" rather than as "the setting did nothing".
+                    fe.dynamicLightCount() > 0
+                            ? FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() : 0
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

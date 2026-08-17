@@ -921,6 +921,27 @@ public final class FluoriteConfig {
              * <p>0 leaves temporal reuse exactly as it was measured, which is this knob's off state. It does
              * nothing at all unless {@code RESTIR_REUSE_DEPTH} is non-zero.
              */
+            /**
+             * How many of the RIS candidates are spent on M18's dynamic sphere emitters — entities, held
+             * blocks, flame particles — rather than on the world's own light grid.
+             *
+             * <p>0 is off and is the shipped default, and off is exactly today's picture: the dynamic
+             * buffer has been collected and uploaded since M18 and read by nothing, so a mob holding a
+             * torch lights itself and nothing around it. Above 0 those emitters start being proposed.
+             *
+             * <p>They need their own stratum because they live in their own per-frame buffer: the power
+             * alias tables and the dense light grid are built incrementally with the terrain, and carrying
+             * entities in them would mean rebuilding both every frame. The price of that shortcut is that
+             * this count is FIXED — a room full of torches and a single mob get the same share of the
+             * candidate budget, where a merged alias table would divide it by emitted power.
+             *
+             * <p>Capped one candidate below {@code RIS_CANDIDATES} so a vertex can never spend its whole
+             * budget on entities and stop seeing the world it stands in.
+             */
+            public static final IntSetting DYNAMIC_RIS_CANDIDATES =
+                    clampedInt("fluorite.rt.dynamicRisCandidates",
+                            "composite.dynamic-ris-candidates", 0, 0, 8);
+
             public static final IntSetting RESTIR_SPATIAL_NEIGHBOURS =
                     clampedInt("fluorite.rt.restirSpatialNeighbours",
                             "composite.restir-spatial-neighbours", 0, 0, 8);

@@ -16,6 +16,21 @@ import water;
 /** No light. Distinguishable from index 0, which is a real emitter. */
 public static const uint RESERVOIR_NO_LIGHT = 0xFFFFFFFFu;
 
+/**
+ * Which buffer a stored lightIndex points into.
+ *
+ * <p>The two light buffers are indexed independently, so an index alone is ambiguous the moment dynamic
+ * emitters enter the candidate set — and the consequence of getting it wrong is not a crash but a
+ * reservoir validated against a completely unrelated light, which is the failure the whole light-identity
+ * check exists to prevent. Bit 31 because neither buffer will ever hold two billion records, and
+ * RESERVOIR_NO_LIGHT stays distinct from any tagged index because it sets every other bit too.
+ */
+public static const uint RESERVOIR_DYNAMIC_LIGHT_BIT = 0x80000000u;
+public bool reservoirLightIsDynamic(uint index) {
+    return index != RESERVOIR_NO_LIGHT && (index & RESERVOIR_DYNAMIC_LIGHT_BIT) != 0u;
+}
+public uint reservoirLightSlot(uint index) { return index & ~RESERVOIR_DYNAMIC_LIGHT_BIT; }
+
 public struct Reservoir {
     public float3 pos;  // light sample point (rebased world space)
     public float3 lnrm; // emitter outward normal
@@ -217,6 +232,58 @@ public float3 lightGeometricNormal(Light light) {
     return (light.section & 0x40000000u) != 0u ? -normal : normal;
 }
 
+/** A dynamic sphere's radius, from the low half of the lane a rectangle spends on its U axis. */
+public float lightSphereRadius(Light light) {
+    return unpackHalf2(light.halfUxy).x;
+}
+
+/**
+ * One uniform point on the half of a sphere emitter that faces the receiver, in the AREA measure.
+ *
+ * <p>The hemisphere rather than the whole sphere: the far half contributes nothing -- its outward normal
+ * points away, so the emitter cosine zeroes it -- and sampling it anyway would throw away half of every
+ * dynamic candidate inside the loop that measurement showed is the expensive one. Uniform over 2*pi*r^2
+ * with density 1/(2*pi*r^2) is exactly the contract evalSampleContrib's area argument expresses, so this
+ * needs no second pdf path beside the rectangle's.
+ *
+ * <p>IT IS EXACT, AND THE WIDER DOMAIN COSTS SAMPLES RATHER THAN ACCURACY. The set actually visible from a
+ * point at distance D is the cap where dot(n, d) > r, a cap strictly smaller than this hemisphere -- but
+ * the band between them needs no test of its own, because it is precisely where evalSampleContrib's
+ * emitter cosine already goes negative: for x = c + r*n the term is dot(n, d) - r, which is what that cap
+ * is defined by. So the silhouette band contributes exactly zero and nothing is over-counted; sampling it
+ * merely wastes a fraction r/D of the dynamic candidates. Negligible for the small radii an entity, a held
+ * torch and a flame particle have, and largest exactly when the receiver is nearly touching the emitter.
+ *
+ * <p>A receiver INSIDE the sphere has no facing half at all and is rejected outright.
+ *
+ * <p>No lightRebase. See WorldPush.dynamicLightAddr: this buffer is authored in current rebased space.
+ */
+public bool sampleSphereEmitter(Light light, float3 receiver, inout uint seed,
+                                out float3 sp, out float3 lnrm, out float area) {
+    sp = float3(0.0, 0.0, 0.0);
+    lnrm = float3(0.0, 0.0, 1.0);
+    area = 0.0;
+    float radius = lightSphereRadius(light);
+    float3 toReceiver = receiver - light.pos;
+    float dist2 = dot(toReceiver, toReceiver);
+    if (!(radius > 0.0) || dist2 <= radius * radius) {
+        return false;
+    }
+    float3 axis = toReceiver * rsqrt(dist2);
+    // Uniform on the hemisphere about `axis`: z uniform in [0,1] is what makes it uniform in AREA rather
+    // than crowding the pole, which is the same identity that makes a sphere's zones equal-area.
+    float z = rndf(seed);
+    float phi = rndf(seed) * 6.28318530718;
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    float3 t;
+    float3 b;
+    canonicalTangentFrame(axis, t, b);
+    lnrm = normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + axis * z);
+    sp = light.pos + lnrm * radius;
+    area = 6.28318530718 * radius * radius;
+    return true;
+}
+
 public float proposalPdf(Light light, float3 le, LightGridCell cell, int3 cellCoord,
                   float localProbability) {
     float power = max(0.0, lightArea(light) * luminance(le));
@@ -285,35 +352,75 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
     bool hasGridCell = findLightGridCell(gridLookup, gridCell, gridCellCoord);
     uint candidateCount = worldPush.risCandidates;
     r.M = float(candidateCount);
+    // M18's dynamic emitters take their own stratum, and the reason is structural rather than a
+    // preference: they live in a separate per-frame buffer because the alias tables and the dense grid are
+    // built with the terrain and would have to be rebuilt whole every frame to carry entities. Reserving
+    // candidates for them is what gets them proposed at all without touching either structure.
+    //
+    // Held back from the total BEFORE the local/global split, so the existing stratification keeps
+    // working on whatever is left; and capped a candidate short of the whole budget, because a vertex that
+    // spent every candidate on entities would stop seeing the world's own lights.
+    uint dynamicCandidateCount = worldPush.dynamicLightCount > 0u && worldPush.dynamicLightAddr != 0
+            ? min(worldPush.dynamicRisCandidates, candidateCount - 1u) : 0u;
+    uint staticCandidateCount = candidateCount - dynamicCandidateCount;
     // Deterministically stratify the proposal mixture. At the default M=8 this schedules exactly six
     // local and two global candidates, with every lane taking the same branch for a given candidate.
     // Counts that are not divisible by four use the nearest practical split with at least one global
     // candidate; M=1 is global-only so the estimator retains full support.
     uint globalCandidateCount = hasGridCell
-            ? max(1u, (candidateCount + 2u) / 4u) : candidateCount;
-    uint localCandidateCount = candidateCount - globalCandidateCount;
-    float localProbability = float(localCandidateCount) / float(candidateCount);
+            ? max(1u, (staticCandidateCount + 2u) / 4u) : staticCandidateCount;
+    uint localCandidateCount = staticCandidateCount - globalCandidateCount;
+    float localProbability = float(localCandidateCount) / float(staticCandidateCount);
     for (uint c = 0u; c < candidateCount; c++) {
+        float3 sp;
+        float3 lightNormal;
+        float3 le;
+        float area;
+        float sourcePdf;
         uint li;
-        uint globalsBefore = (c * globalCandidateCount) / candidateCount;
-        uint globalsAfter = ((c + 1u) * globalCandidateCount) / candidateCount;
-        bool useLocal = hasGridCell && globalsAfter == globalsBefore;
-        selectLightGridLight(gridCell, useLocal, proposalSeed, li);
-        Light lg = ConstPtr<Light>(pc.lightBufAddr)[li];
-        // Soft shadows: uniform point on the emitter rectangle ((s,t) in [-1,1]^2, pdf 1/area).
-        float s = rndf(seed) * 2.0 - 1.0;
-        float t = rndf(seed) * 2.0 - 1.0;
-        float3 sp = lg.pos + worldPush.lightRebase.xyz
-                + s * lightHalfU(lg) + t * lightHalfV(lg);
-        float3 le = lightRadiance(lg);
-        float3 lightNormal = lightGeometricNormal(lg);
-        float area = lightArea(lg);
+        // The dynamic candidates come first. Uniform across c, since both counts are frame constants, so
+        // this branch stays wave-coherent the way the local/global one already is.
+        if (c < dynamicCandidateCount) {
+            li = min(uint(rndf(proposalSeed) * float(worldPush.dynamicLightCount)),
+                     worldPush.dynamicLightCount - 1u);
+            Light lg = ConstPtr<Light>(worldPush.dynamicLightAddr)[li];
+            if (!sampleSphereEmitter(lg, ctx.hitPos, seed, sp, lightNormal, area)) {
+                continue; // receiver inside the emitter, or a radius that never got authored
+            }
+            le = lightRadiance(lg);
+            // Uniform over the buffer, and the mixture needs no other term: the two buffers hold disjoint
+            // shapes, so nothing here could have been proposed by the local or global stratum. Power
+            // weighting would want an alias table rebuilt every frame, which is the cost this stratum
+            // exists to avoid; it is the obvious next refinement and is not free.
+            sourcePdf = (float(dynamicCandidateCount) / float(candidateCount))
+                    / float(worldPush.dynamicLightCount);
+            li |= RESERVOIR_DYNAMIC_LIGHT_BIT;
+        } else {
+            uint sc = c - dynamicCandidateCount;
+            uint globalsBefore = (sc * globalCandidateCount) / staticCandidateCount;
+            uint globalsAfter = ((sc + 1u) * globalCandidateCount) / staticCandidateCount;
+            bool useLocal = hasGridCell && globalsAfter == globalsBefore;
+            selectLightGridLight(gridCell, useLocal, proposalSeed, li);
+            Light lg = ConstPtr<Light>(pc.lightBufAddr)[li];
+            // Soft shadows: uniform point on the emitter rectangle ((s,t) in [-1,1]^2, pdf 1/area).
+            float s = rndf(seed) * 2.0 - 1.0;
+            float t = rndf(seed) * 2.0 - 1.0;
+            sp = lg.pos + worldPush.lightRebase.xyz
+                    + s * lightHalfU(lg) + t * lightHalfV(lg);
+            le = lightRadiance(lg);
+            lightNormal = lightGeometricNormal(lg);
+            area = lightArea(lg);
+            // Scaled by this stratum's share of the budget, for the same reason the dynamic one is: the
+            // mixture is over all M candidates, and holding some back changed what fraction of them this
+            // density describes.
+            sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability)
+                    * (float(staticCandidateCount) / float(candidateCount));
+        }
         float phat;
         evalSampleContrib(ctx, sp, lightNormal, le, area, phat);
         if (phat <= 0.0) {
             continue;
         }
-        float sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability);
         float w = phat / max(sourcePdf, 1.0e-20);
         r.wSum += w;
         if (rndf(seed) * r.wSum < w) { // weighted reservoir update

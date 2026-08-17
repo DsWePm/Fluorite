@@ -95,7 +95,8 @@ public final class RtVideoOptions {
                 // menu.
                 case TRACING -> List.of(
                         Section.of(spp(), maxBounces(), restirReuseDepth(),
-                                restirSpatialNeighbours(), sunSize(), entities(), particles(),
+                                restirSpatialNeighbours(), dynamicRisCandidates(),
+                                sunSize(), entities(), particles(),
                                 particleShadows()),
                         Section.titled("fluorite.options.rt.section.media",
                                 volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
@@ -756,6 +757,27 @@ public final class RtVideoOptions {
      * samples with video memory; this one buys them with arithmetic and no memory at all, since a
      * neighbour is a read of a slot the depth dial already paid for. It does nothing while that dial is 0.
      */
+    /**
+     * How many RIS candidates go to M18's dynamic sphere emitters. 0 is off and is the shipped default.
+     *
+     * <p>In Tracing beside the other candidate dials, because it divides the same budget they do. Off is
+     * today's picture exactly: those emitters have been collected and uploaded since M18 and sampled by
+     * nothing, so a mob holding a torch lights itself and nothing around it.
+     */
+    private static OptionInstance<Integer> dynamicRisCandidates() {
+        IntSetting setting = FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES;
+        return new OptionInstance<>(
+            "fluorite.options.rt.dynamicRisCandidates",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.dynamicRisCandidates.tooltip")),
+            (caption, value) -> value == 0
+                    ? Options.genericValueLabel(caption, CommonComponents.OPTION_OFF)
+                    : Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(0, 8),
+            Math.clamp(setting.value(), 0, 8),
+            setting::set);
+    }
+
     private static OptionInstance<Integer> restirSpatialNeighbours() {
         IntSetting setting = FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS;
         return new OptionInstance<>(

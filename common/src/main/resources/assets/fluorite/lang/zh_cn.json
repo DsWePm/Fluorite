@@ -208,6 +208,8 @@
   "fluorite.options.rt.restirReuseDepth.tooltip": "有多少层路径反弹在帧之间保留 reservoir。0 表示关闭 ReSTIR 复用。实测：第一层接受率 93–97%。更深的层单靠时间复用不到 1%，但开启「ReSTIR 空间邻居数」后第 2 层约 15%、第 3 层约 9%——因为邻居是按「是不是同一个面」判定的，而不是「是不是同一个点」。这是否值那些显存，尚未实测。1920×1080、1 spp 下每层约 530 MB。",
   "fluorite.options.rt.restirSpatialNeighbours": "ReSTIR 空间邻居数",
   "fluorite.options.rt.restirSpatialNeighbours.tooltip": "每个顶点向多少个邻近像素借用光源 reservoir。0 表示关闭。不额外占显存——邻居读的是复用深度那个旋钮已经付过钱的存储——但每个邻居有算力开销。邻居取自上一帧，所以借来的样本也是一帧前的。复用深度为 0 时此项无效。",
+  "fluorite.options.rt.dynamicRisCandidates": "动态光候选数",
+  "fluorite.options.rt.dynamicRisCandidates.tooltip": "每个表面的光源采样里，有多少个给实体、手持方块和火焰粒子，而不是给世界自身的光源。0 表示关闭，关档就是现在的画面——这些发光体从 M18 起就被收集上传、却没有任何地方采样它们，所以举着火把的生物只照亮自己、照不亮周围。它们分到的份额是固定的、不按亮度加权，所以一个生物和一屋子火把拿到同样多的采样。",
   "fluorite.options.rt.restirStats": "ReSTIR 复用统计",
   "fluorite.options.rt.restirStats.tooltip": "每秒把各层深度的 ReSTIR 时间复用接受率写入 latest.log。用它判断某一层深度是否配得上那 265 MB，还是每帧都在为被拒绝的数据付钱。仅用于诊断；ReSTIR 复用深度为 0 时不做任何事。",
   "fluorite.options.rt.sunSize": "太阳大小",

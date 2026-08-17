@@ -292,6 +292,29 @@ public struct WorldPush {
     // measured, which is this knob's off state; the store is unaffected either way, since a neighbour is
     // read from slots that already exist.
     public uint     restirSpatialNeighbours;
+
+    /**
+     * M18's per-frame sphere emitters -- entities, held blocks, flame particles -- and how many.
+     *
+     * <p>THESE POSITIONS ARE ALREADY IN CURRENT REBASED SPACE and must NOT have lightRebase added, unlike
+     * every position in the static light buffer. The static one is built once against a terrain hierarchy
+     * and rebased on the way in; this one is rebuilt from live entities every frame, so it is authored in
+     * the space the shader already works in. Adding the offset compiles, runs, and puts every dynamic
+     * light a rebase distance away from the thing carrying it.
+     *
+     * <p>A separate buffer rather than an extension of the light buffer, because the alias tables and the
+     * dense grid are built incrementally with the terrain and would have to be rebuilt whole every frame
+     * to carry entities. That is why the dynamic candidates are their OWN stratum in the proposal mixture
+     * (see risInitial) rather than competing in the existing ones.
+     *
+     * <p>The two buffers hold disjoint shapes -- rectangles there, spheres here -- which is what makes the
+     * three-way mixture density trivial: no candidate can be proposed by more than one stratum, so each
+     * one's pdf is its own stratum's term and nothing has to be summed across them.
+     */
+    public uint64_t dynamicLightAddr;
+    public uint     dynamicLightCount;
+    /** How many of the M RIS candidates are drawn from that buffer. 0 is off and is the shipped default. */
+    public uint     dynamicRisCandidates;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
