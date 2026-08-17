@@ -221,7 +221,9 @@ public final class RtVideoOptions {
                                 hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
                         bool("fluorite.options.rt.waterMediumTrace",
-                                FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE)));
+                                FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
+                        bool("fluorite.options.rt.restirStats",
+                                FluoriteConfig.Rt.Diagnostics.RESTIR_STATS)));
             };
         }
     }

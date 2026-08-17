@@ -268,6 +268,26 @@ public struct WorldPush {
      * <p>x = 0 skips the fetch and is bit-for-bit the field without any of this.
      */
     public float4   cloudWarp;          // x amplitude (blocks), y feature scale (blocks), zw own drift
+    /**
+     * The shape of the ReSTIR reservoir store at pc.reservoirAddr, published by whatever ALLOCATED it.
+     *
+     * <p>Not the config values. `restirReuseDepth` is the reuse-depth knob already clamped to the bounce
+     * budget, and `restirPathCount` is spp * MAX_PATH_SEGMENTS as it stood when the buffer was sized --
+     * both read back out of the renderer's own fields rather than out of FluoriteConfig, because a knob
+     * that moves mid-frame would otherwise have the shading index a buffer sized for the old value. Zero
+     * depth means no store, and the shading falls back to single-frame RIS.
+     *
+     * <p>`restirStatsAddr` is the per-depth reuse counter buffer, 0 when the diagnostic is off. It is a
+     * DEVICE ADDRESS in WorldPush rather than in WorldPushConstants for the same reason: that block is
+     * full at Vulkan's guaranteed 128-byte floor, and this is the first buffer to arrive after it filled.
+     * The dereference it costs is paid once per pixel, in a diagnostic, off by default.
+     *
+     * <p>All three are here rather than in WorldPushConstants because nothing in a hit shader has any use
+     * for them -- which is the judgement WorldPushConstants' own banner asks for.
+     */
+    public uint64_t restirStatsAddr;
+    public uint     restirReuseDepth;
+    public uint     restirPathCount;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

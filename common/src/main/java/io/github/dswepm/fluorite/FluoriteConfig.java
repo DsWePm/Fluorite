@@ -870,10 +870,12 @@ public final class FluoriteConfig {
              * How many bounce vertices keep a persistent reservoir. 0 disables ReSTIR reuse entirely.
              *
              * <p><b>This knob is the memory dial, and it is the reason the store is measured before it is
-             * compressed.</b> Every depth costs {@code 2 x 64 B x renderWidth x renderHeight} — two frame
-             * halves for temporal reuse — which at a 1920x1080 render resolution is 265 MB per depth. At
-             * the default 4 that is a gigabyte, and the whole point of shipping it uncompressed first is
-             * to find out whether the depths past the first two ever pay for themselves.
+             * compressed.</b> Every depth costs {@code 2 x paths x 64 B x renderWidth x renderHeight} —
+             * two frame halves for temporal reuse, and one plane per path, where paths is {@code spp x 2}
+             * because pass B runs the bounce loop once per sample and once more for the transmission
+             * split. At 1920x1080 and the default spp of 1 that is 530 MB per depth, so 2.1 GB at depth 4;
+             * the whole point of shipping it uncompressed first is to find out whether the depths past the
+             * first two ever pay for themselves.
              *
              * <p>They may well not. A reservoir is only reusable if this frame's vertex at that depth is
              * the same surface as last frame's, and at depth 3 that is rarely true — the stored sample is
@@ -881,7 +883,8 @@ public final class FluoriteConfig {
              * rate per depth so the answer is measured rather than argued; see §8.11.
              *
              * <p>Clamped to MAX_BOUNCES' own ceiling because a reservoir past the last bounce is storage
-             * for a vertex that never exists.
+             * for a vertex that never exists, and again to whatever keeps the store under 4 GiB — the slot
+             * index reaching it is 32 bits wide. See {@code RtComposite.reservoirDepthThatFits}.
              */
             public static final IntSetting RESTIR_REUSE_DEPTH =
                     clampedInt("fluorite.rt.restirReuseDepth", "composite.restir-reuse-depth", 0, 0, 8);
@@ -3077,6 +3080,13 @@ public final class FluoriteConfig {
              * reused, so it does not introduce a readback stall. */
             public static final BooleanSetting WATER_MEDIUM_TRACE =
                     bool("fluorite.rt.waterMediumTrace", "diagnostics.water-medium-trace", false);
+
+            /** Per-depth acceptance rate for ReSTIR temporal reuse — the measurement
+             * {@code composite.restir-reuse-depth} exists to be judged by. Costs one nibble of register
+             * arithmetic per shading vertex plus a handful of atomics on one pixel in sixteen, and does
+             * nothing at all while the reuse depth is 0. See {@code RtRestirStats}. */
+            public static final BooleanSetting RESTIR_STATS =
+                    bool("fluorite.rt.restirStats", "diagnostics.restir-stats", false);
 
             /** Heavy driver-side crash diagnostics: vendor diagnostics-config extensions (shader debug
              * info, resource tracking, automatic checkpoints, shader error reporting) and the

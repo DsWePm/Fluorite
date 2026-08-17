@@ -13,6 +13,9 @@ import trace;
 import volume;
 import water;
 
+/** No light. Distinguishable from index 0, which is a real emitter. */
+public static const uint RESERVOIR_NO_LIGHT = 0xFFFFFFFFu;
+
 public struct Reservoir {
     public float3 pos;  // light sample point (rebased world space)
     public float3 lnrm; // emitter outward normal
@@ -22,6 +25,11 @@ public struct Reservoir {
     public float W;
     public float wSum;
     public float phat;
+    // Which Light record the survivor came from. Single-frame RIS has no use for it — the sample carries
+    // everything shading needs — and it exists so that a reservoir which OUTLIVES its frame can be asked
+    // whether its emitter is still there. See restir.slang; a stored sample whose torch has been mined
+    // still has a position, a radiance and an area, and lights the room from nowhere without this.
+    public uint lightIndex;
 };
 
 public Reservoir resEmpty() {
@@ -34,6 +42,7 @@ public Reservoir resEmpty() {
     r.W = 0.0;
     r.wSum = 0.0;
     r.phat = 0.0;
+    r.lightIndex = RESERVOIR_NO_LIGHT;
     return r;
 }
 
@@ -313,6 +322,7 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
             r.le = le;
             r.area = area;
             r.phat = phat;
+            r.lightIndex = li;
         }
     }
     r.W = r.phat > 0.0 ? (r.wSum / (r.M * r.phat)) : 0.0;

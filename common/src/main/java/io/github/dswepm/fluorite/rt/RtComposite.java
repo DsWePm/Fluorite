@@ -117,6 +117,27 @@ public final class RtComposite {
     private static final long PATH_RECORD_BYTES = PackedPathSegmentData.BYTE_SIZE;
     /** Must match RESERVOIR_BYTES in restir.slang; the allocation and the shader layout move together. */
     private static final long RESERVOIR_BYTES = 64L;
+    /**
+     * Records pass A queues per render pixel: the base continuation plus the optional transmission split.
+     *
+     * <p>Must match MAX_PATH_SEGMENTS in world_core.slang. It sizes the continuation queue, and now the
+     * reservoir store as well — pass B runs the whole bounce loop once per (sample, segment), and each of
+     * those runs needs its own reservoir history or they overwrite each other's.
+     */
+    private static final long PATH_SEGMENTS_PER_PIXEL = 2L;
+    /**
+     * Hard ceiling on the reservoir store, because the slot index reaching it is 32 bits wide.
+     *
+     * <p>{@code reservoirSlot} returns a uint and Slang emits an {@code OpPtrAccessChain} with a 32-bit
+     * Element (verified in the generated SPIR-V). Whether a driver widens that before multiplying by the
+     * 64-byte stride is not something the specification pins down, so the store is kept where the question
+     * cannot arise: under 4 GiB, every byte offset in it fits in 32 bits.
+     *
+     * <p>Reachable, not theoretical: 1080p at the default one sample per pixel just fits at the top of the
+     * dial (3.96 GiB), and 1440p or two samples per pixel does not. Both are reachable from the settings
+     * screen. Clamping the depth and saying so beats a buffer that indexes correctly on one vendor.
+     */
+    private static final long RESERVOIR_STORE_MAX_BYTES = 4L << 30;
     // ---- Ambient participating medium.
     //
     // The active dimension preset supplies the baseline. Weather/time forcing is applied only when that
@@ -1339,6 +1360,18 @@ public final class RtComposite {
     private static int waterProbeReach() {
         return Math.round(FluoriteConfig.Rt.Water.WATER_SIM_HEIGHT.value());
     }
+
+    /**
+     * Settle whether the reuse counters exist, then hand out their address for this frame's WorldPush.
+     *
+     * <p>The two halves are one call because they must not be separated: the address published here is
+     * read by a trace recorded later in the same command buffer, so the decision to release the buffer has
+     * to be made on this side of the write. See RtRestirStats.prepare.
+     */
+    private long restirStatsAddress(RtContext ctx) {
+        restirStats.prepare(ctx, PUSH_RING, reservoirStore != null ? reservoirDepth : 0);
+        return restirStats.address();
+    }
     /** Smallest patch an entity disturbs, in BLOCKS — so the size of a splash does not follow the grid. */
     private static final double WATER_IMPULSE_MIN_RADIUS = 0.5;
     /** How far from the feet still counts as touching water, in blocks. Contact is by definition close. */
@@ -1519,6 +1552,20 @@ public final class RtComposite {
      */
     private RtBuffer reservoirStore;
     private int reservoirDepth;
+    /**
+     * How many independent paths per pixel the store was sized for: {@code spp * PATH_SEGMENTS_PER_PIXEL}.
+     *
+     * <p>Published to the shader rather than recomputed there, because the shader would recompute it from
+     * a live config read and index a buffer sized by a stale one the frame SPP changes.
+     */
+    private int reservoirPaths;
+    /**
+     * Device-local memory holds whatever it held. Nothing in the validation reads an uninitialised slot as
+     * plausible on purpose, but "overwhelmingly unlikely across sixteen million slots" is a worse answer
+     * than one 130 MB fill that happens once per allocation.
+     */
+    private boolean reservoirStoreNeedsClear;
+    private final RtRestirStats restirStats = new RtRestirStats(PUSH_RING);
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
     // enabled. When the PQ swapchain is active, the combined UI overlay is composited over this image, then
@@ -2241,6 +2288,23 @@ public final class RtComposite {
         }
     }
 
+    /**
+     * The largest of {@code wantDepth} that keeps the store inside {@link #RESERVOIR_STORE_MAX_BYTES}.
+     *
+     * <p>Total, and deliberately so: it is called once with the render size about to be allocated and once
+     * with the one already allocated, and the two have to agree exactly or ensureOutput reallocates on
+     * every frame. A zero pixel count (before the first allocation) returns the request unchanged, because
+     * there is nothing yet to be too large.
+     */
+    static int reservoirDepthThatFits(int wantDepth, int paths, long pixelRecords) {
+        if (wantDepth <= 0 || paths <= 0 || pixelRecords <= 0L) {
+            return Math.max(wantDepth, 0);
+        }
+        long perDepth = pixelRecords * 2L * paths * RESERVOIR_BYTES;
+        long fits = RESERVOIR_STORE_MAX_BYTES / perDepth;
+        return (int) Math.min(wantDepth, fits);
+    }
+
     private void ensureOutput(RtContext ctx, int width, int height) {
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
@@ -2251,11 +2315,21 @@ public final class RtComposite {
         // does not exist, because the A/B it exists for would compare a tree against itself.
         int wantReservoirDepth = Math.min(FluoriteConfig.Rt.Composite.RESTIR_REUSE_DEPTH.value(),
                 FluoriteConfig.Rt.Composite.MAX_BOUNCES.value());
+        // SPP belongs here for the same reason the depth does: it multiplies the store, so a change to it
+        // that did not reallocate would leave pass B addressing planes that were never allocated.
+        int wantReservoirPaths = wantReservoirDepth > 0
+                ? Math.toIntExact(FluoriteConfig.Rt.Composite.SPP.value() * PATH_SEGMENTS_PER_PIXEL) : 0;
+        // Compared against the depth that WILL be allocated, not the one asked for. The size clamp can cut
+        // the request, and a condition that tested the raw request would then never be satisfied -- so the
+        // store would be freed and reallocated every single frame, quietly, at gigabyte scale.
+        int fittingDepth = reservoirDepthThatFits(wantReservoirDepth, wantReservoirPaths,
+                (long) renderW * (long) renderH);
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
-                && reservoirDepth == wantReservoirDepth) {
+                && reservoirDepth == fittingDepth
+                && reservoirPaths == (fittingDepth > 0 ? wantReservoirPaths : 0)) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -2277,6 +2351,7 @@ public final class RtComposite {
             reservoirStore.destroy();
             reservoirStore = null;
             reservoirDepth = 0;
+            reservoirPaths = 0;
         }
         destroyGuideImages();
 
@@ -2307,16 +2382,31 @@ public final class RtComposite {
         // reservoir for a vertex deeper than the path ever goes is storage for something that never
         // exists. Two halves so temporal reuse can read last frame while writing this one, which is why
         // the depth dial doubles in memory rather than adding.
-        reservoirDepth = wantReservoirDepth;
+        reservoirDepth = reservoirDepthThatFits(wantReservoirDepth, wantReservoirPaths, pixelRecords);
+        reservoirPaths = reservoirDepth > 0 ? wantReservoirPaths : 0;
         if (reservoirDepth > 0) {
+            // ... and one plane per PATH, because pass B runs the bounce loop once per (sample, queued
+            // segment) and every one of those starts its own bounce numbering. Sharing a plane between
+            // them would have each reading a history the previous one just overwrote.
             long reservoirBytes = Math.multiplyExact(
-                    Math.multiplyExact(pixelRecords, 2L * reservoirDepth), RESERVOIR_BYTES);
+                    Math.multiplyExact(pixelRecords, 2L * reservoirDepth * reservoirPaths),
+                    RESERVOIR_BYTES);
             reservoirStore = ctx.createBuffer(reservoirBytes,
-                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
-                    "ReSTIR reservoirs " + renderW + "x" + renderH + "x" + reservoirDepth + "x2");
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    false, "ReSTIR reservoirs " + renderW + "x" + renderH
+                            + "x" + reservoirDepth + "x" + reservoirPaths + "x2");
+            reservoirStoreNeedsClear = true;
             FluoriteMod.LOGGER.info(
-                    "RT ReSTIR reservoir store: {}x{} x depth {} x 2 halves = {} MiB ({} B each)",
-                    renderW, renderH, reservoirDepth, reservoirBytes / (1024L * 1024L), RESERVOIR_BYTES);
+                    "RT ReSTIR reservoir store: {}x{} x depth {} x {} paths x 2 halves = {} MiB ({} B each)",
+                    renderW, renderH, reservoirDepth, reservoirPaths,
+                    reservoirBytes / (1024L * 1024L), RESERVOIR_BYTES);
+        }
+        if (reservoirDepth < wantReservoirDepth) {
+            FluoriteMod.LOGGER.warn(
+                    "RT ReSTIR reuse depth {} does not fit a 32-bit slot index at {}x{} with {} paths; "
+                            + "using depth {} ({} MiB) instead",
+                    wantReservoirDepth, renderW, renderH, wantReservoirPaths, reservoirDepth,
+                    RESERVOIR_STORE_MAX_BYTES / (1024L * 1024L));
         }
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
@@ -2639,6 +2729,7 @@ public final class RtComposite {
             PushSlot selectedPushSlot = pushRing[pushSlot];
             graphicsUseWaiter.await(selectedPushSlot.graphicsUse);
             logWaterMediumProbe(selectedPushSlot);
+            restirStats.reportRecycledSlot(pushSlot);
             if (gpuTimers != null) {
                 // The await above is what makes this safe: this slot's timestamps are from PUSH_RING frames
                 // ago and the GPU has finished with them, so reading costs nothing and resetting cannot
@@ -2960,7 +3051,14 @@ public final class RtComposite {
                     rainExposure.puddle(),
                     rainExposure.calibration0(),
                     rainExposure.calibration1(),
-                    cloudWarp(environment)
+                    cloudWarp(environment),
+                    // Settled BEFORE this line reads address(), not after: see RtRestirStats.prepare.
+                    restirStatsAddress(ctx),
+                    // The reservoir store's SHAPE, read back out of the fields that allocated it rather
+                    // than out of FluoriteConfig. Both knobs can move between ensureOutput and here, and
+                    // pass B indexes a buffer, not a preference.
+                    reservoirStore != null ? reservoirDepth : 0,
+                    reservoirStore != null ? reservoirPaths : 0
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -3185,6 +3283,17 @@ public final class RtComposite {
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_WATER_SIM);
             }
+            if (reservoirStore != null && reservoirStoreNeedsClear) {
+                // Once per allocation. The validation would almost certainly reject uninitialised memory --
+                // a stored receiver position has to land within 0.05 blocks of this frame's vertex, which
+                // random bits do not -- but "almost certainly" across sixteen million slots is a worse
+                // answer than one fill, and a ghost reservoir born of garbage would be untraceable.
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "restir store clear")) {
+                    VK10.vkCmdFillBuffer(cmd, reservoirStore.handle, 0L, reservoirStore.size, 0);
+                }
+                reservoirStoreNeedsClear = false;
+            }
+            restirStats.recordReset(cmd, pushSlot, reservoirStore != null ? reservoirDepth : 0);
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
 
             // Push the BDA ring slot's address plus the small hot subset used directly by the shaders.
@@ -3230,6 +3339,9 @@ public final class RtComposite {
                 }
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // RT writes visible to DLSS reads
+            // After that barrier, not before it: the counters are among the trace's writes, and the copy
+            // is a reader of them like every other consumer this barrier exists for.
+            restirStats.recordCopy(cmd, stack, pushSlot);
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -3677,7 +3789,9 @@ public final class RtComposite {
             reservoirStore.destroy();
             reservoirStore = null;
             reservoirDepth = 0;
+            reservoirPaths = 0;
         }
+        restirStats.destroy();
         destroyGuideImages();
         exposure.destroy();
         if (displayPipeline != null) {
