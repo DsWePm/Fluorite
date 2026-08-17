@@ -583,8 +583,13 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             return;
         }
         heldLightQuadsSeen++;
-        if (sprite == null || !TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())) {
-            heldLightReject = "quad is not on the block atlas ("
+        // Both atlases, because a held block's quads come from whichever one its ITEM model draws from --
+        // the block's own texture for most emitters, a bespoke item texture for a lantern. Requiring the
+        // block atlas here is what made the lantern the only light-emitting block that did not light its
+        // holder, and it declined all forty-two of its quads without a word.
+        if (sprite == null || !(TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())
+                || TextureAtlas.LOCATION_ITEMS.equals(sprite.atlasLocation()))) {
+            heldLightReject = "quad is on neither the block nor the item atlas ("
                     + (sprite == null ? "no sprite" : String.valueOf(sprite.atlasLocation())) + ")";
             return;
         }

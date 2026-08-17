@@ -505,8 +505,24 @@ public final class RtBlockMaterials {
     }
 
     static List<TextureAtlasSprite> blockSprites() {
-        TextureAtlas atlas = (TextureAtlas) Minecraft.getInstance().getTextureManager()
-                .getTexture(TextureAtlas.LOCATION_BLOCKS);
+        List<TextureAtlasSprite> all = new ArrayList<>(atlasSprites(TextureAtlas.LOCATION_BLOCKS));
+        // The items atlas too, and not for completeness' sake. A light-emitting block whose ITEM has a
+        // bespoke texture rather than a reused block one -- a lantern -- draws its held quads from here,
+        // and a sprite this scan never sees gets no material compiled, so it resolves to a variant built
+        // with no emission and the block fails to light whoever holds it. RtEmissionSemantics has the
+        // matching half: it resolves each emitting block's item model to find out which sprites those are.
+        //
+        // Only sprites that earn a material are kept past this list -- an _s/_n sibling, or a proven place
+        // on something that emits -- so the ordinary item, which has neither, costs one map lookup here
+        // and nothing at all downstream.
+        all.addAll(atlasSprites(TextureAtlas.LOCATION_ITEMS));
+        return all;
+    }
+
+    private static List<TextureAtlasSprite> atlasSprites(Identifier atlasLocation) {
+        if (!(Minecraft.getInstance().getTextureManager().getTexture(atlasLocation) instanceof TextureAtlas atlas)) {
+            return List.of();
+        }
         List<TextureAtlasSprite> sprites = ((TextureAtlasAccessor) atlas).fluorite$sprites();
         return sprites != null ? sprites : List.of();
     }

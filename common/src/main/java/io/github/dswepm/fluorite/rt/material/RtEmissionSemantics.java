@@ -1,14 +1,21 @@
 package io.github.dswepm.fluorite.rt.material;
 
 import io.github.dswepm.fluorite.FluoriteMod;
+import io.github.dswepm.fluorite.mixin.ItemLayerRenderStateAccessor;
+import io.github.dswepm.fluorite.mixin.ItemStackRenderStateAccessor;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
+import net.minecraft.client.renderer.item.ItemStackRenderState;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
@@ -39,6 +46,7 @@ public final class RtEmissionSemantics {
         IdentityHashMap<TextureAtlasSprite, Integer> sprites = new IdentityHashMap<>();
         int states = 0;
         int failures = 0;
+        int blockSprites = 0;
         for (Block block : BuiltInRegistries.BLOCK) {
             for (BlockState state : block.getStateDefinition().getPossibleStates()) {
                 int light = state.getLightEmission();
@@ -51,11 +59,55 @@ public final class RtEmissionSemantics {
                     FluoriteMod.LOGGER.debug("Could not analyze emissive material sprites for {}", state, throwable);
                 }
             }
+            blockSprites = sprites.size();
+        }
+        int items = 0;
+        for (Item item : BuiltInRegistries.ITEM) {
+            if (!(item instanceof BlockItem blockItem)) continue;
+            int light = blockItem.getBlock().defaultBlockState().getLightEmission();
+            if (light <= 0) continue;
+            items++;
+            try {
+                collectItem(item, light, sprites);
+            } catch (Throwable throwable) {
+                failures++;
+                FluoriteMod.LOGGER.debug("Could not analyze emissive material sprites for item {}", item, throwable);
+            }
         }
         Map<TextureAtlasSprite, Integer> frozen = Collections.unmodifiableMap(new IdentityHashMap<>(sprites));
-        FluoriteMod.LOGGER.info("RT emission semantics: emittingStates={}, sprites={}, failedStates={}",
-                states, frozen.size(), failures);
+        FluoriteMod.LOGGER.info(
+                "RT emission semantics: emittingStates={}, emittingItems={}, sprites={} (+{} item-only), failedStates={}",
+                states, items, frozen.size(), frozen.size() - blockSprites, failures);
         return new RtEmissionSemantics(frozen, states, failures);
+    }
+
+    /**
+     * The sprites an emitting block's ITEM form is drawn from, which are not always its block form's.
+     *
+     * <p>Most light-emitting blocks reuse their block texture for the item, so this finds nothing new and
+     * costs a model resolve. The ones that do not — a lantern has a bespoke {@code item/} texture — put
+     * their held quads on the items atlas, and without this pass no material is ever compiled for those
+     * sprites: the resolve falls through to a variant built with no emission, and the block becomes the
+     * one in the game that fails to light whoever is holding it.
+     *
+     * <p>Resolved rather than name-matched. A pack is free to retexture the item and not the block, and
+     * inferring one from the other's registry name would be wrong for exactly the packs that do.
+     */
+    private static void collectItem(Item item, int light,
+                                    IdentityHashMap<TextureAtlasSprite, Integer> sprites) {
+        ItemStackRenderState state = new ItemStackRenderState();
+        // GROUND, not a hand context: the display context selects a TRANSFORM, and the transform is
+        // irrelevant to which sprites the model uses. Asking for a hand would drag in the arm model.
+        Minecraft.getInstance().getItemModelResolver()
+                .updateForTopItem(state, new ItemStack(item), ItemDisplayContext.GROUND, null, null, 0);
+        ItemStackRenderState.LayerRenderState[] layers = ((ItemStackRenderStateAccessor) state).fluorite$layers();
+        int active = ((ItemStackRenderStateAccessor) state).fluorite$activeLayerCount();
+        for (int i = 0; i < active && i < layers.length; i++) {
+            ItemStackRenderState.LayerRenderState layer = layers[i];
+            if (layer == null) continue;
+            List<BakedQuad> quads = ((ItemLayerRenderStateAccessor) layer).fluorite$quads();
+            if (quads != null) collectQuads(quads, light, sprites);
+        }
     }
 
     public boolean permits(TextureAtlasSprite sprite) {
