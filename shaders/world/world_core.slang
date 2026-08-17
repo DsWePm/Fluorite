@@ -107,6 +107,25 @@ public CameraRay cameraRay(uint2 dispatchIndex, uint2 dimensions) {
     return ray;
 }
 
+/**
+ * Where a world point sat on LAST frame's screen, in NDC. Invalid means behind the previous camera --
+ * which a point in view now easily can be, most readily at a grazing angle or as the camera turns.
+ *
+ * <p>`camDelta` is what moves the point into the previous camera's frame; `camOffset` is the current
+ * rebase. Both passes need this: pass A to build motion vectors, pass B to find where a shading vertex's
+ * reservoir was stored. It lives HERE rather than in guides.slang for exactly that reason — pass B
+ * deliberately does not import guides, and two copies of a reprojection are two things to drift apart.
+ *
+ * <p>The matrix is jitter-free (see RtComposite.mvCurProjView), so this answers where the point would
+ * have projected at the pixel grid, not which jittered sample happened to land on it.
+ */
+public float2 projectPrevNdc(float3 worldPos, out bool valid) {
+    float4 clip = mul(worldPush.prevViewProj,
+            float4(worldPos - worldPush.camOffset + worldPush.camDelta, 1.0));
+    valid = clip.w > 0.0;
+    return valid ? clip.xy / clip.w : float2(0.0, 0.0);
+}
+
 // Water is a smooth dielectric. IOR 1.333; absorption is per-block Beer-Lambert extinction.
 public static const float WATER_IOR = 1.333;
 public static const float3 SKY_SPEC_ALBEDO = float3(0.5, 0.5, 0.5); // RR guide default for sky pixels.

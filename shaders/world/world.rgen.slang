@@ -77,9 +77,9 @@ FirstSegmentTrace emptyFirstSegmentTrace(PathSegment seg, uint activeMediumFlags
 // the same reason -- it identifies which of a pixel's paths this is -- so it is deliberately not a
 // second parameter.
 public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
-                        uint2 pix, uint sampleIndex, uint pixelIndex, uint pixelCount,
+                        uint2 pix, uint sampleIndex, uint2 renderSize,
                         bool captureFirst, out FirstSegmentTrace firstTrace,
-                        inout uint2 reuseMask) {
+                        inout uint2 reuseCounts) {
     firstTrace = emptyFirstSegmentTrace(seg, activeMediumFlags);
     float3 L = float3(0.0, 0.0, 0.0);
     float3 ro = seg.ro;
@@ -450,8 +450,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 BsdfContext bc = makeBsdfContext(hitPos, n, v, rd, albedo,
                                                  float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
                 Reservoir r = risInitial(bc, seed, proposalSeed);
-                r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pixelIndex, pixelCount,
-                                seed, reuseMask);
+                r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pix, renderSize,
+                                seed, reuseCounts);
                 L += throughput * shadeReservoir(
                         currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
                         bc, materialExtension(payload.flags), r);
@@ -678,8 +678,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // sized by depth.
         if (risOn) {
             Reservoir r = risInitial(bc, seed, proposalSeed);
-            r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pixelIndex, pixelCount,
-                            seed, reuseMask);
+            r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pix, renderSize,
+                            seed, reuseCounts);
             L += throughput * shadeReservoir(
                     currentExtinction, activeCurrentMediumFlags(activeMediumFlags), bc, ext, r);
         }
@@ -1530,8 +1530,7 @@ void main() {
             bool captureFirst = captureProbe && leaf == 0u && s == 0u;
             FirstSegmentTrace tracedFirst;
             frameRadiance += tracePath(segment, unpackActiveMediumFlags(packed.pathFlags),
-                                       uint2(pix), s + leaf * spp, pixelIndex,
-                                       dimensions.x * dimensions.y,
+                                       uint2(pix), s + leaf * spp, dimensions,
                                        captureFirst, tracedFirst, reuseCounts);
             if (captureFirst) {
                 actualFirstTrace = tracedFirst;

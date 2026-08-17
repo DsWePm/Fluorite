@@ -43,9 +43,9 @@ final class RtRestirReuseContractTest {
         // sampleIndex IS the path index; main() builds it as s + leaf * spp and hands the same number to
         // both uses. If they ever diverge, the store is indexed by something the decorrelation does not
         // follow and two paths share a plane again.
-        assertTrue(rgen.contains("s + leaf * spp, pixelIndex,"),
+        assertTrue(rgen.contains("s + leaf * spp, dimensions,"),
                 "main() must pass sampleIndex as the path index");
-        assertTrue(rgen.contains("restirReuse(bc, r, uint(hitDepth), sampleIndex, pixelIndex, pixelCount,"),
+        assertTrue(rgen.contains("restirReuse(bc, r, uint(hitDepth), sampleIndex, pix, renderSize,"),
                 "both RIS sites must key the reservoir by hitDepth and sampleIndex");
         assertEquals(2, rgen.split("restirReuse\\(bc, r, uint\\(hitDepth\\)", -1).length - 1,
                 "both RIS call sites take part, or the particle vertex quietly never reuses");
@@ -154,6 +154,47 @@ final class RtRestirReuseContractTest {
         assertTrue(reuse.contains("PackedReservoir stored = store[slotPrev];"));
         assertTrue(reuse.contains("store[slotCur] = packReservoir(r, bc.hitPos, bc.n);"),
                 "the combined reservoir must be written, or history never accumulates");
+    }
+
+    /**
+     * The read follows the point across the screen; the write never does.
+     *
+     * <p>Addressed by raw pixel index, the primary hit accepted 95–99% of the time standing still and 0–30%
+     * the moment the view moved — the wrong way round, since noise is least objectionable when nothing is
+     * moving. Reprojection is what makes the history findable while the camera turns.
+     *
+     * <p>The write staying on this invocation's own pixel is the load-bearing half. If it followed the
+     * reprojection too, two pixels landing on the same previous pixel would contend for one slot, and the
+     * store would develop holes that look exactly like a low acceptance rate.
+     */
+    @Test
+    void theReadIsReprojectedAndTheWriteIsNot() throws IOException {
+        String restir = code(source("shaders/world/restir.slang"));
+        String core = code(source("shaders/world/world_core.slang"));
+        String guides = code(source("shaders/world/guides.slang"));
+        String reuse = between(restir, "public Reservoir restirReuse(", "\n}");
+
+        assertTrue(reuse.contains("bounce != 0u || restirPreviousPixel(bc.hitPos, renderSize, readPixel)"),
+                "only the primary hit has a previous screen position; a bounce vertex has none to find");
+        assertTrue(reuse.contains("reservoirSlot(readPixel, pixelCount, pathIndex, paths, bounce, depth, parity ^ 1u)"),
+                "the read must use the reprojected pixel");
+        assertTrue(reuse.contains("uint slotCur = reservoirSlot(pixelIndex, pixelCount, pathIndex, paths, bounce, depth, parity);"),
+                "the write must stay on this pixel, or two invocations contend for one slot");
+
+        String project = between(restir, "public bool restirPreviousPixel(", "\n}");
+        assertTrue(project.contains("projectPrevNdc(hitPos, valid)"));
+        assertTrue(project.contains("if (!valid) {"), "behind the previous camera is no history");
+        assertTrue(project.contains("any(p >= int2(renderSize))"), "off screen last frame is no history");
+        // Rounding, not flooring: this frame's ray leaves the pixel centre by at most half a pixel of
+        // jitter, so the nearest pixel is the one that cast it. Flooring hands half the frames of a
+        // perfectly static camera to the neighbour.
+        assertTrue(project.contains("int2(round(prevPixel))"));
+
+        // One definition of the reprojection, in the module both passes import. guides.slang is absent
+        // from pass B's include list on purpose, so a copy there would be a copy that drifts.
+        assertTrue(core.contains("public float2 projectPrevNdc(float3 worldPos, out bool valid) {"));
+        assertFalse(guides.contains("float2 projectPrevNdc(float3 worldPos, out bool valid) {"),
+                "guides must not redeclare it");
     }
 
     /**

@@ -877,10 +877,18 @@ public final class FluoriteConfig {
              * the whole point of shipping it uncompressed first is to find out whether the depths past the
              * first two ever pay for themselves.
              *
-             * <p>They may well not. A reservoir is only reusable if this frame's vertex at that depth is
-             * the same surface as last frame's, and at depth 3 that is rarely true — the stored sample is
-             * paid for every frame and rejected almost every frame. RtRestirStats reports the acceptance
-             * rate per depth so the answer is measured rather than argued; see §8.11.
+             * <p><b>They do not, and it has now been measured.</b> Acceptance at the primary hit is 95–99%
+             * with the view still; at every depth past it, it is under 1%. The reason is structural rather
+             * than a matter of tuning: the continuation direction is reseeded every frame, so last frame's
+             * bounce vertex is an independent random point metres away, and the sub-1% is the rate at which
+             * two such points coincide. Loosening the rejection thresholds cannot help — it would only mean
+             * applying last frame's lighting to different geometry.
+             *
+             * <p>So <b>1 is the useful setting</b> and anything above it buys storage for data that is
+             * rejected every frame. The dial still goes to 8 because S2's SPATIAL reuse does not require a
+             * vertex to survive between frames — only a neighbouring pixel's vertex to be similar this
+             * frame — so depth 1 is worth re-measuring once that lands. {@code diagnostics.restir-stats}
+             * reports the rate per depth; see §8.9.
              *
              * <p>Clamped to MAX_BOUNCES' own ceiling because a reservoir past the last bounce is storage
              * for a vertex that never exists, and again to whatever keeps the store under 4 GiB — the slot

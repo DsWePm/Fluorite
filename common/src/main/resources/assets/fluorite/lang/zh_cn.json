@@ -205,7 +205,7 @@
   "fluorite.options.rt.maxBounces": "路径反弹",
   "fluorite.options.rt.maxBounces.tooltip": "主命中之后的二级路径追踪反弹最大次数。数值越高能捕捉更多间接光，但成本也越高。",
   "fluorite.options.rt.restirReuseDepth": "ReSTIR 复用深度",
-  "fluorite.options.rt.restirReuseDepth.tooltip": "有多少层路径反弹在帧之间保留 reservoir。0 表示关闭 ReSTIR 复用。每一层深度要为每个渲染像素的每条路径存两帧的 reservoir，而路径数是 spp × 2——1920×1080、1 spp 下每层约 530 MB——所以调高它是用显存换直接光噪声。",
+  "fluorite.options.rt.restirReuseDepth.tooltip": "有多少层路径反弹在帧之间保留 reservoir。0 表示关闭 ReSTIR 复用。实测：第一层的接受率是 95–99%，之后每一层都不到 1%——弹射顶点每帧重新随机，上一帧那个在完全别的地方。**1 是唯一有用的档**。1920×1080、1 spp 下每层约 530 MB。",
   "fluorite.options.rt.restirStats": "ReSTIR 复用统计",
   "fluorite.options.rt.restirStats.tooltip": "每秒把各层深度的 ReSTIR 时间复用接受率写入 latest.log。用它判断某一层深度是否配得上那 265 MB，还是每帧都在为被拒绝的数据付钱。仅用于诊断；ReSTIR 复用深度为 0 时不做任何事。",
   "fluorite.options.rt.sunSize": "太阳大小",

@@ -376,6 +376,45 @@ public void restirStatsAccumulate(uint2 reuseCounts, uint pixelIndex) {
 }
 
 /**
+ * Which pixel's reservoir saw this point last frame — the reprojection, and the reason d0 is not useless
+ * the moment the camera moves.
+ *
+ * <p>MEASURED, not assumed. With the slot addressed by raw pixel index, acceptance at the primary hit was
+ * 95-99% standing still and fell to 0-30% the instant the view moved. That is the wrong way round: noise
+ * is least objectionable when nothing is moving. The renderer already knows where a point used to be on
+ * screen — it builds motion vectors from exactly this projection — so the history is not missing, it was
+ * being looked for in the wrong place.
+ *
+ * <p>REPROJECTION ERROR CANNOT PRODUCE WRONG REUSE, only missed reuse. Landing on the wrong pixel yields a
+ * stored receiver position that fails the drift test, so a moving entity (whose object-space displacement
+ * this does not model) or a refracted vertex simply declines to reuse. That asymmetry is what makes it
+ * safe to reproject approximately.
+ *
+ * <p>Only at the primary hit. A bounce vertex is not on a camera ray, and the pixel it happens to project
+ * to is the pixel whose PRIMARY hit is there — whose bounce vertex is somewhere else entirely. There is no
+ * reprojection to do, which is a separate fact from the measurement that says those depths are not worth
+ * storing at all.
+ */
+public bool restirPreviousPixel(float3 hitPos, uint2 renderSize, out uint prevPixelIndex) {
+    prevPixelIndex = 0u;
+    bool valid;
+    float2 ndc = projectPrevNdc(hitPos, valid);
+    if (!valid) {
+        return false;
+    }
+    // Inverse of cameraRay's uv -> ndc. Rounding rather than flooring because the jitter that displaces
+    // this frame's ray from the pixel centre is bounded by half a pixel, so the nearest pixel is the one
+    // that cast it; flooring would hand half the frames to the neighbour on a perfectly static camera.
+    float2 prevPixel = (ndc * 0.5 + 0.5) * float2(renderSize) - 0.5;
+    int2 p = int2(round(prevPixel));
+    if (any(p < int2(0, 0)) || any(p >= int2(renderSize))) {
+        return false; // off screen last frame: there is no history, which is not the same as rejecting one
+    }
+    prevPixelIndex = uint(p.y) * renderSize.x + uint(p.x);
+    return true;
+}
+
+/**
  * The whole of temporal reuse at one shading vertex: read last frame's slot, validate it, combine it,
  * and leave the result where next frame will find it.
  *
@@ -386,6 +425,11 @@ public void restirStatsAccumulate(uint2 reuseCounts, uint pixelIndex) {
  * with something written moments ago in this same frame -- including by the other spp samples of this
  * pixel, which is what would turn independent estimates into one shared history.
  *
+ * <p>THE READ IS REPROJECTED AND THE WRITE IS NOT. History is looked for wherever this point was on last
+ * frame's screen; the result is always stored under this invocation's own pixel. Only reads move, so no
+ * two invocations can ever contend for a slot, and the whole reprojection stays a hint that the validation
+ * is free to reject.
+ *
  * <p>A slot that this frame does not reach is simply not written; next frame reads a slot two frames old
  * instead, and the receiver test decides whether that is still the same surface. There is nothing to
  * clear: an old reservoir for a surface that has not moved is old, not wrong.
@@ -394,7 +438,7 @@ public void restirStatsAccumulate(uint2 reuseCounts, uint pixelIndex) {
  * it was accepted. That ratio, per depth, is the measurement the whole store is on trial for.
  */
 public Reservoir restirReuse(BsdfContext bc, Reservoir current, uint bounce, uint pathIndex,
-                             uint pixelIndex, uint pixelCount, inout uint seed, inout uint2 reuseCounts) {
+                             uint2 pix, uint2 renderSize, inout uint seed, inout uint2 reuseCounts) {
     uint depth = worldPush.restirReuseDepth;
     if (pc.reservoirAddr == 0 || depth == 0u || bounce >= depth) {
         return current;
@@ -403,17 +447,26 @@ public Reservoir restirReuse(BsdfContext bc, Reservoir current, uint bounce, uin
     if (pathIndex >= paths) {
         return current; // spp changed under a store sized for the old one; next resize fixes it
     }
+    uint pixelIndex = pix.y * renderSize.x + pix.x;
+    uint pixelCount = renderSize.x * renderSize.y;
+    // Where to LOOK. The primary hit gets last frame's screen position; a bounce vertex has no such thing
+    // and reads its own pixel, which is the arrangement the depth measurement was taken under.
+    uint readPixel = pixelIndex;
+    bool haveHistory = bounce != 0u || restirPreviousPixel(bc.hitPos, renderSize, readPixel);
+
     DevicePtr<PackedReservoir> store = DevicePtr<PackedReservoir>(pc.reservoirAddr);
     uint parity = worldPush.frameIndex & 1u;
-    uint slotPrev = reservoirSlot(pixelIndex, pixelCount, pathIndex, paths, bounce, depth, parity ^ 1u);
     uint slotCur = reservoirSlot(pixelIndex, pixelCount, pathIndex, paths, bounce, depth, parity);
 
-    PackedReservoir stored = store[slotPrev];
     restirCountBump(reuseCounts.x, bounce);
     Reservoir r = current;
-    if (reservoirReusable(stored, bc.hitPos, bc.n)) {
-        r = combineStoredReservoir(bc, current, stored, seed);
-        restirCountBump(reuseCounts.y, bounce);
+    if (haveHistory) {
+        uint slotPrev = reservoirSlot(readPixel, pixelCount, pathIndex, paths, bounce, depth, parity ^ 1u);
+        PackedReservoir stored = store[slotPrev];
+        if (reservoirReusable(stored, bc.hitPos, bc.n)) {
+            r = combineStoredReservoir(bc, current, stored, seed);
+            restirCountBump(reuseCounts.y, bounce);
+        }
     }
     store[slotCur] = packReservoir(r, bc.hitPos, bc.n);
     return r;
