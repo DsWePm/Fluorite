@@ -71,6 +71,10 @@ public Reservoir resEmpty() {
 //     when the ray points from the light through the slab toward the camera (same as the sun SSS term).
 public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le, float area,
                          out float phat) {
+    // The emitter controls land HERE rather than in lightRadiance, because this is where radiance turns
+    // into light. proposalPdf takes its own untinted copy of the same le -- see WorldPush.emitterTint for
+    // why tinting the decode instead makes the brightness slider a no-op.
+    le *= worldPush.emitterTint.xyz;
     phat = 0.0;
     float3 toL = sp - c.hitPos;
     float dist2 = dot(toL, toL);
@@ -476,7 +480,9 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
     // The area sample below estimates irradiance at the event, so its directional source is E*p. hg()
     // is already the normalised phase density; multiplying it by 4*pi would create that much energy.
     float phase = hg(dot(rd, wi), phaseG);
-    float3 contrib = emitter.radiance
+    // Tinted here and not at emitter.radiance, which sampleVolumeEmitter also hands to its proposal
+    // density -- the same cancellation the surface path avoids.
+    float3 contrib = (emitter.radiance * worldPush.emitterTint.xyz)
             * (phase * cosL * emitter.area / dist2) / emitter.sourcePdf;
     if (all(contrib <= 0.0)) {
         return float3(0.0, 0.0, 0.0);
@@ -517,7 +523,8 @@ public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
             float dist2 = max(dot(s.pos - c.hitPos, s.pos - c.hitPos), 1.0e-6);
             float cosL = max(0.0, dot(s.lnrm, -wi));
             contrib += disneyLobes(c, ext, wi) * rainBaseTransmission(c, wi)
-                    * s.le * (dot(c.n, wi) * cosL / dist2 * s.area);
+                    * (s.le * worldPush.emitterTint.xyz)
+                    * (dot(c.n, wi) * cosL / dist2 * s.area);
         }
     }
     if (phat <= 0.0) {

@@ -558,7 +558,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // RIS is skipped must also gather emission directly or that light is lost outright.
         bool gateEmitter = risOn && payloadEmitterInList();
         if (emission > 0.0 && (!gateEmitter || showCelestial)) {
-            L += throughput * albedo * emission * rainBaseExitTransmission(bc);
+            L += throughput * albedo * emission * worldPush.emitterTint.xyz
+                    * rainBaseExitTransmission(bc);
         }
 
         // NEE: direct light from the dominant celestial body (sun by day, moon by night) — Lambert

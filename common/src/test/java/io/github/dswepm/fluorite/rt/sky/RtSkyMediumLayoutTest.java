@@ -30,10 +30,13 @@ final class RtSkyMediumLayoutTest {
         // to 1136. S3 spends that free word on the dynamic emitter count and adds the buffer's address and
         // its candidate share beside it, reaching 1152 — M18's records finally reaching a shader, and
         // reaching it through here rather than through the push-constant block for the reason that block's
-        // own banner gives: no hit shader has any use for them. This buffer is not the
+        // own banner gives: no hit shader has any use for them. The emitter brightness/temperature tint is
+        // one more vector, reaching 1168 — per frame rather than baked into the material table, because a
+        // slider that needed a material recompile could not be moved while watching what it changes. This
+        // buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
         // but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(1152, WorldPushData.BYTE_SIZE);
+        assertEquals(1168, WorldPushData.BYTE_SIZE);
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

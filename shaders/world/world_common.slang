@@ -315,6 +315,24 @@ public struct WorldPush {
     public uint     dynamicLightCount;
     /** How many of the M RIS candidates are drawn from that buffer. 0 is off and is the shipped default. */
     public uint     dynamicRisCandidates;
+
+    /**
+     * One multiplier for every finite emitter's radiance: brightness times a colour-temperature tint whose
+     * luminance is exactly one, so the two controls stay orthogonal and turning the temperature never
+     * changes how bright anything is. (1,1,1,0) is off and is bit-for-bit the shipped picture.
+     *
+     * <p><b>Applied where radiance becomes OUTGOING LIGHT, never where a Light record is decoded.</b> That
+     * is not a style preference, it is the difference between a working knob and one that does nothing.
+     * The proposal density reconstructs a light's power as area times luminance, and normalises it by an
+     * inverse total power the CPU published untinted -- so tinting the decode would scale every pdf by the
+     * brightness, W = wSum/(M*phat) would divide by it again, and the two cancel EXACTLY. The picture would
+     * not move by one bit however far the slider went.
+     *
+     * <p>So the decoders and the proposal stay untinted, and so does what ReSTIR stores: a reservoir keeps
+     * the raw radiance, which is what its light-identity check compares against a freshly re-read record.
+     * Tinting one side of that comparison and not the other would reject every stored sample.
+     */
+    public float4   emitterTint;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

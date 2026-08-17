@@ -8,6 +8,7 @@ import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import com.mojang.blaze3d.vulkan.VulkanGpuTexture;
 import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import io.github.dswepm.fluorite.FluoriteConfig;
+import io.github.dswepm.fluorite.rt.light.RtEmitterTint;
 import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.client.FluoriteJitter;
 import io.github.dswepm.fluorite.mixin.CommandEncoderAccessor;
@@ -1404,6 +1405,18 @@ public final class RtComposite {
     // frame (right = travel direction) and wheel the starfield. = normalize(noonDir x sunriseDir).
     // Sign of the sub-pixel jitter as reported to DLSS-RR + applied to the primary ray, mirroring the
     // validated DLSS-SR convention (Vulkan flipped clip space wants Y negated).
+    /**
+     * Brightness times a unit-luminance colour-temperature tint, for every finite emitter.
+     *
+     * <p>Computed here per frame rather than baked into the material table, which is where
+     * {@code emissionStrength} lives: that is compiled at resource-reload time, and a slider that needed a
+     * material recompile to take effect could not be moved while looking at what it changes.
+     */
+    private static Float4 emitterTint() {
+        float[] tint = RtEmitterTint.current();
+        return new Float4(tint[0], tint[1], tint[2], 0f);
+    }
+
     private static float jitterSignX() {
         return FluoriteConfig.Rt.Composite.JITTER_SIGN_X.value();
     }
@@ -3072,7 +3085,8 @@ public final class RtComposite {
                     // empty would have risInitial reserve candidates for an empty stratum and throw them
                     // away, which reads as "RIS got worse" rather than as "the setting did nothing".
                     fe.dynamicLightCount() > 0
-                            ? FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() : 0
+                            ? FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() : 0,
+                    emitterTint()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

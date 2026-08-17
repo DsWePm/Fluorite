@@ -1,5 +1,7 @@
 package io.github.dswepm.fluorite;
 
+import io.github.dswepm.fluorite.rt.light.RtEmitterTint;
+
 import com.electronwill.nightconfig.core.CommentedConfig;
 import com.electronwill.nightconfig.core.file.CommentedFileConfig;
 import com.electronwill.nightconfig.core.file.FileNotFoundAction;
@@ -938,6 +940,38 @@ public final class FluoriteConfig {
              * <p>Capped one candidate below {@code RIS_CANDIDATES} so a vertex can never spend its whole
              * budget on entities and stop seeing the world it stands in.
              */
+            /**
+             * One multiplier over every finite emitter's radiance — block lights, entity and held-item
+             * spheres, and the glow of the emissive surface itself, so a torch in a hand and the same
+             * torch in a wall stay the same brightness.
+             *
+             * <p>Does not touch the sun, the moon or the sky. Those are not emitters in this sense; they
+             * have their own physical parameters, and folding them in here would turn one control into a
+             * global exposure slider.
+             *
+             * <p>1 is off and is exactly the shipped picture — the multiply is by one, which IEEE leaves
+             * alone. Above 1 is a deliberate departure from the emission the material declares.
+             */
+            public static final FloatSetting EMITTER_BRIGHTNESS =
+                    clampedFloat("fluorite.rt.emitterBrightness", "composite.emitter-brightness",
+                            1.0f, 0.0f, 8.0f);
+
+            /**
+             * Colour temperature for those same emitters, in kelvin. 0 keeps each emitter's own colour.
+             *
+             * <p>A real blackbody temperature rather than a warm/cool feeling: the Planckian locus gives a
+             * chromaticity which is then divided by its own luminance, so this changes what colour the
+             * lights are and never how bright they are. A torch is near 1800 K, a lantern near 2000 K,
+             * daylight near 6500 K.
+             *
+             * <p>It applies to every emitter, including the ones that are not incandescent at all —
+             * glowstone and a sea lantern have no temperature, and giving them one is an art choice.
+             * That is why it ships off rather than at some plausible flame value.
+             */
+            public static final IntSetting EMITTER_TEMPERATURE_K =
+                    clampedInt("fluorite.rt.emitterTemperatureK", "composite.emitter-temperature-k",
+                            0, 0, RtEmitterTint.MAX_TEMPERATURE_K);
+
             public static final IntSetting DYNAMIC_RIS_CANDIDATES =
                     clampedInt("fluorite.rt.dynamicRisCandidates",
                             "composite.dynamic-ris-candidates", 0, 0, 8);
