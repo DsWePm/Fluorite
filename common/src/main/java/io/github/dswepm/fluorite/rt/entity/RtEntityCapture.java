@@ -59,12 +59,28 @@ public final class RtEntityCapture implements VertexConsumer {
     // lane, and two independent flags writing one lane is the implicit-consistency shape D11 removed
     // elsewhere. Cleared per submission by whoever sets it, like every other current* field.
     int currentPrimFlags;
+
+    /** Triangles appended so far, in floats — the handle {@link #orPrimFlagsFrom} marks a range from. */
+    int primSize() {
+        return prim.size();
+    }
+
     /** Must equal ENTITY_PRIM_GLINT in world_common.slang. */
     static final int ENTITY_PRIM_GLINT = 1;
     /** Must equal PRIM_STOCHASTIC_ALPHA in world_common.slang. */
     static final int PRIM_STOCHASTIC_ALPHA = 2;
     /** Must equal PRIM_RAIN_SPLASH in world_common.slang. */
     static final int PRIM_RAIN_SPLASH = 4;
+
+    /**
+     * This quad's emission is ALSO carried by a dynamic sphere emitter, so RIS covers it.
+     *
+     * <p>The entity twin of TERRAIN_PRIM_IN_LIGHT_BUFFER, and it reaches the shader through the same
+     * payload bit: the raygen suppresses a marked emitter's direct-hit term off diffuse continuation rays,
+     * because the previous vertex's RIS already sampled it through the proxy. Without it every emissive
+     * entity surface is counted twice the moment M24 S3 starts proposing those proxies.
+     */
+    static final int PRIM_EMITTER_IN_LIGHT_BUFFER = 8;
     // When a model textures from an atlas sprite (block entities: chests/signs/beds via a Material),
     // its ModelPart UVs are 0..1 in a virtual texture and must be remapped into the sprite's atlas
     // region — the work vanilla's sprite-coordinate-expander VertexConsumer does, which we bypass.
@@ -497,6 +513,22 @@ public final class RtEntityCapture implements VertexConsumer {
     void setEmissionFrom(int primStart, float emission) {
         for (int i = primStart + 3; i < prim.size(); i += 12) { // 12 floats/triangle, normal.w is index 3
             prim.set(i, emission);
+        }
+    }
+
+    /**
+     * OR bits into the per-prim flags lane of every triangle appended since {@code primStart}.
+     *
+     * <p>For the emitter paths, which learn whether a quad fed a dynamic light only after its vertices
+     * exist in world space — the accumulator needs the transformed positions, and those are what the add
+     * produces. Retroactive rather than reordered because splitting each observer into a decision half
+     * that runs before the add and a measurement half that runs after would put the two out of reach of
+     * each other, and they have to agree exactly: the flag says "RIS already covers this emitter", so a
+     * quad that sets it and then fails to feed the accumulator loses its light entirely.
+     */
+    void orPrimFlagsFrom(int primStart, int bits) {
+        for (int i = primStart + 9; i < prim.size(); i += 12) { // Prim.flags is lane 9
+            prim.set(i, Float.intBitsToFloat(Float.floatToRawIntBits(prim.getFloat(i)) | bits));
         }
     }
 

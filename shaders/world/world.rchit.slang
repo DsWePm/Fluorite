@@ -384,6 +384,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         // WorldPush (see the note at the top of this file): frameIndex is already in the push constants
         // read on every hit. The cost is a shimmer whose rate follows the frame rate rather than world
         // time, which is the honest price of not adding a per-hit BDA load for a decorative effect.
+        // Same payload bit terrain uses: RIS covers this emitter through its dynamic sphere proxy, so the
+        // raygen must not gather its emission a second time off a diffuse continuation ray.
+        if ((pr.flags & ENTITY_PRIM_EMITTER_IN_LIGHT_BUFFER) != 0u
+                && (pc.shadeFlags & SHADE_DYNAMIC_EMITTER_RIS) != 0u) {
+            // PROXIED as well: what samples this emitter is a sphere standing in for the mesh, not a
+            // second sampling of the mesh, so the raygen has to partition rather than MIS-weight.
+            payload.flags |= PAYLOAD_EMITTER_IN_LIST | PAYLOAD_EMITTER_PROXIED;
+        }
         float glintSheen = 0.0;
         if ((pr.flags & ENTITY_PRIM_GLINT) != 0u) {
             float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();

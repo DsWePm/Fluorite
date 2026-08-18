@@ -21,6 +21,7 @@
 | [M22：后处理、输出变换与镜头效果](M22-post-processing.md) | ACES 2、分区调色、景深/动态模糊、颗粒、Bloom/Flare 与 EV 域自动曝光 | D130–D155 |
 | [M23：TOML 配置预设](M23-config-presets.md) | 完整可移植预设、严格 schema、事务替换、LIVE/RESTART 分层与浮点边界修复 | D156–D159 |
 | [M24：ReSTIR 整合](M24-restir.md)**（进行中）** | reservoir 持久存储、64 B 布局与可替换边界、复用判据；当前状态以主文档 §8.9 为准 | D180– |
+| [M24 后审查：能量重复计数与性能悬崖](post-restir-review.md) | 12 个辐射入口逐项裁决；石英房间掉帧的真实成因（RR 与逃逸同时被击穿）；一条无护栏的预设组合 | — |
 | [测量、诊断与失败经验](lessons-and-measurements.md) | 基准纪律、GPU 日志、observer effect、设备故障取证、F/R 索引 | F1–F28、R1–R24 |
 
 ## 维护规则

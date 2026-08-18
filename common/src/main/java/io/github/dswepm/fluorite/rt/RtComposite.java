@@ -8,6 +8,7 @@ import com.mojang.blaze3d.vulkan.VulkanCommandEncoder;
 import com.mojang.blaze3d.vulkan.VulkanGpuTexture;
 import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import io.github.dswepm.fluorite.FluoriteConfig;
+import io.github.dswepm.fluorite.rt.light.RtEmitterTint;
 import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.client.FluoriteJitter;
 import io.github.dswepm.fluorite.mixin.CommandEncoderAccessor;
@@ -1324,6 +1325,12 @@ public final class RtComposite {
         if (FluoriteConfig.Rt.Bsdf.SUBSURFACE_SOLID_LAYER.value()) {
             flags |= 1; // SHADE_SOLID_LAYER_SSS
         }
+        // Whether an emissive entity quad may claim "RIS already covers me". Only true while the dynamic
+        // stratum is actually proposing those proxies — the gate this feeds suppresses the surface's own
+        // emission, and suppressing it when nothing samples the proxy loses that light outright.
+        if (FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() > 0) {
+            flags |= 2; // SHADE_DYNAMIC_EMITTER_RIS
+        }
         return flags;
     }
 
@@ -1404,6 +1411,18 @@ public final class RtComposite {
     // frame (right = travel direction) and wheel the starfield. = normalize(noonDir x sunriseDir).
     // Sign of the sub-pixel jitter as reported to DLSS-RR + applied to the primary ray, mirroring the
     // validated DLSS-SR convention (Vulkan flipped clip space wants Y negated).
+    /**
+     * Brightness times a unit-luminance colour-temperature tint, for every finite emitter.
+     *
+     * <p>Computed here per frame rather than baked into the material table, which is where
+     * {@code emissionStrength} lives: that is compiled at resource-reload time, and a slider that needed a
+     * material recompile to take effect could not be moved while looking at what it changes.
+     */
+    private static Float4 emitterTint() {
+        float[] tint = RtEmitterTint.current();
+        return new Float4(tint[0], tint[1], tint[2], 0f);
+    }
+
     private static float jitterSignX() {
         return FluoriteConfig.Rt.Composite.JITTER_SIGN_X.value();
     }
@@ -3062,7 +3081,18 @@ public final class RtComposite {
                     // Not read back out of an allocation, because it allocates nothing: a neighbour is a
                     // read of a slot that already exists, so this one can follow the knob directly.
                     reservoirStore != null
-                            ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0
+                            ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0,
+                    // M18's per-frame sphere emitters, finally reaching a shader. The address and count
+                    // come from the frame's own entity build rather than from any cached state: the buffer
+                    // is reallocated every frame, so a stale address here would be a use-after-free that
+                    // happens to render.
+                    fe.dynamicLightAddr(), fe.dynamicLightCount(),
+                    // Off unless there is something to propose. Publishing the knob while the buffer is
+                    // empty would have risInitial reserve candidates for an empty stratum and throw them
+                    // away, which reads as "RIS got worse" rather than as "the setting did nothing".
+                    fe.dynamicLightCount() > 0
+                            ? FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() : 0,
+                    emitterTint()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

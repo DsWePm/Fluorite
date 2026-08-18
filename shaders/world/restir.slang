@@ -243,14 +243,60 @@ public static const float LIGHT_PLANE_SLACK = 1.0e-3;
  * and mass-rejects reuse for a single frame, after which the new indices are what got stored. A terrain
  * rebase does the same to the receiver test one level up, for the same one frame.
  */
+/**
+ * The sphere half of the identity check: same radiance, same area, and the stored point still on it.
+ *
+ * <p>The same three questions the rectangle path asks, against the only shape a dynamic emitter has. The
+ * containment one is again the discriminating test -- radiance and area say "a light like the one that was
+ * stored", and only distance-from-centre says "and this is where it was". A torch carried three blocks in
+ * one frame keeps its radius and its colour and fails here, which is the whole point.
+ *
+ * <p>No lightRebase: this buffer is authored in current rebased space (WorldPush.dynamicLightAddr).
+ */
+bool storedSphereStillPresent(PackedReservoir p, Light lg) {
+    float3 le = lightRadiance(lg);
+    float3 leRef = max(abs(le), abs(p.leW.xyz));
+    if (any(abs(le - p.leW.xyz) > LIGHT_MATCH_TOLERANCE * max(leRef, float3(1.0e-4, 1.0e-4, 1.0e-4)))) {
+        return false;
+    }
+    float radius = lightSphereRadius(lg);
+    if (!(radius > 0.0)) {
+        return false;
+    }
+    // sampleSphereEmitter puts the point on the surface and reports 2*pi*r^2, so the stored area pins the
+    // radius independently of the record -- a sphere that changed size fails here even at the same centre.
+    float area = 6.28318530718 * radius * radius;
+    if (abs(area - p.lightPosArea.w) > LIGHT_MATCH_TOLERANCE * max(area, 1.0e-4)) {
+        return false;
+    }
+    float3 d = p.lightPosArea.xyz - lg.pos;
+    float slack = radius * LIGHT_EXTENT_SLACK;
+    return abs(dot(d, d) - radius * radius) <= slack * slack;
+}
+
 public bool storedLightStillPresent(PackedReservoir p) {
-    uint index = asuint(p.misc.z);
+    uint stored = asuint(p.misc.z);
+    uint index = reservoirLightSlot(stored);
+    Light lg;
+    if (reservoirLightIsDynamic(stored)) {
+        // A per-frame buffer, so its indices are even less stable than the terrain's -- an entity leaving
+        // the frame's list renumbers everything after it. That is the same failure the rectangle path
+        // already handles, and it is handled the same way: find by index, accept by comparison.
+        if (worldPush.dynamicLightAddr == 0 || index >= worldPush.dynamicLightCount) {
+            return false;
+        }
+        lg = ConstPtr<Light>(worldPush.dynamicLightAddr)[index];
+        if (!lightIsSphere(lg)) {
+            return false; // the slot is no longer an emitter of this shape
+        }
+        return storedSphereStillPresent(p, lg);
+    }
     if (pc.lightBufAddr == 0 || index >= worldPush.lightCount) {
         return false;
     }
-    Light lg = ConstPtr<Light>(pc.lightBufAddr)[index];
+    lg = ConstPtr<Light>(pc.lightBufAddr)[index];
     if (lightIsSphere(lg)) {
-        return false; // M18 sphere records decode their axes differently; nothing below would mean anything
+        return false; // a rectangle's index now names a sphere: not the light that was stored
     }
     float3 le = lightRadiance(lg);
     float3 leRef = max(abs(le), abs(p.leW.xyz));

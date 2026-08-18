@@ -158,6 +158,39 @@ public BsdfContext retargetBsdfContext(BsdfContext c, float3 hitPos, float3 n) {
     return o;
 }
 
+/**
+ * The density, in solid angle, with which the CONTINUATION would have sampled direction `wi`.
+ *
+ * <p>One definition for both users. The sun's NEE has computed this inline since it landed; M24 S4 needs
+ * the identical number to weigh the emitter estimator against BSDF sampling, and two spellings of a
+ * density that has to agree exactly is how a MIS weight silently stops summing to one.
+ *
+ * <p>The three shares are path state rather than material: `pf` is the rain film's, `ps` the specular
+ * lobe's within what the film leaves, and `walkSssShare` the subsurface walk's within the diffuse half.
+ * The walk contributes no analytic density of its own, which is why it only ever subtracts here.
+ *
+ * <p>A delta specular lobe contributes nothing at any direction but its own, so it drops out — and its
+ * alphas are zero, which is what `c.alphaX` being zero means and what the branch tests.
+ */
+public float bsdfContinuationPdf(BsdfContext c, float3 wi, float pf, float ps, float walkSssShare) {
+    float ndl = dot(c.n, wi);
+    if (!(ndl > 0.0)) {
+        return 0.0;
+    }
+    float3 h = normalize(wi + c.v);
+    float ndh = max(0.0, dot(c.n, h));
+    float baseShare = 1.0 - pf;
+    float pdf = baseShare * (1.0 - ps) * (1.0 - walkSssShare) * ndl * INV_PI;
+    if (c.alphaX > 0.0 && c.alphaY > 0.0) {
+        pdf += baseShare * ps * ggxReflectPdfAniso(dot(h, c.t), dot(h, c.b), ndh, c.ndv,
+                                                   c.alphaX, c.alphaY, c.g1v);
+    }
+    if (pf > 0.0) {
+        pdf += pf * ggxReflectPdf(ndh, c.ndv, c.rain.filmAlpha, ggxG1(c.ndv, c.rain.filmAlpha));
+    }
+    return pdf;
+}
+
 // ---- M21 energy-layered rain film.
 
 public float rainFilmFresnel(float cosine) {

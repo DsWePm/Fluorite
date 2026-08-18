@@ -44,6 +44,8 @@ public uint payloadMaterial() { return payload.flags & PAYLOAD_MATERIAL_MASK; }
 // travelling into the volume (vs. out of it) at this hit's face.
 public bool payloadDielectricEntering() { return (payload.flags & PAYLOAD_DIELECTRIC_ENTERING) != 0u; }
 public bool payloadEmitterInList() { return (payload.flags & PAYLOAD_EMITTER_IN_LIST) != 0u; }
+/** True when a PROXY covers this emitter rather than a second sampling of the surface just hit. */
+public bool payloadEmitterProxied() { return (payload.flags & PAYLOAD_EMITTER_PROXIED) != 0u; }
 public bool payloadRainFilmReceiver() {
     return payloadMaterial() == MATERIAL_OPAQUE
             && (payload.flags & (PAYLOAD_RAIN_TOP_FACE | PAYLOAD_RAIN_PLANT)) != 0u;
@@ -171,8 +173,13 @@ public static const float SPEC_MOTION_ALPHA_MAX = 0.25; // perceptual smoothness
  *
  * A GGX peak goes as 1/(PI alpha^2), so a light sampled by area against a near-mirror receiver puts the
  * whole lobe into one sample and the estimator has no way to temper it. Where the light is also sampled
- * by the BSDF, MIS does the tempering and no floor is wanted. Where it is not — block emitters, and the
- * sun with MIS switched off — this is what bounds it.
+ * by the BSDF, MIS does the tempering and no floor is wanted.
+ *
+ * BLOCK EMITTERS NO LONGER USE IT. They were the main reason it existed, and M24 S4 gave them the real
+ * fix the old note here promised: their estimator is now weighed against BSDF sampling, which bounds the
+ * peak by weighting rather than by blurring. What is left is the SUN WITH MIS SWITCHED OFF — a light of
+ * zero angular size has no finite density for anything to compete with, so there is nothing to weigh and
+ * this is the only thing standing between a mirror-smooth surface and an unbounded highlight.
  *
  * It is not physically motivated: it makes a very smooth surface reflect a light as though it were
  * slightly rougher. 0.02 is where the 1e-7 epsilon that used to sit in ggxD effectively capped the peak,

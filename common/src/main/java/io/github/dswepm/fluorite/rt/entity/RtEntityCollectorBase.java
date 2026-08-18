@@ -140,6 +140,19 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
     private BlockState activeHeldLightState;
     private RtDynamicLightAccumulator activeHeldLight;
     private int entityWorldBlockLight;
+    /**
+     * Why the last held-block candidate produced no emitter, or null if one was produced.
+     *
+     * <p>Six independent gates stand between "this entity is holding a light-emitting block" and a sphere
+     * record, and every one of them declines SILENTLY -- the item still renders, the entity still lights
+     * itself from the world, and nothing anywhere says which gate it was. That is how a single block can
+     * be the only one in the game that does not light its holder, with no error to go on.
+     *
+     * <p>Reported only when a candidate existed and produced nothing, so the normal case logs nothing at
+     * all and no switch has to be found before the anomaly can be seen.
+     */
+    private String heldLightReject;
+    private int heldLightQuadsSeen;
 
     /**
      * Point the collector at the capture buffer for the next {@code dispatcher.submit}, resetting the
@@ -171,6 +184,18 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         entityWorldBlockLight = Math.clamp(worldBlockLight, 0, 15);
         activeHeldLightState = null;
         activeHeldLight = null;
+        heldLightReject = left != null || right != null ? "no emissive quad was ever submitted" : null;
+        heldLightQuadsSeen = 0;
+    }
+
+    /** Why the held-block candidate produced no emitter this entity, or null if it produced one. */
+    public String heldLightReject() {
+        return heldLightReject;
+    }
+
+    /** How many item quads reached the held-light observer, before any of its gates. */
+    public int heldLightQuadsSeen() {
+        return heldLightQuadsSeen;
     }
 
     /** Append distinct left/right-held, flame and body spheres in the shared M18 record stream. */
@@ -538,6 +563,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         capture.currentOrder = 0; // baked-quad paths never stack decal layers
         int tint = tintColor(q.materialInfo().tintIndex(), tintLayers);
         int vertexStart = capture.verts.size();
+        int primStart = capture.primSize();
         capture.addBakedQuad(pose, q, tint);
         if (activeHeldLight != null) {
             float[] vertices = capture.verts.elements();
@@ -547,21 +573,53 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
                 meshY[i] = vertices[source + 1];
                 meshZ[i] = vertices[source + 2];
             }
-            recordHeldLightQuad(sprite, transmissive, tint, meshX, meshY, meshZ);
+            recordHeldLightQuad(sprite, transmissive, tint, meshX, meshY, meshZ, primStart);
         }
     }
 
     /** Observe one submitted item quad through its stateful block material without changing capture state. */
+    /**
+     * Mark quads whose emission is ALSO represented by a dynamic sphere emitter.
+     *
+     * <p>The raygen suppresses a marked emitter's direct-hit term off diffuse continuation rays, because
+     * the previous vertex's RIS already sampled it. Terrain has had that since RIS landed
+     * (TERRAIN_PRIM_IN_LIGHT_BUFFER); entities never did, because nothing put them in the light buffer —
+     * and the moment M24 S3 started proposing their sphere proxies, every emissive entity surface was
+     * being counted twice, once by RIS through the proxy and once by a bounce ray hitting the surface.
+     *
+     * <p>Per quad rather than per entity, and set only where a quad actually reached an accumulator. An
+     * entity-wide flag would suppress the emission of surfaces that produced no sphere at all, which
+     * loses their light outright — the opposite error, and the harder one to notice.
+     */
+    private void markEmitterInLightBuffer(int primStart) {
+        if (capture != null && primStart >= 0) {
+            capture.orPrimFlagsFrom(primStart, RtEntityCapture.PRIM_EMITTER_IN_LIGHT_BUFFER);
+        }
+    }
+
     private void recordHeldLightQuad(TextureAtlasSprite sprite, boolean transmissive, int tint,
-                                     float[] x, float[] y, float[] z) {
-        if (activeHeldLight == null || activeHeldLightState == null || sprite == null
-                || !TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())) {
+                                     float[] x, float[] y, float[] z, int primStart) {
+        if (activeHeldLight == null || activeHeldLightState == null) {
+            return;
+        }
+        heldLightQuadsSeen++;
+        // Both atlases, because a held block's quads come from whichever one its ITEM model draws from --
+        // the block's own texture for most emitters, a bespoke item texture for a lantern. Requiring the
+        // block atlas here is what made the lantern the only light-emitting block that did not light its
+        // holder, and it declined all forty-two of its quads without a word.
+        if (sprite == null || !(TextureAtlas.LOCATION_BLOCKS.equals(sprite.atlasLocation())
+                || TextureAtlas.LOCATION_ITEMS.equals(sprite.atlasLocation()))) {
+            heldLightReject = "quad is on neither the block nor the item atlas ("
+                    + (sprite == null ? "no sprite" : String.valueOf(sprite.atlasLocation())) + ")";
             return;
         }
         RtMaterialRegistry.Snapshot snapshot = RtMaterialRegistry.INSTANCE.requireSnapshot();
         RtMaterialDesc desc = snapshot.material(snapshot.resolve(sprite, activeHeldLightState, transmissive));
         RtMaterialDesc.EmissionSummary summary = desc.emissionSummary();
         if (!summary.emissive()) {
+            heldLightReject = "the resolved material variant is not emissive (transmissive=" + transmissive
+                    + ", profile=" + RtMaterials.profile(activeHeldLightState)
+                    + ", sound=" + activeHeldLightState.getSoundType() + ")";
             return;
         }
         float stateEmission = activeHeldLightState.getLightEmission() / 15.0f;
@@ -571,12 +629,20 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             case NONE -> 0.0f;
         };
         if (!(factor > 0.0f)) {
+            heldLightReject = "emission factor is zero (source=" + desc.emissionSource()
+                    + ", stateEmission=" + stateEmission + ")";
             return;
         }
+        if (!(summary.coverage() > 0.0f)) {
+            heldLightReject = "the emissive coverage of this sprite is zero";
+            return;
+        }
+        heldLightReject = null;
         float scale = factor * desc.emissionStrength();
         float tintR = ((tint >>> 16) & 0xFF) * (1.0f / 255.0f);
         float tintG = ((tint >>> 8) & 0xFF) * (1.0f / 255.0f);
         float tintB = (tint & 0xFF) * (1.0f / 255.0f);
+        markEmitterInLightBuffer(primStart);
         activeHeldLight.addQuad(x, y, z, summary.coverage(),
                 summary.averageR() * scale * tintR,
                 summary.averageG() * scale * tintG,
@@ -906,10 +972,11 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             flameVertex(flamePose, 1, half, -yOff, z, u0, v1);
             flameVertex(flamePose, 2, half, FLAME_QUAD_HEIGHT - yOff, z, u0, v0);
             flameVertex(flamePose, 3, -half, FLAME_QUAD_HEIGHT - yOff, z, u1, v0);
+            int flamePrimStart = capture.primSize();
             capture.addDirectQuad(meshX, meshY, meshZ, meshU, meshV, 0f, 0f, 0f, -1, FLAME_EMISSION);
             long dynamicLightStart = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
             try {
-                recordFlameLightQuad(sprite, meshX, meshY, meshZ);
+                recordFlameLightQuad(sprite, meshX, meshY, meshZ, flamePrimStart);
             } finally {
                 RtFrameStats.FRAME.endStage("entity.dynamicAttachedLights", dynamicLightStart);
             }
@@ -939,7 +1006,8 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
      * deliberately, because the visible quad's was wrong and M18 was scoped not to change the picture
      * (D98A); with the visible path fixed there is one material and no reason for two lookups.
      */
-    private void recordFlameLightQuad(TextureAtlasSprite sprite, float[] x, float[] y, float[] z) {
+    private void recordFlameLightQuad(TextureAtlasSprite sprite, float[] x, float[] y, float[] z,
+                                      int primStart) {
         RtMaterialRegistry.Snapshot snapshot = RtMaterialRegistry.INSTANCE.requireSnapshot();
         int materialId = flameMaterial(sprite);
         RtMaterialDesc desc = snapshot.material(materialId);
@@ -947,6 +1015,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         if (!summary.emissive() || desc.emissionSource() == RtMaterialDesc.EmissionSource.NONE) {
             return;
         }
+        markEmitterInLightBuffer(primStart);
         flameLight.addQuad(x, y, z, summary.coverage(),
                 summary.averageR() * desc.emissionStrength(),
                 summary.averageG() * desc.emissionStrength(),
@@ -1164,11 +1233,14 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             }
         }
         int color = ARGB.multiply(averageQuadColor(quad), tint);
-        if (itemMesh && activeHeldLight != null) {
-            recordHeldLightQuad(sprite, transmissive, color, meshX, meshY, meshZ);
-        }
         float emission = quad.emissive() ? 1f : state != null ? state.getLightEmission() / 15f : 0f;
+        // The quad goes in FIRST so the observer has prims to mark. Its own inputs are the transformed
+        // positions, which this path already has, so the order is free here.
+        int primStart = capture.primSize();
         capture.addDirectQuad(meshX, meshY, meshZ, meshU, meshV, 0f, 0f, 0f, color, emission);
+        if (itemMesh && activeHeldLight != null) {
+            recordHeldLightQuad(sprite, transmissive, color, meshX, meshY, meshZ, primStart);
+        }
     }
 
     /** Collapse Fabric's per-vertex colour into the flat per-primitive tint stored by the RT layout. */

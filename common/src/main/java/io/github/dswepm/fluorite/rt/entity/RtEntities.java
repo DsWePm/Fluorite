@@ -2,6 +2,7 @@ package io.github.dswepm.fluorite.rt.entity;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import io.github.dswepm.fluorite.FluoriteConfig;
+import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.mixin.ParticleEngineAccessor;
 import io.github.dswepm.fluorite.mixin.ParticleGroupAccessor;
 import io.github.dswepm.fluorite.mixin.ParticleAccessor;
@@ -834,6 +835,15 @@ public final class RtEntities {
                 }
                 int dynamicLights = collector.appendDynamicLights(build.dynamicLights, id,
                         ix - rbx, iy - rby, iz - rbz);
+                // A held emitter that produced nothing. Logged only when it happens, so the normal case is
+                // silent and no switch has to be found before the anomaly can be seen -- which is the whole
+                // difficulty here: every gate between "holding a light-emitting block" and a sphere record
+                // declines without a word, and the block still renders and still lights itself.
+                if ((leftHeldLight != null || rightHeldLight != null)
+                        && collector.heldLightReject() != null) {
+                    reportHeldLightMiss(leftHeldLight != null ? leftHeldLight : rightHeldLight,
+                            collector.heldLightReject(), collector.heldLightQuadsSeen());
+                }
                 RtFrameStats.FRAME.count("dynamicLightsCollected", dynamicLights);
             } catch (Throwable t) {
                 // Fail loud instead of skip-and-limp: a capture throw here is almost always our bug, and
@@ -1700,6 +1710,31 @@ public final class RtEntities {
     private RtBuffer allocBuffer(RtContext ctx, long minSize, int usage, boolean hostVisible, String label) {
         RtFrameStats.FRAME.count("vmaBufferCreates", 1);
         return ctx.createBuffer(Math.max(minSize, MIN_BUFFER_SIZE), usage, hostVisible, label);
+    }
+
+    private static final long HELD_LIGHT_MISS_LOG_INTERVAL_NS = 3_000_000_000L;
+    private long heldLightMissLoggedAt = Long.MIN_VALUE;
+    private String heldLightMissLast;
+
+    /**
+     * Say which gate a held emitter fell through, once, and again only when the answer changes.
+     *
+     * <p>Throttled by REASON rather than by time alone: holding the same block for a minute is one line,
+     * and switching to a different one that also fails says so immediately instead of waiting out an
+     * interval. Time is the backstop for a reason that flickers between two states.
+     */
+    private void reportHeldLightMiss(BlockState state, String reason, int quadsSeen) {
+        String key = state.getBlock().getDescriptionId() + "|" + reason;
+        long now = System.nanoTime();
+        if (key.equals(heldLightMissLast)
+                && now - heldLightMissLoggedAt < HELD_LIGHT_MISS_LOG_INTERVAL_NS) {
+            return;
+        }
+        heldLightMissLast = key;
+        heldLightMissLoggedAt = now;
+        FluoriteMod.LOGGER.info(
+                "RT held emitter produced no light: block={} lightEmission={} quadsSeen={} reason={}",
+                state.getBlock().getDescriptionId(), state.getLightEmission(), quadsSeen, reason);
     }
 
     /** A held item qualifies by block semantics, never by registry name or a hard-coded colour. */

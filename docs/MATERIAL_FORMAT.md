@@ -53,7 +53,7 @@ Everything is optional. Anything absent is inherited, not defaulted.
 
   "model": "opaque",
   "base": {"roughness": 0.6, "metalness": 0.0},
-  "emission": {"strength": 2.0},
+  "emission": {"strength": 2.0, "temperature_k": 1800},
   "transmission": {"factor": 1.0, "ior": 1.52},
 
   "sheen":      {"amount": 0.3, "tint": 1.0},
@@ -72,6 +72,7 @@ Everything is optional. Anything absent is inherited, not defaulted.
 | `base.roughness` | 0–1 | **Linear roughness, which is the GGX alpha** — the same units LabPBR stores, *not* perceptual roughness. `alpha = (1 - smoothness)^2`. |
 | `base.metalness` | 0–1 | |
 | `emission.strength` | 0–5 | A **multiplier** over whatever emission the material already resolves to. It cannot light up a block that was not emissive. |
+| `emission.temperature_k` | 0, or 1000–12000 | This emitter's own blackbody colour temperature, **replacing** the global `composite.emitter-temperature-k` for this material. **0 is meaningful and is not "unset"**: it keeps the texture's own colour against a global setting that would otherwise recolour it — which is what glowstone or a sea lantern wants, being nothing like an incandescent body. Omit the key entirely to inherit the global value. A torch is near 1800, a lantern near 2000, daylight near 6500. It changes only the light's COLOUR, never its brightness: the tint is normalised to unit luminance, so `strength` remains the only control over how much light there is. |
 | `transmission.factor` | 0–1 | |
 | `transmission.ior` | > 0 | |
 | `sheen.amount` | 0–1 | Retroreflective grazing lobe. Cloth, moss, foliage silhouettes. Subtle by design; 1.0 is far more than you want. |

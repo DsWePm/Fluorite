@@ -16,6 +16,21 @@ import water;
 /** No light. Distinguishable from index 0, which is a real emitter. */
 public static const uint RESERVOIR_NO_LIGHT = 0xFFFFFFFFu;
 
+/**
+ * Which buffer a stored lightIndex points into.
+ *
+ * <p>The two light buffers are indexed independently, so an index alone is ambiguous the moment dynamic
+ * emitters enter the candidate set — and the consequence of getting it wrong is not a crash but a
+ * reservoir validated against a completely unrelated light, which is the failure the whole light-identity
+ * check exists to prevent. Bit 31 because neither buffer will ever hold two billion records, and
+ * RESERVOIR_NO_LIGHT stays distinct from any tagged index because it sets every other bit too.
+ */
+public static const uint RESERVOIR_DYNAMIC_LIGHT_BIT = 0x80000000u;
+public bool reservoirLightIsDynamic(uint index) {
+    return index != RESERVOIR_NO_LIGHT && (index & RESERVOIR_DYNAMIC_LIGHT_BIT) != 0u;
+}
+public uint reservoirLightSlot(uint index) { return index & ~RESERVOIR_DYNAMIC_LIGHT_BIT; }
+
 public struct Reservoir {
     public float3 pos;  // light sample point (rebased world space)
     public float3 lnrm; // emitter outward normal
@@ -56,6 +71,10 @@ public Reservoir resEmpty() {
 //     when the ray points from the light through the slab toward the camera (same as the sun SSS term).
 public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le, float area,
                          out float phat) {
+    // The emitter controls land HERE rather than in lightRadiance, because this is where radiance turns
+    // into light. proposalPdf takes its own untinted copy of the same le -- see WorldPush.emitterTint for
+    // why tinting the decode instead makes the brightness slider a no-op.
+    le *= worldPush.emitterTint.xyz;
     phat = 0.0;
     float3 toL = sp - c.hitPos;
     float dist2 = dot(toL, toL);
@@ -84,13 +103,11 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float3 h = normalize(wi + c.v);
             float ndh = max(0.0, dot(c.n, h));
             float vdh = max(0.0, dot(c.v, h));
-            // Emitter rectangles are sampled by area and never weighted against BSDF sampling, so this
-            // is one of the two places UNWEIGHTED_SPEC_ALPHA_FLOOR is what bounds the peak. The real fix
-            // is MIS against emitter sampling, which is its own piece of work.
-            //
-            // The floor applies to D alone. Smith masking is within a fraction of a percent of 1 for any
-            // alpha this small at any angle that survives the ndl > 0 test, so flooring it too would buy
-            // nothing and would cost the hoisted c.g1v below.
+            // NO ALPHA FLOOR. It stood here because an emitter rectangle was sampled by area and never
+            // weighted against BSDF sampling, so nothing else bounded the peak of a very smooth lobe; the
+            // note that used to be here named MIS as the real fix, and shadeReservoir now applies it.
+            // Flooring on top of a MIS weight would blur a highlight that is no longer at risk of
+            // exploding, and would put the target function out of step with the density weighing it.
             //
             // This is the one specular site that still branches on anisotropy rather than running the
             // anisotropic form for everyone. It is called M+1 times per shading vertex — the measured
@@ -99,12 +116,10 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float D;
             float Gs;
             if (c.aniso) {
-                float ax = max(c.alphaX, UNWEIGHTED_SPEC_ALPHA_FLOOR);
-                float ay = max(c.alphaY, UNWEIGHTED_SPEC_ALPHA_FLOOR);
-                D = ggxDAniso(dot(h, c.t), dot(h, c.b), ndh, ax, ay);
-                Gs = c.g1v * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, ax, ay);
+                D = ggxDAniso(dot(h, c.t), dot(h, c.b), ndh, c.alphaX, c.alphaY);
+                Gs = c.g1v * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, c.alphaX, c.alphaY);
             } else {
-                D = ggxD(ndh, max(c.rough, UNWEIGHTED_SPEC_ALPHA_FLOOR));
+                D = ggxD(ndh, c.rough);
                 // c.g1v is the view half of Smith masking, hoisted: it depends only on the receiver, and
                 // this function runs once per RIS candidate.
                 Gs = c.g1v * ggxG1(ndl, c.rough);
@@ -112,7 +127,7 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float3 Fs = fresnelSchlick(vdh, c.F0);
             brdf += (D * Gs) * Fs / (4.0 * c.ndv * ndl);
         }
-        brdf = brdf * rainBaseTransmission(c, wi) + rainFilmBrdf(c, wi, true);
+        brdf = brdf * rainBaseTransmission(c, wi) + rainFilmBrdf(c, wi, false);
         contrib = brdf * le * (G * area);
     } else if (c.sss > 0.0) {
         float backNdl = -ndl;
@@ -126,6 +141,29 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
     }
     phat = luminance(contrib);
     return contrib;
+}
+
+/**
+ * The density, per unit AREA on an emitter, that the emitter strategy carries for a point of radiance
+ * `le` — as used by BOTH sides of M24 S4's MIS weight.
+ *
+ * <p>THE AREA CANCELS, and that is what makes this computable at a BSDF hit where nothing knows which
+ * light was struck. The proposal picks a light in proportion to its power, area times luminance, and then
+ * a point on it uniformly with density one over that same area — so the joint density of a point is its
+ * radiance times the inverse total power, and the emitter's extent drops out of both factors at once.
+ *
+ * <p>It is the GLOBAL stratum only; the real mixture also has the light grid's local term. That makes it
+ * an approximation of the true density and NOT a source of bias: a MIS weight may be built from any pair
+ * of positive functions, and what unbiasedness requires is that the two sides use the SAME pair — which is
+ * why this exists as one function rather than as two expressions that happen to match today.
+ */
+public float emitterAreaDensity(float3 le) {
+    return luminance(le) * worldPush.lightRebase.w;
+}
+
+/** The same for the competing strategy: a solid-angle density carried onto the emitter's surface. */
+public float bsdfAreaDensity(float solidAnglePdf, float cosAtEmitter, float distanceSquared) {
+    return solidAnglePdf * max(cosAtEmitter, 0.0) / max(distanceSquared, 1.0e-6);
 }
 
 // Select one light from the emitted-power distribution in O(1).
@@ -217,6 +255,58 @@ public float3 lightGeometricNormal(Light light) {
     return (light.section & 0x40000000u) != 0u ? -normal : normal;
 }
 
+/** A dynamic sphere's radius, from the low half of the lane a rectangle spends on its U axis. */
+public float lightSphereRadius(Light light) {
+    return unpackHalf2(light.halfUxy).x;
+}
+
+/**
+ * One uniform point on the half of a sphere emitter that faces the receiver, in the AREA measure.
+ *
+ * <p>The hemisphere rather than the whole sphere: the far half contributes nothing -- its outward normal
+ * points away, so the emitter cosine zeroes it -- and sampling it anyway would throw away half of every
+ * dynamic candidate inside the loop that measurement showed is the expensive one. Uniform over 2*pi*r^2
+ * with density 1/(2*pi*r^2) is exactly the contract evalSampleContrib's area argument expresses, so this
+ * needs no second pdf path beside the rectangle's.
+ *
+ * <p>IT IS EXACT, AND THE WIDER DOMAIN COSTS SAMPLES RATHER THAN ACCURACY. The set actually visible from a
+ * point at distance D is the cap where dot(n, d) > r, a cap strictly smaller than this hemisphere -- but
+ * the band between them needs no test of its own, because it is precisely where evalSampleContrib's
+ * emitter cosine already goes negative: for x = c + r*n the term is dot(n, d) - r, which is what that cap
+ * is defined by. So the silhouette band contributes exactly zero and nothing is over-counted; sampling it
+ * merely wastes a fraction r/D of the dynamic candidates. Negligible for the small radii an entity, a held
+ * torch and a flame particle have, and largest exactly when the receiver is nearly touching the emitter.
+ *
+ * <p>A receiver INSIDE the sphere has no facing half at all and is rejected outright.
+ *
+ * <p>No lightRebase. See WorldPush.dynamicLightAddr: this buffer is authored in current rebased space.
+ */
+public bool sampleSphereEmitter(Light light, float3 receiver, inout uint seed,
+                                out float3 sp, out float3 lnrm, out float area) {
+    sp = float3(0.0, 0.0, 0.0);
+    lnrm = float3(0.0, 0.0, 1.0);
+    area = 0.0;
+    float radius = lightSphereRadius(light);
+    float3 toReceiver = receiver - light.pos;
+    float dist2 = dot(toReceiver, toReceiver);
+    if (!(radius > 0.0) || dist2 <= radius * radius) {
+        return false;
+    }
+    float3 axis = toReceiver * rsqrt(dist2);
+    // Uniform on the hemisphere about `axis`: z uniform in [0,1] is what makes it uniform in AREA rather
+    // than crowding the pole, which is the same identity that makes a sphere's zones equal-area.
+    float z = rndf(seed);
+    float phi = rndf(seed) * 6.28318530718;
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    float3 t;
+    float3 b;
+    canonicalTangentFrame(axis, t, b);
+    lnrm = normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + axis * z);
+    sp = light.pos + lnrm * radius;
+    area = 6.28318530718 * radius * radius;
+    return true;
+}
+
 public float proposalPdf(Light light, float3 le, LightGridCell cell, int3 cellCoord,
                   float localProbability) {
     float power = max(0.0, lightArea(light) * luminance(le));
@@ -285,35 +375,75 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
     bool hasGridCell = findLightGridCell(gridLookup, gridCell, gridCellCoord);
     uint candidateCount = worldPush.risCandidates;
     r.M = float(candidateCount);
+    // M18's dynamic emitters take their own stratum, and the reason is structural rather than a
+    // preference: they live in a separate per-frame buffer because the alias tables and the dense grid are
+    // built with the terrain and would have to be rebuilt whole every frame to carry entities. Reserving
+    // candidates for them is what gets them proposed at all without touching either structure.
+    //
+    // Held back from the total BEFORE the local/global split, so the existing stratification keeps
+    // working on whatever is left; and capped a candidate short of the whole budget, because a vertex that
+    // spent every candidate on entities would stop seeing the world's own lights.
+    uint dynamicCandidateCount = worldPush.dynamicLightCount > 0u && worldPush.dynamicLightAddr != 0
+            ? min(worldPush.dynamicRisCandidates, candidateCount - 1u) : 0u;
+    uint staticCandidateCount = candidateCount - dynamicCandidateCount;
     // Deterministically stratify the proposal mixture. At the default M=8 this schedules exactly six
     // local and two global candidates, with every lane taking the same branch for a given candidate.
     // Counts that are not divisible by four use the nearest practical split with at least one global
     // candidate; M=1 is global-only so the estimator retains full support.
     uint globalCandidateCount = hasGridCell
-            ? max(1u, (candidateCount + 2u) / 4u) : candidateCount;
-    uint localCandidateCount = candidateCount - globalCandidateCount;
-    float localProbability = float(localCandidateCount) / float(candidateCount);
+            ? max(1u, (staticCandidateCount + 2u) / 4u) : staticCandidateCount;
+    uint localCandidateCount = staticCandidateCount - globalCandidateCount;
+    float localProbability = float(localCandidateCount) / float(staticCandidateCount);
     for (uint c = 0u; c < candidateCount; c++) {
+        float3 sp;
+        float3 lightNormal;
+        float3 le;
+        float area;
+        float sourcePdf;
         uint li;
-        uint globalsBefore = (c * globalCandidateCount) / candidateCount;
-        uint globalsAfter = ((c + 1u) * globalCandidateCount) / candidateCount;
-        bool useLocal = hasGridCell && globalsAfter == globalsBefore;
-        selectLightGridLight(gridCell, useLocal, proposalSeed, li);
-        Light lg = ConstPtr<Light>(pc.lightBufAddr)[li];
-        // Soft shadows: uniform point on the emitter rectangle ((s,t) in [-1,1]^2, pdf 1/area).
-        float s = rndf(seed) * 2.0 - 1.0;
-        float t = rndf(seed) * 2.0 - 1.0;
-        float3 sp = lg.pos + worldPush.lightRebase.xyz
-                + s * lightHalfU(lg) + t * lightHalfV(lg);
-        float3 le = lightRadiance(lg);
-        float3 lightNormal = lightGeometricNormal(lg);
-        float area = lightArea(lg);
+        // The dynamic candidates come first. Uniform across c, since both counts are frame constants, so
+        // this branch stays wave-coherent the way the local/global one already is.
+        if (c < dynamicCandidateCount) {
+            li = min(uint(rndf(proposalSeed) * float(worldPush.dynamicLightCount)),
+                     worldPush.dynamicLightCount - 1u);
+            Light lg = ConstPtr<Light>(worldPush.dynamicLightAddr)[li];
+            if (!sampleSphereEmitter(lg, ctx.hitPos, seed, sp, lightNormal, area)) {
+                continue; // receiver inside the emitter, or a radius that never got authored
+            }
+            le = lightRadiance(lg);
+            // Uniform over the buffer, and the mixture needs no other term: the two buffers hold disjoint
+            // shapes, so nothing here could have been proposed by the local or global stratum. Power
+            // weighting would want an alias table rebuilt every frame, which is the cost this stratum
+            // exists to avoid; it is the obvious next refinement and is not free.
+            sourcePdf = (float(dynamicCandidateCount) / float(candidateCount))
+                    / float(worldPush.dynamicLightCount);
+            li |= RESERVOIR_DYNAMIC_LIGHT_BIT;
+        } else {
+            uint sc = c - dynamicCandidateCount;
+            uint globalsBefore = (sc * globalCandidateCount) / staticCandidateCount;
+            uint globalsAfter = ((sc + 1u) * globalCandidateCount) / staticCandidateCount;
+            bool useLocal = hasGridCell && globalsAfter == globalsBefore;
+            selectLightGridLight(gridCell, useLocal, proposalSeed, li);
+            Light lg = ConstPtr<Light>(pc.lightBufAddr)[li];
+            // Soft shadows: uniform point on the emitter rectangle ((s,t) in [-1,1]^2, pdf 1/area).
+            float s = rndf(seed) * 2.0 - 1.0;
+            float t = rndf(seed) * 2.0 - 1.0;
+            sp = lg.pos + worldPush.lightRebase.xyz
+                    + s * lightHalfU(lg) + t * lightHalfV(lg);
+            le = lightRadiance(lg);
+            lightNormal = lightGeometricNormal(lg);
+            area = lightArea(lg);
+            // Scaled by this stratum's share of the budget, for the same reason the dynamic one is: the
+            // mixture is over all M candidates, and holding some back changed what fraction of them this
+            // density describes.
+            sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability)
+                    * (float(staticCandidateCount) / float(candidateCount));
+        }
         float phat;
         evalSampleContrib(ctx, sp, lightNormal, le, area, phat);
         if (phat <= 0.0) {
             continue;
         }
-        float sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability);
         float w = phat / max(sourcePdf, 1.0e-20);
         r.wSum += w;
         if (rndf(seed) * r.wSum < w) { // weighted reservoir update
@@ -369,7 +499,9 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
     // The area sample below estimates irradiance at the event, so its directional source is E*p. hg()
     // is already the normalised phase density; multiplying it by 4*pi would create that much energy.
     float phase = hg(dot(rd, wi), phaseG);
-    float3 contrib = emitter.radiance
+    // Tinted here and not at emitter.radiance, which sampleVolumeEmitter also hands to its proposal
+    // density -- the same cancellation the surface path avoids.
+    float3 contrib = (emitter.radiance * worldPush.emitterTint.xyz)
             * (phase * cosL * emitter.area / dist2) / emitter.sourcePdf;
     if (all(contrib <= 0.0)) {
         return float3(0.0, 0.0, 0.0);
@@ -394,9 +526,26 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
 // the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the
 // sample's side of the surface.
 public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
-                             BsdfContext c, MaterialExtension ext, Reservoir s) {
+                             BsdfContext c, MaterialExtension ext, Reservoir s,
+                             float lobeFilmShare, float lobeSpecShare, float lobeWalkShare) {
     if (s.W <= 0.0 || s.phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
+    }
+    // M24 S4's MIS weight against the continuation that could have found this same emitter by chance.
+    //
+    // Only for emitters the BSDF ray can actually hit. A DYNAMIC sample is a sphere standing in for a
+    // mesh: the two strategies sample different domains, their densities never meet, and a weight built
+    // from them would not sum to one. Those keep the outright partition the raygen applies instead.
+    float misWeight = 1.0;
+    if (!reservoirLightIsDynamic(s.lightIndex)) {
+        float3 toL = s.pos - c.hitPos;
+        float dist2 = max(dot(toL, toL), 1.0e-6);
+        float3 wi = toL * rsqrt(dist2);
+        float continuationPdf = bsdfAreaDensity(
+                bsdfContinuationPdf(c, wi, lobeFilmShare, lobeSpecShare, lobeWalkShare),
+                dot(s.lnrm, -wi), dist2);
+        misWeight = powerHeuristic(emitterAreaDensity(s.le * worldPush.emitterTint.xyz),
+                                   continuationPdf);
     }
     float phat;
     float3 contrib = evalSampleContrib(c, s.pos, s.lnrm, s.le, s.area, phat);
@@ -410,7 +559,8 @@ public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
             float dist2 = max(dot(s.pos - c.hitPos, s.pos - c.hitPos), 1.0e-6);
             float cosL = max(0.0, dot(s.lnrm, -wi));
             contrib += disneyLobes(c, ext, wi) * rainBaseTransmission(c, wi)
-                    * s.le * (dot(c.n, wi) * cosL / dist2 * s.area);
+                    * (s.le * worldPush.emitterTint.xyz)
+                    * (dot(c.n, wi) * cosL / dist2 * s.area);
         }
     }
     if (phat <= 0.0) {
@@ -444,7 +594,7 @@ public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
     if (mediumFlagsWater(mediumFlags) && (worldPush.flags & 16u) != 0u && shadow.waterHitT > 0.0) {
         vis *= waterCaustic(origin + wiShadow * shadow.waterHitT, wiShadow, shadow.waterHitT);
     }
-    return contrib * vis * s.W;
+    return contrib * vis * s.W * misWeight;
 }
 
 // TLAS instance-mask bits (set on the Java side, ANDed against these per-ray cull masks):

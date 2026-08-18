@@ -2,6 +2,7 @@ package io.github.dswepm.fluorite.client;
 
 import com.mojang.serialization.Codec;
 import io.github.dswepm.fluorite.FluoriteConfig;
+import io.github.dswepm.fluorite.rt.light.RtEmitterTint;
 import io.github.dswepm.fluorite.FluoriteConfig.BooleanSetting;
 import io.github.dswepm.fluorite.FluoriteConfig.FloatSetting;
 import io.github.dswepm.fluorite.FluoriteConfig.IntSetting;
@@ -95,7 +96,9 @@ public final class RtVideoOptions {
                 // menu.
                 case TRACING -> List.of(
                         Section.of(spp(), maxBounces(), restirReuseDepth(),
-                                restirSpatialNeighbours(), sunSize(), entities(), particles(),
+                                restirSpatialNeighbours(), dynamicRisCandidates(),
+                                emitterBrightness(), emitterTemperature(),
+                                sunSize(), entities(), particles(),
                                 particleShadows()),
                         Section.titled("fluorite.options.rt.section.media",
                                 volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
@@ -756,6 +759,73 @@ public final class RtVideoOptions {
      * samples with video memory; this one buys them with arithmetic and no memory at all, since a
      * neighbour is a read of a slot the depth dial already paid for. It does nothing while that dial is 0.
      */
+    /**
+     * How many RIS candidates go to M18's dynamic sphere emitters. 0 is off and is the shipped default.
+     *
+     * <p>In Tracing beside the other candidate dials, because it divides the same budget they do. Off is
+     * today's picture exactly: those emitters have been collected and uploaded since M18 and sampled by
+     * nothing, so a mob holding a torch lights itself and nothing around it.
+     */
+    /**
+     * One brightness over every finite emitter. 1 is off and is the shipped picture exactly.
+     *
+     * <p>Tenths on the slider, because whole steps are far too coarse for something that multiplies
+     * radiance and the value people want is usually just above or just below 1.
+     */
+    private static OptionInstance<Integer> emitterBrightness() {
+        FloatSetting setting = FluoriteConfig.Rt.Composite.EMITTER_BRIGHTNESS;
+        int initialTenths = Math.clamp(Math.round(setting.value() * 10.0f), 0, 80);
+        return new OptionInstance<>(
+            "fluorite.options.rt.emitterBrightness",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.emitterBrightness.tooltip")),
+            (caption, tenths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format("%.1fx", tenths / 10.0))),
+            new OptionInstance.IntRange(0, 80),
+            initialTenths,
+            tenths -> setting.set(tenths / 10.0f));
+    }
+
+    /**
+     * Colour temperature for those same emitters. 0 keeps each emitter's own colour and is the default.
+     *
+     * <p>100 K steps: neighbouring hundreds are indistinguishable, and a per-kelvin slider would have
+     * eleven thousand positions. Step 0 is off and step 1 is the bottom of the Planckian fit's range, so
+     * the slider is contiguous — there is no dead zone below the first valid temperature to drag through.
+     */
+    private static OptionInstance<Integer> emitterTemperature() {
+        IntSetting setting = FluoriteConfig.Rt.Composite.EMITTER_TEMPERATURE_K;
+        int lowest = RtEmitterTint.MIN_TEMPERATURE_K / 100;
+        int steps = RtEmitterTint.MAX_TEMPERATURE_K / 100 - lowest + 1;
+        int initial = setting.value() <= 0 ? 0
+                : Math.clamp(setting.value() / 100 - lowest + 1, 1, steps);
+        return new OptionInstance<>(
+            "fluorite.options.rt.emitterTemperature",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.emitterTemperature.tooltip")),
+            (caption, step) -> step <= 0
+                    ? Options.genericValueLabel(caption, CommonComponents.OPTION_OFF)
+                    : Options.genericValueLabel(caption,
+                            Component.literal((step + lowest - 1) * 100 + "K")),
+            new OptionInstance.IntRange(0, steps),
+            initial,
+            step -> setting.set(step <= 0 ? 0 : (step + lowest - 1) * 100));
+    }
+
+    private static OptionInstance<Integer> dynamicRisCandidates() {
+        IntSetting setting = FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES;
+        return new OptionInstance<>(
+            "fluorite.options.rt.dynamicRisCandidates",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.dynamicRisCandidates.tooltip")),
+            (caption, value) -> value == 0
+                    ? Options.genericValueLabel(caption, CommonComponents.OPTION_OFF)
+                    : Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(0, 8),
+            Math.clamp(setting.value(), 0, 8),
+            setting::set);
+    }
+
     private static OptionInstance<Integer> restirSpatialNeighbours() {
         IntSetting setting = FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS;
         return new OptionInstance<>(

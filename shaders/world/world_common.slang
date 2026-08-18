@@ -76,6 +76,19 @@ public struct WorldPushConstants {
  */
 public static const uint SHADE_SOLID_LAYER_SSS = 1u;
 
+/**
+ * M18's dynamic sphere emitters are being proposed this frame (dynamicRisCandidates > 0).
+ *
+ * <p>The hit shader needs it to decide whether an emissive ENTITY quad should claim
+ * PAYLOAD_EMITTER_IN_LIST: the proxy covering it only exists as a candidate while the stratum is on, and
+ * suppressing the surface's own emission when nothing samples the proxy would lose that light outright.
+ * Terrain has no such condition — its emitters live in the buffer RIS always draws from.
+ *
+ * <p>Here rather than read from WorldPush because the hit shader deliberately never dereferences that
+ * struct, which is the same judgement SHADE_SOLID_LAYER_SSS is here for.
+ */
+public static const uint SHADE_DYNAMIC_EMITTER_RIS = 2u;
+
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
 // w = bindless entityAlbedoTex slot of the destroy-stage texture.
 public struct BreakEntry {
@@ -292,6 +305,47 @@ public struct WorldPush {
     // measured, which is this knob's off state; the store is unaffected either way, since a neighbour is
     // read from slots that already exist.
     public uint     restirSpatialNeighbours;
+
+    /**
+     * M18's per-frame sphere emitters -- entities, held blocks, flame particles -- and how many.
+     *
+     * <p>THESE POSITIONS ARE ALREADY IN CURRENT REBASED SPACE and must NOT have lightRebase added, unlike
+     * every position in the static light buffer. The static one is built once against a terrain hierarchy
+     * and rebased on the way in; this one is rebuilt from live entities every frame, so it is authored in
+     * the space the shader already works in. Adding the offset compiles, runs, and puts every dynamic
+     * light a rebase distance away from the thing carrying it.
+     *
+     * <p>A separate buffer rather than an extension of the light buffer, because the alias tables and the
+     * dense grid are built incrementally with the terrain and would have to be rebuilt whole every frame
+     * to carry entities. That is why the dynamic candidates are their OWN stratum in the proposal mixture
+     * (see risInitial) rather than competing in the existing ones.
+     *
+     * <p>The two buffers hold disjoint shapes -- rectangles there, spheres here -- which is what makes the
+     * three-way mixture density trivial: no candidate can be proposed by more than one stratum, so each
+     * one's pdf is its own stratum's term and nothing has to be summed across them.
+     */
+    public uint64_t dynamicLightAddr;
+    public uint     dynamicLightCount;
+    /** How many of the M RIS candidates are drawn from that buffer. 0 is off and is the shipped default. */
+    public uint     dynamicRisCandidates;
+
+    /**
+     * One multiplier for every finite emitter's radiance: brightness times a colour-temperature tint whose
+     * luminance is exactly one, so the two controls stay orthogonal and turning the temperature never
+     * changes how bright anything is. (1,1,1,0) is off and is bit-for-bit the shipped picture.
+     *
+     * <p><b>Applied where radiance becomes OUTGOING LIGHT, never where a Light record is decoded.</b> That
+     * is not a style preference, it is the difference between a working knob and one that does nothing.
+     * The proposal density reconstructs a light's power as area times luminance, and normalises it by an
+     * inverse total power the CPU published untinted -- so tinting the decode would scale every pdf by the
+     * brightness, W = wSum/(M*phat) would divide by it again, and the two cancel EXACTLY. The picture would
+     * not move by one bit however far the slider went.
+     *
+     * <p>So the decoders and the proposal stay untinted, and so does what ReSTIR stores: a reservoir keeps
+     * the raw radiance, which is what its light-identity check compares against a freshly re-read record.
+     * Tinting one side of that comparison and not the other would reject every stored sample.
+     */
+    public float4   emitterTint;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
@@ -384,6 +438,20 @@ public static const uint PAYLOAD_DIRECT_VIEW = 8u;
 // Set by world.rchit on a terrain hit whose prim carries TERRAIN_PRIM_IN_LIGHT_BUFFER: this emitter is
 // RIS-sampled, so raygen gates its direct-hit emission on diffuse continuation rays (no double count).
 public static const uint PAYLOAD_EMITTER_IN_LIST = 128u;
+
+/**
+ * This emitter is covered by a PROXY rather than by a second sampling of the same surface.
+ *
+ * <p>The distinction decides which correction applies, and the two are not interchangeable. A terrain
+ * rectangle is sampled by the emitter strategy and hit by the BSDF strategy on THE SAME SURFACE, so the
+ * two densities meet and MIS weights them. A dynamic entity emitter is sampled as a SPHERE that stands in
+ * for a mesh the BSDF ray actually hits — two different domains, whose densities never meet, so there is
+ * no MIS weight to compute and the estimators have to be partitioned outright instead.
+ *
+ * <p>Weighting the proxy case as though it were the surface case would produce weights that do not sum to
+ * one, which is a quiet energy error rather than a visible one.
+ */
+public static const uint PAYLOAD_EMITTER_PROXIED = 1u << 21u;
 // Set by world.rchit on any dielectric hit (water or glass/ice): true when the incoming ray travels
 // against the prim's outward face normal (entering the volume), false when it exits. Derived from face
 // orientation rather than toggled, so a stray or missing face cannot corrupt the medium for the rest of
@@ -551,14 +619,16 @@ public static const uint MAX_MATERIAL_EXTENSIONS = 4095u;
 // is what makes it free: the payload does not grow, so the SER path spills nothing extra for it, and a
 // tangent is otherwise three floats the closest-hit computes and throws away.
 //
-// Eleven bits, not the sixteen originally sketched — bits 8..19 went to the extension index and bit 20
-// to the celestial light. 11 bits is 0.18 degrees, still far below any visible error in a brushed
-// streak. Bit 20 could in principle be shared, since it only means anything on a miss and this only on
-// a hit, but PAYLOAD_SHOW_CELESTIAL and PAYLOAD_DIELECTRIC_ENTERING already declined that trade to keep
-// the two concerns unambiguous, and this follows them.
-public static const uint PAYLOAD_TANGENT_SHIFT = 21u;
-public static const uint PAYLOAD_TANGENT_MASK = 0x7FFu;
-public static const float PAYLOAD_TANGENT_STEPS = 2047.0;
+// Ten bits, not the sixteen originally sketched — bits 8..19 went to the extension index, bit 20 to the
+// celestial light, and bit 21 to M24 S4's emitter-proxy tag. Every bit of this word is now spoken for.
+// 10 bits is 0.35 degrees of grain direction, which is still an order of magnitude finer than any
+// visible error in a brushed streak; the bit bought the difference between an emitter counted once and
+// an emitter counted twice, which is visible. Bit 20 could in principle be shared, since it only means
+// anything on a miss and this only on a hit, but PAYLOAD_SHOW_CELESTIAL and PAYLOAD_DIELECTRIC_ENTERING
+// already declined that trade to keep the two concerns unambiguous, and this follows them.
+public static const uint PAYLOAD_TANGENT_SHIFT = 22u;
+public static const uint PAYLOAD_TANGENT_MASK = 0x3FFu;
+public static const float PAYLOAD_TANGENT_STEPS = 1023.0;
 
 /**
  * An arbitrary but DETERMINISTIC basis about n.
@@ -591,6 +661,10 @@ public static const uint MATERIAL_DIELECTRIC = 3u;
 // Bit 0: this submission carried an enchantment foil, so the hit shader gives it a violet sheen instead
 // of shading the glint pass as ordinary albedo.
 public static const uint ENTITY_PRIM_GLINT = 1u;
+// This entity quad's emission is also carried by a dynamic sphere emitter, so RIS already samples it.
+// The entity twin of TERRAIN_PRIM_IN_LIGHT_BUFFER, and it feeds the same payload bit -- see
+// RtEntityCapture.PRIM_EMITTER_IN_LIGHT_BUFFER for why an entity-wide flag would be the wrong shape.
+public static const uint ENTITY_PRIM_EMITTER_IN_LIGHT_BUFFER = 8u;
 // Bit 1: dither this prim's alpha instead of cutting it off. Entities get the same behaviour from their
 // MaterialHeader, but PARTICLES CARRY NO MATERIAL RECORD — they never index the table — so the flag lane
 // is the only place the any-hit shader can learn it. Vanilla decides: SingleQuadParticle.Layer.translucent.

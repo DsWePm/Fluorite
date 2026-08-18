@@ -1,5 +1,7 @@
 package io.github.dswepm.fluorite.rt.material;
 
+import io.github.dswepm.fluorite.rt.light.RtEmitterTint;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -82,9 +84,23 @@ public final class RtMaterialOverrides {
             metalness = optionalFloat(base, "metalness");
         }
         Float emissionStrength = null;
+        Integer emissionTemperatureK = null;
         if (root.has("emission")) {
             JsonObject emission = root.getAsJsonObject("emission");
             emissionStrength = optionalFloat(emission, "strength");
+            // A blackbody temperature for THIS emitter. Absent means it inherits the global setting;
+            // 0 means it explicitly keeps its texture's own colour, which is what a sea lantern or
+            // glowstone wants and what a single global control could never say.
+            Float temperature = optionalFloat(emission, "temperature_k");
+            if (temperature != null) {
+                if (!Float.isFinite(temperature) || temperature < 0.0f
+                        || (temperature > 0.0f && (temperature < RtEmitterTint.MIN_TEMPERATURE_K
+                                || temperature > RtEmitterTint.MAX_TEMPERATURE_K))) {
+                    throw new IllegalArgumentException("emission.temperature_k must be 0 or "
+                            + RtEmitterTint.MIN_TEMPERATURE_K + ".." + RtEmitterTint.MAX_TEMPERATURE_K);
+                }
+                emissionTemperatureK = Math.round(temperature);
+            }
             if (emission.has("color_source") && !"albedo".equals(emission.get("color_source").getAsString())) {
                 throw new IllegalArgumentException("format 1 only supports emission color_source=albedo");
             }
@@ -197,7 +213,7 @@ public final class RtMaterialOverrides {
             emissionStrength = clamped;
         }
         return new Rule(source, sprite, block, model, roughness, metalness, ior, transmission,
-                disney, weather, emissionStrength);
+                disney, weather, emissionStrength, emissionTemperatureK);
     }
 
     public List<Rule> rules() {
@@ -220,7 +236,17 @@ public final class RtMaterialOverrides {
                         * A material with no natural emission stays unlit no matter this value; this
                         * cannot make a block glow that wasn't already emissive.
                         */
-                       Float emissionStrength) {
+                       Float emissionStrength,
+                       /**
+                        * This emitter's own blackbody temperature in kelvin, or null to inherit the global
+                        * setting. 0 is meaningful and distinct from null: it keeps the texture's own
+                        * colour, which is what an emitter that is not incandescent at all wants.
+                        *
+                        * <p>Unlike {@code emissionStrength}, which multiplies, this REPLACES — two colour
+                        * temperatures multiplied together are not a colour temperature, because a thing
+                        * has one.
+                        */
+                       Integer emissionTemperatureK) {
         boolean matchesSprite(TextureAtlasSprite value) {
             return value != null && sprite.equals(value.contents().name());
         }
