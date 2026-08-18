@@ -319,5 +319,11 @@ if (ambientVisibility == RtSkyPreset.AmbientVisibility.UNOCCLUDED
 
 ## R3.6 仍未动的两条
 
-- **S4b 开关**——第二轮记的「一个布尔 + 两处分支」是低估了：`worldPush.flags` 的 32 位已全部分配完（0–31 逐位可查），关档若要等于合并前行为还得把 alpha 下限一并恢复，而那个下限在 `evalSampleContrib` 里，是每顶点 M+1 次的最热循环。可行的落点是 `pc.shadeFlags` 的 bit 2（该字保留了 30 位），但要让 `lighting.slang` 开始读 push constant——一个当前不存在的耦合。**成本重估：不是一个布尔。**
+- **S4b 开关**。
+
+  > **R3.6 初稿在此处写「`worldPush.flags` 的 32 位已全部分配完，需改用 `pc.shadeFlags` bit 2，引入一个当前不存在的耦合」。那是错的**，逐位重查的结果是 **bit 1 空闲**：`RtComposite:2769–2917` 共 19 处写入，覆盖 0、2–31，bit 1 无人写；`shaders/` 里也无人读（bit 1 在 `environmentFlags` 那个**另一个**字里是 `FROXEL_LOCAL_LIGHTS`，我第一次把两个字的位混在一起数了）。
+
+  所以插桩成本恢复成第二轮的原始估计：**一个 bit，无新耦合**。三个落点都已经在读 WorldPush——raygen 读 `worldPush.flags`（116/138/1351），`shadeReservoir` 读它（`lighting.slang:594` 的水焦散），`evalSampleContrib` 读 `worldPush.emitterTint`。
+
+  **真正的成本不在插桩，在关档的完整性**：off 若只恢复 MIS 权重而不恢复 alpha 下限，得到的是「无下限的高光被重复计数」——一张**从未发布过、且比两端都差**的图，拿它当 A/B 基准比没有开关更坏。要正确就得把三处 `UNWEIGHTED_SPEC_ALPHA_FLOOR` 和 `rainFilmBrdf(c, wi, true)` 一并放回 `evalSampleContrib`，而那是每顶点 M+1 次的最热循环。分支是 wave-uniform 且读的是已加载的值，预期极廉价，但按铁律 7 它落在实测过的 5.9 ms 里，**不能凭「应该很便宜」定论**。
 - **测试 helper 去重**（`between`/`code`/`source` ×16）。
