@@ -563,6 +563,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         capture.currentOrder = 0; // baked-quad paths never stack decal layers
         int tint = tintColor(q.materialInfo().tintIndex(), tintLayers);
         int vertexStart = capture.verts.size();
+        int primStart = capture.primSize();
         capture.addBakedQuad(pose, q, tint);
         if (activeHeldLight != null) {
             float[] vertices = capture.verts.elements();
@@ -572,13 +573,32 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
                 meshY[i] = vertices[source + 1];
                 meshZ[i] = vertices[source + 2];
             }
-            recordHeldLightQuad(sprite, transmissive, tint, meshX, meshY, meshZ);
+            recordHeldLightQuad(sprite, transmissive, tint, meshX, meshY, meshZ, primStart);
         }
     }
 
     /** Observe one submitted item quad through its stateful block material without changing capture state. */
+    /**
+     * Mark quads whose emission is ALSO represented by a dynamic sphere emitter.
+     *
+     * <p>The raygen suppresses a marked emitter's direct-hit term off diffuse continuation rays, because
+     * the previous vertex's RIS already sampled it. Terrain has had that since RIS landed
+     * (TERRAIN_PRIM_IN_LIGHT_BUFFER); entities never did, because nothing put them in the light buffer —
+     * and the moment M24 S3 started proposing their sphere proxies, every emissive entity surface was
+     * being counted twice, once by RIS through the proxy and once by a bounce ray hitting the surface.
+     *
+     * <p>Per quad rather than per entity, and set only where a quad actually reached an accumulator. An
+     * entity-wide flag would suppress the emission of surfaces that produced no sphere at all, which
+     * loses their light outright — the opposite error, and the harder one to notice.
+     */
+    private void markEmitterInLightBuffer(int primStart) {
+        if (capture != null && primStart >= 0) {
+            capture.orPrimFlagsFrom(primStart, RtEntityCapture.PRIM_EMITTER_IN_LIGHT_BUFFER);
+        }
+    }
+
     private void recordHeldLightQuad(TextureAtlasSprite sprite, boolean transmissive, int tint,
-                                     float[] x, float[] y, float[] z) {
+                                     float[] x, float[] y, float[] z, int primStart) {
         if (activeHeldLight == null || activeHeldLightState == null) {
             return;
         }
@@ -622,6 +642,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         float tintR = ((tint >>> 16) & 0xFF) * (1.0f / 255.0f);
         float tintG = ((tint >>> 8) & 0xFF) * (1.0f / 255.0f);
         float tintB = (tint & 0xFF) * (1.0f / 255.0f);
+        markEmitterInLightBuffer(primStart);
         activeHeldLight.addQuad(x, y, z, summary.coverage(),
                 summary.averageR() * scale * tintR,
                 summary.averageG() * scale * tintG,
@@ -951,10 +972,11 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             flameVertex(flamePose, 1, half, -yOff, z, u0, v1);
             flameVertex(flamePose, 2, half, FLAME_QUAD_HEIGHT - yOff, z, u0, v0);
             flameVertex(flamePose, 3, -half, FLAME_QUAD_HEIGHT - yOff, z, u1, v0);
+            int flamePrimStart = capture.primSize();
             capture.addDirectQuad(meshX, meshY, meshZ, meshU, meshV, 0f, 0f, 0f, -1, FLAME_EMISSION);
             long dynamicLightStart = profileDynamicEntity ? RtFrameStats.FRAME.startStage() : 0L;
             try {
-                recordFlameLightQuad(sprite, meshX, meshY, meshZ);
+                recordFlameLightQuad(sprite, meshX, meshY, meshZ, flamePrimStart);
             } finally {
                 RtFrameStats.FRAME.endStage("entity.dynamicAttachedLights", dynamicLightStart);
             }
@@ -984,7 +1006,8 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
      * deliberately, because the visible quad's was wrong and M18 was scoped not to change the picture
      * (D98A); with the visible path fixed there is one material and no reason for two lookups.
      */
-    private void recordFlameLightQuad(TextureAtlasSprite sprite, float[] x, float[] y, float[] z) {
+    private void recordFlameLightQuad(TextureAtlasSprite sprite, float[] x, float[] y, float[] z,
+                                      int primStart) {
         RtMaterialRegistry.Snapshot snapshot = RtMaterialRegistry.INSTANCE.requireSnapshot();
         int materialId = flameMaterial(sprite);
         RtMaterialDesc desc = snapshot.material(materialId);
@@ -992,6 +1015,7 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
         if (!summary.emissive() || desc.emissionSource() == RtMaterialDesc.EmissionSource.NONE) {
             return;
         }
+        markEmitterInLightBuffer(primStart);
         flameLight.addQuad(x, y, z, summary.coverage(),
                 summary.averageR() * desc.emissionStrength(),
                 summary.averageG() * desc.emissionStrength(),
@@ -1209,11 +1233,14 @@ public abstract class RtEntityCollectorBase implements SubmitNodeCollector {
             }
         }
         int color = ARGB.multiply(averageQuadColor(quad), tint);
-        if (itemMesh && activeHeldLight != null) {
-            recordHeldLightQuad(sprite, transmissive, color, meshX, meshY, meshZ);
-        }
         float emission = quad.emissive() ? 1f : state != null ? state.getLightEmission() / 15f : 0f;
+        // The quad goes in FIRST so the observer has prims to mark. Its own inputs are the transformed
+        // positions, which this path already has, so the order is free here.
+        int primStart = capture.primSize();
         capture.addDirectQuad(meshX, meshY, meshZ, meshU, meshV, 0f, 0f, 0f, color, emission);
+        if (itemMesh && activeHeldLight != null) {
+            recordHeldLightQuad(sprite, transmissive, color, meshX, meshY, meshZ, primStart);
+        }
     }
 
     /** Collapse Fabric's per-vertex colour into the flat per-primitive tint stored by the RT layout. */

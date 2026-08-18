@@ -1325,6 +1325,12 @@ public final class RtComposite {
         if (FluoriteConfig.Rt.Bsdf.SUBSURFACE_SOLID_LAYER.value()) {
             flags |= 1; // SHADE_SOLID_LAYER_SSS
         }
+        // Whether an emissive entity quad may claim "RIS already covers me". Only true while the dynamic
+        // stratum is actually proposing those proxies — the gate this feeds suppresses the surface's own
+        // emission, and suppressing it when nothing samples the proxy loses that light outright.
+        if (FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() > 0) {
+            flags |= 2; // SHADE_DYNAMIC_EMITTER_RIS
+        }
         return flags;
     }
 

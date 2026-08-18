@@ -76,6 +76,19 @@ public struct WorldPushConstants {
  */
 public static const uint SHADE_SOLID_LAYER_SSS = 1u;
 
+/**
+ * M18's dynamic sphere emitters are being proposed this frame (dynamicRisCandidates > 0).
+ *
+ * <p>The hit shader needs it to decide whether an emissive ENTITY quad should claim
+ * PAYLOAD_EMITTER_IN_LIST: the proxy covering it only exists as a candidate while the stratum is on, and
+ * suppressing the surface's own emission when nothing samples the proxy would lose that light outright.
+ * Terrain has no such condition — its emitters live in the buffer RIS always draws from.
+ *
+ * <p>Here rather than read from WorldPush because the hit shader deliberately never dereferences that
+ * struct, which is the same judgement SHADE_SOLID_LAYER_SSS is here for.
+ */
+public static const uint SHADE_DYNAMIC_EMITTER_RIS = 2u;
+
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
 // w = bindless entityAlbedoTex slot of the destroy-stage texture.
 public struct BreakEntry {
@@ -632,6 +645,10 @@ public static const uint MATERIAL_DIELECTRIC = 3u;
 // Bit 0: this submission carried an enchantment foil, so the hit shader gives it a violet sheen instead
 // of shading the glint pass as ordinary albedo.
 public static const uint ENTITY_PRIM_GLINT = 1u;
+// This entity quad's emission is also carried by a dynamic sphere emitter, so RIS already samples it.
+// The entity twin of TERRAIN_PRIM_IN_LIGHT_BUFFER, and it feeds the same payload bit -- see
+// RtEntityCapture.PRIM_EMITTER_IN_LIGHT_BUFFER for why an entity-wide flag would be the wrong shape.
+public static const uint ENTITY_PRIM_EMITTER_IN_LIGHT_BUFFER = 8u;
 // Bit 1: dither this prim's alpha instead of cutting it off. Entities get the same behaviour from their
 // MaterialHeader, but PARTICLES CARRY NO MATERIAL RECORD — they never index the table — so the flag lane
 // is the only place the any-hit shader can learn it. Vanilla decides: SingleQuadParticle.Layer.translucent.
