@@ -53,9 +53,11 @@
 | the_end | sky | environment |
 | the_nether | **unoccluded** | **local_ambient** |
 
-只有下界用 `unoccluded`，而它配的 `local_ambient` 没有可达的天空盘/梯度。**所以当前不重复——但那是巧合，不是约束。** 资源包完全可以authored 出 `unoccluded` + `atmosphere` 的组合，那一刻整个世界会均匀偏亮，而且没有任何地方会报错。
+只有下界用 `unoccluded`。
 
-**建议**：在 `RtSkyPresets` 解析时拒绝（或至少警告）`unoccluded` 与带天空的 provider 的组合。这是本轮唯一一条「现在没坏但没有护栏」的发现。
+> **本段以下在动手修护栏时被推翻，见文末「第二轮遗留项」。** 原判断是「`local_ambient` 没有可达的天空盘/梯度，所以当前不重复，那是巧合」。事实是 `world.rmiss:178` 的 `local_ambient` 分支**直接把 `mediumSkyRadiance` 写进 `payload.albedo`**——逃逸背景是可达的，下界现在就在两次计入。**「没有天空盘/梯度」被我当成了「没有可达背景」，而均匀背景也是背景。**
+
+**建议**：在 `RtSkyPresets` 解析时拒绝（或至少警告）`unoccluded` 与带天空的 provider 的组合。这是本轮唯一一条「现在没坏但没有护栏」的发现——「现在没坏」这半句也是错的，见下。
 
 ### A.3 SSS 的两项是互补的，不是重复的
 
@@ -243,3 +245,79 @@ pre-ReSTIR 的 A3 类。两条都在宣称动态发光体尚未被采样：
 以及本轮新增：
 
 - **M24 新增代码的重复/耦合/边界条件**——pre-ReSTIR 第二轮的对应部分，本轮完全没做。已知的候选：`between/code/source` 三个测试 helper 在本轮新增的四个测试类里又复制了四份（pre-review 的 R5 记的是 ×12，现在是 ×16）。
+
+
+---
+
+# 第二轮遗留项 · 已动手：`unoccluded` 的 provider 护栏
+
+> 用户裁定：从第二轮攒下的三条可动手项（`unoccluded` 护栏 / S4b 开关 / 测试 helper 去重）里挑一条做。选了护栏——另外两条是卫生项，这条挡的是「资源包一改字段，整个世界的光凭空翻倍，且无处报错」。
+
+## R3.1 先更正 A.2：它的事实判断错了
+
+A.2 说「下界配的 `local_ambient` 没有可达的天空，所以当前不重复」。查 `world.rmiss:178`：
+
+```slang
+if (worldPush.skyProvider == SKY_PROVIDER_LOCAL_AMBIENT) {
+    float3 col = max(worldPush.mediumSkyRadiance.xyz, float3(0.0, 0.0, 0.0));
+    payload.albedo = half3(clamp(col, ...));
+```
+
+**逃逸射线拿到的就是 `mediumSkyRadiance` 本身。** 所以下界此刻正在两次计入：表面在 545 无遮挡加一次，从同一表面出发的漫反射延续逃逸时在 271 再加一次。
+
+我在 A.2 里把「没有天空盘/梯度」读成了「没有可达背景」。**均匀背景也是背景**，而且是同一个数。
+
+## R3.2 但那不是 bug——是 D78A 明写批准过的
+
+`DEVELOPMENT.md:592`：
+
+> 环境光倍率统一缩放**表面保底光、逃逸背景与介质环境源**，不改变局部发光体功率；保底光不受遮挡是 D78A 明示的非物理可读性近似。
+
+三项是**被当作一件事**批准的，共用一个维度滑条。所以下界的两次计入是设计，不是疏漏——这也正是 `ambient_radiance` 写 0.002 而不是写一个物理值的原因：它是**下限**，不是天空。
+
+## R3.3 真正没有护栏的，是 `mediumSkyRadiance` 由谁写
+
+三个 provider 的这一个字段来源完全不同（`RtComposite.mediumSkyRadiance` + `RtComposite:3192` 的 `if (atmosphereProvider)`）：
+
+| provider | `mediumSkyRadiance` 从哪来 | 量级 |
+| --- | --- | --- |
+| `local_ambient` | 预设 authored 的 `ambient_radiance × 维度倍率` | 保底下限（下界 0.002） |
+| `atmosphere` | **`sky_medium_reduce` 用 sky-view LUT 的相位积分覆写** | 真实天光 |
+| `environment` | HDRI 的 `meanRadiance × 维度倍率` | 真实环境均值 |
+
+**只有第一行是「保底光」，后两行是推导出来的日光。** 把后两者无遮挡地加到每一个漫反射表面上，密闭房间会和外面的旷野一样亮——而且哪儿都不会报错：没有 NaN、没有黑屏、没有校验失败，只是整张图均匀地错。这是最难归因到某个预设字段的一类错误。
+
+所以护栏的判据不是「provider 有没有天空」（A.2 的表述），而是「**`mediumSkyRadiance` 是 authored 的下限，还是推导出的日光**」。当前这两个划分给出同一个答案，但前者是巧合，后者是理由。
+
+## R3.4 改了什么
+
+`RtSkyPresets.parse` 加一条跨字段一致性检查，紧挨着已有的那条同形状检查（`Environment providers require weather, clouds and fog off`）：
+
+```java
+if (ambientVisibility == RtSkyPreset.AmbientVisibility.UNOCCLUDED
+        && provider != RtSkyPreset.SkyProvider.LOCAL_AMBIENT) {
+    throw new IllegalArgumentException(
+            "Unoccluded ambient visibility requires the local_ambient provider in " + source);
+}
+```
+
+**「拒绝」在这里不是崩溃**：`load()` 逐资源 catch，写一行 WARN 点名文件，该维度回落 `FULL_ATMOSPHERE`。这是本文件对每一处跨字段矛盾的既有政策，不是本轮新发明的处理方式——所以这一条不构成方向性决策。
+
+三个已发布预设全部不受影响：overworld = atmosphere + sky，the_end = environment + sky，the_nether = local_ambient + unoccluded。
+
+约束同时写进了 `RtSkyPreset.AmbientVisibility` 的 javadoc——那是读到这个字段的人会看的地方。
+
+## R3.5 测试：从已发布预设改一个字段
+
+两个新用例，202 测试全绿。关键在**取材**：
+
+- 用例从 `overworld.json` / `the_end.json` 的**真实文件**出发，只替换 `ambient_visibility` 一个字段。未改动版本先断言能解析通过——**这样「改动版本抛异常」就只能是这个字段的原因**。
+- 手写 fixture 会green 得毫无意义：拿下界的 fog 拼一个 environment 预设，会先被 format-2 规则拒掉，护栏删了测试照样过。这正是上一轮踩过三次的坑（「断言了一个比要守的性质更弱的命题」）。
+- `assertAll` 而不是 for 循环：循环在第一个维度就停，**只覆盖 atmosphere 而漏掉 environment 的护栏仍会显示绿色**。
+
+**变异验证已做**：把判据改成 `if (false)`，两个维度**各自独立**报错（`MultipleFailuresError: 2 failures`），不是一个连带另一个。恢复后 202 全绿。
+
+## R3.6 仍未动的两条
+
+- **S4b 开关**——第二轮记的「一个布尔 + 两处分支」是低估了：`worldPush.flags` 的 32 位已全部分配完（0–31 逐位可查），关档若要等于合并前行为还得把 alpha 下限一并恢复，而那个下限在 `evalSampleContrib` 里，是每顶点 M+1 次的最热循环。可行的落点是 `pc.shadeFlags` 的 bit 2（该字保留了 30 位），但要让 `lighting.slang` 开始读 push constant——一个当前不存在的耦合。**成本重估：不是一个布尔。**
+- **测试 helper 去重**（`between`/`code`/`source` ×16）。

@@ -54,6 +54,15 @@ public record RtSkyPreset(
         HOMOGENEOUS
     }
 
+    /**
+     * Whether the ambient term samples visibility, or is taken as arriving from everywhere.
+     *
+     * <p>{@code UNOCCLUDED} is D78A's approved non-physical readability floor and is legal ONLY with
+     * {@link SkyProvider#LOCAL_AMBIENT}, which is the one provider whose {@code mediumSkyRadiance} is the
+     * authored floor itself. The other two derive that value -- from the sky-view integral, or from an
+     * HDRI's mean -- and adding a derived daylight radiance to every diffuse surface without visibility
+     * would light a sealed room as brightly as the field outside it. RtSkyPresets enforces the pairing.
+     */
     public enum AmbientVisibility {
         SKY,
         UNOCCLUDED

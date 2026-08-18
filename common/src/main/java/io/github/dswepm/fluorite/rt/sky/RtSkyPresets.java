@@ -139,6 +139,27 @@ public final class RtSkyPresets {
                 && (weather || clouds || profile != RtSkyPreset.FogProfile.OFF || density != 0f)) {
             throw new IllegalArgumentException("Environment providers require weather, clouds and fog off in " + source);
         }
+
+        // An UNOCCLUDED ambient floor is only coherent where mediumSkyRadiance is authored as a floor.
+        //
+        // That value is added to every diffuse surface with no visibility sampled at all, and the diffuse
+        // continuation leaving the same surface picks it up A SECOND TIME on escape -- world.rmiss returns
+        // exactly this radiance for local_ambient. The second entry is not an oversight: D78A approved the
+        // surface floor, the escaped background and the medium source as ONE authored quantity moved by one
+        // dimension slider, which is what "non-physical readability floor" means and why the Nether's 0.002
+        // reads as a floor rather than as a doubling.
+        //
+        // The other two providers do not own that value. Atmosphere has sky_medium_reduce overwrite it with
+        // the phase-integrated sky-view radiance and environment fills it with the HDRI's mean radiance --
+        // both DERIVED daylight quantities, orders of magnitude above any floor. Adding one of them
+        // unoccluded makes a sealed room exactly as bright as the field outside it, everywhere, at once.
+        // Nothing downstream can notice: no NaN, no black, no error. The picture is merely uniformly wrong,
+        // which is the hardest kind of wrong to attribute to a preset field.
+        if (ambientVisibility == RtSkyPreset.AmbientVisibility.UNOCCLUDED
+                && provider != RtSkyPreset.SkyProvider.LOCAL_AMBIENT) {
+            throw new IllegalArgumentException(
+                    "Unoccluded ambient visibility requires the local_ambient provider in " + source);
+        }
         return new RtSkyPreset(provider, ambient, weather, clouds,
                 new RtSkyPreset.Fog(profile, density, extinction, albedo, phaseG,
                         start, cull, heightScale, heightBase, noise, ambientVisibility, localLights),
