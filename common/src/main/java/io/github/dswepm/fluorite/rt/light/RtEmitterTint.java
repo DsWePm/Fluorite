@@ -1,6 +1,7 @@
 package io.github.dswepm.fluorite.rt.light;
 
 import io.github.dswepm.fluorite.FluoriteConfig;
+import io.github.dswepm.fluorite.rt.material.RtMaterialDesc;
 
 /**
  * One multiplier for every finite emitter's radiance: brightness, times a colour-temperature tint.
@@ -28,11 +29,59 @@ public final class RtEmitterTint {
     private RtEmitterTint() {
     }
 
-    /** This frame's multiplier, from the two knobs. Index 0..2 are RGB; nothing writes index 3. */
+    /**
+     * The per-frame multiplier, which is BRIGHTNESS ONLY.
+     *
+     * <p>Temperature is not here, and the asymmetry is not an oversight. A unit-luminance tint is
+     * invisible to {@code luminance(le)}, so a colour temperature can be baked straight into a light
+     * record without disturbing the proposal density that reconstructs power from it — while brightness
+     * cannot, which is why brightness alone survives as a runtime multiply at the shading sites. Baking
+     * the temperature also lets it be authored PER MATERIAL, which a single frame-wide vector could not
+     * express, and leaves each light record carrying the colour it actually has.
+     *
+     * <p>The cost is that moving the temperature slider needs a resource reload. That is the trade the
+     * per-material control is worth: fine-tuning individual emitters happens in files, which needs a
+     * reload anyway.
+     */
     public static float[] current() {
         float brightness = FluoriteConfig.Rt.Composite.EMITTER_BRIGHTNESS.value();
-        int kelvin = FluoriteConfig.Rt.Composite.EMITTER_TEMPERATURE_K.value();
-        return of(brightness, kelvin);
+        if (!Float.isFinite(brightness) || brightness < 0.0f) {
+            brightness = 1.0f;
+        }
+        return new float[] {brightness, brightness, brightness};
+    }
+
+    /**
+     * Recolour an emission summary to a blackbody temperature, at material-compile time.
+     *
+     * <p>{@code authored} distinguishes "this material named a temperature" from "it did not". The
+     * distinction matters at zero: an authored 0 means KEEP MY OWN COLOUR, which is what glowstone or a
+     * sea lantern wants against a global setting that would otherwise recolour it, while an unauthored 0
+     * simply inherits that global setting. Per-material OVERRIDES global rather than multiplying it,
+     * because two colour temperatures multiplied together are not a colour temperature — a thing has one.
+     *
+     * <p>Only the average colour moves. {@code integratedLuminance} and {@code coverage} are untouched and
+     * stay correct by construction, because the tint's luminance is one — which is also what keeps the
+     * proposal density, which reconstructs a light's power from that luminance, completely unaware of
+     * this.
+     */
+    public static RtMaterialDesc.EmissionSummary tint(RtMaterialDesc.EmissionSummary summary,
+                                                      int kelvin, boolean authored) {
+        // An AUTHORED value is taken as given, including an authored 0, which is how a material says
+        // "keep my own colour" against a global setting that would otherwise recolour it. Only an
+        // unauthored material falls through to the global one.
+        if (!authored) {
+            kelvin = FluoriteConfig.Rt.Composite.EMITTER_TEMPERATURE_K.value();
+        }
+        if (kelvin <= 0 || summary == null || !summary.emissive()) {
+            return summary;
+        }
+        double[] rgb = blackbodyUnitLuminance(Math.clamp(kelvin, MIN_TEMPERATURE_K, MAX_TEMPERATURE_K));
+        return new RtMaterialDesc.EmissionSummary(
+                (float) (summary.averageR() * rgb[0]),
+                (float) (summary.averageG() * rgb[1]),
+                (float) (summary.averageB() * rgb[2]),
+                summary.integratedLuminance(), summary.coverage());
     }
 
     /** Exposed for tests: the same computation without reading configuration. */

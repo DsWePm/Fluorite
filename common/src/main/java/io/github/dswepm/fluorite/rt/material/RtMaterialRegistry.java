@@ -1,5 +1,7 @@
 package io.github.dswepm.fluorite.rt.material;
 
+import io.github.dswepm.fluorite.rt.light.RtEmitterTint;
+
 import com.mojang.blaze3d.platform.NativeImage;
 import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.mixin.SpriteContentsAccessor;
@@ -211,7 +213,8 @@ public final class RtMaterialRegistry {
                                 variantSummary(features, emitting, entry, stats.uniformSummary()),
                                 dielectricIor);
                         if (spriteWide != null) {
-                            desc = spriteWide.rule.apply(desc);
+                            desc = withEmitterTemperature(spriteWide.rule.apply(desc),
+                                    spriteWide.rule.emissionTemperatureK());
                         }
                         variants[index(profile, glass, emitting)] = headers.size();
                         add(headers, extensions, descriptions, grids, desc, stats.average(), entry, stats.albedoGrid());
@@ -231,7 +234,8 @@ public final class RtMaterialRegistry {
                                     features, profile, emitting, false,
                                     variantSummary(features, emitting, entry, stats.uniformSummary()),
                                     dielectricIor);
-                            RtMaterialDesc desc = compiled.rule.apply(base);
+                            RtMaterialDesc desc = withEmitterTemperature(compiled.rule.apply(base),
+                                    compiled.rule.emissionTemperatureK());
                             overrideVariants[index(profile, glass, emitting)] = headers.size();
                             add(headers, extensions, descriptions, grids, desc, stats.average(), entry, stats.albedoGrid());
                         }
@@ -250,7 +254,7 @@ public final class RtMaterialRegistry {
             RtMaterialDesc desc = compileEntityDesc(features, false, entry.emissionSummary());
             for (RtMaterialOverrides.Rule rule : overrides.rules()) {
                 if (!rule.matchesEntity(name)) continue;
-                desc = rule.apply(desc);
+                desc = withEmitterTemperature(rule.apply(desc), rule.emissionTemperatureK());
                 entityMatchedOverrides.add(rule);
                 break;
             }
@@ -509,12 +513,38 @@ public final class RtMaterialRegistry {
                 * EMISSION_VARIANTS + (emitting ? 1 : 0);
     }
 
-    /** LabPBR/heuristic masks own the summary; otherwise an emitting state falls back to whole-sprite. */
+    /**
+     * LabPBR/heuristic masks own the summary; otherwise an emitting state falls back to whole-sprite.
+     *
+     * <p>Untinted. The colour temperature lands in {@link #withEmitterTemperature}, AFTER any override has
+     * been applied — an override may name its own temperature, and tinting here would leave that one
+     * recolouring a colour that had already been recoloured.
+     */
     private static RtMaterialDesc.EmissionSummary variantSummary(int features, boolean emitting,
                                                                  RtBlockMaterials.Entry entry,
                                                                  RtMaterialDesc.EmissionSummary uniformSummary) {
         if ((features & (FEATURE_SPEC | FEATURE_HEURISTIC_EMISSION)) != 0) return entry.emissionSummary();
         return emitting ? uniformSummary : RtMaterialDesc.EmissionSummary.NONE;
+    }
+
+    /**
+     * Recolour a finished material's emission to a blackbody temperature.
+     *
+     * <p>Applied once per compiled material, after overrides, so that every downstream consumer — the
+     * block-light collector, the entity and held-item spheres, the particle clusters — inherits it without
+     * knowing it exists. {@code authored} is the resource pack's {@code emission.temperature_k}: null
+     * inherits the global setting, 0 keeps the texture's own colour.
+     */
+    static RtMaterialDesc withEmitterTemperature(RtMaterialDesc desc, Integer authored) {
+        RtMaterialDesc.EmissionSummary tinted = authored != null
+                ? RtEmitterTint.tint(desc.emissionSummary(), authored, true)
+                : RtEmitterTint.tint(desc.emissionSummary(), 0, false);
+        if (tinted == desc.emissionSummary()) {
+            return desc;
+        }
+        return new RtMaterialDesc(desc.model(), desc.source(), desc.features(), desc.roughness(),
+                desc.metalness(), desc.ior(), desc.transmission(), desc.emissionSource(),
+                desc.emissionStrength(), tinted, desc.disney(), desc.weather());
     }
 
     private static RtMaterialDesc compileDesc(int model, int features, RtMaterials.Profile profile,
