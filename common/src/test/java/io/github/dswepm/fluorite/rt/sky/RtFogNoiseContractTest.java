@@ -109,24 +109,31 @@ final class RtFogNoiseContractTest {
         }
     }
 
+
+    /**
+     * The resolved-noise pair stays split even though the view that made it visible is gone.
+     *
+     * <p>Debug view 25 painted the texture resolution and the final multiplier in separate bands, and it
+     * was retired with the atmosphere views. What it was checking is a production property: the sample and
+     * the multiplier are two functions, so a change to the ambient response cannot silently become a
+     * change to what the texture resolves to. Keeping the assertion without the view is the point --
+     * a diagnostic retiring must not take the invariant it demonstrated with it.
+     */
     @Test
-    void debugView25SeparatesTextureResolutionAndFinalMultiplier() throws IOException {
+    void theResolvedNoiseAndItsMultiplierRemainSeparateFunctions() throws IOException {
         String source = shader("volume_source.slang");
         String volume = shader("volume.slang");
         String raygen = shader("world.rgen.slang");
-        String options = repositoryFile(
-                "common/src/main/java/io/github/dswepm/fluorite/client/RtVideoOptions.java");
 
         assertTrue(source.contains("volumeFogNoiseResolved"));
-        assertTrue(volume.contains("ambientNoiseDebugSample"));
-        assertTrue(raygen.contains("DEBUG_VIEW_FOG_NOISE = 25u"));
-        assertTrue(raygen.contains("fogNoiseDebug(dispatchIndex, dimensions)"));
-        assertTrue(raygen.contains("band < 1u"));
-        assertTrue(raygen.contains("band < 2u"));
-        assertTrue(raygen.contains("band < 3u"));
-        // 25 must remain selectable, but later diagnostics may legitimately extend the upper bound.
-        assertTrue(Pattern.compile("List\\.of\\([^;]*\\b25\\s*,", Pattern.DOTALL)
-                .matcher(options).find());
+        assertTrue(source.contains("volumeFogNoiseResolvedMultiplier"));
+        assertTrue(volume.contains("volumeFogNoiseResolvedMultiplier(sample.xy, sample.zw"));
+
+        // And the retirement is complete: number, painter, and the helper that had no other caller.
+        assertFalse(raygen.contains("DEBUG_VIEW_FOG_NOISE"));
+        assertFalse(raygen.contains("fogNoiseDebug"));
+        assertFalse(volume.contains("ambientNoiseDebugSample"),
+                "its only caller was the retired view, so leaving it would be dead shader code");
     }
 
     private static int encodePairedUnorm(float paired, boolean canonicalHalf) {

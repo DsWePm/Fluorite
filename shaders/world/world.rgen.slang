@@ -889,97 +889,6 @@ static const uint DEBUG_VIEW_VOLUME_SUNVIS = 10u;
 static const uint DEBUG_VIEW_WATER_CAUSTIC = 11u;
 static const float CAUSTIC_DEVIATION_GAIN = 20.0;
 
-// The transmittance table, painted straight onto the screen, with a control strip along the bottom that
-// recomputes the SAME (r, mu) by marching. Written because "the sun and moon discs are black while the
-// sunlight is right" has two very different explanations — an empty table, or a table that is fine and a
-// consumer that is not — and no amount of reading the descriptor wiring separates them.
-//
-// The whole screen is the (u, v) domain of the table. Alternating vertical bands choose who answers:
-//
-//   even band: skyTransmittanceLut sampled there      (bake + binding + sampler, end to end)
-//   odd  band: atmosphereTransmittance(r, mu, 8) there (the maths alone, no GPU resource involved)
-//
-// Both are asked the SAME (r, mu), which is the whole point. A first version split the screen top/bottom
-// instead, and that could not be read: each half ran v from 0 to 1 over its own height, so the two sides
-// of the seam described different altitudes and stepped no matter what — "is that step real?" had no
-// answer. Banding at equal uv has one: agreement is literally invisible.
-//
-//   uniformly black          -> the table never arrived; look at the bake, the barrier, the descriptor.
-//   smooth, no visible bands -> the table is fine; the fault is in whoever consumes it.
-//   visible bands            -> the table disagrees with the integral it was baked from.
-//
-// It read black the first time it ran, and the cause was the bake's descriptor write leaving
-// descriptorCount at zero — see RtSky.create. Kept rather than deleted because M10.2/10.3 add two more
-// tables through the same three links, and this separates "the table" from "the reader" in one look.
-//
-// Expected picture either way: white at the left (straight up, thin air) grading to orange-red at the
-// right (toward the horizon), and black in the top-right — sea level along the longest path, where
-// nothing gets through. v is altitude, and it runs top to bottom.
-static const uint DEBUG_VIEW_SKY_TRANSMITTANCE = 12u;
-static const float SKY_LUT_BAND_PX = 48.0; // wide enough to see, narrow enough to give many comparisons
-
-// The multi-scatter table, painted the same way, with the same equal-uv banding against the same kind of
-// control — except the control here cannot be "recompute it", because recomputing it is a 64-direction
-// march that has no business running per pixel. The control is the TRANSMITTANCE at the same altitude
-// and sun angle, which answers a different question but shares the table's geometry, so a table that is
-// empty, constant, or has its axes transposed is visible against it.
-//
-// Expected picture: a smooth field, brightest where the sun is high and the air thin, with NO sharp
-// features anywhere — this quantity is isotropic by construction, so any edge in it is a bug. Blue-ish
-// throughout, since Rayleigh dominates what bounces more than once. Values are small (a few percent of
-// the sun); it is a correction to single scattering, not a replacement.
-static const uint DEBUG_VIEW_SKY_MULTISCATTER = 13u;
-static const float MULTISCATTER_DEBUG_GAIN = 8.0; // it is small on purpose; this makes it readable
-
-// The three sky-view tables, side by side over their own uv domain: Rayleigh | Mie | multi-scatter.
-// Left to right within each band is azimuth, 0 = toward the sun, 1 = away; UP IS UP — screen top is the
-// zenith, the middle row is the horizon, the bottom is straight down. The first version of this copied
-// the vertical flip from the transmittance view, whose v axis is altitude rather than elevation, and so
-// drew the sky upside down; the first reading taken from it put the bright region at the zenith when it
-// was at the horizon all along.
-//
-// HUE, not magnitude: each texel is divided by its own largest channel. These values run over orders of
-// magnitude between noon and dusk, so any fixed gain either clips the bright end to white or leaves the
-// dim end black, and both destroy the one thing worth reading here — whether the horizon reddens toward
-// the sun. A gain of 4 did exactly that on the first attempt and turned a legible sunset into a white
-// blob. Brightness is what the actual sky is for; this view answers colour.
-//
-// Split rather than composed, because the report — a sky that is wrong overall, with no visible sun halo
-// — does not say WHICH of the three is at fault, and the three fail in distinguishable ways. Rayleigh
-// carries the blue and the sunset gradient; Mie carries the halo and should be a bright spot at the
-// bottom-left of its band and nearly nothing elsewhere; multi-scatter should be a smooth dim wash with no
-// feature at all. A band that is black, flat, or shaped like its neighbour names the bug on sight.
-static const uint DEBUG_VIEW_SKY_VIEW = 14u;
-
-// The sky-view lookup against the march it replaced, at the SAME direction, in alternating bands.
-//
-// Neither is a reference for the other by authority — the march is simply the thing that was on screen
-// before and looked right, so a disagreement localises the milestone. Equal directions and equal bands
-// means agreement is literally invisible, which is the only judgement call worth asking anyone to make.
-//
-// The screen is the sky, not the table: a direction is reconstructed for each pixel from the sky-view
-// parameterisation, so left is toward the sun, the middle row is the horizon, up is the zenith.
-//
-//   no visible bands              -> the table reproduces the march; look downstream of it
-//   bands differing in BRIGHTNESS -> a magnitude error in the bake (a coefficient, SUN_INTENSITY, a step)
-//   bands differing in HUE        -> the sun transmittance is not reaching the bake correctly
-//   bands only near the horizon   -> the elevation axis is too coarse where it matters most
-static const uint DEBUG_VIEW_SKY_VIEW_REFERENCE = 15u;
-
-// The dye actually applied to this frame's celestial light, as a flat colour, beside the sky it is
-// supposed to match.
-//
-// This view answers whether the direct celestial light's atmosphere dye agrees with the sky toward it.
-// M16's diffuse medium source now comes from a separate full-sky integral, so a water/direct-light hue
-// difference is no longer expected to be explained by both sharing a fixed multiplier.
-//
-//   left  : sampleTransmittanceToSpace(lightDir), flat — the dye, nothing else
-//   right : the sky toward the light direction, for scale
-//
-// If the left half is red at dusk, the dye is doing its job and the dilution is downstream; if it is
-// yellow, the transmittance lookup is what to chase.
-static const uint DEBUG_VIEW_LIGHT_DYE = 16u;
-
 // The aerial-perspective froxel, read at the depth the slider is parked on, across the whole screen.
 //
 // Left is what the air ADDS between the eye and that depth, right is what it LEAVES of whatever is behind
@@ -1047,9 +956,6 @@ static const uint DEBUG_VIEW_WATER_SIM = 23u;
 // 24: the same field, but sampled the way the SHADING samples it. 23 proves the field has content; this
 // proves the content reaches the surface. They fail independently, which is the whole reason for two.
 static const uint DEBUG_VIEW_WATER_SIM_REACH = 24u;
-// M13/D67: one world-space slice through every stage that can erase heterogeneous fog structure.
-static const uint DEBUG_VIEW_FOG_NOISE = 25u;
-
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
     // view that resampled it through anything else would be testing the resampling.
@@ -1071,31 +977,6 @@ float3 froxelDebug(float2 uv) {
  * A fixed world-space distance makes this a spatial slice instead of allowing scene depth to scramble
  * the field. The footprint is the one a full camera-to-cull interval receives under the configured cap.
  */
-float3 fogNoiseDebug(uint2 dispatchIndex, uint2 dimensions) {
-    CameraRay cam = cameraRay(dispatchIndex, dimensions);
-    float start = min(worldPush.fogExtinction.w, worldPush.fogParams.w);
-    float span = max(worldPush.fogParams.w - start, 0.0);
-    int steps = volumeFogMarchSteps(span, worldPush.fogAmbient, worldPush.fogNoiseOrigin.w);
-    float footprint = span / float(max(steps, 1));
-    float probeDist = min(max(worldPush.fogNoiseOrigin.w * 0.25, 1.0), max(span, 1.0));
-    float4 sample = ambientNoiseDebugSample(cam.origin + cam.dir * probeDist, footprint);
-
-    uint band = min(dispatchIndex.x * 4u / max(dimensions.x, 1u), 3u);
-    if (band < 1u) {
-        float v = sample.x * 0.5 + 0.5;
-        return float3(v, v, v);
-    }
-    if (band < 2u) {
-        float v = sample.y * 0.5 + 0.5;
-        return float3(v, v, v);
-    }
-    if (band < 3u) {
-        return float3(sample.z, sample.w, 0.0); // red base, green detail, yellow both
-    }
-    float multiplier = ambientNoiseDebugMultiplier(sample);
-    return float3(multiplier, multiplier, multiplier) * 0.5; // neutral density 1 -> middle grey
-}
-
 // The volumetric visibility grid (M13.2), sampled at the MIDPOINT of this pixel's camera segment.
 //
 //   R : sun visibility     G : sky openness     B : always zero, so the two never blend into a grey
@@ -1229,58 +1110,6 @@ float3 visProfileDebug(uint2 dispatchIndex, uint2 dimensions, ConstPtr<PackedPat
         col = max(col, float3(0.30, 0.30, 0.30)); // the crosshair's column
     }
     return col;
-}
-
-float3 lightDyeDebug(float2 uv) {
-    float3 lightDir = worldPush.lightDir.xyz;
-    if (uv.x < 0.5) {
-        return sampleTransmittanceToSpace(lightDir);
-    }
-    return sampleSkyView(lightDir, worldPush.sunDir.xyz);
-}
-
-float3 skyViewReferenceDebug(float2 uv, uint2 pix) {
-    float3 sunDir = worldPush.sunDir.xyz;
-    float3 dir = skyViewLutDir(float2(uv.x, uv.y), sunDir);
-    if ((uint(float(pix.x) / SKY_LUT_BAND_PX) & 1u) == 0u) {
-        return sampleSkyView(dir, sunDir);
-    }
-    return atmosphereReferenceSky(dir, sunDir);
-}
-
-float3 skyViewDebug(float2 uv) {
-    float2 lutUv = float2(frac(uv.x * 3.0), uv.y);
-    uint band = uint(uv.x * 3.0);
-    float3 v = band == 0u ? skyViewRayleighLut.SampleLevel(lutUv, 0.0).rgb
-             : band == 1u ? skyViewMieLut.SampleLevel(lutUv, 0.0).rgb
-             : skyViewMultiLut.SampleLevel(lutUv, 0.0).rgb;
-    return v / max(max(max(v.r, v.g), v.b), 1.0e-9);
-}
-
-float3 skyMultiScatterDebug(float2 uv, uint2 pix) {
-    float2 lutUv = float2(uv.x, 1.0 - uv.y);
-    float r;
-    float muS;
-    multiScatterLutParams(lutUv, r, muS);
-    if ((uint(float(pix.x) / SKY_LUT_BAND_PX) & 1u) == 0u) {
-        return skyMultiScatterLut.SampleLevel(lutUv, 0.0).rgb * MULTISCATTER_DEBUG_GAIN;
-    }
-    return sampleTransmittance(r, muS);
-}
-
-float3 skyTransmittanceDebug(float2 uv, uint2 pix) {
-    // outImage is stored bottom-up with respect to the window: makeCameraRay builds ndc as
-    // pix/size * 2 - 1, so row 0 is ndc.y = -1, and the projection this renderer is handed puts ndc.y =
-    // -1 at the BOTTOM of the picture. Every other debug view is a per-pixel property and cannot notice;
-    // this one is the first thing here with a deliberate top and bottom, so it has to flip.
-    float2 lutUv = float2(uv.x, 1.0 - uv.y);
-    if ((uint(float(pix.x) / SKY_LUT_BAND_PX) & 1u) == 0u) {
-        return skyTransmittanceLut.SampleLevel(lutUv, 0.0).rgb;
-    }
-    float r;
-    float mu;
-    transmittanceLutParams(lutUv, r, mu);
-    return atmosphereTransmittance(r, mu, 8);
 }
 
 float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
@@ -1495,23 +1324,23 @@ void main() {
                         : float3(1.0, 0.0, 0.0);
             }
             outImage[pix] = float4(prefixDebug, 1.0);
-        } else if (pc.debugView >= DEBUG_VIEW_SKY_TRANSMITTANCE) {
+        } else if (pc.debugView >= DEBUG_VIEW_FROXEL) {
             // Screen-space, not a path property, so these take the pixel rather than the queued record.
+            //
+            // OPENS AT FROXEL (17), and 12-16 are now unclaimed. They were the four atmosphere tables and
+            // the celestial dye -- retired once the atmosphere stopped changing, along with 25's fog noise
+            // field. The numbers were NOT reused: every devlog, every comment and every note that names a
+            // view by number stays true, and renumbering would have made all of them quietly wrong.
+            //
+            // WHICH IS WHY THE DEFAULT IS LOUD. This chain used to end in `: froxelDebug(screenUv)`, so a
+            // number no arm claimed painted the froxel -- and that is not hypothetical: view 27 fell
+            // through to it and painted over pass A's puddle image for as long as the view existed,
+            // because a froxel is a plausible-looking picture and nobody reads it as an error. Retiring
+            // six numbers creates six more chances to make exactly that mistake, so an unclaimed number
+            // now returns magenta, which is not a picture of anything.
             float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
-            bool unavailableAtmosphereView = worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE
-                    && pc.debugView <= DEBUG_VIEW_LIGHT_DYE;
-            float3 table = unavailableAtmosphereView
-                    ? float3(0.0, 0.0, 0.0)
-                    : pc.debugView == DEBUG_VIEW_SKY_TRANSMITTANCE
-                    ? skyTransmittanceDebug(screenUv, dispatchIndex)
-                    : pc.debugView == DEBUG_VIEW_SKY_MULTISCATTER
-                    ? skyMultiScatterDebug(screenUv, dispatchIndex)
-                    : pc.debugView == DEBUG_VIEW_SKY_VIEW
-                    ? skyViewDebug(screenUv)
-                    : pc.debugView == DEBUG_VIEW_SKY_VIEW_REFERENCE
-                    ? skyViewReferenceDebug(screenUv, dispatchIndex)
-                    : pc.debugView == DEBUG_VIEW_LIGHT_DYE
-                    ? lightDyeDebug(screenUv)
+            float3 table = pc.debugView == DEBUG_VIEW_FROXEL
+                    ? froxelDebug(screenUv)
                     : pc.debugView == DEBUG_VIEW_VOLUME_VISIBILITY
                     // The queued record's origin is where the primary pass stopped, which is this pixel's
                     // camera segment's far end. Taken from the queue rather than re-traced: a debug view
@@ -1523,15 +1352,13 @@ void main() {
                     ? waterSimDebug(screenUv)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM_REACH
                     ? waterSimReachDebug(unpackPathSegment(queue[pixelIndex]).ro)
-                    : pc.debugView == DEBUG_VIEW_FOG_NOISE
-                    ? fogNoiseDebug(dispatchIndex, dimensions)
                     : pc.debugView == DEBUG_VIEW_CLOUD_PROBE
                     // The queued record carries the ray pass A stopped on, which for a pixel looking at
                     // sky is the camera ray itself. Taken from the queue rather than rebuilt here: a
                     // diagnostic that constructs its own ray is testing its own ray.
                     ? cloudDebugProbe(unpackPathSegment(queue[pixelIndex]).ro,
                                       unpackPathSegment(queue[pixelIndex]).rd)
-                    : froxelDebug(screenUv);
+                    : float3(1.0, 0.0, 1.0); // unclaimed view number
             outImage[pix] = float4(table, 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_VOLUME_INSCATTER) {
             outImage[pix] = float4(volumeDebug(queue[pixelIndex], pixelIndex), 1.0);

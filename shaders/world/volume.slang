@@ -92,17 +92,6 @@ float ambientNoiseMultiplier(float3 p, float footprint) {
                                     worldPush.fogNoiseOrigin.w, footprint);
 }
 
-/** Debug 25: xy are the decoded signed channels; zw are D66's base/detail resolved weights. */
-public float4 ambientNoiseDebugSample(float3 p, float footprint) {
-    if (!ambientNoiseOn()) {
-        return float4(0.0, 0.0, 0.0, 0.0);
-    }
-    float2 packed = fogNoise.SampleLevel(
-            volumeFogNoiseUv(worldPush.fogNoiseOrigin, p), 0.0).rg;
-    return float4(packed * 2.0 - 1.0,
-                  volumeFogNoiseResolved(worldPush.fogNoiseOrigin.w, footprint));
-}
-
 /** Debug 25 uses the exact final multiplier function consumed by normal transport. */
 public float ambientNoiseDebugMultiplier(float4 sample) {
     return volumeFogNoiseResolvedMultiplier(sample.xy, sample.zw, worldPush.fogAmbient);
