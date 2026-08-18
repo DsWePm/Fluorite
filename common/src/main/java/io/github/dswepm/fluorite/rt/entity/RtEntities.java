@@ -1747,8 +1747,10 @@ public final class RtEntities {
     }
 
     /**
-     * Upload M18's per-frame typed records into the guarded frame-list slot. This buffer is intentionally
-     * absent from WorldPush/descriptor state: collection is measurable now, sampling waits for ReSTIR.
+     * Upload M18's per-frame typed records into the guarded frame-list slot. This buffer is
+     * published through WorldPush.dynamicLightAddr since M24 S3, which gave these records their own
+     * stratum in the RIS proposal. The buffer is reallocated every frame, so the address must come from
+     * the frame's own build rather than from cached state.
      */
     private void uploadDynamicLights(RtContext ctx, FrameBuild build) {
         int count = build.dynamicLights.size();
