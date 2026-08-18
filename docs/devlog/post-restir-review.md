@@ -171,3 +171,75 @@
 - pass A 前缀与 pass B 叶片的分界（有 debug view 27 可跑，本轮未跑）。
 - 后处理链是否二次计入发光体。
 - `ENVIRONMENT_AMBIENT_UNOCCLUDED` 的护栏（A.2 的建议）。
+
+
+---
+
+# 第二轮：一个物理光源会不会进两个缓冲，以及 M24 留下的陈述
+
+> 第一轮（能量入口 + 性能悬崖）见上。本轮按 pre-ReSTIR 的规格续做：静态清点里的「过期注释」与「关闭档」两类，加上第一轮点名未覆盖的第一条。
+
+## 2.1 同一个物理光源进两个缓冲——**已核查，干净，且是被刻意设计过的**
+
+这是第一轮列为「未覆盖」的头一条，也是最值得担心的一条：一个火把既是静态光缓冲里的矩形光（方块本身），它的火焰**粒子**又会被 S3 收成球代理。两份记录，一个物理火把。
+
+查下来有一道明确的闸（`RtEntities.collectParticleLight:1371`）：
+
+```java
+int excess = ((packedLight >>> 4) & 15) - worldBlock;
+if (excess <= 0) return;
+```
+
+**粒子只有在自身亮度超过所在格的世界方块光时才成为光源**，且强度按 `excess/15` 缩放。火把的火焰粒子坐在火把已经提供 14 级方块光的格子里，它贡献的只是超出那一份的部分。
+
+实体身体光走同一套（`RtEntityCollectorBase:433`，`excess = reportedBlock - entityWorldBlockLight`）。
+
+`worldBlock` 是 vanilla 的方块光，而静态矩形光来自材质发射——两者不是同一个量，所以这是**近似**而非精确抵消。但它是有原则的近似：方块光正是「这个格子已经被世界的静态光源照亮了多少」的度量。
+
+### 但第三条路径没有这道闸，而且那是对的
+
+`recordHeldLightQuad` 用 `stateEmission = getLightEmission()/15`，**没有 excess 检查**。这不是遗漏：**原版不会从手持物发出方块光**（那正是「动态光」类 mod 存在的理由），所以没有任何静态光代表手持火把，没有可抵扣的东西。加上这道闸反而会让你站在墙上火把旁边时，手里的火把被错误压制。
+
+**三条路径、两种处理、不对称是正确的——而代码里没有一个字说明这件事。** 下一个动这块的人有一半概率把它「修」成一致。建议在 `configureDynamicLights` 附近写明。
+
+## 2.2 两条已被 M24 推翻的注释（本轮直接修掉）
+
+pre-ReSTIR 的 A3 类。两条都在宣称动态发光体尚未被采样：
+
+| 位置 | 原文 | 现状 |
+| --- | --- | --- |
+| `world_common.slang:374` | 「…alias/grid sampling therefore sees rectangle records only **until the ReSTIR integration is approved**」 | S3 已给它们自己的分层通道 |
+| `RtEntities.java:1750` | 「collection is measurable now, **sampling waits for ReSTIR**」 | 已通过 `WorldPush.dynamicLightAddr` 发布 |
+
+两条都已改写，并顺带把「为什么是独立通道而不是并入 alias 表」和「那些位置已经 rebase 过」写进了前者——后者是 D187 里两个静默失败点之一。
+
+## 2.3 关闭档清点（铁律 8）
+
+| 开关 | 关档 | 状态 |
+| --- | --- | --- |
+| `composite.restir-reuse-depth` = 0 | 不分配缓冲、地址 0、回落单帧 RIS | ✓ 有测试 |
+| `composite.restir-spatial-neighbours` = 0 | 循环零迭代 | ✓ 有测试 |
+| `composite.dynamic-ris-candidates` = 0 | 通道跳过，不消耗随机数 | ✓ 有测试 |
+| `composite.emitter-brightness` = 1.0 | 乘一（IEEE 精确） | ✓ 有测试 |
+| `composite.emitter-temperature-k` = 0 | 完全跳过普朗克轨迹 | ✓ 有测试 |
+| `diagnostics.restir-stats` = false | 地址 0，着色端提前返回 | ✓ |
+
+**没有违规。** 但有一条结构性的欠缺：
+
+### S4b 没有开关，因此它是 M24 里唯一无法在运行时 A/B 的改动
+
+发光体 MIS 与移除高光下限**改变了已发布行为**（去掉镜面重复计数、让高光变锐），而它没有旋钮。铁律 7 明确偏好「运行时隔离开关优先于 git checkout A/B」——对这一项做不到。
+
+这不是违规（铁律 8 管的是开关的关档，而这里没有开关），但它意味着：**如果将来有人报告「发光体附近的高光太噪」，无法在同一会话里把 MIS 关掉对比**，只能切 commit。若要补，成本是一个布尔 + 两处分支（`shadeReservoir` 的 `misWeight` 与 raygen 的 `emitterShare`），关档等于合并前的行为。
+
+## 2.4 本轮未覆盖（第三轮的起点）
+
+第一轮列的四条里，本轮结清了第一条，另外三条仍在：
+
+- **pass A 前缀与 pass B 叶片的分界**——有 `DEBUG_VIEW_COMPOSITE_PREFIX_AB`（debug view 27 的邻居）专门为此存在，跑一次即可，但需要在游戏里跑。
+- **后处理链是否二次计入发光体**（bloom/flare 的阈值取自已计入的辐射）。
+- **`ENVIRONMENT_AMBIENT_UNOCCLUDED` 的预设护栏**（第一轮 A.2）。
+
+以及本轮新增：
+
+- **M24 新增代码的重复/耦合/边界条件**——pre-ReSTIR 第二轮的对应部分，本轮完全没做。已知的候选：`between/code/source` 三个测试 helper 在本轮新增的四个测试类里又复制了四份（pre-review 的 R5 记的是 ×12，现在是 ×16）。

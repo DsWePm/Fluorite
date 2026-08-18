@@ -371,8 +371,11 @@ public struct Light {
 
 // M18 reserves bit 31 as the shared ABI's shape tag. Dynamic sphere records store radius in the low
 // half of halfUxy; section bits 0..29 carry a deterministic dynamic-source key, while bit 30 remains
-// reserved. These records currently live in a separate, deliberately unbound per-frame buffer. Existing
-// alias/grid sampling therefore sees rectangle records only until the ReSTIR integration is approved.
+// reserved. These records live in a separate per-frame buffer, and M24 S3 gave them their own stratum in
+// the RIS proposal rather than folding them into the alias tables or the dense grid -- both are built
+// incrementally with the terrain and would have to be rebuilt whole every frame to carry entities. So the
+// alias/grid sampling still sees rectangle records only, and the sphere records are proposed beside it.
+// See WorldPush.dynamicLightAddr, and note that THOSE POSITIONS ARE ALREADY REBASED.
 public static const uint LIGHT_TYPE_SPHERE = 0x80000000u;
 public static const uint LIGHT_NORMAL_FLIP = 0x40000000u;
 
