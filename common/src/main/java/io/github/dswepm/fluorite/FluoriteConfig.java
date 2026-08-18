@@ -75,7 +75,8 @@ public final class FluoriteConfig {
             Rt.Dimensions.END_ENVIRONMENT_SCALE, Rt.Dimensions.END_DISK_SCALE,
             Rt.Dimensions.END_DISK_OUTER_RADIUS, Rt.Dimensions.END_DISK_THICKNESS,
             Rt.Dimensions.END_ENVIRONMENT_ROTATION_SPEED,
-            Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
+            Rt.Bsdf.MIS_ENABLED, Rt.Bsdf.EMITTER_MIS_ENABLED,
+            Rt.Bsdf.ANISOTROPY_ENABLED, Rt.Bsdf.SUBSURFACE_SOLID_LAYER,
             Rt.Bsdf.SUBSURFACE_MODE, Rt.Water.ABSORB_OVERRIDE,
             Rt.Water.SCATTER_R, Rt.Weather.RAIN_SURFACES_ENABLED,
             Rt.Weather.RAIN_EXPOSURE_QUALITY, Rt.Weather.RAIN_PARTICLES_ENABLED,
@@ -1846,6 +1847,27 @@ public final class FluoriteConfig {
              */
             public static final BooleanSetting MIS_ENABLED =
                     bool("fluorite.rt.bsdf.sunMis", "bsdf.sun-mis", true);
+
+            /**
+             * The same weighing for the world's own emitters: a torch, glowstone, lava.
+             *
+             * <p>Its sibling above covers ONE light of zero angular size. This covers every light with an
+             * extent, and the double count it removes was not the sun's. RIS estimates an emitter through
+             * the diffuse and specular lobes both, while the gate that preceded M24 S4b only suppressed
+             * the diffuse continuation — so an emitter reached by a specular bounce was counted twice for
+             * as long as both existed, and the alpha floor is most likely why it never read as a doubling:
+             * it made the RIS half a blurred copy of the sharp highlight rather than the same highlight.
+             *
+             * <p><b>Off restores both halves</b>, the 1/0 gate and the alpha floor, because they are one
+             * decision — the floor bounded a peak nothing else bounded, and the weight bounds it by
+             * weighting instead of by blurring. Off with only the weight removed would be an unfloored
+             * highlight counted twice: a picture that never shipped, and a worse baseline than no switch.
+             *
+             * <p>Here to make the comparison possible inside one session rather than across two commits,
+             * which is what iron law 7 asks of a change that moved a published picture.
+             */
+            public static final BooleanSetting EMITTER_MIS_ENABLED =
+                    bool("fluorite.rt.bsdf.emitterMis", "bsdf.emitter-mis", true);
 
             /**
              * The anisotropic specular lobe.

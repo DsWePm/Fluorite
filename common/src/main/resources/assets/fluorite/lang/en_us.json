@@ -465,6 +465,8 @@
   "fluorite.options.rt.dlssEnabled.tooltip": "Off traces at full resolution with no denoising and no temporal accumulation — the reference view for judging a material change on its own terms. Raise samples per pixel alongside it.",
   "fluorite.options.rt.sunMis": "Sun & Moon MIS",
   "fluorite.options.rt.sunMis.tooltip": "Weights the two ways the sun is estimated — a shadow ray toward it, and a reflection landing on it — instead of adding both. Only materials smoother than roughness 0.006 change; mirrors are untouched. Off to compare.",
+  "fluorite.options.rt.emitterMis": "Emitter MIS",
+  "fluorite.options.rt.emitterMis.tooltip": "Weights the two ways a torch, lantern or lava block is estimated — the light sampler aiming at it, and a bounce that lands on it — instead of taking both in full. Off also restores the highlight softening that hid the difference, so the pair moves together. Off to compare.",
   "fluorite.options.rt.anisotropy": "Anisotropic Specular",
   "fluorite.options.rt.anisotropy.tooltip": "Stretches the highlight along the surface grain, the way brushed metal and satin look. Only affects materials whose pack authored anisotropy.amount; everything else is identical either way. Off to compare.",
   "fluorite.options.rt.subsurfaceMode": "Subsurface Scattering",

@@ -103,7 +103,7 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.media",
                                 volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
                 case MATERIAL -> List.of(
-                        Section.of(sunMis(), anisotropy()),
+                        Section.of(sunMis(), emitterMis(), anisotropy()),
                         Section.titled("fluorite.options.rt.section.subsurface",
                                 subsurfaceMode(), subsurfaceThickness(), subsurfaceMaxEvents()));
                 // Clouds are sky, not fog. They share a config namespace with the fog for historical
@@ -2064,6 +2064,20 @@ public final class RtVideoOptions {
      */
     private static OptionInstance<Boolean> sunMis() {
         return bool("fluorite.options.rt.sunMis", FluoriteConfig.Rt.Bsdf.MIS_ENABLED);
+    }
+
+    /**
+     * The same weighing for the world's own emitters, and here for the same reason: it moved a published
+     * picture, so the comparison has to be one flip rather than one checkout.
+     *
+     * <p>Beside its sibling because the pair is one idea applied to two kinds of light — one of zero
+     * angular size, one with an extent. The difference is where it shows: the sun's switch only touches
+     * materials smoother than roughness 0.006, while this one changes every specular highlight standing
+     * near a torch, because the double count it removes was a specular bounce finding an emitter the
+     * previous vertex had already estimated through the same lobe.
+     */
+    private static OptionInstance<Boolean> emitterMis() {
+        return bool("fluorite.options.rt.emitterMis", FluoriteConfig.Rt.Bsdf.EMITTER_MIS_ENABLED);
     }
 
     /**

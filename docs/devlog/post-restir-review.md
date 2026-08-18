@@ -319,7 +319,7 @@ if (ambientVisibility == RtSkyPreset.AmbientVisibility.UNOCCLUDED
 
 ## R3.6 仍未动的两条
 
-- **S4b 开关**。
+- ~~**S4b 开关**~~ —— 已做，见 R3.7。以下是当时的成本分析，保留。
 
   > **R3.6 初稿在此处写「`worldPush.flags` 的 32 位已全部分配完，需改用 `pc.shadeFlags` bit 2，引入一个当前不存在的耦合」。那是错的**，逐位重查的结果是 **bit 1 空闲**：`RtComposite:2769–2917` 共 19 处写入，覆盖 0、2–31，bit 1 无人写；`shaders/` 里也无人读（bit 1 在 `environmentFlags` 那个**另一个**字里是 `FROXEL_LOCAL_LIGHTS`，我第一次把两个字的位混在一起数了）。
 
@@ -327,3 +327,56 @@ if (ambientVisibility == RtSkyPreset.AmbientVisibility.UNOCCLUDED
 
   **真正的成本不在插桩，在关档的完整性**：off 若只恢复 MIS 权重而不恢复 alpha 下限，得到的是「无下限的高光被重复计数」——一张**从未发布过、且比两端都差**的图，拿它当 A/B 基准比没有开关更坏。要正确就得把三处 `UNWEIGHTED_SPEC_ALPHA_FLOOR` 和 `rainFilmBrdf(c, wi, true)` 一并放回 `evalSampleContrib`，而那是每顶点 M+1 次的最热循环。分支是 wave-uniform 且读的是已加载的值，预期极廉价，但按铁律 7 它落在实测过的 5.9 ms 里，**不能凭「应该很便宜」定论**。
 - **测试 helper 去重**（`between`/`code`/`source` ×16）。
+
+
+---
+
+# R3.7 S4b 的隔离开关
+
+> 承 R3.6。第二轮点名「M24 里唯一无法在运行时 A/B 的改动」，这次补上。
+
+## 落点：`worldPush.flags` bit 1
+
+R3.6 更正过的那个空闲位。三个读取点本来就在解引用 WorldPush，所以**没有新增任何耦合**，也没有新增 WorldPush 字段（`BYTE_SIZE` 不动，布局测试不受影响）。
+
+**极性：设置为 OFF 时才置位**，于是 flags 全零 = 已发布画面。这是水体「无遮挡太阳」隔离开关（bit 15）的既有约定，理由相同：任何忘记置位的路径都应该落到已发布行为上，而不是落到旧估计器上。
+
+## 关档必须是三处一起动
+
+这是这次唯一需要想清楚的地方。S4b 改了三处：
+
+| 位置 | ON（已发布） | OFF |
+| --- | --- | --- |
+| `world.rgen.slang` | 三情形（partition / MIS / delta 全取） | 1/0 闸 |
+| `shadeReservoir` | `powerHeuristic(...)` 权重 | `misWeight = 1.0` |
+| `evalSampleContrib` | 无 alpha 下限 | 三处下限 + `rainFilmBrdf(..., true)` |
+
+**只恢复权重而不恢复下限，得到的是「无下限的高光被重复计数」——一张从未发布过、且比两端都差的图。** 拿它当 A/B 基准比没有开关更坏：对比出来的差异会被归因到权重，而实际来自下限，且没有任何东西会指出这一点。
+
+所以三处共用一个 `emitterMisOn()`，`evalSampleContrib` 里进一步收敛成一个 `bool floorAlpha`，覆盖基础瓣和雨膜两处。
+
+### 关档的等价性是机器验证的，不是眼看的
+
+写了一段脚本：取 `f0b4de0^`（S4b 之前）的 `evalSampleContrib`，与当前版本把 `floorAlpha` 字面展开为 `true` 后逐行比对，去注释、归一化空白。
+
+**结果：逐行相同。** 不是「看起来一样」。
+
+这一步不是仪式。手写时最容易犯的错是**把各向同性分支的 Smith 项也加上下限**——各向异性分支确实 D 和 Smith 都用 `ax/ay`，看着就该对称。但已发布行为里各向同性分支**只给 D 加下限**，Smith 用未加下限的 `c.rough`（原注释：这么小的 alpha 下遮蔽项与 1 相差不到一个百分点，加了白加，还要多占一个寄存器）。那个不对称就是已发布行为，测试专门钉住了它。
+
+其余两处的等价性是结构性的，不需要脚本：`* 1.0` 在 IEEE 下精确；raygen 的 `emitterShare = showCelestial ? 1.0 : 0.0` + `emitterShare > 0.0` 守卫，与旧的 `(!gateEmitter || showCelestial)` 真值表逐格相同，且触发时乘的是精确的 1.0。
+
+## 开关**不**回退的那一半，以及为什么不能
+
+S4b 顺带把切向量从 11 位压到 10 位（0.18° → 0.35°），腾出 bit 21 给 `PAYLOAD_EMITTER_PROXIED`。**那是 payload 布局改动，运行时开关无法回退**，也不该回退——它不改变估计器，只改变各向异性纹理方向的精度。
+
+**所以这个开关的关档 = 「S4b 的估计器回退了」，不是「S4b 这个 commit 回退了」。** 用它做 A/B 时，切向量精度两端相同。
+
+## UI
+
+放在材质页 `sunMis()` 旁边，因为是同一个想法作用于两类光源——一个零角尺寸，一个有面积。差别在于波及面：太阳那个只动 roughness < 0.006 的材质，这个动的是**每一个站在火把旁边的高光**。en_us / zh_cn / zh_tw 三份。
+
+## 测试
+
+203 测试全绿（+1）。新增 `offIsTheEstimatorThatPredatesS4bAtEveryOneOfItsThreeSites`：三处各断言一次（任何一处单独漏掉都仍然渲染出一张有光的图）、极性断言（写反了会让所有忘记置位的路径静默发布旧估计器）、默认值断言。
+
+原有三个 S4b 契约测试因为断言的是**无条件**形式而失败，已改成断言**条件**形式——这比原来更强：原来钉的是「下限不存在」，现在钉的是「下限恰好在权重关闭时存在」。

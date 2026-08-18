@@ -190,6 +190,30 @@ public static const float SPEC_MOTION_ALPHA_MAX = 0.25; // perceptual smoothness
  */
 public static const float UNWEIGHTED_SPEC_ALPHA_FLOOR = 0.02;
 
+/**
+ * Isolation switch: take every emitter estimator unweighted, the way this renderer did before M24 S4b.
+ *
+ * S4b changed a published picture -- it removed a specular double count and unblurred the highlights that
+ * double count was hiding behind -- and shipped without a lever, which made it the one M24 change that
+ * could only be A/B'd by checking out another commit. Iron law 7 wants the comparison to be possible
+ * inside one session, against one build, on one scene.
+ *
+ * OFF RESTORES BOTH HALVES, and it has to. The weight and the alpha floor arrived together because
+ * neither works without the other: the floor bounded a peak that nothing else bounded, and the weight
+ * bounds it by weighting instead of by blurring. Restoring the weight alone would leave an unfloored
+ * highlight being counted twice -- a picture that never shipped and is worse than either endpoint, which
+ * is a worse baseline to compare against than having no switch at all.
+ *
+ * The bit is set when the setting is OFF, so a zero flags word is the shipped picture. Same convention as
+ * the water's unoccluded-sun isolation switch, and for the same reason.
+ */
+public static const uint FLAG_EMITTER_MIS_OFF = 1u << 1u;
+
+/** True while an emitter estimator and the continuation that could find it are weighed against each other. */
+public bool emitterMisOn() {
+    return (worldPush.flags & FLAG_EMITTER_MIS_OFF) == 0u;
+}
+
 public bool isDeltaAlpha(float roughness) {
     return clamp(roughness, 0.0, 1.0) <= MIRROR_ALPHA_MAX;
 }
