@@ -260,6 +260,48 @@ final class RtPostProcessingContractTest {
         assertTrue(options.contains("lensFlareBokehSize()"));
     }
 
+    /**
+     * bloom1 is TWO things — the bloom pyramid's level 1, and the flare seed's scratch — and only the
+     * dispatch order keeps that from mattering.
+     *
+     * <p>The pyramid is built coarse to fine and each level reads the one below it, so bloom0 is built
+     * FROM bloom1; the flare then overwrites bloom1 with its own isolation-weighted seed. Today that is
+     * safe for two reasons and no others: mode 11 is dispatched after the pyramid finishes, and the
+     * composite samples level 0 alone. Break either and bloom silently takes its shape from the flare
+     * seed whenever the flare is on and looks correct whenever it is off — a setting-dependent artefact
+     * with no error attached, and the most natural edit in this file (widening bloom by blending level 1)
+     * is exactly the one that trips it.
+     *
+     * <p>Not a live defect. Pinned because nothing in either file says the buffer is shared.
+     */
+    @Test
+    void theFlareSeedOverwritesBloomLevelOneAndMayOnlyDoSoAfterThePyramidIsBuilt() throws IOException {
+        String shader = source("shaders/display/bloom_flare.comp");
+        String pipeline = source(
+                "common/src/main/java/io/github/dswepm/fluorite/rt/pipeline/RtBloomFlarePipeline.java");
+
+        // The aliasing itself: the flare seed lands in the pyramid's level 1.
+        assertTrue(shader.contains("imageStore(bloom1, pixel, vec4(flareSeed(pixel), 1.0))"));
+        assertTrue(shader.contains("imageLoad(bloom1, samplePixel).rgb * tapWeight"),
+                "and the bokeh pass is the only thing meant to read it back");
+
+        // Why bloom0 depends on it: each level is seeded by the coarser one.
+        assertTrue(shader.contains("+ bilinearBloom(level + 1, uv).rgb * propagation"));
+
+        // The composite reads level 0 ALONE. A blend with level 1 here would pick up the flare seed.
+        assertTrue(shader.contains("scene += bilinearBloom(0, uv).rgb * max(pc.bloomIntensity, 0.0);"));
+        assertFalse(shader.contains("bilinearBloom(1, uv)"),
+                "sampling level 1 at composite time would read the flare seed, but only with flare on");
+
+        // And the order that makes all of the above safe.
+        assertTrue(pipeline.indexOf("for (int mode = 6; mode <= 9; mode++)")
+                        < pipeline.indexOf("dispatch(cmd, stack, push, 11"),
+                "the pyramid must be finished before its level 1 is repurposed");
+        assertTrue(pipeline.indexOf("dispatch(cmd, stack, push, 12")
+                        < pipeline.indexOf("dispatch(cmd, stack, push, 10"),
+                "and the bokeh must be built before the composite reads it");
+    }
+
     @Test
     void artisticGradeUsesDirtyBakedSceneLinearLutAndFilmGrainStaysBeforeOutput() throws IOException {
         String display = source("shaders/display/display_common.glsl");
