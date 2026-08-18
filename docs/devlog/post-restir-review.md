@@ -380,3 +380,65 @@ S4b 顺带把切向量从 11 位压到 10 位（0.18° → 0.35°），腾出 bi
 203 测试全绿（+1）。新增 `offIsTheEstimatorThatPredatesS4bAtEveryOneOfItsThreeSites`：三处各断言一次（任何一处单独漏掉都仍然渲染出一张有光的图）、极性断言（写反了会让所有忘记置位的路径静默发布旧估计器）、默认值断言。
 
 原有三个 S4b 契约测试因为断言的是**无条件**形式而失败，已改成断言**条件**形式——这比原来更强：原来钉的是「下限不存在」，现在钉的是「下限恰好在权重关闭时存在」。
+
+
+---
+
+# R3.8 后处理链是否二次计入发光体——**是，但那是加性 bloom 的定义，不是输运错误**
+
+第一轮列的第三条。合成端（`bloom_flare.comp` mode 10）：
+
+```glsl
+vec3 scene = imageLoad(sourceImage, pixel).rgb;
+if (bloom) scene += bilinearBloom(0, uv).rgb * pc.bloomIntensity;
+if (flare) scene += lensFlare(uv);
+```
+
+**纯加性。** 完整场景保留，再把由**它自己的亮像素**滤出来的一份加上去。物理守恒的写法是 `scene*(1-k) + blur*k`——光晕的能量本该是**没能到达锐利成像点**的那份能量。这里是加，不是搬。
+
+所以一个火把的辐射确实进了两次。但它不构成本次 review 关心的那类错误，理由有三条，每条都验证过：
+
+1. **在估计器下游。** 无法污染 RIS / MIS / ReSTIR 的任何账。
+2. **没有反馈回路。** 曝光计的是 `rrOutput`（`RtComposite:3445`），即 **bloom 之前**的图；bloom 只把曝光图当作阈值的参考量读。所以 bloom 不会推动曝光、曝光不会再推动 bloom。这一条如果反了就是真 bug（bloom 变亮 → 曝光压暗 → 下一帧更暗 → bloom 减少 → 振荡），而它是靠**顺序**而不是靠注释保证的。
+3. **默认关。** `post-processing.bloom.enabled = false`、`lens-flare.enabled = false`。已发布配置里这条链根本没跑。
+
+### 顺带验证了「曝光只应用一次」
+
+文件头自称：阈值是显示相对的（`source * exposure`），而存储/合成的值留在场景线性域，好让后面的 display pass 恰好应用一次曝光。
+
+查 `extractHighlight`：`exposure` **只**参与 `brightness` 的阈值判断，返回的是 `max(sceneLinear,0) * contribution`——不带曝光。金字塔因此全程场景线性，合成是线性加线性，display 再乘一次。**成立。** 这里最容易犯的错是在 extract 里就乘上曝光，那样 display 会再乘一次。
+
+## R3.9 `bloom1` 是两个东西，只有派发顺序拦着
+
+查这条时发现的，**不是当前缺陷**，但没有一个字写着它。
+
+- 金字塔由粗到细构建，每级读下一级：`combined = loadBright(level) + bilinearBloom(level + 1) * propagation`。**所以 bloom0 是由 bloom1 建出来的。**
+- 然后 mode 11 把**炫光种子**写进 `bloom1`（当作 scratch 用），mode 12 从它算五边形散景。
+
+今天安全，靠且仅靠两件事：**mode 11 排在金字塔（mode 9）之后**，且**合成只采样 level 0**。
+
+两者任一被破坏，bloom 就会在开炫光时静默地从炫光种子取形状、在关炫光时完全正常——一个跟着设置走、不报任何错的画面异常。而这个文件里**最自然的一次改动恰好就会踩中**：想让 bloom 更宽，把 `bilinearBloom(0, uv)` 改成掺一点 level 1。
+
+已加测试 `theFlareSeedOverwritesBloomLevelOneAndMayOnlyDoSoAfterThePyramidIsBuilt` 钉住：别名本身、bloom0 对 bloom1 的依赖、合成只读 level 0、以及两条派发顺序。**变异验证**：把炫光两次派发移到金字塔之前，测试报「the pyramid must be finished before its level 1 is repurposed」。
+
+## R3.10 测试 helper 的重复度：不是 ×16，是 ×18
+
+第二轮记的是 ×16，实际数了一遍：
+
+| helper | 份数 |
+| --- | --- |
+| `source(String relativePath)` | **18** |
+| `code(String text)` | 8 |
+| `between(String, String, String)` | 7 |
+
+18 个测试类各自持有一份仓库根定位逻辑。本轮新增的测试**没有再加一份**——它写在已经持有 `source` 的 `RtPostProcessingContractTest` 里。
+
+去重本身仍未做，留作独立项：它要改 18 个文件，和本轮的审查结论混在一个提交里不合适。
+
+## 本轮结束时的账
+
+第一轮列的四条，**已结清三条**：同一光源进两个缓冲（2.1）、`unoccluded` 护栏（R3.4）、后处理链（R3.8）。
+
+**剩一条**：pass A 前缀与 pass B 叶片的分界——有 `DEBUG_VIEW_COMPOSITE_PREFIX_AB` 专为此存在，但必须在游戏里跑，静态分析给不出答案。
+
+第二轮新增的「M24 新增代码的重复/耦合/边界条件」：本轮做了耦合（R3.9）与重复的清点（R3.10），**边界条件尚未系统过一遍**。
