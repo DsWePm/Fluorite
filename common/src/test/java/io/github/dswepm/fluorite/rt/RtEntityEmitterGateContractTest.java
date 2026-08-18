@@ -71,10 +71,17 @@ final class RtEntityEmitterGateContractTest {
 
         assertTrue(chit.contains("pr.flags & ENTITY_PRIM_EMITTER_IN_LIGHT_BUFFER"));
         assertTrue(chit.contains("pr.flags & TERRAIN_PRIM_IN_LIGHT_BUFFER"));
-        assertEquals(2, count(chit, "payload.flags |= PAYLOAD_EMITTER_IN_LIST;"),
-                "terrain and entities must both raise it, and nothing else should");
-        assertTrue(rgen.contains("bool gateEmitter = risOn && payloadEmitterInList();"),
-                "the raygen gate stays exactly as terrain left it");
+        assertTrue(chit.contains("payload.flags |= PAYLOAD_EMITTER_IN_LIST;"),
+                "terrain raises it alone");
+        assertTrue(chit.contains("payload.flags |= PAYLOAD_EMITTER_IN_LIST | PAYLOAD_EMITTER_PROXIED;"),
+                "entities raise it together with the proxy tag, which is what tells the two apart");
+
+        // S4 replaced the gate with three cases, and the PROXIED one is still the outright partition:
+        // a sphere standing in for a mesh gives the two strategies different domains, so their densities
+        // never meet and there is no weight to compute between them.
+        assertTrue(rgen.contains("if (payloadEmitterProxied()) {"));
+        assertTrue(rgen.contains("emitterShare = showCelestial ? 1.0 : 0.0;"),
+                "a proxied emitter keeps the partition S4a introduced");
     }
 
     /**

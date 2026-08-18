@@ -103,13 +103,11 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float3 h = normalize(wi + c.v);
             float ndh = max(0.0, dot(c.n, h));
             float vdh = max(0.0, dot(c.v, h));
-            // Emitter rectangles are sampled by area and never weighted against BSDF sampling, so this
-            // is one of the two places UNWEIGHTED_SPEC_ALPHA_FLOOR is what bounds the peak. The real fix
-            // is MIS against emitter sampling, which is its own piece of work.
-            //
-            // The floor applies to D alone. Smith masking is within a fraction of a percent of 1 for any
-            // alpha this small at any angle that survives the ndl > 0 test, so flooring it too would buy
-            // nothing and would cost the hoisted c.g1v below.
+            // NO ALPHA FLOOR. It stood here because an emitter rectangle was sampled by area and never
+            // weighted against BSDF sampling, so nothing else bounded the peak of a very smooth lobe; the
+            // note that used to be here named MIS as the real fix, and shadeReservoir now applies it.
+            // Flooring on top of a MIS weight would blur a highlight that is no longer at risk of
+            // exploding, and would put the target function out of step with the density weighing it.
             //
             // This is the one specular site that still branches on anisotropy rather than running the
             // anisotropic form for everyone. It is called M+1 times per shading vertex — the measured
@@ -118,12 +116,10 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float D;
             float Gs;
             if (c.aniso) {
-                float ax = max(c.alphaX, UNWEIGHTED_SPEC_ALPHA_FLOOR);
-                float ay = max(c.alphaY, UNWEIGHTED_SPEC_ALPHA_FLOOR);
-                D = ggxDAniso(dot(h, c.t), dot(h, c.b), ndh, ax, ay);
-                Gs = c.g1v * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, ax, ay);
+                D = ggxDAniso(dot(h, c.t), dot(h, c.b), ndh, c.alphaX, c.alphaY);
+                Gs = c.g1v * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, c.alphaX, c.alphaY);
             } else {
-                D = ggxD(ndh, max(c.rough, UNWEIGHTED_SPEC_ALPHA_FLOOR));
+                D = ggxD(ndh, c.rough);
                 // c.g1v is the view half of Smith masking, hoisted: it depends only on the receiver, and
                 // this function runs once per RIS candidate.
                 Gs = c.g1v * ggxG1(ndl, c.rough);
@@ -131,7 +127,7 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float3 Fs = fresnelSchlick(vdh, c.F0);
             brdf += (D * Gs) * Fs / (4.0 * c.ndv * ndl);
         }
-        brdf = brdf * rainBaseTransmission(c, wi) + rainFilmBrdf(c, wi, true);
+        brdf = brdf * rainBaseTransmission(c, wi) + rainFilmBrdf(c, wi, false);
         contrib = brdf * le * (G * area);
     } else if (c.sss > 0.0) {
         float backNdl = -ndl;
@@ -145,6 +141,29 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
     }
     phat = luminance(contrib);
     return contrib;
+}
+
+/**
+ * The density, per unit AREA on an emitter, that the emitter strategy carries for a point of radiance
+ * `le` — as used by BOTH sides of M24 S4's MIS weight.
+ *
+ * <p>THE AREA CANCELS, and that is what makes this computable at a BSDF hit where nothing knows which
+ * light was struck. The proposal picks a light in proportion to its power, area times luminance, and then
+ * a point on it uniformly with density one over that same area — so the joint density of a point is its
+ * radiance times the inverse total power, and the emitter's extent drops out of both factors at once.
+ *
+ * <p>It is the GLOBAL stratum only; the real mixture also has the light grid's local term. That makes it
+ * an approximation of the true density and NOT a source of bias: a MIS weight may be built from any pair
+ * of positive functions, and what unbiasedness requires is that the two sides use the SAME pair — which is
+ * why this exists as one function rather than as two expressions that happen to match today.
+ */
+public float emitterAreaDensity(float3 le) {
+    return luminance(le) * worldPush.lightRebase.w;
+}
+
+/** The same for the competing strategy: a solid-angle density carried onto the emitter's surface. */
+public float bsdfAreaDensity(float solidAnglePdf, float cosAtEmitter, float distanceSquared) {
+    return solidAnglePdf * max(cosAtEmitter, 0.0) / max(distanceSquared, 1.0e-6);
 }
 
 // Select one light from the emitted-power distribution in O(1).
@@ -507,9 +526,26 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
 // the survivor (front BRDF, twoSided billboard, or SSS backscatter) — the origin is biased toward the
 // sample's side of the surface.
 public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
-                             BsdfContext c, MaterialExtension ext, Reservoir s) {
+                             BsdfContext c, MaterialExtension ext, Reservoir s,
+                             float lobeFilmShare, float lobeSpecShare, float lobeWalkShare) {
     if (s.W <= 0.0 || s.phat <= 0.0) {
         return float3(0.0, 0.0, 0.0);
+    }
+    // M24 S4's MIS weight against the continuation that could have found this same emitter by chance.
+    //
+    // Only for emitters the BSDF ray can actually hit. A DYNAMIC sample is a sphere standing in for a
+    // mesh: the two strategies sample different domains, their densities never meet, and a weight built
+    // from them would not sum to one. Those keep the outright partition the raygen applies instead.
+    float misWeight = 1.0;
+    if (!reservoirLightIsDynamic(s.lightIndex)) {
+        float3 toL = s.pos - c.hitPos;
+        float dist2 = max(dot(toL, toL), 1.0e-6);
+        float3 wi = toL * rsqrt(dist2);
+        float continuationPdf = bsdfAreaDensity(
+                bsdfContinuationPdf(c, wi, lobeFilmShare, lobeSpecShare, lobeWalkShare),
+                dot(s.lnrm, -wi), dist2);
+        misWeight = powerHeuristic(emitterAreaDensity(s.le * worldPush.emitterTint.xyz),
+                                   continuationPdf);
     }
     float phat;
     float3 contrib = evalSampleContrib(c, s.pos, s.lnrm, s.le, s.area, phat);
@@ -558,7 +594,7 @@ public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
     if (mediumFlagsWater(mediumFlags) && (worldPush.flags & 16u) != 0u && shadow.waterHitT > 0.0) {
         vis *= waterCaustic(origin + wiShadow * shadow.waterHitT, wiShadow, shadow.waterHitT);
     }
-    return contrib * vis * s.W;
+    return contrib * vis * s.W * misWeight;
 }
 
 // TLAS instance-mask bits (set on the Java side, ANDed against these per-ray cull masks):

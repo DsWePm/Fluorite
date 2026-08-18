@@ -454,7 +454,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                                 surfaceFootprint(rayConeWidth, rd, n), seed, reuseCounts);
                 L += throughput * shadeReservoir(
                         currentExtinction, activeCurrentMediumFlags(activeMediumFlags),
-                        bc, materialExtension(payload.flags), r);
+                        bc, materialExtension(payload.flags), r,
+                        // A billboard's only lobe is Lambertian, so every share is zero and the shared
+                        // continuation density reduces to cos/pi -- which is what cosineDir samples.
+                        0.0, 0.0, 0.0);
             }
 
             if (bounce >= maxBounces) {
@@ -556,9 +559,36 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // One gate drives both the RIS call below and the direct-hit emission suppression here. They must
         // agree: gateEmitter exists only because RIS already accounted for this emitter, so a bounce where
         // RIS is skipped must also gather emission directly or that light is lost outright.
-        bool gateEmitter = risOn && payloadEmitterInList();
-        if (emission > 0.0 && (!gateEmitter || showCelestial)) {
-            L += throughput * albedo * emission * worldPush.emitterTint.xyz
+        // How much of this emitter's own radiance THIS strategy is entitled to, now that the emitter
+        // estimator competes for it. Three cases, and they are not interchangeable:
+        //
+        //   * not in the light buffer -- nothing else samples it, so all of it (entities without a proxy,
+        //     sub-threshold footprints; bit-identical to the no-NEE path, no energy lost);
+        //   * PROXIED -- what samples it is a sphere standing in for this mesh. Two different domains, so
+        //     there is no shared density to weigh and the estimators are partitioned outright: the proxy
+        //     owns the diffuse continuation, this owns everything else. That is the 1/0 gate S4a added;
+        //   * in the light buffer and NOT proxied -- the emitter strategy samples THIS surface, so the two
+        //     densities meet and MIS weighs them. This is what replaces the gate for terrain, and it is
+        //     what removes the double count on a specular bounce: RIS at the previous vertex estimated
+        //     this emitter through the specular lobe too, and until now both were counted in full.
+        float emitterShare = 1.0;
+        if (risOn && payloadEmitterInList()) {
+            if (payloadEmitterProxied()) {
+                emitterShare = showCelestial ? 1.0 : 0.0;
+            } else {
+                // bsdfPdf is the density of the ray that arrived here; negative marks a DELTA lobe, which
+                // has no finite density for the emitter strategy to compete with and therefore takes all
+                // of it -- a mirror shows the emitter, and RIS's own specular term vanishes at alpha 0.
+                float cosAtEmitter = max(0.0, dot(n, -rd));
+                float travelled = max(dot(hitPos - ro, hitPos - ro), 1.0e-6);
+                float3 emitted = albedo * emission * worldPush.emitterTint.xyz;
+                emitterShare = bsdfPdf < 0.0 ? 1.0
+                        : powerHeuristic(bsdfAreaDensity(bsdfPdf, cosAtEmitter, travelled),
+                                         emitterAreaDensity(emitted));
+            }
+        }
+        if (emission > 0.0 && emitterShare > 0.0) {
+            L += throughput * albedo * emission * worldPush.emitterTint.xyz * emitterShare
                     * rainBaseExitTransmission(bc);
         }
 
@@ -652,13 +682,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 // The diffuse share shrinks when a subsurface lobe is in the mixture, and the walk
                 // itself contributes no analytic density, so this is the whole of what the continuation
                 // can put toward the sun. Getting it wrong loses energy quietly on smooth materials.
-                float baseShare = 1.0 - pf;
-                float diffuseShare = baseShare * (1.0 - ps) * (1.0 - walkSssShare);
-                float pdfB = diffuseShare * ndl * INV_PI
-                        + (exactSpecular ? 0.0 : baseShare * ps
-                                * ggxReflectPdfAniso(hx, hy, ndh, ndv, ax, ay, g1v))
-                        + pf * ggxReflectPdf(ndh, ndv, rain.filmAlpha,
-                                ggxG1(ndv, rain.filmAlpha));
+                // The same density M24 S4 weighs the emitter estimator against, and deliberately the
+                // same function: two spellings of a density that must agree exactly is how a MIS weight
+                // silently stops summing to one. Where it matters -- misActive -- floorAlpha is false, so
+                // the unfloored form below IS the number the floored expression produced here.
+                float pdfB = bsdfContinuationPdf(bc, lightDir, pf, ps, walkSssShare);
                 float wLight = misActive ? powerHeuristic(pdfLight, pdfB) : 1.0;
 
                 float3 brdf = sampled * wLight
@@ -682,7 +710,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             r = restirReuse(bc, r, uint(hitDepth), sampleIndex, pix, renderSize,
                             impactFootprint, seed, reuseCounts);
             L += throughput * shadeReservoir(
-                    currentExtinction, activeCurrentMediumFlags(activeMediumFlags), bc, ext, r);
+                    currentExtinction, activeCurrentMediumFlags(activeMediumFlags), bc, ext, r,
+                    pf, ps, walkSssShare);
         }
 
         // Thin-surface SSS transmission. Light entering from the back face scatters through toward the

@@ -388,7 +388,9 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         // raygen must not gather its emission a second time off a diffuse continuation ray.
         if ((pr.flags & ENTITY_PRIM_EMITTER_IN_LIGHT_BUFFER) != 0u
                 && (pc.shadeFlags & SHADE_DYNAMIC_EMITTER_RIS) != 0u) {
-            payload.flags |= PAYLOAD_EMITTER_IN_LIST;
+            // PROXIED as well: what samples this emitter is a sphere standing in for the mesh, not a
+            // second sampling of the mesh, so the raygen has to partition rather than MIS-weight.
+            payload.flags |= PAYLOAD_EMITTER_IN_LIST | PAYLOAD_EMITTER_PROXIED;
         }
         float glintSheen = 0.0;
         if ((pr.flags & ENTITY_PRIM_GLINT) != 0u) {

@@ -438,6 +438,20 @@ public static const uint PAYLOAD_DIRECT_VIEW = 8u;
 // Set by world.rchit on a terrain hit whose prim carries TERRAIN_PRIM_IN_LIGHT_BUFFER: this emitter is
 // RIS-sampled, so raygen gates its direct-hit emission on diffuse continuation rays (no double count).
 public static const uint PAYLOAD_EMITTER_IN_LIST = 128u;
+
+/**
+ * This emitter is covered by a PROXY rather than by a second sampling of the same surface.
+ *
+ * <p>The distinction decides which correction applies, and the two are not interchangeable. A terrain
+ * rectangle is sampled by the emitter strategy and hit by the BSDF strategy on THE SAME SURFACE, so the
+ * two densities meet and MIS weights them. A dynamic entity emitter is sampled as a SPHERE that stands in
+ * for a mesh the BSDF ray actually hits — two different domains, whose densities never meet, so there is
+ * no MIS weight to compute and the estimators have to be partitioned outright instead.
+ *
+ * <p>Weighting the proxy case as though it were the surface case would produce weights that do not sum to
+ * one, which is a quiet energy error rather than a visible one.
+ */
+public static const uint PAYLOAD_EMITTER_PROXIED = 1u << 21u;
 // Set by world.rchit on any dielectric hit (water or glass/ice): true when the incoming ray travels
 // against the prim's outward face normal (entering the volume), false when it exits. Derived from face
 // orientation rather than toggled, so a stray or missing face cannot corrupt the medium for the rest of
@@ -605,14 +619,16 @@ public static const uint MAX_MATERIAL_EXTENSIONS = 4095u;
 // is what makes it free: the payload does not grow, so the SER path spills nothing extra for it, and a
 // tangent is otherwise three floats the closest-hit computes and throws away.
 //
-// Eleven bits, not the sixteen originally sketched — bits 8..19 went to the extension index and bit 20
-// to the celestial light. 11 bits is 0.18 degrees, still far below any visible error in a brushed
-// streak. Bit 20 could in principle be shared, since it only means anything on a miss and this only on
-// a hit, but PAYLOAD_SHOW_CELESTIAL and PAYLOAD_DIELECTRIC_ENTERING already declined that trade to keep
-// the two concerns unambiguous, and this follows them.
-public static const uint PAYLOAD_TANGENT_SHIFT = 21u;
-public static const uint PAYLOAD_TANGENT_MASK = 0x7FFu;
-public static const float PAYLOAD_TANGENT_STEPS = 2047.0;
+// Ten bits, not the sixteen originally sketched — bits 8..19 went to the extension index, bit 20 to the
+// celestial light, and bit 21 to M24 S4's emitter-proxy tag. Every bit of this word is now spoken for.
+// 10 bits is 0.35 degrees of grain direction, which is still an order of magnitude finer than any
+// visible error in a brushed streak; the bit bought the difference between an emitter counted once and
+// an emitter counted twice, which is visible. Bit 20 could in principle be shared, since it only means
+// anything on a miss and this only on a hit, but PAYLOAD_SHOW_CELESTIAL and PAYLOAD_DIELECTRIC_ENTERING
+// already declined that trade to keep the two concerns unambiguous, and this follows them.
+public static const uint PAYLOAD_TANGENT_SHIFT = 22u;
+public static const uint PAYLOAD_TANGENT_MASK = 0x3FFu;
+public static const float PAYLOAD_TANGENT_STEPS = 1023.0;
 
 /**
  * An arbitrary but DETERMINISTIC basis about n.
