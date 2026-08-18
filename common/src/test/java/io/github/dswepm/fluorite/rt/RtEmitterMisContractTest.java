@@ -1,11 +1,13 @@
 package io.github.dswepm.fluorite.rt;
 
+import io.github.dswepm.fluorite.FluoriteConfig;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -83,8 +85,10 @@ final class RtEmitterMisContractTest {
         String shade = between(code(source("shaders/world/lighting.slang")),
                 "public float3 shadeReservoir(", CLOSE);
 
-        assertTrue(rgen.contains("if (payloadEmitterProxied()) {"));
-        assertTrue(shade.contains("if (!reservoirLightIsDynamic(s.lightIndex)) {"),
+        // The proxy check reaches the partition branch; the isolation switch shares that branch, which is
+        // why this asserts the proxy is IN the condition rather than that it is the whole of it.
+        assertTrue(rgen.contains("if (payloadEmitterProxied() || !emitterMisOn()) {"));
+        assertTrue(shade.contains("if (emitterMisOn() && !reservoirLightIsDynamic(s.lightIndex)) {"),
                 "the reservoir side must exclude the same samples the raygen does");
         assertTrue(shade.contains("float misWeight = 1.0;"),
                 "an excluded sample keeps its full weight rather than losing it");
@@ -104,21 +108,81 @@ final class RtEmitterMisContractTest {
                 "a negative bsdfPdf is this renderer's delta marker");
     }
 
-    /** The floor the whole slice exists to remove is gone from the emitter path, and only from it. */
+    /**
+     * The floor is gone from the emitter path whenever the weight is on, and returns with it when it goes.
+     *
+     * <p>The pair is one decision. A floor on top of a MIS weight blurs a highlight that is no longer at
+     * risk of exploding; a weight removed without the floor coming back leaves an unfloored highlight being
+     * counted twice, which is a picture that never shipped. Both halves are asserted because either half
+     * alone still renders, and renders wrong in a way no probe reports.
+     */
     @Test
-    void theAlphaFloorSurvivesOnlyWhereNothingCanWeighTheLight() throws IOException {
+    void theAlphaFloorTracksTheWeightExactly() throws IOException {
         String lighting = code(source("shaders/world/lighting.slang"));
         String core = code(source("shaders/world/world_core.slang"));
         String rgen = code(source("shaders/world/world.rgen.slang"));
 
-        assertFalse(lighting.contains("UNWEIGHTED_SPEC_ALPHA_FLOOR"),
-                "the emitter target function is weighed now, so flooring it only blurs a safe highlight");
-        assertTrue(lighting.contains("rainFilmBrdf(c, wi, false)"), "and its rain film with it");
+        // ONE predicate drives every floored site in the target function, so the halves cannot drift.
+        String eval = between(lighting, "public float3 evalSampleContrib(", CLOSE);
+        assertTrue(eval.contains("bool floorAlpha = !emitterMisOn();"));
+        assertTrue(eval.contains("rainFilmBrdf(c, wi, floorAlpha)"), "the rain film rides the same flag");
+        assertEquals(3, eval.split("UNWEIGHTED_SPEC_ALPHA_FLOOR", -1).length - 1,
+                "three floored alphas: both anisotropic ones and the isotropic D");
+
+        // THE ASYMMETRY IS THE SHIPPED BEHAVIOUR. The anisotropic branch floors D and its Smith term; the
+        // isotropic branch floors D alone, because masking is within a fraction of a percent of 1 at any
+        // alpha this small. Flooring the isotropic Gs as well would be a defensible-looking edit that
+        // makes "off" resemble what shipped instead of equalling it.
+        assertTrue(eval.contains("Gs = c.g1v * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, ax, ay);"));
+        assertTrue(eval.contains("Gs = c.g1v * ggxG1(ndl, c.rough);"),
+                "the isotropic Smith term takes the UNfloored roughness, as it always has");
+
         assertTrue(core.contains("UNWEIGHTED_SPEC_ALPHA_FLOOR = 0.02"), "the constant still has a user");
         // The sun keeps it, and only where MIS is switched off — a light of zero angular size has no
         // finite density for anything to compete with, so there is nothing to weigh.
         assertTrue(rgen.contains("floorAlpha ? max(bc.alphaX, UNWEIGHTED_SPEC_ALPHA_FLOOR) : bc.alphaX"));
         assertTrue(rgen.contains("bool floorAlpha = !(misActive || exactSpecular);"));
+    }
+
+    /**
+     * Iron law 8 for the isolation switch: OFF is the picture that shipped before S4b, not an approximation.
+     *
+     * <p>Three sites have to move together, and each of them still renders a lit world on its own. The
+     * raygen's gate, the reservoir's weight and the target function's floor were one change; a switch that
+     * reverts two of the three produces a state that has never existed, which is a worse A/B baseline than
+     * no switch at all -- the comparison would attribute a difference to the weight that came from the
+     * floor, and nothing would say so.
+     *
+     * <p>Polarity is asserted too. The bit is raised on the OFF setting so that a zero flags word is the
+     * shipped picture; inverted, every code path that forgets to set it would silently ship the old
+     * estimator.
+     */
+    @Test
+    void offIsTheEstimatorThatPredatesS4bAtEveryOneOfItsThreeSites() throws IOException {
+        String rgen = code(source("shaders/world/world.rgen.slang"));
+        String lighting = code(source("shaders/world/lighting.slang"));
+        String core = code(source("shaders/world/world_core.slang"));
+        String composite = code(source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java"));
+
+        // 1. the raygen falls back to the 1/0 gate -- the same branch the proxied case already takes.
+        assertTrue(rgen.contains("if (payloadEmitterProxied() || !emitterMisOn()) {"));
+        // 2. the reservoir stops weighing.
+        assertTrue(between(lighting, "public float3 shadeReservoir(", CLOSE)
+                .contains("if (emitterMisOn() && !reservoirLightIsDynamic(s.lightIndex)) {"));
+        // 3. the target function floors again. Asserted in theAlphaFloorTracksTheWeightExactly.
+        assertTrue(between(lighting, "public float3 evalSampleContrib(", CLOSE)
+                .contains("bool floorAlpha = !emitterMisOn();"));
+
+        // One reader for all three, so the sites cannot come to different answers within a frame.
+        assertTrue(core.contains("FLAG_EMITTER_MIS_OFF = 1u << 1u"));
+        assertTrue(core.contains("(worldPush.flags & FLAG_EMITTER_MIS_OFF) == 0u"));
+
+        // Raised on the OFF setting: a zero flags word must be the shipped picture.
+        assertTrue(composite.contains("if (!FluoriteConfig.Rt.Bsdf.EMITTER_MIS_ENABLED.value()) {"),
+                "inverted polarity would ship the pre-S4b estimator wherever the bit is not set");
+        assertTrue(composite.contains("flags |= 0b10;"));
+        assertTrue(FluoriteConfig.Rt.Bsdf.EMITTER_MIS_ENABLED.defaultValue(),
+                "the default is the merged behaviour; OFF is the comparison, not the product");
     }
 
     /** Ten bits of tangent now, and the layout says where the eleventh went. */

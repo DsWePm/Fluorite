@@ -94,6 +94,9 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
     float3 contrib = float3(0.0, 0.0, 0.0);
     if (ndl > 0.0) {
         float G = ndl * cosL / dist2; // area-light geometry term (x area)
+        // One decision for the base lobe and the rain film both, hoisted here because the film is added
+        // outside the !twoSided branch below.
+        bool floorAlpha = !emitterMisOn();
         float3 brdf = c.diffAlb * INV_PI;
         // twoSided callers are particle billboards, which pass rough=1/F0=0 and want diffuse-only
         // shading: fresnelSchlick still returns up to full white at grazing angles even with F0=0 (that
@@ -103,23 +106,32 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float3 h = normalize(wi + c.v);
             float ndh = max(0.0, dot(c.n, h));
             float vdh = max(0.0, dot(c.v, h));
-            // NO ALPHA FLOOR. It stood here because an emitter rectangle was sampled by area and never
-            // weighted against BSDF sampling, so nothing else bounded the peak of a very smooth lobe; the
-            // note that used to be here named MIS as the real fix, and shadeReservoir now applies it.
-            // Flooring on top of a MIS weight would blur a highlight that is no longer at risk of
-            // exploding, and would put the target function out of step with the density weighing it.
+            // NO ALPHA FLOOR while the weight is on. It stood here because an emitter rectangle was
+            // sampled by area and never weighted against BSDF sampling, so nothing else bounded the peak
+            // of a very smooth lobe; shadeReservoir applies the real fix now, and flooring on top of a MIS
+            // weight would blur a highlight no longer at risk of exploding while putting the target
+            // function out of step with the density weighing it.
+            //
+            // It comes back exactly when the weight goes away, because the pair is one decision -- see
+            // FLAG_EMITTER_MIS_OFF. Note which alphas it touches: the anisotropic branch floors D AND its
+            // Smith term, the isotropic branch floors D ALONE. That asymmetry is the shipped behaviour and
+            // is deliberate -- masking is within a fraction of a percent of 1 for any alpha this small at
+            // any angle surviving ndl > 0, so flooring it there buys nothing and costs the hoisted c.g1v.
+            // Reproducing it is what makes off equal to what shipped rather than merely resemble it.
             //
             // This is the one specular site that still branches on anisotropy rather than running the
             // anisotropic form for everyone. It is called M+1 times per shading vertex — the measured
-            // 5.9ms loop — and the branch is uniform across that loop because it depends only on the
-            // receiver, so it costs one comparison and never diverges.
+            // 5.9ms loop — and both branches here are uniform across that loop: one depends only on the
+            // receiver and the other only on a frame constant, so they cost a comparison and never diverge.
             float D;
             float Gs;
             if (c.aniso) {
-                D = ggxDAniso(dot(h, c.t), dot(h, c.b), ndh, c.alphaX, c.alphaY);
-                Gs = c.g1v * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, c.alphaX, c.alphaY);
+                float ax = floorAlpha ? max(c.alphaX, UNWEIGHTED_SPEC_ALPHA_FLOOR) : c.alphaX;
+                float ay = floorAlpha ? max(c.alphaY, UNWEIGHTED_SPEC_ALPHA_FLOOR) : c.alphaY;
+                D = ggxDAniso(dot(h, c.t), dot(h, c.b), ndh, ax, ay);
+                Gs = c.g1v * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, ax, ay);
             } else {
-                D = ggxD(ndh, c.rough);
+                D = ggxD(ndh, floorAlpha ? max(c.rough, UNWEIGHTED_SPEC_ALPHA_FLOOR) : c.rough);
                 // c.g1v is the view half of Smith masking, hoisted: it depends only on the receiver, and
                 // this function runs once per RIS candidate.
                 Gs = c.g1v * ggxG1(ndl, c.rough);
@@ -127,7 +139,8 @@ public float3 evalSampleContrib(BsdfContext c, float3 sp, float3 lnrm, float3 le
             float3 Fs = fresnelSchlick(vdh, c.F0);
             brdf += (D * Gs) * Fs / (4.0 * c.ndv * ndl);
         }
-        brdf = brdf * rainBaseTransmission(c, wi) + rainFilmBrdf(c, wi, false);
+        // Same decision, same flag: the film had its own floor and lost it with the rest of S4b.
+        brdf = brdf * rainBaseTransmission(c, wi) + rainFilmBrdf(c, wi, floorAlpha);
         contrib = brdf * le * (G * area);
     } else if (c.sss > 0.0) {
         float backNdl = -ndl;
@@ -537,7 +550,7 @@ public float3 shadeReservoir(float3 mediumExtinction, uint mediumFlags,
     // mesh: the two strategies sample different domains, their densities never meet, and a weight built
     // from them would not sum to one. Those keep the outright partition the raygen applies instead.
     float misWeight = 1.0;
-    if (!reservoirLightIsDynamic(s.lightIndex)) {
+    if (emitterMisOn() && !reservoirLightIsDynamic(s.lightIndex)) {
         float3 toL = s.pos - c.hitPos;
         float dist2 = max(dot(toL, toL), 1.0e-6);
         float3 wi = toL * rsqrt(dist2);

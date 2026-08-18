@@ -465,6 +465,8 @@
   "fluorite.options.rt.dlssEnabled.tooltip": "关闭后按完整分辨率追踪，不降噪也不做时域累积——判断材质改动本身是否正确时的参考视图。请同时调高每像素采样数。",
   "fluorite.options.rt.sunMis": "日月多重重要性采样",
   "fluorite.options.rt.sunMis.tooltip": "对太阳的两种估计——朝它发一条阴影光线，以及反射光线正好打到它——加权合并而不是相加。仅粗糙度低于 0.006 的材质会变化，镜面不受影响。关闭可做对比。",
+  "fluorite.options.rt.emitterMis": "发光体 MIS",
+  "fluorite.options.rt.emitterMis.tooltip": "将火把、灯笼、岩浆等光源的两种估计方式加权——光源采样直接指向它，以及弹射恰好落在它上面——而不是两者全取。关闭时一并恢复当时掩盖住这个差异的高光柔化，两者是一体的。关闭可做对比。",
   "fluorite.options.rt.anisotropy": "各向异性高光",
   "fluorite.options.rt.anisotropy.tooltip": "沿表面纹理方向拉长高光，即拉丝金属和缎面的样子。仅影响资源包写了 anisotropy.amount 的材质，其余材质开关两态完全一致。关闭可做对比。",
   "fluorite.options.rt.subsurfaceMode": "次表面散射",

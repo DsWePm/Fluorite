@@ -573,7 +573,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         //     this emitter through the specular lobe too, and until now both were counted in full.
         float emitterShare = 1.0;
         if (risOn && payloadEmitterInList()) {
-            if (payloadEmitterProxied()) {
+            // The 1/0 gate is also what OFF means: FLAG_EMITTER_MIS_OFF sends the second case down the
+            // first one's path, which is bit for bit the gate that stood here before M24 S4b.
+            if (payloadEmitterProxied() || !emitterMisOn()) {
                 emitterShare = showCelestial ? 1.0 : 0.0;
             } else {
                 // bsdfPdf is the density of the ray that arrived here; negative marks a DELTA lobe, which

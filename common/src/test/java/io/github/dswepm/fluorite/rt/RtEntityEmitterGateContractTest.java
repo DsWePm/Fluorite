@@ -79,7 +79,9 @@ final class RtEntityEmitterGateContractTest {
         // S4 replaced the gate with three cases, and the PROXIED one is still the outright partition:
         // a sphere standing in for a mesh gives the two strategies different domains, so their densities
         // never meet and there is no weight to compute between them.
-        assertTrue(rgen.contains("if (payloadEmitterProxied()) {"));
+        // The isolation switch shares this branch -- OFF is the 1/0 gate, which is what the proxied case
+        // already is -- so the assertion is on the proxy reaching it, not on the branch being proxy-only.
+        assertTrue(rgen.contains("if (payloadEmitterProxied() || !emitterMisOn()) {"));
         assertTrue(rgen.contains("emitterShare = showCelestial ? 1.0 : 0.0;"),
                 "a proxied emitter keeps the partition S4a introduced");
     }

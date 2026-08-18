@@ -2857,6 +2857,13 @@ public final class RtComposite {
             if (FluoriteConfig.Rt.Bsdf.MIS_ENABLED.value()) {
                 flags |= 0b100000; // weight the sun's two estimators instead of summing them
             }
+            if (!FluoriteConfig.Rt.Bsdf.EMITTER_MIS_ENABLED.value()) {
+                // Bit 1: take every emitter estimator unweighted, as before M24 S4b. Set on the OFF
+                // setting so a zero flags word is the shipped picture -- same convention as bit 15, and
+                // the reason both are isolation switches rather than features. Off restores the 1/0 gate
+                // AND the alpha floor together; see FLAG_EMITTER_MIS_OFF for why neither works alone.
+                flags |= 0b10;
+            }
             if (FluoriteConfig.Rt.Bsdf.ANISOTROPY_ENABLED.value()) {
                 flags |= 0b1000000; // stretch the specular lobe along the surface tangent
             }
