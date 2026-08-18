@@ -1,6 +1,6 @@
 # M24：ReSTIR 整合
 
-> **进行中。** 本文件只记录**已经定案、不会再改**的子决策；里程碑本身的当前状态、剩余工作和待裁决项以 `DEVELOPMENT.md` §8.9 为准（devlog 维护规则 1：进行中的事项不提前写成完成日志）。
+> **已完成。** 五个切片（S1 / S2a / S2b / S3 / S4）全部落地并游戏内验证；欠账与未覆盖项见 [后审查](post-restir-review.md) 与 `DEVELOPMENT.md` §8.9。
 
 前置条件三条已全部结清：M14 完成、M18 数据层可用、[pre-ReSTIR 全项目 review](pre-restir-review.md) 完成（两轮 + `submitFlame` 直击语义修正）。
 
