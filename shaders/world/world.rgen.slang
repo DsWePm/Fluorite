@@ -1291,7 +1291,17 @@ void main() {
     int2 pix = int2(dispatchIndex);
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
+    // Read outside the probe guard: line ~1582 splits the frame on it, and a release build
+    // must still resolve it to false rather than fail to compile.
     bool compositePrefixDebug = pc.debugView == DEBUG_VIEW_COMPOSITE_PREFIX_AB;
+#ifdef FLUORITE_PROBES
+    // ---- DIAGNOSTIC SURFACE. Present only in a probe build; -Pfluorite.probes=false keeps every line
+    // between here and the matching #endif out of the SPIR-V entirely.
+    //
+    // Stripped rather than branched because this is a ray generation shader: a branch the driver never
+    // takes still costs the registers its live range reserves and the instruction cache its body fills,
+    // and occupancy is what pass B is short of. The debug chain below is the largest such body in the
+    // renderer.
     if (pc.debugView != 0u && !compositePrefixDebug) {
         // Pass A owns both rain diagnostics -- the direct-hit material/film/exposure view and the puddle
         // storage/basin/result view -- so this stage must not write over either.
@@ -1365,6 +1375,7 @@ void main() {
         }
         return; // pass A owns the guide visualizations
     }
+#endif
     uint spp = max(worldPush.spp, 1u);
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
     uint recordIndex = pixelIndex;
@@ -1419,8 +1430,10 @@ void main() {
             compositeRadiance = includePrefix ? compositeRadiance : leafRadiance;
         }
     }
+#ifdef FLUORITE_PROBES
     restirStatsAccumulate(reuseCounts, pixelIndex);
     writeWaterMediumProbe(dispatchIndex, dimensions, queue[pixelIndex], prefix,
                           leafRadiance, prefix.inScatter + leafRadiance, actualFirstTrace);
+#endif
     outImage[pix] = float4(compositeRadiance, 1.0);
 }

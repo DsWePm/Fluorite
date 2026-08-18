@@ -62,6 +62,17 @@ abstract class CompileShaders extends DefaultTask {
 	@Input abstract Property<String> getGlslang()
 	@Input abstract Property<String> getSpirvVal()
 	@Input abstract Property<String> getSlangc()
+	/**
+	 * Whether this build keeps its diagnostic probes: debug views, the water-medium probe, the ReSTIR
+	 * statistics. A tracked @Input, so flipping it recompiles rather than serving a stale variant.
+	 *
+	 * A -D define rather than a specialization constant, following FLUORITE_ENABLE_EXT_SER below. The
+	 * define keeps the probe code OUT OF THE SPIR-V entirely; a specialization constant would leave it in
+	 * the binary for the driver to eliminate, which recovers the branch but not the code size, and ray
+	 * tracing pays for code size in occupancy. Neither is a runtime toggle -- both need new pipelines --
+	 * so the define gives up nothing real.
+	 */
+	@Input abstract Property<Boolean> getProbes()
 
 	@Inject abstract ExecOperations getExecOps()
 
@@ -101,7 +112,8 @@ abstract class CompileShaders extends DefaultTask {
 				commandLine([slangc.get(), src.absolutePath, "-target", "spirv",
 						"-profile", "spirv_1_5", "-matrix-layout-column-major",
 						"-warnings-as-errors", "all", "-warnings-disable", "41012", "-g",
-						"-I", new File(srcDir.get().asFile, "world").absolutePath] + extra
+						"-I", new File(srcDir.get().asFile, "world").absolutePath]
+						+ (probes.get() ? ["-DFLUORITE_PROBES"] : []) + extra
 						+ ["-o", spv.absolutePath])
 			}
 			validate(spv)
@@ -159,6 +171,9 @@ def compileShaders = tasks.register("compileShaders", CompileShaders) {
 	glslang = resolveVulkanTool("glslangValidator")
 	spirvVal = resolveVulkanTool("spirv-val")
 	slangc = resolveVulkanTool("slangc")
+	// Default ON: an ordinary build stays exactly what shipped, and the stripped variant is something you
+	// ask for. Release artifacts are built with -Pfluorite.probes=false.
+	probes = providers.gradleProperty("fluorite.probes").map { it != "false" }.orElse(true)
 }
 
 def generateShaderRecords = tasks.register("generateShaderRecords", GenerateShaderRecords) {
