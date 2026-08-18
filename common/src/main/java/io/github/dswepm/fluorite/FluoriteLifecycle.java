@@ -16,7 +16,6 @@ import io.github.dswepm.fluorite.rt.material.RtBlockMaterials;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssFg;
 import io.github.dswepm.fluorite.rt.pipeline.RtDlssRr;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrain;
-import io.github.dswepm.fluorite.rt.terrain.RtTerrainDigest;
 import io.github.dswepm.fluorite.rt.terrain.RtWorkerPool;
 import io.github.dswepm.fluorite.ngx.NgxRuntime;
 
@@ -74,7 +73,6 @@ public final class FluoriteLifecycle {
 				// we're in a world with the block atlas loaded, or once already created.
 				RtComposite.INSTANCE.ensureResourcesReady(ctx);
 				RtTerrain.update(ctx);
-				RtTerrainDigest.tick();
 				// Log DLSS-FG availability once when frame generation is enabled (capability query only).
 				if (RtDlssFg.enabled()) {
 					RtDlssFg.INSTANCE.probeAvailabilityOnce();
@@ -94,11 +92,9 @@ public final class FluoriteLifecycle {
 		RtComposite.INSTANCE.resetFailureLatch(); // F3+A doubles as manual RT recovery after a latched failure
 		RtDlssRr.INSTANCE.requestHistoryReset();
 		// Residency is about to be rebuilt from scratch; keeping the old hashes would mix two worlds.
-		RtTerrainDigest.reset();
 	}
 
 	public static void shutdown() {
-		RtTerrainDigest.dumpIfDirty();
 
 		// Make the device idle before anything is destroyed.
 		//

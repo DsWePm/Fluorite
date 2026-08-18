@@ -2249,11 +2249,15 @@ public final class RtVideoOptions {
             // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
             (caption, value) -> Component.translatable("fluorite.options.rt.debugView." + value),
             // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
-            // between hits rather than the hits themselves. See world.rgen's volumeDebug. 12 is neither —
-            // 12 and 13 are neither — they paint the atmosphere's own tables, ignoring the scene entirely.
+            // between hits rather than the hits themselves. See world.rgen's volumeDebug.
+            //
+            // 12-16 and 25 ARE GONE AND THEIR NUMBERS ARE NOT REUSED: the four atmosphere tables, the
+            // celestial dye and the fog noise field, retired once the atmosphere stopped changing. Every
+            // note that names a view by number stays true this way, and the shader paints magenta for a
+            // number no arm claims rather than falling through to a plausible picture.
             new OptionInstance.Enum<>(
-                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                            24, 25, 26, 27),
+                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 19, 20, 21, 22, 23,
+                            24, 26, 27),
                     Codec.INT),
             Math.clamp(setting.value(), 0, 27),
             setting::set);

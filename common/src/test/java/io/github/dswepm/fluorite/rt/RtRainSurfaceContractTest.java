@@ -127,7 +127,8 @@ final class RtRainSurfaceContractTest {
         assertTrue(primary.contains("rainSurfaceDebug"));
         assertTrue(primary.contains("pc.debugView == DEBUG_VIEW_RAIN_PUDDLE"));
         assertTrue(primary.contains("rainPuddleDebug"));
-        assertTrue(options.contains("24, 25, 26, 27"));
+        // 25 retired with the fog noise view; 26/27 keep their numbers rather than sliding down.
+        assertTrue(options.contains("24, 26, 27"));
         assertTrue(options.contains("Math.clamp(setting.value(), 0, 27)"));
     }
 
