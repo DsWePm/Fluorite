@@ -178,3 +178,23 @@ phat 依赖几何，放/挖方块后该格权重要到重采样才更新。配 N
 ## 可以开工
 
 四条全部结清：D197（p=32、N=45）、D196（两个来源开关，取代第 3 条）、D198（phat 含透射率）。
+
+## 实施记录：a–c 完成，d 的入口约束
+
+**a（开关位）、b（表分配）、c（哈希寻址）已提交，三步都是零行为变化。**
+
+### 两处「先断言后验证」的更正
+
+1. **导入未调用的模块不会被死代码消除。** 我先说了会,量完是 world.rgen 从 10,385,160 → 10,390,476 字节,**+5.3 KB(0.05%)**,函数确实进了 SPIR-V。但这与退休的 debug view 是相反情形:那些是 push constant 驱动的**可达**分支,寄存器分配器按它配额、占用率付账;这些不可达,代价是模块字节与管线创建时间。真正的代价在 d 步接线后才产生。
+
+2. **`RtComposite` 的 `reservoirStore` 释放块在文件里出现两次**(重分配路径、关闭路径),只有尾行能区分。只补第一处会在退出时泄漏整张表。
+
+### d 步的入口约束：push 常量块已满
+
+`WorldPushConstants` 停在 Vulkan 保证的 **128 字节下限**上。`world_common.slang` 里那行注释「120 bytes with this; the guaranteed push-constant floor is 128, so there is room for one more」记录的最后一个名额,已被 `rainPrecipitationAddr` 用掉。
+
+所以 `volumeGridAddr` 与 `volumeGridSlots` 必须进 **`WorldPush`**(需解引用的结构),而不是内联 push 块 —— 与 `restirStatsAddr` 同一条先例。那里的横幅给出的判据正好适用:**hit shader 对它们没有任何用处**,而这正是 `WorldPushConstants` 自己的横幅要求的取舍。多付一次解引用,每像素一次。
+
+### 记录一条工具教训
+
+本环境的 bash heredoc **装长 python 脚本会被截断**,且 `\n` 会被二次转义吃掉(与之前 Java 测试源码那次同一个坑)。可靠做法:先用 Write 落脚本文件再执行,字符串里用 `chr(10)` 代替 `\n`。
