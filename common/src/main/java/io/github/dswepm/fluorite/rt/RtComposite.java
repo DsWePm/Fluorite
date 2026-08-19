@@ -139,6 +139,20 @@ public final class RtComposite {
      * screen. Clamping the depth and saying so beats a buffer that indexes correctly on one vendor.
      */
     private static final long RESERVOIR_STORE_MAX_BYTES = 4L << 30;
+
+    /** D197 model constants. See {@link #volumeGridSlotsThatFit}. */
+    private static final double VOLUME_GRID_REFERENCE_FOV_RAD = Math.toRadians(70.0);
+    private static final double VOLUME_GRID_MIN_CELL = 1.0;
+    /** Frames a fast 180-degree pan takes to swap the whole frustum, at 60 fps. */
+    private static final double VOLUME_GRID_TURN_FRAMES = 30.0;
+    private static final double VOLUME_GRID_LOAD_FACTOR = 0.6;
+    /**
+     * A hard ceiling, and unlike RESERVOIR_STORE_MAX_BYTES it is a VRAM budget rather than an indexing
+     * limit. The store has no such budget, and on 2026-08-18 that cost a session: a quality change grew
+     * it to 2812 MiB and the frame time degraded monotonically into a lost device. A fixed table gives
+     * this milestone that ceiling by construction.
+     */
+    static final long VOLUME_GRID_MAX_BYTES = 512L << 20;
     // ---- Ambient participating medium.
     //
     // The active dimension preset supplies the baseline. Weather/time forcing is applied only when that
@@ -1592,6 +1606,14 @@ public final class RtComposite {
      * than one 130 MB fill that happens once per allocation.
      */
     private boolean reservoirStoreNeedsClear;
+    /**
+     * M25 world-space hash grid. Null whenever both source switches sit at their published positions, so
+     * the off state costs no VRAM either -- iron law 8 read strictly, since a switch that still paid a
+     * hundred megabytes to be off would not be an honest A/B of a memory-sensitive feature.
+     */
+    private RtBuffer volumeGrid;
+    private long volumeGridSlots;
+    private boolean volumeGridNeedsClear;
     private final RtRestirStats restirStats = new RtRestirStats(PUSH_RING);
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
@@ -2332,6 +2354,53 @@ public final class RtComposite {
         return (int) Math.min(wantDepth, fits);
     }
 
+    /**
+     * Slots for the volumetric hash table, per D197, clamped to {@link #VOLUME_GRID_MAX_BYTES}.
+     *
+     * <p>{@code live x (1 + N/turn) / loadFactor}, where live is the frustum filled with power-of-two
+     * cells whose edge tracks {@code p * FOV / renderHeight}. The eviction window belongs in the count
+     * because the table must hold the cells the camera recently left, not only those in front of it: a
+     * fast pan swaps the whole frustum in about half a second.
+     *
+     * <p>THE REFERENCE FOV IS DELIBERATE, and it is not the number the shader will use. k itself is
+     * derived per frame from the live FOV and render extent (D197); this function sizes a FIXED table,
+     * which cannot resize when the player zooms, so it budgets against a reference and lets the load
+     * factor absorb the rest. Sizing and addressing answer different questions.
+     */
+    static long volumeGridSlotsThatFit(int lodPixels, int evictionFrames,
+                                       int renderW, int renderH, double cullDistance) {
+        if (lodPixels <= 0 || evictionFrames <= 0 || renderW <= 0 || renderH <= 0 || cullDistance <= 0.0) {
+            return 0L;
+        }
+        double k = lodPixels * VOLUME_GRID_REFERENCE_FOV_RAD / renderH;
+        double tanY = Math.tan(VOLUME_GRID_REFERENCE_FOV_RAD / 2.0);
+        double tanX = tanY * renderW / (double) renderH;
+        double knee = Math.min(VOLUME_GRID_MIN_CELL / k, cullDistance);
+        double live = frustumVolume(knee, tanX, tanY)
+                / (VOLUME_GRID_MIN_CELL * VOLUME_GRID_MIN_CELL * VOLUME_GRID_MIN_CELL);
+        for (double d = knee; d < cullDistance; ) {
+            double next = Math.min(d * 2.0, cullDistance);
+            double edge = volumeGridCellEdge(d, k);
+            live += (frustumVolume(next, tanX, tanY) - frustumVolume(d, tanX, tanY)) / (edge * edge * edge);
+            d = next;
+        }
+        double slots = live * (1.0 + evictionFrames / VOLUME_GRID_TURN_FRAMES) / VOLUME_GRID_LOAD_FACTOR;
+        return Math.min((long) Math.ceil(slots), VOLUME_GRID_MAX_BYTES / RESERVOIR_BYTES);
+    }
+
+    /** Cell edge at {@code d}: the constant-screen-footprint law, quantised to powers of two. */
+    static double volumeGridCellEdge(double d, double k) {
+        double want = d * k;
+        if (want <= VOLUME_GRID_MIN_CELL) {
+            return VOLUME_GRID_MIN_CELL;
+        }
+        return Math.max(Math.pow(2.0, Math.round(Math.log(want) / Math.log(2.0))), VOLUME_GRID_MIN_CELL);
+    }
+
+    private static double frustumVolume(double d, double tanX, double tanY) {
+        return (2.0 * d * tanX) * (2.0 * d * tanY) * d / 3.0;
+    }
+
     private void ensureOutput(RtContext ctx, int width, int height) {
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
@@ -2351,12 +2420,22 @@ public final class RtComposite {
         // store would be freed and reallocated every single frame, quietly, at gigabyte scale.
         int fittingDepth = reservoirDepthThatFits(wantReservoirDepth, wantReservoirPaths,
                 (long) renderW * (long) renderH);
+        // Compared like the depth above: against what WILL be allocated. Zero when both switches sit at
+        // the published position, which is also how the buffer gets freed the moment they return there.
+        long wantVolumeGridSlots = FluoriteConfig.Rt.Volumetrics.volumeRestirNear()
+                        || FluoriteConfig.Rt.Volumetrics.volumeRestirFar()
+                ? volumeGridSlotsThatFit(
+                        FluoriteConfig.Rt.Volumetrics.volumeRestirLodPixels(),
+                        FluoriteConfig.Rt.Volumetrics.volumeRestirEvictionFrames(),
+                        renderW, renderH, FluoriteConfig.Rt.Volumetrics.CULL_DISTANCE.value())
+                : 0L;
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
                 && reservoirDepth == fittingDepth
-                && reservoirPaths == (fittingDepth > 0 ? wantReservoirPaths : 0)) {
+                && reservoirPaths == (fittingDepth > 0 ? wantReservoirPaths : 0)
+                && volumeGridSlots == wantVolumeGridSlots) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -2379,6 +2458,11 @@ public final class RtComposite {
             reservoirStore = null;
             reservoirDepth = 0;
             reservoirPaths = 0;
+        }
+        if (volumeGrid != null) {
+            volumeGrid.destroy();
+            volumeGrid = null;
+            volumeGridSlots = 0L;
         }
         destroyGuideImages();
 
@@ -2434,6 +2518,21 @@ public final class RtComposite {
                             + "using depth {} ({} MiB) instead",
                     wantReservoirDepth, renderW, renderH, wantReservoirPaths, reservoirDepth,
                     RESERVOIR_STORE_MAX_BYTES / (1024L * 1024L));
+        }
+        // M25 hash grid. Sized from the knobs rather than the resolution alone, and allocated only when a
+        // switch actually asks for it -- see the field comment.
+        volumeGridSlots = wantVolumeGridSlots;
+        if (volumeGridSlots > 0L) {
+            long volumeGridBytes = Math.multiplyExact(volumeGridSlots, RESERVOIR_BYTES);
+            volumeGrid = ctx.createBuffer(volumeGridBytes,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    false, "volume ReSTIR hash grid " + volumeGridSlots + " slots");
+            volumeGridNeedsClear = true;
+            FluoriteMod.LOGGER.info(
+                    "RT volumetric ReSTIR grid: {} slots x {} B = {} MiB (p={} px, evict={} frames)",
+                    volumeGridSlots, RESERVOIR_BYTES, volumeGridBytes / (1024L * 1024L),
+                    FluoriteConfig.Rt.Volumetrics.volumeRestirLodPixels(),
+                    FluoriteConfig.Rt.Volumetrics.volumeRestirEvictionFrames());
         }
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
@@ -3342,6 +3441,15 @@ public final class RtComposite {
                 }
                 reservoirStoreNeedsClear = false;
             }
+            if (volumeGrid != null && volumeGridNeedsClear) {
+                // Same reasoning as the store above, and stronger: a hash slot is claimed by comparing a
+                // stored key, so uninitialised memory does not merely risk a bad sample, it risks a slot
+                // that reports itself already owned by a cell which never existed.
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volume grid clear")) {
+                    VK10.vkCmdFillBuffer(cmd, volumeGrid.handle, 0L, volumeGrid.size, 0);
+                }
+                volumeGridNeedsClear = false;
+            }
             restirStats.recordReset(cmd, pushSlot, reservoirStore != null ? reservoirDepth : 0);
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
 
@@ -3839,6 +3947,11 @@ public final class RtComposite {
             reservoirStore = null;
             reservoirDepth = 0;
             reservoirPaths = 0;
+        }
+        if (volumeGrid != null) {
+            volumeGrid.destroy();
+            volumeGrid = null;
+            volumeGridSlots = 0L;
         }
         restirStats.destroy();
         destroyGuideImages();

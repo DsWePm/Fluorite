@@ -123,6 +123,48 @@ final class RtVolumeRestirContractTest {
         }
     }
 
+    /**
+     * The allocator reproduces the number the decision was actually made on.
+     *
+     * <p>D197 chose p=32 over p=16 and p=64 by reading a table of costs. If the code that allocates the
+     * buffer computes something else, the choice was made about a renderer that does not exist -- and the
+     * discrepancy would surface as a VRAM figure in a log line nobody diffs against a devlog.
+     */
+    @Test
+    void theTableSizeReproducesTheNumberTheDecisionWasMadeOn() {
+        long slots = RtComposite.volumeGridSlotsThatFit(32, 45, 1600, 900, 515.0);
+        assertEquals(1_815_605L, slots);
+        long mib = slots * 64L / (1024L * 1024L);
+        assertEquals(110L, mib);
+    }
+
+    /**
+     * At the finest LOD the floor allows, the VRAM ceiling is what binds -- not the model.
+     *
+     * <p>Worth pinning because it is the one configuration where the two limits meet: p=16 wants 685 MB,
+     * the budget grants 512, and the table silently runs at a higher load factor instead of failing. That
+     * is the intended behaviour and it is invisible from the picture, so only a test can hold it.
+     */
+    @Test
+    void theCeilingBindsAtTheFinestLodTheFloorAllows() {
+        long capSlots = RtComposite.VOLUME_GRID_MAX_BYTES / 64L;
+        assertEquals(capSlots, RtComposite.volumeGridSlotsThatFit(16, 45, 1600, 900, 515.0));
+        assertTrue(RtComposite.volumeGridSlotsThatFit(32, 45, 1600, 900, 515.0) < capSlots);
+        assertTrue(RtComposite.volumeGridSlotsThatFit(64, 45, 1600, 900, 515.0) < capSlots);
+    }
+
+    /**
+     * A render extent that does not exist yet allocates nothing.
+     *
+     * <p>ensureOutput calls this with the PREVIOUS render size, which is -1 before the first allocation.
+     * Returning a slot count there would size the first table from a negative extent.
+     */
+    @Test
+    void aRenderExtentThatDoesNotExistYetSizesNothing() {
+        assertEquals(0L, RtComposite.volumeGridSlotsThatFit(32, 45, -1, -1, 515.0));
+        assertEquals(0L, RtComposite.volumeGridSlotsThatFit(32, 45, 1600, 900, 0.0));
+    }
+
     private static String quote() {
         return String.valueOf((char) 34);
     }
