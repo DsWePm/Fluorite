@@ -334,7 +334,7 @@
   "fluorite.options.rt.debugView.26": "雨水材质 / 水膜 / 曝光",
   "fluorite.options.rt.debugView.27": "水坑蓄水 / 选区 / 结果",
   "fluorite.options.rt.debugView.28": "体积 ReSTIR 格状态",
-  "fluorite.options.rt.debugView.28.tooltip": "M25。本像素落入的世界空间格，按 shading 完全相同的方式读取。黑：该区域的开关关着，或表未分配。红：没找到活格——纯红是淘汰或探测失败，闪烁是格在不断丢失又重建。其余情况下红通道是累积复用量 M、绿通道是权重 W、蓝色标记权重正贴在上限上。画面稳定则说明格是稳的，闪烁在下游的「格→辐亮度」那一步。",
+  "fluorite.options.rt.debugView.28.tooltip": "M25。着色器自己那一次查找的结果，画在它查找的地方。暗红：这个像素根本没跑读取（此处没有雾在行进）。品红：查了但没找到格。黑：该区域开关关着。其余情况下红通道是累积复用量 M、绿通道是权重 W、蓝色表示该格已成熟到可以相信它的「空」。",
   "fluorite.options.rt.fog": "体积雾",
   "fluorite.options.rt.fog.tooltip": "世界的环境介质。按路径分段积分，因此反射和折射里同样会出现，而不只是直接视野。",
   "fluorite.options.rt.fogDensity": "雾浓度",

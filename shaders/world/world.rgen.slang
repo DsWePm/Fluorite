@@ -1299,6 +1299,10 @@ void main() {
     // Read outside the probe guard: line ~1582 splits the frame on it, and a release build
     // must still resolve it to false rather than fail to compile.
     bool compositePrefixDebug = pc.debugView == DEBUG_VIEW_COMPOSITE_PREFIX_AB;
+    // Same reason as the line above: 28 describes what the SHADING looked up, so it cannot be painted by
+    // the chain that runs before the shading. Three earlier versions of this view asked their own
+    // question in their own place and disagreed with the shading every time.
+    bool volumeRestirDebug = pc.debugView == DEBUG_VIEW_VOLUME_RESTIR;
 #ifdef FLUORITE_PROBES
     // ---- DIAGNOSTIC SURFACE. Present only in a probe build; -Pfluorite.probes=false keeps every line
     // between here and the matching #endif out of the SPIR-V entirely.
@@ -1307,7 +1311,7 @@ void main() {
     // takes still costs the registers its live range reserves and the instruction cache its body fills,
     // and occupancy is what pass B is short of. The debug chain below is the largest such body in the
     // renderer.
-    if (pc.debugView != 0u && !compositePrefixDebug) {
+    if (pc.debugView != 0u && !compositePrefixDebug && !volumeRestirDebug) {
         // Pass A owns both rain diagnostics -- the direct-hit material/film/exposure view and the puddle
         // storage/basin/result view -- so this stage must not write over either.
         //
@@ -1339,14 +1343,6 @@ void main() {
                         : float3(1.0, 0.0, 0.0);
             }
             outImage[pix] = float4(prefixDebug, 1.0);
-        } else if (pc.debugView == DEBUG_VIEW_VOLUME_RESTIR) {
-            // NOT the queued origin. That equals the CAMERA ORIGIN unless the primary met a refractive
-            // interface, so reading it probed the single cell at the eye and painted solid red -- which
-            // reads as "no cells exist" and actually meant "asked in the wrong place". Deposits happen
-            // along the ray, in the air, so this walks the ray and reports the first live cell.
-            CameraRay debugCam = cameraRay(dispatchIndex, dimensions);
-            outImage[pix] = float4(
-                    volumeRestirDebug(debugCam.origin, debugCam.dir, 512.0), 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_FROXEL) {
             // Screen-space, not a path property, so these take the pixel rather than the queued record.
             //
@@ -1430,6 +1426,13 @@ void main() {
     }
     float3 leafRadiance = prefix.transmittance * (frameRadiance / float(spp));
     float3 compositeRadiance = prefix.inScatter + leafRadiance;
+    if (volumeRestirDebug) {
+        // Whatever the shading's own lookup saw, painted where the shading saw it.
+        float3 probe = volumeRestirProbeResult();
+        compositeRadiance = probe.x < 0.0
+                ? float3(0.25, 0.0, 0.0)  // dark red: the read never ran for this pixel
+                : probe;
+    }
     if (compositePrefixDebug) {
         if (dispatchIndex.y >= dimensions.y * 3u / 4u) {
             float prefixLum = luminance(max(prefix.inScatter, float3(0.0, 0.0, 0.0)));

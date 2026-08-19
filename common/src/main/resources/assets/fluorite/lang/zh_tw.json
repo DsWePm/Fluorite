@@ -140,7 +140,7 @@
   "fluorite.options.rt.debugView": "偵錯檢視",
   "fluorite.options.rt.debugView.tooltip": "顯示光線追蹤的中間緩衝區，而不是最終影像。",
   "fluorite.options.rt.debugView.28": "體積 ReSTIR 格狀態",
-  "fluorite.options.rt.debugView.28.tooltip": "M25。本像素落入的世界空間格，按 shading 完全相同的方式讀取。黑：該區域的開關關著，或表未分配。紅：沒找到活格——純紅是淘汰或探測失敗，閃爍是格在不斷丟失又重建。其餘情況下紅通道是累積復用量 M、綠通道是權重 W、藍色標記權重正貼在上限上。畫面穩定則說明格是穩的，閃爍在下游的「格→輻亮度」那一步。",
+  "fluorite.options.rt.debugView.28.tooltip": "M25。著色器自己那一次查找的結果，畫在它查找的地方。暗紅：這個像素根本沒跑讀取（此處沒有霧在行進）。品紅：查了但沒找到格。黑：該區域開關關著。其餘情況下紅通道是累積復用量 M、綠通道是權重 W、藍色表示該格已成熟到可以相信它的「空」。",
   "fluorite.options.rt.debugView.0": "關閉",
   "fluorite.options.rt.debugView.1": "法線",
   "fluorite.options.rt.debugView.2": "反照率",

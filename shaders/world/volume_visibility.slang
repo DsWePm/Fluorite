@@ -103,11 +103,25 @@ public struct VolumeVisibilitySample {
  * per sample -- the amortisation D198 depends on, and the reason a shadow ray in the target is affordable
  * at all.
  */
+/**
+ * What the read below actually saw, for debug view 28.
+ *
+ * <p>RECORDED BY THE READ ITSELF rather than re-derived by the view. The first three versions of this
+ * diagnostic marched their own ray and looked up their own cells, and every one of them disagreed with the
+ * shading about where to ask -- the queued origin collapses to the camera, then linear spacing started
+ * beyond the room, and then the view painted before the shading it was describing had even run. A
+ * diagnostic that performs its own lookup is testing its own lookup.
+ *
+ * <p>x < 0 means the read never ran here at all.
+ */
+static float3 gVolumeRestirProbe = float3(-1.0, 0.0, 0.0);
+
 void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
     uint switchBit = volumeInsideVisibilityGrid(p)
             ? ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR;
     if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
             || worldPush.volumeGridAddr == 0) {
+        gVolumeRestirProbe = float3(0.0, 0.0, 0.0); // black: switch off, or no table
         return;
     }
     float dist = length(p - worldPush.camOffset);
@@ -120,6 +134,7 @@ void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
     int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
                               worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
     if (slot < 0) {
+        gVolumeRestirProbe = float3(1.0, 0.0, 1.0); // magenta: probed, found nothing
         return; // no cell yet: the scalar answer above stands, which is the shipped one
     }
     VolumeCell c = grid[slot];
@@ -129,11 +144,16 @@ void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
         // the point of the milestone. In a cell that was created a few frames ago it means no data yet,
         // and treating that as darkness deleted the near-field fog entirely, because every cell is young
         // when it is born and the near field is where cells are born fastest.
+        gVolumeRestirProbe = float3(saturate(c.stats.x / VOLUME_M_MAX), 0.0,
+                                   c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0);
         if (c.stats.x >= VOLUME_M_MATURE) {
             result.sky = 0.0;
         }
         return; // young: leave the scalar answer above, which is the shipped one
     }
+    gVolumeRestirProbe = float3(saturate(c.stats.x / VOLUME_M_MAX),
+                               saturate(c.dirW.w / VOLUME_W_MAX),
+                               c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0);
     result.skyDirValid = true;
     result.skyDir = c.dirW.xyz;
     // leT already carries radiance times transmittance; W finishes the estimator. The phase belongs at
@@ -180,72 +200,6 @@ public bool volumeInsideVisibilityGrid(float3 p) {
     float3 extent = cell * float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
     float3 g = (p - worldPush.visGridOrigin.xyz) / extent;
     return g.y <= 1.0 && all(g >= float3(0.0, 0.0, 0.0)) && all(g <= float3(1.0, 1.0, 1.0));
-}
-
-/**
- * Debug view 12: the state of the cell a point lands in, read exactly the way the shading reads it.
- *
- * <p>Built because two rounds of fixing this by reasoning produced two wrong diagnoses. Every quantity
- * the flicker could come from is a number in a cell, and none of them were observable.
- *
- * <p>Colour key:
- * <ul>
- *   <li>black  -- the switch for this region is off, or no table is allocated
- *   <li>RED    -- a live cell was not found. Solid red means eviction or probe failure, and red FLASHING
- *                 between frames means cells are being lost and refound, which is a churn problem
- *   <li>otherwise R = M/M_MAX (how much reuse accumulated), G = W/W_MAX (the weight), and
- *                 B = 1 where W is sitting ON its ceiling, which is a clamp being load-bearing rather
- *                 than a safety net
- * </ul>
- *
- * <p>What to read: a stable picture means the cells are stable and the flicker is downstream of them, in
- * how the shading turns a cell into radiance. A picture that flickers in G means the WEIGHT is unstable.
- * One that flickers in R or between red and not-red means cells are churning. Those are three different
- * bugs and this view is what tells them apart.
- */
-public float3 volumeRestirDebug(float3 ro, float3 rd, float cullDistance) {
-    // MARCHED, NOT SAMPLED AT ONE POINT, and the first version got this wrong in a way worth recording:
-    // it read the queued record origin, which equals the CAMERA ORIGIN whenever the primary ray met no
-    // refractive interface -- almost every pixel. So it probed the one cell at the eye and painted solid
-    // red everywhere, which reads exactly like "no cells exist" and is instead "asked in the wrong place".
-    // Deposits happen along the ray, in the air, so the diagnostic has to look there too.
-    // GEOMETRIC SPACING, and the linear version it replaces was the second time this view asked in the
-    // wrong place. Twelve equal steps across 512 blocks put the FIRST sample 43 blocks out -- through the
-    // wall of any room. Deposits happen where the fog march runs, which indoors is the few blocks between
-    // the eye and the nearest surface, so the samples have to be dense there and sparse far away.
-    float3 firstMiss = float3(1.0, 0.0, 0.0);
-    for (uint step = 0u; step < 12u; ++step) {
-        float t = exp2(log2(max(cullDistance, 2.0)) * float(step) / 11.0);
-        float3 hit = volumeRestirDebugAt(ro + rd * t);
-        if (hit.x >= 0.0) {
-            return hit;
-        }
-    }
-    return firstMiss;
-}
-
-/** One point. Negative red means "no live cell here", which the march above walks past. */
-float3 volumeRestirDebugAt(float3 p) {
-    uint switchBit = volumeInsideVisibilityGrid(p)
-            ? ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR;
-    if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
-            || worldPush.volumeGridAddr == 0) {
-        return float3(0.0, 0.0, 0.0);
-    }
-    float dist = length(p - worldPush.camOffset);
-    int level = volumeCellLevel(dist, worldPush.volumeGridLodK);
-    int3 coord = volumeCellCoord(p, volumeCellEdge(level));
-    ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
-    uint base = volumeHalfBase(worldPush.volumeGridSlots, worldPush.frameIndex + 1u);
-    int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
-                              worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
-    if (slot < 0) {
-        return float3(-1.0, 0.0, 0.0);
-    }
-    VolumeCell c = grid[slot];
-    return float3(saturate(c.stats.x / VOLUME_M_MAX),
-                  saturate(c.dirW.w / VOLUME_W_MAX),
-                  c.dirW.w >= VOLUME_W_MAX * 0.999 ? 1.0 : 0.0);
 }
 
 public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
@@ -339,4 +293,9 @@ public static const float WATER_SKY_GATE_LIFT = 0.5;
 public float waterSurfaceSkyOpenness(float3 p, float skyDepth) {
     float3 gateP = float3(p.x, p.y + skyDepth + WATER_SKY_GATE_LIFT, p.z);
     return sampleVolumeVisibility(gateP).y;
+}
+
+/** Debug view 28 reads this after the shading that filled it. See gVolumeRestirProbe. */
+public float3 volumeRestirProbeResult() {
+    return gVolumeRestirProbe;
 }
