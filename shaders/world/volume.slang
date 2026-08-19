@@ -715,7 +715,11 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
                 visSample = sampleVolumeLightVisibility(p);
             }
 
-            float3 source = skySource * visSample.sky;
+            // D199: with a live cell the sky term is directional, so the phase belongs here -- this is
+            // the only place that knows rd. Without one this is verbatim the shipped line.
+            float3 source = visSample.skyDirValid
+                    ? visSample.skyRadiance * enclosedPhase(dot(rd, visSample.skyDir), phaseG, scatterAlbedo)
+                    : skySource * visSample.sky;
             if (sunRays == 0u && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
                 float3 lightDir = gridRegion
                         ? sampleSquareLightDirection(worldPush.lightDir.xyz,
@@ -1504,9 +1508,19 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                             stepSunSource = sampledAmbientSunSource(
                                     ro, rd, gridLightDir, phaseG, sunSigma);
                         }
+                        // Folded into the source rather than pushed through ambientStep's signature:
+                        // the scalar it takes is an OPENNESS, and a directional estimate is not one. Sky
+                        // openness then reads 1 because the radiance already carries the visibility.
+                        float3 stepSkySource = skySource;
+                        float stepSkyVis = visSample.sky;
+                        if (visSample.skyDirValid) {
+                            stepSkySource = visSample.skyRadiance
+                                    * enclosedPhase(dot(rd, visSample.skyDir), phaseG, scatterAlbedo);
+                            stepSkyVis = 1.0;
+                        }
                         ambientStep(acc, ro, rd, tA, tB, scatterAlbedo,
-                                    stepSunSource, skySource,
-                                    float2(visSample.sun, visSample.sky));
+                                    stepSunSource, stepSkySource,
+                                    float2(visSample.sun, stepSkyVis));
                     }
                 }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,

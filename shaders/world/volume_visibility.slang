@@ -8,6 +8,7 @@
 
 import world_common; // WorldPush's shape
 import world_core;   // the frame's WorldPush itself, which carries the grid's placement
+import volume_hash;  // M25 cell addressing and the cell record
 
 // Must match volume_visibility.comp.slang and RtSky.VIS_GRID_W/H/D.
 public static const int VIS_GRID_W = 64;
@@ -28,6 +29,21 @@ public struct VolumeVisibilitySample {
     public float sun;
     public float sky;
     public float2 lightUv;
+    /**
+     * D199: the direction a volumetric ReSTIR cell settled on, and the sky radiance along it.
+     *
+     * <p>VALID IS FALSE ON EVERY PATH THAT DOES NOT SET IT, which is what keeps iron law 8 structural
+     * here rather than careful. The scalar `sky` above is untouched and still correct on its own, so a
+     * caller that ignores these three fields reproduces the shipped picture exactly -- and every caller
+     * did, up to the commit that added them.
+     *
+     * <p>The pair exists because collapsing a reservoir to `sky` would discard the direction, and the
+     * direction is what D198 spent a shadow ray to obtain. The phase term belongs at the caller, which
+     * is the only place that knows the view direction it must be evaluated against.
+     */
+    public bool skyDirValid;
+    public float3 skyDir;
+    public float3 skyRadiance;
 };
 
 /**
@@ -79,11 +95,48 @@ public struct VolumeVisibilitySample {
  * bake now follows the grid's own knob instead (#41). Which leaves this fallback saying only what it
  * always should have: no grid was asked for, so there is no measurement to report.
  */
+/**
+ * Replace the scalar sky term with a cell's directional estimate, if this switch is on and the cell is
+ * live. Silent on every other path, which is how the off state stays byte-identical.
+ *
+ * <p>Reads only. The cell is filled where the volume is marched, once per cell per frame rather than once
+ * per sample -- the amortisation D198 depends on, and the reason a shadow ray in the target is affordable
+ * at all.
+ */
+void volumeRestirSky(float3 p, uint switchBit, inout VolumeVisibilitySample result) {
+    if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
+            || worldPush.volumeGridAddr == 0) {
+        return;
+    }
+    float dist = length(p - worldPush.camOffset);
+    int level = volumeCellLevel(dist, worldPush.volumeGridLodK);
+    int3 coord = volumeCellCoord(p, volumeCellEdge(level));
+    ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
+    int slot = volumeGridFind(grid, worldPush.volumeGridSlots, coord, level,
+                              worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
+    if (slot < 0) {
+        return; // no cell yet: the scalar answer above stands, which is the shipped one
+    }
+    VolumeCell c = grid[slot];
+    if (c.dirW.w <= 0.0) {
+        // An empty reservoir is not a missing answer. Every candidate had zero transmittance, which is
+        // what a sealed cave looks like, and reporting no sky light there is the point of the milestone.
+        result.sky = 0.0;
+        return;
+    }
+    result.skyDirValid = true;
+    result.skyDir = c.dirW.xyz;
+    result.skyRadiance = c.leTarget.xyz * c.stats.yzw * c.dirW.w;
+}
+
 public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     VolumeVisibilitySample result;
     result.sun = 1.0;
     result.sky = 1.0;
     result.lightUv = float2(0.5, 0.5);
+    result.skyDirValid = false;
+    result.skyDir = float3(0.0, 1.0, 0.0);
+    result.skyRadiance = float3(0.0, 0.0, 0.0);
     // D78A: some authored dimensions deliberately use a tiny unoccluded environment floor. It is an
     // explicit non-physical readability light, so roofs must not gate it. Directional/local emitters
     // still cast their own shadow rays; only the preset's isotropic floor takes this fast path.
@@ -114,6 +167,9 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     // Sideways and downward do clamp: laterally the world plausibly continues as it does here, and below
     // the grid the bottom cell is an UPPER bound, so clamping there errs bright but bounded.
     if (g.y > 1.0) {
+        // D194: above the grid the top cell is a LOWER bound on sky openness, and returning it as though
+        // it were a measurement is what the FAR switch exists to replace. Clamp remains the off state.
+        volumeRestirSky(p, ENVIRONMENT_VOLUME_RESTIR_FAR, result);
         return result;
     }
     // Clamped HERE rather than left to the sampler. The descriptor happens to carry CLAMP_TO_EDGE today,
@@ -127,6 +183,7 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     result.lightUv = result.sun > 1.0e-5
             ? clamp(v.ba / result.sun, float2(0.0, 0.0), float2(1.0, 1.0))
             : float2(0.5, 0.5);
+    volumeRestirSky(p, ENVIRONMENT_VOLUME_RESTIR_NEAR, result);
     return result;
 }
 

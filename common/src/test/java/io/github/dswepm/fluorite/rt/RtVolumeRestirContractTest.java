@@ -221,6 +221,31 @@ final class RtVolumeRestirContractTest {
         assertFalse(expired.contains("frame - evictionFrames"));
     }
 
+    /**
+     * The read path is silent unless a switch is on AND a live cell exists.
+     *
+     * <p>D199 widened the interface, which means the off state now depends on three fields staying unread
+     * rather than on a branch not being taken. {@code skyDirValid} is false on every path that does not
+     * set it, and both callers fall back to the shipped scalar line, so the published picture survives by
+     * construction. This test holds the two ends of that: the early return, and the fallback.
+     */
+    @Test
+    void theWidenedInterfaceIsInertUntilACellAnswers() throws IOException {
+        String vis = code(source("shaders/world/volume_visibility.slang"));
+        String volume = code(source("shaders/world/volume.slang"));
+
+        String lookup = between(vis, "void volumeRestirSky(", "\n}");
+        assertTrue(lookup.contains("worldPush.environmentFlags & switchBit) == 0u"));
+        assertTrue(lookup.contains("worldPush.volumeGridSlots == 0u"));
+        assertTrue(lookup.contains("worldPush.volumeGridAddr == 0"));
+        // Both switches are dispatched, and on the two regions D196 named.
+        assertTrue(vis.contains("volumeRestirSky(p, ENVIRONMENT_VOLUME_RESTIR_NEAR, result)"));
+        assertTrue(vis.contains("volumeRestirSky(p, ENVIRONMENT_VOLUME_RESTIR_FAR, result)"));
+        // Every consumer keeps the shipped scalar as its else-branch.
+        assertTrue(volume.contains(": skySource * visSample.sky;"));
+        assertTrue(volume.contains("float stepSkyVis = visSample.sky;"));
+    }
+
     private static String quote() {
         return String.valueOf((char) 34);
     }
