@@ -333,6 +333,8 @@
   "fluorite.options.rt.debugView.24": "Water sim reach",
   "fluorite.options.rt.debugView.26": "Rain material / film / exposure",
   "fluorite.options.rt.debugView.27": "Puddle storage / basin / result",
+  "fluorite.options.rt.debugView.28": "Volumetric ReSTIR cell",
+  "fluorite.options.rt.debugView.28.tooltip": "M25. The world-space cell this pixel lands in, read the way the shading reads it. Black: the switch for this region is off, or no table is allocated. Red: no live cell found -- solid means eviction or a failed probe, flashing means cells are churning. Otherwise red is accumulated reuse (M), green is the weight (W), and blue marks a weight sitting on its ceiling. A steady picture puts any flicker downstream, in how a cell becomes radiance.",
   "fluorite.options.rt.fog": "Volumetric Fog",
   "fluorite.options.rt.fog.tooltip": "The world's ambient participating medium. Integrated per path segment, so it appears in reflections and refractions, not just the direct view.",
   "fluorite.options.rt.fogDensity": "Fog Density",

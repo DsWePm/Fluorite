@@ -900,10 +900,10 @@ static const float CAUSTIC_DEVIATION_GAIN = 20.0;
 // Expected at the far slice: a faint wash that follows the fog's height profile, brighter toward the sun,
 // with the transmittance darkest where the sightline is longest and lowest. Expected at the NEAR slices:
 // almost nothing, which is the point of distributing the depth axis exponentially (see froxelSliceDepth).
-// M25: the volumetric ReSTIR cell a pixel lands in. Claims one of the numbers the retired atmosphere
-// tables left, and the retirement comment below explains why claiming one is safe while RENUMBERING the
-// survivors would not have been.
-static const uint DEBUG_VIEW_VOLUME_RESTIR = 12u;
+// M25: the volumetric ReSTIR cell a pixel lands in. A NEW number, not one of the retired ones. 12-16 and
+// 25 are gone and stay gone -- the point of not reusing them is that every note naming a view by number
+// stays true, and reoccupying 12 would have falsified exactly the notes that retirement protected.
+static const uint DEBUG_VIEW_VOLUME_RESTIR = 28u;
 static const uint DEBUG_VIEW_FROXEL = 17u;
 static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
 
