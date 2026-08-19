@@ -184,16 +184,19 @@ public VisibilityResult visibilityThroughAmbient(float3 mediumExtinction, uint m
 }
 
 /**
- * Fill one cell: draw candidates over the hemisphere, measure each with a shadow ray, and resample.
+ * Fill one cell: draw candidates over the upper hemisphere, measure each with a shadow ray, resample.
  *
- * <p>ONCE PER CELL PER FRAME, NOT ONCE PER SAMPLE, and the stamp check is what enforces it. That ratio is
- * the entire economics of D198: 436k live cells against 5.8-11.5M volume samples means 13-26 samples share
- * every ray drawn here, which is why putting transmittance in the target is affordable at all. Depositing
- * per sample would draw a ray per sample and buy nothing the shipped texture fetch does not already give.
+ * <p>ONE THREAD PER CELL PER FRAME, ELECTED WITH AN ATOMIC. The first wiring used a plain read of the
+ * stamp followed by a write, and that enforced nothing: every thread landing in a cell reads the stamp
+ * before any write lands, so all of them passed the check, all deposited, and all wrote. The rays became
+ * per-sample -- voiding D198's economics entirely -- and the concurrent stores tore the 64-byte record,
+ * which is what the screen was showing. A check-then-act is not a rule.
  *
- * <p>The target carries the transmittance (D198). Over a cave hemisphere the radiance is near-uniform and
- * the phase is smooth, so a target without it is nearly constant and the reservoir would settle on an
- * arbitrary direction -- accumulating, at cost, the one fact that is useless underground.
+ * <p>With the election in place the ray really is per cell per frame: 436k live cells against 5.8-11.5M
+ * volume samples means 13-26 samples share every ray drawn here, which is the whole reason a shadow ray
+ * in the target is affordable.
+ *
+ * <p>Writes THIS parity and seeds from the OTHER, so nothing reads a half being written.
  */
 void volumeRestirDeposit(float3 p, uint switchBit, float3 skyRadiance, float3 mediumExtinction,
                          uint mediumFlags) {
@@ -201,34 +204,42 @@ void volumeRestirDeposit(float3 p, uint switchBit, float3 skyRadiance, float3 me
             || worldPush.volumeGridAddr == 0) {
         return;
     }
+    uint slots = worldPush.volumeGridSlots;
+    uint frame = worldPush.frameIndex;
     float dist = length(p - worldPush.camOffset);
     int level = volumeCellLevel(dist, worldPush.volumeGridLodK);
     int3 coord = volumeCellCoord(p, volumeCellEdge(level));
-    // Probing is a read, so it takes the const view; only the final store needs the writable one.
     DevicePtr<VolumeCell> grid = DevicePtr<VolumeCell>(worldPush.volumeGridAddr);
     ConstPtr<VolumeCell> gridRead = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
-    int slot = volumeGridClaim(gridRead, worldPush.volumeGridSlots, coord, level,
-                               worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
+
+    uint writeBase = volumeHalfBase(slots, frame);
+    int slot = volumeGridClaim(gridRead, slots, writeBase, coord, level, frame,
+                               worldPush.volumeGridEvictionFrames);
     if (slot < 0) {
         return; // probe window full of live strangers; contributing nothing beats evicting one
     }
-    VolumeCell c = gridRead[slot];
-    bool mine = volumeCellStoredKey(c) == volumeCellKey(coord, level);
-    if (mine && volumeCellStamp(c) == worldPush.frameIndex) {
-        return; // already fed this frame. This line IS the per-cell-per-frame rule.
+    // THE ELECTION. Exactly one thread sees a stamp other than this frame and proceeds; every other
+    // thread that lands in this cell this frame loses the exchange and returns without tracing anything.
+    uint previous;
+    InterlockedExchange(grid[slot].ident.y, frame, previous);
+    if (previous == frame) {
+        return;
     }
-    if (!mine) {
-        c.dirW = float4(0.0, 1.0, 0.0, 0.0);
-        c.leTarget = float4(0.0, 0.0, 0.0, 0.0);
-        c.stats = float4(0.0, 0.0, 0.0, 0.0);
-    }
-    // Seeded from the CELL, not the pixel: every sample that lands here must agree on the stream, or the
-    // reservoir's M counts draws from a distribution that changes with whoever arrived first.
-    uint seed = volumeCellKey(coord, level) ^ (worldPush.frameIndex * 2654435761u);
+
+    // Continue the cell from the OTHER half, which nothing is writing this frame. A cell with no history
+    // there starts empty rather than inheriting whatever the slot held.
+    uint readBase = volumeHalfBase(slots, frame + 1u);
+    int prior = volumeGridFind(gridRead, slots, readBase, coord, level, frame,
+                               worldPush.volumeGridEvictionFrames);
+    VolumeCell c = prior >= 0 ? gridRead[prior] : volumeCellEmpty();
+
+    // Seeded from the CELL, not the pixel: which thread won the election is arbitrary, so a pixel-derived
+    // stream would make the cell's content depend on that arbitrary choice and shimmer between frames.
+    uint seed = volumeCellKey(coord, level) ^ (frame * 2654435761u);
     uint candidates = max(worldPush.volumeGridCandidates, 1u);
     for (uint i = 0u; i < candidates; ++i) {
-        // Uniform over the UPPER hemisphere. The lower half has no sky to find, and folding it up
-        // rather than drawing over the whole sphere keeps the pdf honest at half the candidates.
+        // Uniform over the UPPER hemisphere. The lower half has no sky to find, and folding rather than
+        // drawing over the whole sphere keeps the pdf honest at half the candidates.
         float u1 = rndf(seed);
         float u2 = rndf(seed);
         float r = sqrt(max(0.0, 1.0 - u1 * u1));
@@ -236,9 +247,9 @@ void volumeRestirDeposit(float3 p, uint switchBit, float3 skyRadiance, float3 me
         float3 dir = float3(r * cos(phi), u1, r * sin(phi));
         VisibilityResult shadow = visibilityThroughAmbient(mediumExtinction, mediumFlags,
                                                            p, dir, RAY_FAR);
-        volumeCellUpdate(c, dir, skyRadiance, shadow.transmittance, 0.15915494309, seed);
+        volumeCellUpdate(c, dir, skyRadiance * shadow.transmittance, 0.15915494309, seed);
     }
-    volumeCellClaimStamp(c, coord, level, worldPush.frameIndex);
+    volumeCellClaimStamp(c, coord, level, frame);
     grid[slot] = c;
 }
 

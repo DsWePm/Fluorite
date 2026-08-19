@@ -246,6 +246,65 @@ final class RtVolumeRestirContractTest {
         assertTrue(volume.contains("float stepSkyVis = visSample.sky;"));
     }
 
+    /**
+     * One thread per cell per frame is elected with an atomic, not asserted by a comment.
+     *
+     * <p>The first wiring read the stamp, compared it, and wrote. That enforces nothing: every thread
+     * landing in a cell reads before any write lands, so all of them pass, all trace their own candidate
+     * rays, and all store. The rays become per-sample, which voids D198's entire cost argument, and the
+     * concurrent stores tear the 64-byte record. It reached the screen as full-frame flicker.
+     */
+    @Test
+    void theOneDepositPerCellRuleIsElectedRatherThanAsserted() throws IOException {
+        String deposit = between(code(source("shaders/world/volume.slang")),
+                "void volumeRestirDeposit(", "\n}");
+        assertTrue(deposit.contains("InterlockedExchange(grid[slot].ident.y, frame, previous)"));
+        assertTrue(deposit.contains("if (previous == frame) {"));
+        // The check-then-act that did not work must not come back.
+        assertFalse(deposit.contains("volumeCellStamp(c) == worldPush.frameIndex"));
+    }
+
+    /**
+     * Readers take the parity nobody is writing.
+     *
+     * <p>Two halves, exactly as the reservoir store does it. Reading the half being filled is unordered
+     * against the writes in the same dispatch, so a reader can observe a partially stored record -- the
+     * other half of what the screen was showing.
+     */
+    @Test
+    void theHalfBeingWrittenIsNeverTheHalfBeingRead() throws IOException {
+        String deposit = between(code(source("shaders/world/volume.slang")),
+                "void volumeRestirDeposit(", "\n}");
+        String read = between(code(source("shaders/world/volume_visibility.slang")),
+                "void volumeRestirSky(", "\n}");
+        assertTrue(deposit.contains("volumeHalfBase(slots, frame)"), "writes this parity");
+        assertTrue(deposit.contains("volumeHalfBase(slots, frame + 1u)"), "seeds from the other");
+        assertTrue(read.contains("volumeHalfBase(worldPush.volumeGridSlots, worldPush.frameIndex + 1u)"));
+        assertTrue(code(source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java"))
+                .contains("Math.multiplyExact(volumeGridSlots * 2L, RESERVOIR_BYTES)"));
+    }
+
+    /**
+     * wSum is stored, and both W and M are bounded.
+     *
+     * <p>W is defined as wSum/(M*phat), so recovering wSum from W is circular and drifts -- which the
+     * first version did. And unlike a surface reservoir this W multiplies a radiance that lights a whole
+     * cell for as long as the cell lives, so one lucky sample in a mostly-occluded cave paints a bright
+     * blob that persists for the eviction window. Both caps bound that.
+     */
+    @Test
+    void theWeightIsBoundedAndTheSumIsStoredRatherThanRecovered() throws IOException {
+        String hash = code(source("shaders/world/volume_hash.slang"));
+        assertTrue(hash.contains("public float4 stats;"));
+        assertTrue(hash.contains("VOLUME_W_MAX"));
+        assertTrue(hash.contains("VOLUME_M_MAX"));
+        String update = between(hash, "public void volumeCellUpdate(", "\n}");
+        assertTrue(update.contains("c.stats.y += w;"), "wSum accumulates in its own lane");
+        assertTrue(update.contains("min(c.stats.y / (c.stats.x * c.leT.w), VOLUME_W_MAX)"));
+        assertTrue(update.contains("min(c.stats.x + 1.0, VOLUME_M_MAX)"));
+        assertFalse(update.contains("wSumBefore"), "wSum must not be reconstructed from W");
+    }
+
     private static String quote() {
         return String.valueOf((char) 34);
     }

@@ -2537,7 +2537,9 @@ public final class RtComposite {
         // switch actually asks for it -- see the field comment.
         volumeGridSlots = wantVolumeGridSlots;
         if (volumeGridSlots > 0L) {
-            long volumeGridBytes = Math.multiplyExact(volumeGridSlots, RESERVOIR_BYTES);
+            // TWO HALVES, like the reservoir store: readers take the parity nobody is writing, which is
+            // what makes a 64-byte record safe to read from a dispatch that is also filling the table.
+            long volumeGridBytes = Math.multiplyExact(volumeGridSlots * 2L, RESERVOIR_BYTES);
             volumeGrid = ctx.createBuffer(volumeGridBytes,
                     VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                     false, "volume ReSTIR hash grid " + volumeGridSlots + " slots");

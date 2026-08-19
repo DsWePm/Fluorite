@@ -216,3 +216,27 @@ phat 依赖几何，放/挖方块后该格权重要到重采样才更新。配 N
 ### 状态
 
 a、b、c、d 前半已提交(开关位、表分配、哈希寻址、地址与格记录 + 含透射率的 RIS 更新)。**尚未接线:上面三条。** 着色器编译通过、全量测试通过、两个开关仍在发布档,所以当前分支的画面与 main 逐位相同。
+
+## 首次点亮即全屏闪烁：三个缺陷，都在写入路径
+
+开关拨到 `restir` 后画面全白 + 满屏亮点 + 疯狂闪烁。三个缺陷都是本轮引入的,记在这里因为它们都会静默复发。
+
+### 1. 「每格每帧一次」根本没生效 —— check-then-act 不是规则
+
+原写法是读 stamp、比较、写回。**这什么也不保证**:成千上万条线程同一帧命中同一个格,它们全都在任何写入落地之前读到旧 stamp,于是全部通过检查、全部各自打阴影线、全部写回。后果有二:阴影线退化成**每样本一条**(D198 的整套成本论证作废),以及并发写撕裂 64 字节记录。
+
+提交信息里我写的「the stamp check is the load-bearing line」是错的。**修复:`InterlockedExchange` 选举** —— 恰好一条线程看到 `previous != frame` 并继续,其余全部返回且不追任何光线。`restir.slang:570` 早就在 BDA 指针上用 `InterlockedAdd`,机制是现成的。
+
+### 2. 同一 dispatch 内边读边写
+
+`volumeRestirSky` 读的正是 `volumeRestirDeposit` 在写的那半张表,两者之间没有任何顺序保证,所以读得到半写状态。**修复:双半区**,与 reservoir store 同一做法(`restir.slang:655`「Reads the half belonging to the OTHER parity and writes this one」)。读取取 `frame + 1` 的奇偶,写入取 `frame` 的。代价是表翻倍到 222 MiB,仍在 512 MiB 预算内。
+
+### 3. W 无界 —— 能量爆炸
+
+已发布路径是 `skySource * sky`,`sky ∈ [0,1]` 有界。换成乘 `W = wSum/(M·phat)` 就无界了:大部分被遮挡的格里只有一个候选存活、phat 塌缩,W 爆掉。而且**这个 W 乘的是一整个格的辐亮度、并在该格的整个存活窗口里持续发光**,所以一次幸运采样会画出一团持续 0.75 s 的亮斑。
+
+同时 `wSum` 当时是从 W 反推的(`wSumBefore = W · M · phat`)—— W 的定义就是 `wSum/(M·phat)`,反推是循环的、会漂移。`restir.slang` 的横幅说 wSum「只在填充期间存在」,那对**一趟填完即消费**的表面 reservoir 成立;格子是跨帧填充的,所以这里必须持久化。
+
+**修复:`stats.y` 显式存 wSum,`VOLUME_W_MAX = 8`、`VOLUME_M_MAX = 64` 双上限。** M 上限另有作用:防止一个被看了一千帧的格拒绝接受任何新信息。
+
+三条都加了契约测试,包括断言那个不起作用的 check-then-act 不会回来。

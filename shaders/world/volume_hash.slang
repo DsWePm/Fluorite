@@ -110,31 +110,52 @@ public bool volumeCellExpired(uint stamp, uint frame, uint evictionFrames) {
 }
 
 /**
- * One cell. Exactly 64 bytes, the same stride RtComposite sizes the table with -- a struct that drifted
- * from RESERVOIR_BYTES would not fail, it would address a table of the wrong length.
+ * One cell. Exactly 64 bytes, the stride RtComposite sizes the table with.
  *
- * <p>ITS OWN RECORD RATHER THAN PackedReservoir. A surface reservoir spends two lanes on a receiver
- * normal and an emitter normal; a point in the air has neither, and the sky has no emitter to have one.
- * Borrowing that layout would have meant two dead lanes and a name that lies about what is stored.
+ * <p>ITS OWN RECORD RATHER THAN PackedReservoir: a point in the air has no receiver normal and the sky
+ * has no emitter to have one, so borrowing that layout would mean two dead lanes and a name that lies.
+ *
+ * <p>wSum IS STORED. Reconstructing it from W was a real defect and not a shortcut -- W is defined as
+ * wSum/(M*phat), so recovering wSum from W is circular, and it drifts. restir.slang says wSum "only
+ * exists while a reservoir is being filled", which is true for a surface reservoir that is filled and
+ * consumed in one pass. A cell is filled across frames, so here it has to persist.
  */
 public struct VolumeCell {
-    public float4 dirW;      // xyz = the stored sky direction, w = W, the finished ReSTIR weight
-    public float4 leTarget;  // xyz = sky radiance along it,    w = phat at the vertex that chose it
-    public float4 stats;     // x = M,  yzw = the transmittance the shadow ray measured (D198)
-    public float4 ident;     // x = key (0 = empty), y = frame stamp, zw = reserved
+    public float4 dirW;      // xyz = the chosen sky direction, w = W, the finished weight
+    public float4 leT;       // xyz = radiance TIMES transmittance along it, w = phat
+    public float4 stats;     // x = M, y = wSum, zw = reserved
+    public uint4  ident;     // x = key (0 = empty), y = frame stamp, zw = reserved
 };
 
-public uint volumeCellStoredKey(VolumeCell c) { return asuint(c.ident.x); }
-public uint volumeCellStamp(VolumeCell c) { return asuint(c.ident.y); }
+/**
+ * Weight ceiling, and M ceiling.
+ *
+ * <p>Both bound the same failure. In a mostly-occluded cell one candidate survives and phat collapses, so
+ * W = wSum/(M*phat) spikes -- and unlike a surface reservoir this value multiplies a RADIANCE that then
+ * lights the whole cell, for as long as the cell lives. Unbounded, the first lucky sample in a cave paints
+ * a bright blob that persists for the eviction window. Capping M additionally stops a cell that has been
+ * looked at for a thousand frames from refusing all new information.
+ */
+public static const float VOLUME_W_MAX = 8.0;
+public static const float VOLUME_M_MAX = 64.0;
+
+public uint volumeCellStoredKey(VolumeCell c) { return c.ident.x; }
+public uint volumeCellStamp(VolumeCell c) { return c.ident.y; }
 
 /**
- * The slot this cell lives in, or -1.
+ * Where a half begins. Two halves rather than two buffers, exactly as the reservoir store does it: one
+ * device address, and the parity picked from the frame.
  *
- * <p>Linear probing, bounded. An unbounded walk on a saturated table degenerates into a scan of the whole
- * buffer for every sample -- the failure mode is not a wrong picture but a frame time that collapses when
- * the table fills, which is exactly when the player is somewhere new and least able to explain it.
+ * <p>THIS IS WHAT MAKES THE GRID SAFE TO READ. Every reader takes the other parity, which no thread is
+ * writing this frame, so a read can never observe a half-written 64-byte record. Reading and writing one
+ * half in a single dispatch is precisely the defect that made the first wiring flicker.
  */
-public int volumeGridFind(ConstPtr<VolumeCell> grid, uint slots, int3 coord, int level,
+public uint volumeHalfBase(uint slots, uint frame) {
+    return (frame & 1u) * slots;
+}
+
+/** The slot this cell occupies within a half, or -1. */
+public int volumeGridFind(ConstPtr<VolumeCell> grid, uint slots, uint base, int3 coord, int level,
                           uint frame, uint evictionFrames) {
     if (slots == 0u) {
         return -1;
@@ -143,27 +164,26 @@ public int volumeGridFind(ConstPtr<VolumeCell> grid, uint slots, int3 coord, int
     uint slot = volumeCellSlot(coord, level, slots);
     for (uint step = 0u; step < VOLUME_PROBE_LIMIT; ++step) {
         uint at = (slot + step) % slots;
-        VolumeCell c = grid[at];
+        VolumeCell c = grid[base + at];
         uint stored = volumeCellStoredKey(c);
         if (stored == 0u) {
             return -1; // an empty slot ends the probe: nothing past it can belong to this cell
         }
         if (stored == key && !volumeCellExpired(volumeCellStamp(c), frame, evictionFrames)) {
-            return int(at);
+            return int(base + at);
         }
     }
     return -1;
 }
 
 /**
- * The slot to write, claiming an empty or expired one if this cell has none yet. -1 when the probe window
- * is full of live strangers, and the caller then simply does not contribute this frame.
+ * The slot to write, claiming an empty or expired one. -1 when the probe window is full of live strangers.
  *
- * <p>Dropping the sample is the right answer to a full window. The alternative -- evicting a live cell to
- * make room -- trades one cell's accumulated reuse for another's first sample, and under pressure the two
- * evict each other every frame, so both stay at M=1 and the table does more work to hold less.
+ * <p>Dropping the sample is the right answer to a full window: evicting a live cell trades its accumulated
+ * reuse for another's first sample, and under pressure the two evict each other every frame, so both stay
+ * at M=1 and the table does more work to hold less.
  */
-public int volumeGridClaim(ConstPtr<VolumeCell> grid, uint slots, int3 coord, int level,
+public int volumeGridClaim(ConstPtr<VolumeCell> grid, uint slots, uint base, int3 coord, int level,
                            uint frame, uint evictionFrames) {
     if (slots == 0u) {
         return -1;
@@ -172,51 +192,57 @@ public int volumeGridClaim(ConstPtr<VolumeCell> grid, uint slots, int3 coord, in
     uint slot = volumeCellSlot(coord, level, slots);
     for (uint step = 0u; step < VOLUME_PROBE_LIMIT; ++step) {
         uint at = (slot + step) % slots;
-        VolumeCell c = grid[at];
+        VolumeCell c = grid[base + at];
         uint stored = volumeCellStoredKey(c);
         if (stored == key || stored == 0u
                 || volumeCellExpired(volumeCellStamp(c), frame, evictionFrames)) {
-            return int(at);
+            return int(base + at);
         }
     }
     return -1;
 }
 
+/** An empty reservoir, for a cell that is being started rather than continued. */
+public VolumeCell volumeCellEmpty() {
+    VolumeCell c;
+    c.dirW = float4(0.0, 1.0, 0.0, 0.0);
+    c.leT = float4(0.0, 0.0, 0.0, 0.0);
+    c.stats = float4(0.0, 0.0, 0.0, 0.0);
+    c.ident = uint4(0u, 0u, 0u, 0u);
+    return c;
+}
+
 /**
  * One RIS candidate into a cell.
  *
- * <p>phat CARRIES THE TRANSMITTANCE (D198), which is the decision that separates this from the shipped
- * surface estimator. There, le and the geometry term separate emitters by orders of magnitude and the
- * target is informative without visibility. Over a cave's hemisphere the sky radiance is near-uniform and
- * the phase is smooth, so a target without transmittance is nearly constant and the reservoir accumulates
- * the one fact that is useless underground. This is the whole reason the milestone can address #41.
+ * <p>phat CARRIES THE TRANSMITTANCE (D198), which is what separates this from the shipped surface
+ * estimator. There, le and the geometry term separate emitters by orders of magnitude and the target is
+ * informative without visibility. Over a cave hemisphere the sky radiance is near-uniform and the phase is
+ * smooth, so a target without transmittance is nearly constant and the reservoir would settle on an
+ * arbitrary direction -- accumulating, at the cost of a ray, the one fact that is useless underground.
  *
- * <p>The estimator stays unbiased for any strictly positive target -- lighting.slang's banner says so --
- * and a fully sealed cell drives every candidate to phat = 0, leaves the reservoir empty, and reports no
- * sky light. Which is correct.
+ * <p>The estimator stays unbiased for any strictly positive target (lighting.slang's banner), and a sealed
+ * cell drives every candidate to phat = 0, leaves the reservoir empty, and reports no sky light. Correct.
  */
-public void volumeCellUpdate(inout VolumeCell c, float3 dir, float3 le, float3 transmittance,
-                             float sourcePdf, inout uint seed) {
-    float phat = luminance(le * transmittance);
-    if (phat <= 0.0) {
-        c.stats.x += 1.0; // seen and rejected still counts: M is the denominator, not a success count
-        return;
+public void volumeCellUpdate(inout VolumeCell c, float3 dir, float3 leT, float sourcePdf, inout uint seed) {
+    float phat = luminance(leT);
+    c.stats.x = min(c.stats.x + 1.0, VOLUME_M_MAX);
+    if (phat > 0.0) {
+        float w = phat / max(sourcePdf, 1.0e-20);
+        c.stats.y += w;
+        if (c.stats.y > 0.0 && rndf(seed) < (w / c.stats.y)) {
+            c.dirW.xyz = dir;
+            c.leT.xyz = leT;
+            c.leT.w = phat;
+        }
     }
-    float w = phat / max(sourcePdf, 1.0e-20);
-    float wSumBefore = c.leTarget.w > 0.0 ? c.dirW.w * c.stats.x * c.leTarget.w : 0.0;
-    float wSum = wSumBefore + w;
-    c.stats.x += 1.0;
-    if (wSum > 0.0 && rndf(seed) < (w / wSum)) {
-        c.dirW.xyz = dir;
-        c.leTarget.xyz = le;
-        c.leTarget.w = phat;
-        c.stats.yzw = transmittance;
-    }
-    c.dirW.w = c.leTarget.w > 0.0 ? (wSum / (c.stats.x * c.leTarget.w)) : 0.0;
+    c.dirW.w = (c.leT.w > 0.0 && c.stats.x > 0.0)
+            ? min(c.stats.y / (c.stats.x * c.leT.w), VOLUME_W_MAX)
+            : 0.0;
 }
 
 /** Stamp a cell as belonging to this key and touched this frame. */
 public void volumeCellClaimStamp(inout VolumeCell c, int3 coord, int level, uint frame) {
-    c.ident.x = asfloat(volumeCellKey(coord, level));
-    c.ident.y = asfloat(frame);
+    c.ident.x = volumeCellKey(coord, level);
+    c.ident.y = frame;
 }

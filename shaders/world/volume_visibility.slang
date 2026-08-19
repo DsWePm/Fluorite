@@ -112,7 +112,10 @@ void volumeRestirSky(float3 p, uint switchBit, inout VolumeVisibilitySample resu
     int level = volumeCellLevel(dist, worldPush.volumeGridLodK);
     int3 coord = volumeCellCoord(p, volumeCellEdge(level));
     ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
-    int slot = volumeGridFind(grid, worldPush.volumeGridSlots, coord, level,
+    // The OTHER parity: the half completed last frame, which no thread is writing now. Reading the half
+    // being filled is what made the first wiring flicker.
+    uint base = volumeHalfBase(worldPush.volumeGridSlots, worldPush.frameIndex + 1u);
+    int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
                               worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
     if (slot < 0) {
         return; // no cell yet: the scalar answer above stands, which is the shipped one
@@ -126,7 +129,9 @@ void volumeRestirSky(float3 p, uint switchBit, inout VolumeVisibilitySample resu
     }
     result.skyDirValid = true;
     result.skyDir = c.dirW.xyz;
-    result.skyRadiance = c.leTarget.xyz * c.stats.yzw * c.dirW.w;
+    // leT already carries radiance times transmittance; W finishes the estimator. The phase belongs at
+    // the caller, which is the only place that knows the view direction.
+    result.skyRadiance = c.leT.xyz * c.dirW.w;
 }
 
 public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
