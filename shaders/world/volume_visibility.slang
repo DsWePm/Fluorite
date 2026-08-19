@@ -103,7 +103,9 @@ public struct VolumeVisibilitySample {
  * per sample -- the amortisation D198 depends on, and the reason a shadow ray in the target is affordable
  * at all.
  */
-void volumeRestirSky(float3 p, uint switchBit, inout VolumeVisibilitySample result) {
+void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
+    uint switchBit = volumeInsideVisibilityGrid(p)
+            ? ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR;
     if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
             || worldPush.volumeGridAddr == 0) {
         return;
@@ -132,6 +134,23 @@ void volumeRestirSky(float3 p, uint switchBit, inout VolumeVisibilitySample resu
     // leT already carries radiance times transmittance; W finishes the estimator. The phase belongs at
     // the caller, which is the only place that knows the view direction.
     result.skyRadiance = c.leT.xyz * c.dirW.w;
+}
+
+/**
+ * Whether a point falls inside the cached visibility grid. THE ONE DEFINITION of M25's near/far split.
+ *
+ * <p>The deposit and the read must agree on it. When they did not -- the deposit testing its caller's own
+ * region flag and the read testing the grid extent -- a cell could be written under one switch and looked
+ * for under the other, so turning on a single switch produced cells nobody read.
+ */
+public bool volumeInsideVisibilityGrid(float3 p) {
+    float cell = worldPush.visGridOrigin.w;
+    if (cell <= 0.0) {
+        return false;
+    }
+    float3 extent = cell * float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
+    float3 g = (p - worldPush.visGridOrigin.xyz) / extent;
+    return g.y <= 1.0 && all(g >= float3(0.0, 0.0, 0.0)) && all(g <= float3(1.0, 1.0, 1.0));
 }
 
 public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
@@ -174,7 +193,7 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     if (g.y > 1.0) {
         // D194: above the grid the top cell is a LOWER bound on sky openness, and returning it as though
         // it were a measurement is what the FAR switch exists to replace. Clamp remains the off state.
-        volumeRestirSky(p, ENVIRONMENT_VOLUME_RESTIR_FAR, result);
+        volumeRestirSky(p, result);
         return result;
     }
     // Clamped HERE rather than left to the sampler. The descriptor happens to carry CLAMP_TO_EDGE today,
@@ -188,7 +207,7 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     result.lightUv = result.sun > 1.0e-5
             ? clamp(v.ba / result.sun, float2(0.0, 0.0), float2(1.0, 1.0))
             : float2(0.5, 0.5);
-    volumeRestirSky(p, ENVIRONMENT_VOLUME_RESTIR_NEAR, result);
+    volumeRestirSky(p, result);
     return result;
 }
 

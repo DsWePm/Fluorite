@@ -226,7 +226,7 @@ public VolumeCell volumeCellEmpty() {
  */
 public void volumeCellUpdate(inout VolumeCell c, float3 dir, float3 leT, float sourcePdf, inout uint seed) {
     float phat = luminance(leT);
-    c.stats.x = min(c.stats.x + 1.0, VOLUME_M_MAX);
+    c.stats.x += 1.0;
     if (phat > 0.0) {
         float w = phat / max(sourcePdf, 1.0e-20);
         c.stats.y += w;
@@ -235,6 +235,15 @@ public void volumeCellUpdate(inout VolumeCell c, float3 dir, float3 leT, float s
             c.leT.xyz = leT;
             c.leT.w = phat;
         }
+    }
+    // M IS CAPPED BY SCALING BOTH, NEVER BY CLAMPING M ALONE. W is wSum/(M*phat); clamping M while wSum
+    // keeps accumulating makes W grow without bound, every cell ramping to VOLUME_W_MAX at its own rate
+    // while eviction restarts others on a stagger. That reads as the whole screen pulsing, and it is what
+    // it did. Scaling holds the ratio, which is the only thing W is made of.
+    if (c.stats.x > VOLUME_M_MAX) {
+        float scale = VOLUME_M_MAX / c.stats.x;
+        c.stats.x *= scale;
+        c.stats.y *= scale;
     }
     c.dirW.w = (c.leT.w > 0.0 && c.stats.x > 0.0)
             ? min(c.stats.y / (c.stats.x * c.leT.w), VOLUME_W_MAX)

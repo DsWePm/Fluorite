@@ -198,8 +198,18 @@ public VisibilityResult visibilityThroughAmbient(float3 mediumExtinction, uint m
  *
  * <p>Writes THIS parity and seeds from the OTHER, so nothing reads a half being written.
  */
-void volumeRestirDeposit(float3 p, uint switchBit, float3 skyRadiance, float3 mediumExtinction,
-                         uint mediumFlags) {
+void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
+    // THE CELL'S CONTENT MUST NOT DEPEND ON WHICH THREAD WON THE ELECTION, and the winner is arbitrary
+    // and different every frame. Taking the caller's local sky source made the stored radiance jump
+    // frame to frame -- flicker, from the same root as the seed, which was fixed one round earlier
+    // without following the reasoning through to the data. The frame's medium sky radiance is the same
+    // value for every thread, which is what makes the cell stable.
+    //
+    // The region is decided the same way the READ decides it, by one shared predicate, so a cell is
+    // never written under one switch and looked for under the other.
+    uint switchBit = volumeInsideVisibilityGrid(p)
+            ? ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR;
+    float3 skyRadiance = worldPush.mediumSkyRadiance.xyz;
     if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
             || worldPush.volumeGridAddr == 0) {
         return;
@@ -786,9 +796,7 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
             if (gridRegion) {
                 visSample = sampleVolumeLightVisibility(p);
             }
-            volumeRestirDeposit(p, gridRegion ? ENVIRONMENT_VOLUME_RESTIR_NEAR
-                                              : ENVIRONMENT_VOLUME_RESTIR_FAR,
-                                skySource, worldPush.fogExtinction.xyz, MEDIUM_FLAG_AMBIENT);
+            volumeRestirDeposit(p, worldPush.fogExtinction.xyz, MEDIUM_FLAG_AMBIENT);
 
             // D199: with a live cell the sky term is directional, so the phase belongs here -- this is
             // the only place that knows rd. Without one this is verbatim the shipped line.
@@ -1574,8 +1582,7 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // shape.
                         float3 midP = ro + rd * ((tA + tB) * 0.5);
                         VolumeVisibilitySample visSample = sampleVolumeLightVisibility(midP);
-                        volumeRestirDeposit(midP, ENVIRONMENT_VOLUME_RESTIR_NEAR, skySource,
-                                            worldPush.fogExtinction.xyz, MEDIUM_FLAG_AMBIENT);
+                        volumeRestirDeposit(midP, worldPush.fogExtinction.xyz, MEDIUM_FLAG_AMBIENT);
                         float3 stepSunSource = gridSunSource;
                         if (sunRays == 0u
                                 && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {

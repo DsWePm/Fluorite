@@ -239,8 +239,8 @@ final class RtVolumeRestirContractTest {
         assertTrue(lookup.contains("worldPush.volumeGridSlots == 0u"));
         assertTrue(lookup.contains("worldPush.volumeGridAddr == 0"));
         // Both switches are dispatched, and on the two regions D196 named.
-        assertTrue(vis.contains("volumeRestirSky(p, ENVIRONMENT_VOLUME_RESTIR_NEAR, result)"));
-        assertTrue(vis.contains("volumeRestirSky(p, ENVIRONMENT_VOLUME_RESTIR_FAR, result)"));
+        assertTrue(vis.contains("volumeInsideVisibilityGrid(p)"));
+        assertTrue(vis.contains("ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR"));
         // Every consumer keeps the shipped scalar as its else-branch.
         assertTrue(volume.contains(": skySource * visSample.sky;"));
         assertTrue(volume.contains("float stepSkyVis = visSample.sky;"));
@@ -301,8 +301,16 @@ final class RtVolumeRestirContractTest {
         String update = between(hash, "public void volumeCellUpdate(", "\n}");
         assertTrue(update.contains("c.stats.y += w;"), "wSum accumulates in its own lane");
         assertTrue(update.contains("min(c.stats.y / (c.stats.x * c.leT.w), VOLUME_W_MAX)"));
-        assertTrue(update.contains("min(c.stats.x + 1.0, VOLUME_M_MAX)"));
         assertFalse(update.contains("wSumBefore"), "wSum must not be reconstructed from W");
+        // M IS CAPPED BY SCALING BOTH LANES. Clamping M alone was the second flicker: W is
+        // wSum/(M*phat), so a frozen M with a still-growing wSum makes W climb without bound until it
+        // hits the ceiling, every cell arriving there on its own schedule while eviction restarts others
+        // on a stagger. The whole screen pulses, and no near/far tuning touches it.
+        assertTrue(update.contains("float scale = VOLUME_M_MAX / c.stats.x;"));
+        assertTrue(update.contains("c.stats.x *= scale;"));
+        assertTrue(update.contains("c.stats.y *= scale;"));
+        assertFalse(update.contains("min(c.stats.x + 1.0, VOLUME_M_MAX)"),
+                "clamping M without scaling wSum is the defect this replaced");
     }
 
     private static String quote() {
