@@ -3196,6 +3196,11 @@ public final class RtComposite {
                     // read of a slot that already exists, so this one can follow the knob directly.
                     reservoirStore != null
                             ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0,
+                    // Read back out of the ALLOCATION, like the reservoir shape above and unlike the
+                    // neighbour count: the shader indexes this buffer modulo the slot count, so a count
+                    // from the live config against a table sized by a stale one addresses past the end.
+                    volumeGrid != null ? volumeGrid.deviceAddress : 0L,
+                    volumeGrid != null ? (int) volumeGridSlots : 0,
                     // M18's per-frame sphere emitters, finally reaching a shader. The address and count
                     // come from the frame's own entity build rather than from any cached state: the buffer
                     // is reallocated every frame, so a stale address here would be a use-after-free that

@@ -313,6 +313,20 @@ public struct WorldPush {
     public uint     restirSpatialNeighbours;
 
     /**
+     * M25 world-space volumetric hash grid: base address and slot count.
+     *
+     * <p>0 and 0 whenever both source switches sit at their published positions, and the read path then
+     * falls back to the cached visibility grid exactly as before. That is the off state iron law 8 asks
+     * for, and it is spelled as an absent buffer rather than as a branch, so there is nothing to forget.
+     *
+     * <p>HERE RATHER THAN IN WorldPushConstants because that block is full at the guaranteed 128-byte
+     * floor -- the slot its banner reserved went to rainPrecipitationAddr -- and because it passes that
+     * banner test anyway: no hit shader has any use for these.
+     */
+    public uint64_t volumeGridAddr;
+    public uint     volumeGridSlots;
+
+    /**
      * M18's per-frame sphere emitters -- entities, held blocks, flame particles -- and how many.
      *
      * <p>THESE POSITIONS ARE ALREADY IN CURRENT REBASED SPACE and must NOT have lightRebase added, unlike
