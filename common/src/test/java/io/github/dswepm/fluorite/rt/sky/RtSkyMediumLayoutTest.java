@@ -35,8 +35,11 @@ final class RtSkyMediumLayoutTest {
         // slider that needed a material recompile could not be moved while watching what it changes. This
         // buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
-        // but it is pinned here so growth is a decision rather than a side effect.
-        assertEquals(1168, WorldPushData.BYTE_SIZE);
+        // but it is pinned here so growth is a decision rather than a side effect. M25 adds the volumetric
+        // hash grid'''s device address and its slot count, reaching 1184 — here for the same reason M24'''s
+        // store and M18'''s records are, and by now that reason is the rule rather than the exception: the
+        // push block has been full since before M24, so every buffer since has arrived through this struct.
+        assertEquals(1184, WorldPushData.BYTE_SIZE);
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every
