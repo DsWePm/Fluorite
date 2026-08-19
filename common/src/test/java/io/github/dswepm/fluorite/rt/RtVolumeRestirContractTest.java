@@ -165,6 +165,62 @@ final class RtVolumeRestirContractTest {
         assertEquals(0L, RtComposite.volumeGridSlotsThatFit(32, 45, 1600, 900, 0.0));
     }
 
+    /**
+     * The shader and the allocator implement ONE law, and both say so.
+     *
+     * <p>{@code volumeCellLevel} decides which cell a sample lands in; {@code volumeGridCellEdge} decides
+     * how many cells the table is sized for. They are the same formula written twice in two languages, so
+     * they will drift, and the drift is silent: the table simply runs at a load factor nobody chose.
+     */
+    @Test
+    void theShaderAndTheAllocatorQuantiseDistanceTheSameWay() throws IOException {
+        String hash = code(source("shaders/world/volume_hash.slang"));
+        String composite = code(source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java"));
+
+        // Both floor the cell at one block, and both quantise by rounding in log2.
+        assertTrue(hash.contains("if (want <= 1.0) {"));
+        assertTrue(hash.contains("max(int(round(log2(want))), 0)"));
+        assertTrue(composite.contains("if (want <= VOLUME_GRID_MIN_CELL) {"));
+        assertTrue(composite.contains("Math.round(Math.log(want) / Math.log(2.0))"));
+    }
+
+    /**
+     * The two hashes are independent, and the key can never be zero.
+     *
+     * <p>Both properties are load-bearing and both fail as a picture. A key derived from the slot mix
+     * would confirm every collision as a match, so two cells sharing a slot would read each other's
+     * samples -- light leaking between places that cannot see each other. And the table is cleared to
+     * zeros, so a key that could legitimately be zero lets a live cell adopt a slot nobody wrote.
+     */
+    @Test
+    void theSlotAndKeyHashesShareNoConstantAndTheKeyIsNeverZero() throws IOException {
+        String hash = code(source("shaders/world/volume_hash.slang"));
+        String slot = between(hash, "public uint volumeCellSlot(", "\n}");
+        String key = between(hash, "public uint volumeCellKey(", "\n}");
+
+        assertTrue(key.contains("h == 0u ? 1u : h"));
+        assertTrue(slot.contains("uint(level)"), "the level must be mixed in, not just the coordinate");
+        assertTrue(key.contains("uint(level)"));
+        for (String constant : new String[] {"0x8DA6B343u", "0xD8163841u", "0xCB1AB31Fu", "0x2C1B3C6Du"}) {
+            assertFalse(key.contains(constant), "key reuses a slot-hash constant: " + constant);
+        }
+    }
+
+    /**
+     * Eviction measures distance with unsigned subtraction, so a wrapped frame counter is harmless.
+     *
+     * <p>The natural spelling, {@code stamp < frame - n}, underflows once every 2^32 frames and recycles
+     * the entire table for one frame when it does. Rare enough to never be reproduced, and it presents as
+     * a single frame of noise.
+     */
+    @Test
+    void evictionSurvivesTheFrameCounterWrapping() throws IOException {
+        String expired = between(code(source("shaders/world/volume_hash.slang")),
+                "public bool volumeCellExpired(", "\n}");
+        assertTrue(expired.contains("(frame - stamp) > evictionFrames"));
+        assertFalse(expired.contains("frame - evictionFrames"));
+    }
+
     private static String quote() {
         return String.valueOf((char) 34);
     }

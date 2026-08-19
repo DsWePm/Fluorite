@@ -27,6 +27,7 @@ import medium;
 import volume;
 import volume_source; // debug 25 shares D66's exact resolution and multiplier helpers
 import volume_visibility; // debug view 18 reads the grid directly
+import volume_hash;        // M25 addressing. 5.3 KB of unreachable SPIR-V until step (d) calls it
 import cloud;
 import segment;
 import water;
