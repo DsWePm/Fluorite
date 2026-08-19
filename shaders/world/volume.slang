@@ -255,7 +255,8 @@ void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
         float3 dir = float3(r * cos(phi), u1, r * sin(phi));
         VisibilityResult shadow = visibilityThroughAmbient(mediumExtinction, mediumFlags,
                                                            p, dir, RAY_FAR);
-        volumeCellUpdate(c, dir, skyRadiance * shadow.transmittance, 0.15915494309, seed);
+        volumeCellUpdate(c, dir, skyRadiance * shadow.transmittance,
+                         luminance(shadow.transmittance), 0.15915494309, seed);
     }
     volumeCellClaimStamp(c, coord, level, frame);
     grid[slot] = c;

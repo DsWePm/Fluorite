@@ -14,7 +14,7 @@
 // seam if anything ever looks for one. Making the level camera-independent would mean uniform cells,
 // which is the configuration D197 measured at 15.18M cells and 0.4 samples each.
 import world_common;
-import math;        // luminance, for the target function
+import volume_source; // volumeLuminance: math.slang carries the RT bindings a compute bake cannot take
 
 /**
  * The LOD constant: cell edge divided by distance. A cell one edge across at distance d subtends
@@ -123,7 +123,7 @@ public bool volumeCellExpired(uint stamp, uint frame, uint evictionFrames) {
 public struct VolumeCell {
     public float4 dirW;      // xyz = the chosen sky direction, w = W, the finished weight
     public float4 leT;       // xyz = radiance TIMES transmittance along it, w = phat
-    public float4 stats;     // x = M, y = wSum, zw = reserved
+    public float4 stats;     // x = M, y = wSum, z = summed visibility, w = reserved
     public uint4  ident;     // x = key (0 = empty), y = frame stamp, zw = reserved
 };
 
@@ -232,9 +232,22 @@ public VolumeCell volumeCellEmpty() {
  * <p>The estimator stays unbiased for any strictly positive target (lighting.slang's banner), and a sealed
  * cell drives every candidate to phat = 0, leaves the reservoir empty, and reports no sky light. Correct.
  */
-public void volumeCellUpdate(inout VolumeCell c, float3 dir, float3 leT, float sourcePdf, inout uint seed) {
-    float phat = luminance(leT);
+/**
+ * ONE RAY FEEDS BOTH CONSUMERS, which is what lets the three visibility sources collapse into one.
+ *
+ * <p>The marched path wants a DIRECTION -- D198 put transmittance in the target precisely so the
+ * reservoir settles on the direction the sky actually arrives from. The froxel wants a SCALAR openness,
+ * because its in-scatter sum is isotropic (`source.sky * skyOpen`) and a direction has nowhere to go in
+ * that expression. Those are two different questions about the same sample, so the sample answers both:
+ * the reservoir keeps the direction, and stats.z keeps the running sum of the scalar visibility.
+ *
+ * <p>Scaled with M when M is capped, so the mean it divides out stays the mean.
+ */
+public void volumeCellUpdate(inout VolumeCell c, float3 dir, float3 leT, float visibility,
+                             float sourcePdf, inout uint seed) {
+    float phat = volumeLuminance(leT);
     c.stats.x += 1.0;
+    c.stats.z += saturate(visibility);
     if (phat > 0.0) {
         float w = phat / max(sourcePdf, 1.0e-20);
         c.stats.y += w;
@@ -252,6 +265,7 @@ public void volumeCellUpdate(inout VolumeCell c, float3 dir, float3 leT, float s
         float scale = VOLUME_M_MAX / c.stats.x;
         c.stats.x *= scale;
         c.stats.y *= scale;
+        c.stats.z *= scale;
     }
     c.dirW.w = (c.leT.w > 0.0 && c.stats.x > 0.0)
             ? min(c.stats.y / (c.stats.x * c.leT.w), VOLUME_W_MAX)
@@ -259,6 +273,18 @@ public void volumeCellUpdate(inout VolumeCell c, float3 dir, float3 leT, float s
 }
 
 /** Stamp a cell as belonging to this key and touched this frame. */
+/**
+ * The cell's answer to "how much of the sky reaches here", in [0,1].
+ *
+ * <p>A plain Monte Carlo mean of the visibility of uniformly drawn hemisphere directions, which is the
+ * definition of sky openness. What replaces the shipped answer is not the averaging but the QUESTION: the
+ * froxel asks one ray straight up and gets 0 or 1, so a cell under an overhang but open to the side reads
+ * fully dark. Accumulating a random direction each frame costs the same one ray and answers the integral.
+ */
+public float volumeCellOpenness(VolumeCell c) {
+    return c.stats.x > 0.0 ? saturate(c.stats.z / c.stats.x) : 1.0;
+}
+
 public void volumeCellClaimStamp(inout VolumeCell c, int3 coord, int level, uint frame) {
     c.ident.x = volumeCellKey(coord, level);
     c.ident.y = frame;
