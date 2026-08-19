@@ -205,13 +205,9 @@ public final class RtComposite {
         if (fogActive && preset.fog().localLights()) {
             flags |= 1 << 1; // ENVIRONMENT_FROXEL_LOCAL_LIGHTS
         }
-        // M25 (D196): two independent source switches rather than one scope knob, so the published
-        // behaviour is a reachable position of this switch and not a branch that was deleted.
-        if (FluoriteConfig.Rt.Volumetrics.volumeRestirNear()) {
-            flags |= 1 << 2; // ENVIRONMENT_VOLUME_RESTIR_NEAR
-        }
-        if (FluoriteConfig.Rt.Volumetrics.volumeRestirFar()) {
-            flags |= 1 << 3; // ENVIRONMENT_VOLUME_RESTIR_FAR
+        // M25: one switch. Raised on the ReSTIR side so a zero word is the shipped picture.
+        if (FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR.value()) {
+            flags |= 1 << 2; // ENVIRONMENT_VOLUME_RESTIR
         }
         if (environment != null) {
             flags |= (environment.layer() & 0xff) << 8;
@@ -2436,8 +2432,7 @@ public final class RtComposite {
                 (long) renderW * (long) renderH);
         // Compared like the depth above: against what WILL be allocated. Zero when both switches sit at
         // the published position, which is also how the buffer gets freed the moment they return there.
-        long wantVolumeGridSlots = FluoriteConfig.Rt.Volumetrics.volumeRestirNear()
-                        || FluoriteConfig.Rt.Volumetrics.volumeRestirFar()
+        long wantVolumeGridSlots = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR.value()
                 ? volumeGridSlotsThatFit(
                         FluoriteConfig.Rt.Volumetrics.volumeRestirLodPixels(),
                         FluoriteConfig.Rt.Volumetrics.volumeRestirEvictionFrames(),

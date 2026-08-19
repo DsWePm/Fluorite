@@ -117,9 +117,7 @@ public struct VolumeVisibilitySample {
 static float3 gVolumeRestirProbe = float3(-1.0, 0.0, 0.0);
 
 void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
-    uint switchBit = volumeInsideVisibilityGrid(p)
-            ? ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR;
-    if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
+    if ((worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u || worldPush.volumeGridSlots == 0u
             || worldPush.volumeGridAddr == 0) {
         gVolumeRestirProbe = float3(0.0, 0.0, 0.0); // black: switch off, or no table
         return;

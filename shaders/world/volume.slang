@@ -207,10 +207,8 @@ void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
     //
     // The region is decided the same way the READ decides it, by one shared predicate, so a cell is
     // never written under one switch and looked for under the other.
-    uint switchBit = volumeInsideVisibilityGrid(p)
-            ? ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR;
     float3 skyRadiance = worldPush.mediumSkyRadiance.xyz;
-    if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
+    if ((worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u || worldPush.volumeGridSlots == 0u
             || worldPush.volumeGridAddr == 0) {
         return;
     }

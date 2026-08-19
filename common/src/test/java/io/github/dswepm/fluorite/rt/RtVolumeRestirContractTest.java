@@ -12,8 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * M25 step (a): the two volumetric-ReSTIR source switches exist, and their OFF positions are the shipped
- * renderer bit for bit.
+ * M25: the volumetric-ReSTIR switch exists, and its OFF position is the shipped renderer bit for bit.
  *
  * <p>Iron law 8 is the whole point of this file. An A/B switch whose off position is merely "close to" the
  * published behaviour measures nothing, because every difference it then reports is ambiguous between the
@@ -21,8 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * both bits are RAISED on the ReSTIR side, so a zero environment-flags word is the shipped picture and no
  * code path has to remember to clear anything.
  *
- * <p>D196 chose two independent switches over one scope knob precisely so the published behaviour stays a
- * REACHABLE POSITION rather than a branch deleted along the way.
+ * <p>D196 split this into near and far so each region could be A/B'd against its own baseline. That was
+ * dropped: one switch satisfies iron law 8 just as well, the split was not doing the LOD work it
+ * resembled -- volumeCellLevel's octaves do that -- and two paths meant two things that could break
+ * separately, which is what happened.
  */
 final class RtVolumeRestirContractTest {
 
@@ -34,11 +35,8 @@ final class RtVolumeRestirContractTest {
      * programme report differences against a baseline that never shipped.
      */
     @Test
-    void bothSwitchesDefaultToTheBehaviourThatAlreadyShipped() {
-        assertEquals("grid", FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_NEAR_SOURCE.defaultValue());
-        assertEquals("clamp", FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_FAR_SOURCE.defaultValue());
-        assertFalse(FluoriteConfig.Rt.Volumetrics.volumeRestirNear());
-        assertFalse(FluoriteConfig.Rt.Volumetrics.volumeRestirFar());
+    void theSwitchDefaultsToTheBehaviourThatAlreadyShipped() {
+        assertFalse(FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR.defaultValue());
     }
 
     /**
@@ -53,27 +51,23 @@ final class RtVolumeRestirContractTest {
         String composite = code(source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java"));
         String body = between(composite, "private static int environmentFlags(", "\n    }");
 
-        assertTrue(body.contains("if (FluoriteConfig.Rt.Volumetrics.volumeRestirNear()) {"));
-        assertTrue(body.contains("if (FluoriteConfig.Rt.Volumetrics.volumeRestirFar()) {"));
+        assertTrue(body.contains("if (FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR.value()) {"));
         assertTrue(body.contains("flags |= 1 << 2;"));
-        assertTrue(body.contains("flags |= 1 << 3;"));
         // The negated spelling is the failure this test exists for.
-        assertFalse(body.contains("!FluoriteConfig.Rt.Volumetrics.volumeRestirNear()"));
-        assertFalse(body.contains("!FluoriteConfig.Rt.Volumetrics.volumeRestirFar()"));
+        assertFalse(body.contains("!FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR.value()"));
     }
 
     /**
-     * The shader constants name the same two bits the Java raises.
+     * The shader constant names the same bit the Java raises.
      *
      * <p>Two literals that agree today are exactly how they stop agreeing later, and this pair fails as a
      * picture -- fog reading the wrong switch -- rather than as an error.
      */
     @Test
-    void theShaderConstantsAndTheJavaBitsAreTheSameTwoBits() throws IOException {
+    void theShaderConstantAndTheJavaBitAreTheSameBit() throws IOException {
         String common = code(source("shaders/world/world_common.slang"));
 
-        assertTrue(common.contains("ENVIRONMENT_VOLUME_RESTIR_NEAR = 1u << 2u;"));
-        assertTrue(common.contains("ENVIRONMENT_VOLUME_RESTIR_FAR = 1u << 3u;"));
+        assertTrue(common.contains("ENVIRONMENT_VOLUME_RESTIR = 1u << 2u;"));
         // Bits 0 and 1, and the 8-15 layer byte, were already spoken for.
         assertTrue(common.contains("ENVIRONMENT_AMBIENT_UNOCCLUDED = 1u << 0u;"));
         assertTrue(common.contains("ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;"));
@@ -106,14 +100,10 @@ final class RtVolumeRestirContractTest {
     @Test
     void allThreeMaintainedLocalesCarryEveryKeyTheScreenAsksFor() throws IOException {
         String[] keys = {
-            "fluorite.options.rt.volumeRestirNearSource",
-            "fluorite.options.rt.volumeRestirNearSource.grid",
-            "fluorite.options.rt.volumeRestirNearSource.restir",
-            "fluorite.options.rt.volumeRestirNearSource.tooltip",
-            "fluorite.options.rt.volumeRestirFarSource",
-            "fluorite.options.rt.volumeRestirFarSource.clamp",
-            "fluorite.options.rt.volumeRestirFarSource.restir",
-            "fluorite.options.rt.volumeRestirFarSource.tooltip",
+            "fluorite.options.rt.volumeRestir",
+            "fluorite.options.rt.volumeRestir.tooltip",
+            "fluorite.options.rt.debugView.28",
+            "fluorite.options.rt.debugView.28.tooltip",
         };
         for (String locale : new String[] {"en_us", "zh_cn", "zh_tw"}) {
             String lang = source("common/src/main/resources/assets/fluorite/lang/" + locale + ".json");
@@ -235,12 +225,9 @@ final class RtVolumeRestirContractTest {
         String volume = code(source("shaders/world/volume.slang"));
 
         String lookup = between(vis, "void volumeRestirSky(", "\n}");
-        assertTrue(lookup.contains("worldPush.environmentFlags & switchBit) == 0u"));
+        assertTrue(lookup.contains("worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u"));
         assertTrue(lookup.contains("worldPush.volumeGridSlots == 0u"));
         assertTrue(lookup.contains("worldPush.volumeGridAddr == 0"));
-        // Both switches are dispatched, and on the two regions D196 named.
-        assertTrue(vis.contains("volumeInsideVisibilityGrid(p)"));
-        assertTrue(vis.contains("ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR"));
         // Every consumer keeps the shipped scalar as its else-branch.
         assertTrue(volume.contains(": skySource * visSample.sky;"));
         assertTrue(volume.contains("float stepSkyVis = visSample.sky;"));

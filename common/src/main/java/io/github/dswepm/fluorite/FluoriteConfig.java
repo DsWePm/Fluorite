@@ -1181,36 +1181,18 @@ public final class FluoriteConfig {
             }
 
             /**
-             * M25 near-field source for volumetric sky visibility. "grid" is the shipped cached
-             * visibility grid; "restir" is the world-space hash grid (D193). The DEFAULT IS THE
-             * PUBLISHED BEHAVIOUR -- iron law 8 -- so a zero environment-flags word still reproduces
-             * today's picture exactly, which is what makes the A/B mean anything.
+             * M25: replace the cached visibility grid with the world-space ReSTIR hash grid.
+             *
+             * <p>OFF IS THE PUBLISHED RENDERER, which is what makes every comparison this milestone draws
+             * a ratio against something that actually shipped.
+             *
+             * <p>One switch rather than D196's near/far pair. That split existed so each region could be
+             * A/B'd against its own baseline, but a single switch satisfies iron law 8 just as well, the
+             * near/far distinction was never doing the LOD work it resembled -- volumeCellLevel's octaves
+             * do that, continuously -- and two paths meant two things that could break separately.
              */
-            public static final StringSetting VOLUME_RESTIR_NEAR_SOURCE =
-                    string("fluorite.rt.fog.volumeRestirNearSource",
-                            "volumetrics.volume-restir-near-source", "grid",
-                            Volumetrics::sanitizeVolumeRestirNear);
-
-            private static String sanitizeVolumeRestirNear(String value) {
-                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
-                return v.equals("restir") ? v : "grid";
-            }
-
-            /**
-             * M25 far-field source. "clamp" is the shipped behaviour, and per D194 that is not an
-             * approximation being kept for compatibility: outside its extent the visibility grid
-             * produces a BOUND, not a measurement (volume_visibility.slang:82-118). Clamping is what
-             * the renderer does today, stated honestly.
-             */
-            public static final StringSetting VOLUME_RESTIR_FAR_SOURCE =
-                    string("fluorite.rt.fog.volumeRestirFarSource",
-                            "volumetrics.volume-restir-far-source", "clamp",
-                            Volumetrics::sanitizeVolumeRestirFar);
-
-            private static String sanitizeVolumeRestirFar(String value) {
-                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
-                return v.equals("restir") ? v : "clamp";
-            }
+            public static final BooleanSetting VOLUME_RESTIR =
+                    bool("fluorite.rt.fog.volumeRestir", "volumetrics.volume-restir", false);
 
             /**
              * D197: the target screen-pixel edge of one hash cell. k = p * FOV / renderHeight, and it is
@@ -1783,15 +1765,6 @@ public final class FluoriteConfig {
                 return Math.clamp(VISIBILITY_MAX_STEPS.value(), 1, 31);
             }
 
-            /** environmentFlags bit 2 (ENVIRONMENT_VOLUME_RESTIR_NEAR). */
-            public static boolean volumeRestirNear() {
-                return "restir".equals(VOLUME_RESTIR_NEAR_SOURCE.get());
-            }
-
-            /** environmentFlags bit 3 (ENVIRONMENT_VOLUME_RESTIR_FAR). */
-            public static boolean volumeRestirFar() {
-                return "restir".equals(VOLUME_RESTIR_FAR_SOURCE.get());
-            }
 
             /**
              * D197 measured 2.1-4.3 samples per cell per frame at p=16 -- too few for the spatiotemporal
