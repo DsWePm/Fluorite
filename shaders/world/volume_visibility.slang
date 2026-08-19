@@ -180,9 +180,13 @@ public float3 volumeRestirDebug(float3 ro, float3 rd, float cullDistance) {
     // refractive interface -- almost every pixel. So it probed the one cell at the eye and painted solid
     // red everywhere, which reads exactly like "no cells exist" and is instead "asked in the wrong place".
     // Deposits happen along the ray, in the air, so the diagnostic has to look there too.
+    // GEOMETRIC SPACING, and the linear version it replaces was the second time this view asked in the
+    // wrong place. Twelve equal steps across 512 blocks put the FIRST sample 43 blocks out -- through the
+    // wall of any room. Deposits happen where the fog march runs, which indoors is the few blocks between
+    // the eye and the nearest surface, so the samples have to be dense there and sparse far away.
     float3 firstMiss = float3(1.0, 0.0, 0.0);
-    for (uint step = 1u; step <= 12u; ++step) {
-        float t = cullDistance * float(step) / 12.0;
+    for (uint step = 0u; step < 12u; ++step) {
+        float t = exp2(log2(max(cullDistance, 2.0)) * float(step) / 11.0);
         float3 hit = volumeRestirDebugAt(ro + rd * t);
         if (hit.x >= 0.0) {
             return hit;
