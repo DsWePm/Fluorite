@@ -139,6 +139,14 @@ public struct VolumeCell {
 public static const float VOLUME_W_MAX = 8.0;
 public static const float VOLUME_M_MAX = 64.0;
 
+/**
+ * How many candidates a cell must have seen before its EMPTINESS is believed.
+ *
+ * <p>W = 0 in a young cell means "no data yet"; in a mature one it means "every candidate was occluded".
+ * Believing the young case deleted the near-field fog outright, since every cell is young when born.
+ */
+public static const float VOLUME_M_MATURE = 16.0;
+
 public uint volumeCellStoredKey(VolumeCell c) { return c.ident.x; }
 public uint volumeCellStamp(VolumeCell c) { return c.ident.y; }
 

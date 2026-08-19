@@ -124,10 +124,15 @@ void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
     }
     VolumeCell c = grid[slot];
     if (c.dirW.w <= 0.0) {
-        // An empty reservoir is not a missing answer. Every candidate had zero transmittance, which is
-        // what a sealed cave looks like, and reporting no sky light there is the point of the milestone.
-        result.sky = 0.0;
-        return;
+        // AN EMPTY RESERVOIR MEANS TWO DIFFERENT THINGS AND THIS ONCE CONFLATED THEM. In a MATURE cell it
+        // means every candidate found zero transmittance -- a sealed cave, and reporting no sky light is
+        // the point of the milestone. In a cell that was created a few frames ago it means no data yet,
+        // and treating that as darkness deleted the near-field fog entirely, because every cell is young
+        // when it is born and the near field is where cells are born fastest.
+        if (c.stats.x >= VOLUME_M_MATURE) {
+            result.sky = 0.0;
+        }
+        return; // young: leave the scalar answer above, which is the shipped one
     }
     result.skyDirValid = true;
     result.skyDir = c.dirW.xyz;
