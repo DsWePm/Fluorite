@@ -3221,6 +3221,8 @@ public final class RtComposite {
                             : 0.0f,
                     volumeGrid != null
                             ? FluoriteConfig.Rt.Volumetrics.volumeRestirEvictionFrames() : 0,
+                    volumeGrid != null
+                            ? FluoriteConfig.Rt.Volumetrics.volumeRestirCandidates() : 0,
                     // M18's per-frame sphere emitters, finally reaching a shader. The address and count
                     // come from the frame's own entity build rather than from any cached state: the buffer
                     // is reallocated every frame, so a stale address here would be a use-after-free that

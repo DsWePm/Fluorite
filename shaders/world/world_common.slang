@@ -336,6 +336,7 @@ public struct WorldPush {
      */
     public float    volumeGridLodK;
     public uint     volumeGridEvictionFrames;
+    public uint     volumeGridCandidates;
 
     /**
      * M18's per-frame sphere emitters -- entities, held blocks, flame particles -- and how many.

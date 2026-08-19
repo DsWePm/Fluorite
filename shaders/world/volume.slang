@@ -21,6 +21,7 @@ import atmosphere_lut;
 import environment;
 import volume_source;
 import volume_visibility;
+import volume_hash;
 import world_common;
 import world_core;
 
@@ -181,6 +182,66 @@ public VisibilityResult visibilityThroughAmbient(float3 mediumExtinction, uint m
     }
     return result;
 }
+
+/**
+ * Fill one cell: draw candidates over the hemisphere, measure each with a shadow ray, and resample.
+ *
+ * <p>ONCE PER CELL PER FRAME, NOT ONCE PER SAMPLE, and the stamp check is what enforces it. That ratio is
+ * the entire economics of D198: 436k live cells against 5.8-11.5M volume samples means 13-26 samples share
+ * every ray drawn here, which is why putting transmittance in the target is affordable at all. Depositing
+ * per sample would draw a ray per sample and buy nothing the shipped texture fetch does not already give.
+ *
+ * <p>The target carries the transmittance (D198). Over a cave hemisphere the radiance is near-uniform and
+ * the phase is smooth, so a target without it is nearly constant and the reservoir would settle on an
+ * arbitrary direction -- accumulating, at cost, the one fact that is useless underground.
+ */
+void volumeRestirDeposit(float3 p, uint switchBit, float3 skyRadiance, float3 mediumExtinction,
+                         uint mediumFlags) {
+    if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
+            || worldPush.volumeGridAddr == 0) {
+        return;
+    }
+    float dist = length(p - worldPush.camOffset);
+    int level = volumeCellLevel(dist, worldPush.volumeGridLodK);
+    int3 coord = volumeCellCoord(p, volumeCellEdge(level));
+    // Probing is a read, so it takes the const view; only the final store needs the writable one.
+    DevicePtr<VolumeCell> grid = DevicePtr<VolumeCell>(worldPush.volumeGridAddr);
+    ConstPtr<VolumeCell> gridRead = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
+    int slot = volumeGridClaim(gridRead, worldPush.volumeGridSlots, coord, level,
+                               worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
+    if (slot < 0) {
+        return; // probe window full of live strangers; contributing nothing beats evicting one
+    }
+    VolumeCell c = gridRead[slot];
+    bool mine = volumeCellStoredKey(c) == volumeCellKey(coord, level);
+    if (mine && volumeCellStamp(c) == worldPush.frameIndex) {
+        return; // already fed this frame. This line IS the per-cell-per-frame rule.
+    }
+    if (!mine) {
+        c.dirW = float4(0.0, 1.0, 0.0, 0.0);
+        c.leTarget = float4(0.0, 0.0, 0.0, 0.0);
+        c.stats = float4(0.0, 0.0, 0.0, 0.0);
+    }
+    // Seeded from the CELL, not the pixel: every sample that lands here must agree on the stream, or the
+    // reservoir's M counts draws from a distribution that changes with whoever arrived first.
+    uint seed = volumeCellKey(coord, level) ^ (worldPush.frameIndex * 2654435761u);
+    uint candidates = max(worldPush.volumeGridCandidates, 1u);
+    for (uint i = 0u; i < candidates; ++i) {
+        // Uniform over the UPPER hemisphere. The lower half has no sky to find, and folding it up
+        // rather than drawing over the whole sphere keeps the pdf honest at half the candidates.
+        float u1 = rndf(seed);
+        float u2 = rndf(seed);
+        float r = sqrt(max(0.0, 1.0 - u1 * u1));
+        float phi = 6.28318530718 * u2;
+        float3 dir = float3(r * cos(phi), u1, r * sin(phi));
+        VisibilityResult shadow = visibilityThroughAmbient(mediumExtinction, mediumFlags,
+                                                           p, dir, RAY_FAR);
+        volumeCellUpdate(c, dir, skyRadiance, shadow.transmittance, 0.15915494309, seed);
+    }
+    volumeCellClaimStamp(c, coord, level, worldPush.frameIndex);
+    grid[slot] = c;
+}
+
 
 /** What a segment did to the path: what survives it, and what it added. */
 public struct SegmentIntegral {
@@ -714,6 +775,9 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
             if (gridRegion) {
                 visSample = sampleVolumeLightVisibility(p);
             }
+            volumeRestirDeposit(p, gridRegion ? ENVIRONMENT_VOLUME_RESTIR_NEAR
+                                              : ENVIRONMENT_VOLUME_RESTIR_FAR,
+                                skySource, worldPush.fogExtinction.xyz, MEDIUM_FLAG_AMBIENT);
 
             // D199: with a live cell the sky term is directional, so the phase belongs here -- this is
             // the only place that knows rd. Without one this is verbatim the shipped line.
@@ -1497,8 +1561,10 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // whichever side of a shadow boundary that end happened to fall on, which is the
                         // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
                         // shape.
-                        VolumeVisibilitySample visSample = sampleVolumeLightVisibility(
-                                ro + rd * ((tA + tB) * 0.5));
+                        float3 midP = ro + rd * ((tA + tB) * 0.5);
+                        VolumeVisibilitySample visSample = sampleVolumeLightVisibility(midP);
+                        volumeRestirDeposit(midP, ENVIRONMENT_VOLUME_RESTIR_NEAR, skySource,
+                                            worldPush.fogExtinction.xyz, MEDIUM_FLAG_AMBIENT);
                         float3 stepSunSource = gridSunSource;
                         if (sunRays == 0u
                                 && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
