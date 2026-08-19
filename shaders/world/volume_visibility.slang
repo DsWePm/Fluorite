@@ -174,7 +174,25 @@ public bool volumeInsideVisibilityGrid(float3 p) {
  * One that flickers in R or between red and not-red means cells are churning. Those are three different
  * bugs and this view is what tells them apart.
  */
-public float3 volumeRestirDebug(float3 p) {
+public float3 volumeRestirDebug(float3 ro, float3 rd, float cullDistance) {
+    // MARCHED, NOT SAMPLED AT ONE POINT, and the first version got this wrong in a way worth recording:
+    // it read the queued record origin, which equals the CAMERA ORIGIN whenever the primary ray met no
+    // refractive interface -- almost every pixel. So it probed the one cell at the eye and painted solid
+    // red everywhere, which reads exactly like "no cells exist" and is instead "asked in the wrong place".
+    // Deposits happen along the ray, in the air, so the diagnostic has to look there too.
+    float3 firstMiss = float3(1.0, 0.0, 0.0);
+    for (uint step = 1u; step <= 12u; ++step) {
+        float t = cullDistance * float(step) / 12.0;
+        float3 hit = volumeRestirDebugAt(ro + rd * t);
+        if (hit.x >= 0.0) {
+            return hit;
+        }
+    }
+    return firstMiss;
+}
+
+/** One point. Negative red means "no live cell here", which the march above walks past. */
+float3 volumeRestirDebugAt(float3 p) {
     uint switchBit = volumeInsideVisibilityGrid(p)
             ? ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR;
     if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
@@ -189,7 +207,7 @@ public float3 volumeRestirDebug(float3 p) {
     int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
                               worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
     if (slot < 0) {
-        return float3(1.0, 0.0, 0.0);
+        return float3(-1.0, 0.0, 0.0);
     }
     VolumeCell c = grid[slot];
     return float3(saturate(c.stats.x / VOLUME_M_MAX),

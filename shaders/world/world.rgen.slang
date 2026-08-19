@@ -1340,9 +1340,13 @@ void main() {
             }
             outImage[pix] = float4(prefixDebug, 1.0);
         } else if (pc.debugView == DEBUG_VIEW_VOLUME_RESTIR) {
-            // The queued record's origin, like view 18: this pixel's camera segment's far end. A debug
-            // view that traces its own ray is testing its own ray.
-            outImage[pix] = float4(volumeRestirDebug(queue[pixelIndex].ro), 1.0);
+            // NOT the queued origin. That equals the CAMERA ORIGIN unless the primary met a refractive
+            // interface, so reading it probed the single cell at the eye and painted solid red -- which
+            // reads as "no cells exist" and actually meant "asked in the wrong place". Deposits happen
+            // along the ray, in the air, so this walks the ray and reports the first live cell.
+            CameraRay debugCam = cameraRay(dispatchIndex, dimensions);
+            outImage[pix] = float4(
+                    volumeRestirDebug(debugCam.origin, debugCam.dir, 512.0), 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_FROXEL) {
             // Screen-space, not a path property, so these take the pixel rather than the queued record.
             //
