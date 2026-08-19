@@ -900,6 +900,10 @@ static const float CAUSTIC_DEVIATION_GAIN = 20.0;
 // Expected at the far slice: a faint wash that follows the fog's height profile, brighter toward the sun,
 // with the transmittance darkest where the sightline is longest and lowest. Expected at the NEAR slices:
 // almost nothing, which is the point of distributing the depth axis exponentially (see froxelSliceDepth).
+// M25: the volumetric ReSTIR cell a pixel lands in. Claims one of the numbers the retired atmosphere
+// tables left, and the retirement comment below explains why claiming one is safe while RENUMBERING the
+// survivors would not have been.
+static const uint DEBUG_VIEW_VOLUME_RESTIR = 12u;
 static const uint DEBUG_VIEW_FROXEL = 17u;
 static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
 
@@ -1335,6 +1339,10 @@ void main() {
                         : float3(1.0, 0.0, 0.0);
             }
             outImage[pix] = float4(prefixDebug, 1.0);
+        } else if (pc.debugView == DEBUG_VIEW_VOLUME_RESTIR) {
+            // The queued record's origin, like view 18: this pixel's camera segment's far end. A debug
+            // view that traces its own ray is testing its own ray.
+            outImage[pix] = float4(volumeRestirDebug(queue[pixelIndex].ro), 1.0);
         } else if (pc.debugView >= DEBUG_VIEW_FROXEL) {
             // Screen-space, not a path property, so these take the pixel rather than the queued record.
             //

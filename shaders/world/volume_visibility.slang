@@ -153,6 +153,50 @@ public bool volumeInsideVisibilityGrid(float3 p) {
     return g.y <= 1.0 && all(g >= float3(0.0, 0.0, 0.0)) && all(g <= float3(1.0, 1.0, 1.0));
 }
 
+/**
+ * Debug view 12: the state of the cell a point lands in, read exactly the way the shading reads it.
+ *
+ * <p>Built because two rounds of fixing this by reasoning produced two wrong diagnoses. Every quantity
+ * the flicker could come from is a number in a cell, and none of them were observable.
+ *
+ * <p>Colour key:
+ * <ul>
+ *   <li>black  -- the switch for this region is off, or no table is allocated
+ *   <li>RED    -- a live cell was not found. Solid red means eviction or probe failure, and red FLASHING
+ *                 between frames means cells are being lost and refound, which is a churn problem
+ *   <li>otherwise R = M/M_MAX (how much reuse accumulated), G = W/W_MAX (the weight), and
+ *                 B = 1 where W is sitting ON its ceiling, which is a clamp being load-bearing rather
+ *                 than a safety net
+ * </ul>
+ *
+ * <p>What to read: a stable picture means the cells are stable and the flicker is downstream of them, in
+ * how the shading turns a cell into radiance. A picture that flickers in G means the WEIGHT is unstable.
+ * One that flickers in R or between red and not-red means cells are churning. Those are three different
+ * bugs and this view is what tells them apart.
+ */
+public float3 volumeRestirDebug(float3 p) {
+    uint switchBit = volumeInsideVisibilityGrid(p)
+            ? ENVIRONMENT_VOLUME_RESTIR_NEAR : ENVIRONMENT_VOLUME_RESTIR_FAR;
+    if ((worldPush.environmentFlags & switchBit) == 0u || worldPush.volumeGridSlots == 0u
+            || worldPush.volumeGridAddr == 0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float dist = length(p - worldPush.camOffset);
+    int level = volumeCellLevel(dist, worldPush.volumeGridLodK);
+    int3 coord = volumeCellCoord(p, volumeCellEdge(level));
+    ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
+    uint base = volumeHalfBase(worldPush.volumeGridSlots, worldPush.frameIndex + 1u);
+    int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
+                              worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
+    if (slot < 0) {
+        return float3(1.0, 0.0, 0.0);
+    }
+    VolumeCell c = grid[slot];
+    return float3(saturate(c.stats.x / VOLUME_M_MAX),
+                  saturate(c.dirW.w / VOLUME_W_MAX),
+                  c.dirW.w >= VOLUME_W_MAX * 0.999 ? 1.0 : 0.0);
+}
+
 public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     VolumeVisibilitySample result;
     result.sun = 1.0;
