@@ -2372,7 +2372,7 @@ public final class RtComposite {
         if (lodPixels <= 0 || evictionFrames <= 0 || renderW <= 0 || renderH <= 0 || cullDistance <= 0.0) {
             return 0L;
         }
-        double k = lodPixels * VOLUME_GRID_REFERENCE_FOV_RAD / renderH;
+        double k = volumeGridLodConstant(lodPixels, renderH);
         double tanY = Math.tan(VOLUME_GRID_REFERENCE_FOV_RAD / 2.0);
         double tanX = tanY * renderW / (double) renderH;
         double knee = Math.min(VOLUME_GRID_MIN_CELL / k, cullDistance);
@@ -2386,6 +2386,20 @@ public final class RtComposite {
         }
         double slots = live * (1.0 + evictionFrames / VOLUME_GRID_TURN_FRAMES) / VOLUME_GRID_LOAD_FACTOR;
         return Math.min((long) Math.ceil(slots), VOLUME_GRID_MAX_BYTES / RESERVOIR_BYTES);
+    }
+
+    /**
+     * The LOD constant. ONE DEFINITION, deliberately: {@link #volumeGridSlotsThatFit} sizes the table with
+     * it and the shader addresses cells with it, and two spellings of it would disagree only at runtime,
+     * as a load factor nobody chose.
+     *
+     * <p>The reference FOV rather than the live one, on both sides. A fixed table cannot reallocate when
+     * the player zooms, so the sizing has to budget against a reference; making the ADDRESSING follow the
+     * live FOV instead would break the very agreement this method exists to guarantee. Zoom therefore
+     * moves the load factor, which the 0.6 headroom absorbs, rather than moving the cells.
+     */
+    static double volumeGridLodConstant(int lodPixels, int renderH) {
+        return lodPixels * VOLUME_GRID_REFERENCE_FOV_RAD / Math.max(renderH, 1);
     }
 
     /** Cell edge at {@code d}: the constant-screen-footprint law, quantised to powers of two. */
@@ -3201,6 +3215,12 @@ public final class RtComposite {
                     // from the live config against a table sized by a stale one addresses past the end.
                     volumeGrid != null ? volumeGrid.deviceAddress : 0L,
                     volumeGrid != null ? (int) volumeGridSlots : 0,
+                    volumeGrid != null
+                            ? (float) volumeGridLodConstant(
+                                    FluoriteConfig.Rt.Volumetrics.volumeRestirLodPixels(), renderH)
+                            : 0.0f,
+                    volumeGrid != null
+                            ? FluoriteConfig.Rt.Volumetrics.volumeRestirEvictionFrames() : 0,
                     // M18's per-frame sphere emitters, finally reaching a shader. The address and count
                     // come from the frame's own entity build rather than from any cached state: the buffer
                     // is reallocated every frame, so a stale address here would be a use-after-free that

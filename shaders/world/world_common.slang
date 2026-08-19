@@ -325,6 +325,17 @@ public struct WorldPush {
      */
     public uint64_t volumeGridAddr;
     public uint     volumeGridSlots;
+    /**
+     * The LOD constant, `lodPixels * FOV / renderHeight` (D197), and the eviction window in frames.
+     *
+     * <p>k ARRIVES COMPUTED rather than being rebuilt here from the projection matrix, and that is the
+     * point of spending a lane on it: RtComposite sizes the table from the same expression, so the number
+     * that decides how many cells exist and the number that decides which cell a point lands in are one
+     * value with one definition. Recovering it shader-side would put those two on separate paths that
+     * meet only at runtime, where nothing can test that they still agree.
+     */
+    public float    volumeGridLodK;
+    public uint     volumeGridEvictionFrames;
 
     /**
      * M18's per-frame sphere emitters -- entities, held blocks, flame particles -- and how many.
