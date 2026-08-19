@@ -224,6 +224,7 @@ public final class RtVideoOptions {
                                 outputTransform(), hdrEnabled(), acesHdrPreset(),
                                 hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
+                        volumeRestirNearSource(), volumeRestirFarSource(),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",
@@ -1936,6 +1937,40 @@ public final class RtVideoOptions {
                     Component.translatable("fluorite.options.rt.fogSegmentSource.tooltip")),
             (caption, value) -> Component.translatable("fluorite.options.rt.fogSegmentSource." + value),
             new OptionInstance.Enum<>(List.of("both", "froxel", "marched", "none"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    /**
+     * M25 (D196): the near-field source for volumetric sky visibility. A diagnostic in the same sense as
+     * the fog segment source beside it -- "grid" is exactly what the renderer ships, so the two positions
+     * are an A/B of one mechanism rather than a feature toggle. Iron law 8 is why the default is grid.
+     */
+    private static OptionInstance<String> volumeRestirNearSource() {
+        StringSetting setting = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_NEAR_SOURCE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.volumeRestirNearSource",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.volumeRestirNearSource.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.volumeRestirNearSource." + value),
+            new OptionInstance.Enum<>(List.of("grid", "restir"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
+    /**
+     * The far-field source. "clamp" is not a legacy approximation kept for comparison: outside the
+     * visibility grid's extent the grid yields a BOUND rather than a measurement (D194), and clamping to
+     * it is what the shipped renderer does.
+     */
+    private static OptionInstance<String> volumeRestirFarSource() {
+        StringSetting setting = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_FAR_SOURCE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.volumeRestirFarSource",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.volumeRestirFarSource.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.volumeRestirFarSource." + value),
+            new OptionInstance.Enum<>(List.of("clamp", "restir"), Codec.STRING),
             setting.get(),
             setting::set);
     }

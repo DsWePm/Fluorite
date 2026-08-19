@@ -18,6 +18,12 @@ public static const uint SKY_PROVIDER_LOCAL_AMBIENT = 1u;
 public static const uint SKY_PROVIDER_ENVIRONMENT = 2u;
 public static const uint ENVIRONMENT_AMBIENT_UNOCCLUDED = 1u << 0u;
 public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
+// M25's two volumetric-ReSTIR source switches. RAISED ON THE ReSTIR SIDE, so a zero word is the shipped
+// picture -- the same convention worldPush.flags bit 1 and bit 15 already follow, and what iron law 8
+// requires of every switch. They live here rather than in worldPush.flags because that word is full:
+// all 32 bits are allocated (0 camera-in-water ... 31), and these are environment properties anyway.
+public static const uint ENVIRONMENT_VOLUME_RESTIR_NEAR = 1u << 2u;
+public static const uint ENVIRONMENT_VOLUME_RESTIR_FAR = 1u << 3u;
 public static const uint ENVIRONMENT_LAYER_SHIFT = 8u;
 public static const uint ENVIRONMENT_LAYER_MASK = 0xFFu;
 

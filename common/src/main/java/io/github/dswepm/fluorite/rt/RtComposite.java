@@ -191,6 +191,14 @@ public final class RtComposite {
         if (fogActive && preset.fog().localLights()) {
             flags |= 1 << 1; // ENVIRONMENT_FROXEL_LOCAL_LIGHTS
         }
+        // M25 (D196): two independent source switches rather than one scope knob, so the published
+        // behaviour is a reachable position of this switch and not a branch that was deleted.
+        if (FluoriteConfig.Rt.Volumetrics.volumeRestirNear()) {
+            flags |= 1 << 2; // ENVIRONMENT_VOLUME_RESTIR_NEAR
+        }
+        if (FluoriteConfig.Rt.Volumetrics.volumeRestirFar()) {
+            flags |= 1 << 3; // ENVIRONMENT_VOLUME_RESTIR_FAR
+        }
         if (environment != null) {
             flags |= (environment.layer() & 0xff) << 8;
         }

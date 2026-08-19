@@ -1181,6 +1181,57 @@ public final class FluoriteConfig {
             }
 
             /**
+             * M25 near-field source for volumetric sky visibility. "grid" is the shipped cached
+             * visibility grid; "restir" is the world-space hash grid (D193). The DEFAULT IS THE
+             * PUBLISHED BEHAVIOUR -- iron law 8 -- so a zero environment-flags word still reproduces
+             * today's picture exactly, which is what makes the A/B mean anything.
+             */
+            public static final StringSetting VOLUME_RESTIR_NEAR_SOURCE =
+                    string("fluorite.rt.fog.volumeRestirNearSource",
+                            "volumetrics.volume-restir-near-source", "grid",
+                            Volumetrics::sanitizeVolumeRestirNear);
+
+            private static String sanitizeVolumeRestirNear(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return v.equals("restir") ? v : "grid";
+            }
+
+            /**
+             * M25 far-field source. "clamp" is the shipped behaviour, and per D194 that is not an
+             * approximation being kept for compatibility: outside its extent the visibility grid
+             * produces a BOUND, not a measurement (volume_visibility.slang:82-118). Clamping is what
+             * the renderer does today, stated honestly.
+             */
+            public static final StringSetting VOLUME_RESTIR_FAR_SOURCE =
+                    string("fluorite.rt.fog.volumeRestirFarSource",
+                            "volumetrics.volume-restir-far-source", "clamp",
+                            Volumetrics::sanitizeVolumeRestirFar);
+
+            private static String sanitizeVolumeRestirFar(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return v.equals("restir") ? v : "clamp";
+            }
+
+            /**
+             * D197: the target screen-pixel edge of one hash cell. k = p * FOV / renderHeight, and it is
+             * DERIVED AT RUNTIME rather than baked, because k scales with render height -- baking it
+             * would let a DLSS quality change silently coarsen the grid, which iron law 8 forbids.
+             */
+            public static final IntSetting VOLUME_RESTIR_LOD_PIXELS =
+                    intValue("fluorite.rt.fog.volumeRestirLodPixels",
+                            "volumetrics.volume-restir-lod-pixels", 32);
+
+            /** D197: frames a cell may go untouched before recycling. 45 is 0.75 s at 60 fps. */
+            public static final IntSetting VOLUME_RESTIR_EVICTION_FRAMES =
+                    intValue("fluorite.rt.fog.volumeRestirEvictionFrames",
+                            "volumetrics.volume-restir-eviction-frames", 45);
+
+            /** RIS candidates drawn per cell per frame. One shadow ray each, per cell rather than per sample. */
+            public static final IntSetting VOLUME_RESTIR_CANDIDATES =
+                    intValue("fluorite.rt.fog.volumeRestirCandidates",
+                            "volumetrics.volume-restir-candidates", 4);
+
+            /**
              * Cell size of the volumetric visibility grid, in blocks. 0 turns the grid off entirely and
              * restores the unshadowed fog exactly.
              *
@@ -1730,6 +1781,33 @@ public final class FluoriteConfig {
             /** Bits 18-22 of worldPush.flags. Clamped so a bad config cannot unroll a raygen loop. */
             public static int visibilityMaxSteps() {
                 return Math.clamp(VISIBILITY_MAX_STEPS.value(), 1, 31);
+            }
+
+            /** environmentFlags bit 2 (ENVIRONMENT_VOLUME_RESTIR_NEAR). */
+            public static boolean volumeRestirNear() {
+                return "restir".equals(VOLUME_RESTIR_NEAR_SOURCE.get());
+            }
+
+            /** environmentFlags bit 3 (ENVIRONMENT_VOLUME_RESTIR_FAR). */
+            public static boolean volumeRestirFar() {
+                return "restir".equals(VOLUME_RESTIR_FAR_SOURCE.get());
+            }
+
+            /**
+             * D197 measured 2.1-4.3 samples per cell per frame at p=16 -- too few for the spatiotemporal
+             * reuse this milestone exists to prove. The lower clamp keeps a config from asking for a grid
+             * whose cells the frame cannot feed.
+             */
+            public static int volumeRestirLodPixels() {
+                return Math.clamp(VOLUME_RESTIR_LOD_PIXELS.value(), 16, 256);
+            }
+
+            public static int volumeRestirEvictionFrames() {
+                return Math.clamp(VOLUME_RESTIR_EVICTION_FRAMES.value(), 1, 600);
+            }
+
+            public static int volumeRestirCandidates() {
+                return Math.clamp(VOLUME_RESTIR_CANDIDATES.value(), 1, 32);
             }
 
             /** Runtime bound mirrored by VOLUME_FOG_MARCH_LIMIT in volume_source.slang. */
