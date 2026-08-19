@@ -1427,11 +1427,11 @@ void main() {
     float3 leafRadiance = prefix.transmittance * (frameRadiance / float(spp));
     float3 compositeRadiance = prefix.inScatter + leafRadiance;
     if (volumeRestirDebug) {
-        // Whatever the shading's own lookup saw, painted where the shading saw it.
-        float3 probe = volumeRestirProbeResult();
-        compositeRadiance = probe.x < 0.0
-                ? float3(0.25, 0.0, 0.0)  // dark red: the read never ran for this pixel
-                : probe;
+        // The cells along this ray. The shading-recorded probe describes only the MARCHED read, which is
+        // a minority of the screen now that the froxel fills the grid, so it painted "never ran" nearly
+        // everywhere and reported nothing about the half doing most of the work.
+        CameraRay debugCam = cameraRay(dispatchIndex, dimensions);
+        compositeRadiance = volumeRestirDebugMarch(debugCam.origin, debugCam.dir, 512.0);
     }
     if (compositePrefixDebug) {
         if (dispatchIndex.y >= dimensions.y * 3u / 4u) {

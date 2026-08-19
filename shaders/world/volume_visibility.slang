@@ -293,6 +293,43 @@ public float waterSurfaceSkyOpenness(float3 p, float skyDepth) {
     return sampleVolumeVisibility(gateP).y;
 }
 
+/**
+ * Debug view 28: the state of the cells along this pixel's camera ray.
+ *
+ * <p>THE VIEW MAY ASK FOR ITSELF AGAIN, and the reason it may is new rather than a relapse. Every earlier
+ * version failed because the sample point disagreed with the shading's -- only the marched path filled
+ * cells, and it filled them sparsely and unpredictably. Now the froxel fills every cell in the frustum,
+ * once per cell per frame, and the grid is world-anchored: "what is in the cell at this world point" has
+ * one answer no matter who asks. The shading-recorded probe could only ever describe the MARCHED read,
+ * which is a minority of the screen, so it reported "the read never ran here" over most of the picture
+ * and said nothing at all about the froxel.
+ *
+ * <p>Geometric spacing, dense near the eye where the cells are small.
+ */
+public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
+    if ((worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u
+            || worldPush.volumeGridSlots == 0u || worldPush.volumeGridAddr == 0) {
+        return float3(0.0, 0.0, 0.0); // black: the switch is off
+    }
+    ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
+    uint base = volumeHalfBase(worldPush.volumeGridSlots, worldPush.frameIndex + 1u);
+    for (uint step = 0u; step < 12u; ++step) {
+        float t = exp2(log2(max(cullDistance, 2.0)) * float(step) / 11.0);
+        float3 p = ro + rd * t;
+        int level = volumeCellLevel(length(p - worldPush.camOffset), worldPush.volumeGridLodK);
+        int3 coord = volumeCellCoord(p, volumeCellEdge(level));
+        int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
+                                  worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
+        if (slot >= 0) {
+            VolumeCell c = grid[slot];
+            return float3(saturate(c.stats.x / VOLUME_M_MAX),
+                          volumeCellOpenness(c),
+                          c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0);
+        }
+    }
+    return float3(1.0, 0.0, 1.0); // magenta: no live cell anywhere along this ray
+}
+
 /** Debug view 28 reads this after the shading that filled it. See gVolumeRestirProbe. */
 public float3 volumeRestirProbeResult() {
     return gVolumeRestirProbe;
