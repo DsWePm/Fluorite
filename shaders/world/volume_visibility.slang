@@ -313,11 +313,18 @@ public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
     }
     ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
     uint base = volumeHalfBase(worldPush.volumeGridSlots, worldPush.frameIndex + 1u);
-    for (uint step = 0u; step < 12u; ++step) {
-        float t = exp2(log2(max(cullDistance, 2.0)) * float(step) / 11.0);
+    // STEPPED BY THE CELL EDGE, not by twelve arbitrary distances. Fixed sample points miss cells
+    // whenever the spacing exceeds the cell size, and near the eye the cells are one block while the
+    // froxel that fills them has only 64x36 columns -- so a ray sampled at a dozen points lands in cells
+    // nobody visited and the view reports "no cell anywhere" for a grid that is working. Advancing by the
+    // local edge visits every cell the ray crosses, which is what the question actually means.
+    float t = 1.0;
+    for (uint step = 0u; step < 64u && t < cullDistance; ++step) {
         float3 p = ro + rd * t;
         int level = volumeCellLevel(length(p - worldPush.camOffset), worldPush.volumeGridLodK);
-        int3 coord = volumeCellCoord(p, volumeCellEdge(level));
+        float edge = volumeCellEdge(level);
+        t += edge;
+        int3 coord = volumeCellCoord(p, edge);
         int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
                                   worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
         if (slot >= 0) {
