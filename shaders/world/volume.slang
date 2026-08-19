@@ -789,10 +789,7 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
         if (sourceOn) {
-            VolumeVisibilitySample visSample;
-            visSample.sun = 1.0;
-            visSample.sky = 1.0;
-            visSample.lightUv = float2(0.5, 0.5);
+            VolumeVisibilitySample visSample = volumeVisibilityUnoccluded();
             if (gridRegion) {
                 visSample = sampleVolumeLightVisibility(p);
             }

@@ -313,6 +313,33 @@ final class RtVolumeRestirContractTest {
                 "clamping M without scaling wSum is the defect this replaced");
     }
 
+    /**
+     * Nobody builds a VolumeVisibilitySample field by field.
+     *
+     * <p>This is the test for a bug that shipped. D199 widened the struct and one of its two construction
+     * sites kept assigning only the original three members, so the bool selecting the directional path was
+     * uninitialised. An uninitialised bool picks a branch per invocation and an uninitialised float3
+     * becomes radiance: black speckle over the whole screen, flickering, indoors and outdoors, day and
+     * night, immune to every volumetric setting, and moving in response to unrelated code changes.
+     *
+     * <p>It cost six refuted hypotheses and twelve experiments, because every symptom pointed at the
+     * volumetric estimator and none of them pointed at a struct that had simply grown past one of its
+     * callers. The factory is what makes the next field addition safe.
+     */
+    @Test
+    void everyVisibilitySampleComesFromTheFactory() throws IOException {
+        String vis = code(source("shaders/world/volume_visibility.slang"));
+        String volume = code(source("shaders/world/volume.slang"));
+
+        assertTrue(vis.contains("public VolumeVisibilitySample volumeVisibilityUnoccluded() {"));
+        // Both construction sites go through it.
+        assertTrue(vis.contains("VolumeVisibilitySample result = volumeVisibilityUnoccluded();"));
+        assertTrue(volume.contains("VolumeVisibilitySample visSample = volumeVisibilityUnoccluded();"));
+        // And the field-by-field spelling that caused this does not come back.
+        assertFalse(volume.contains("visSample.sun = 1.0;"),
+                "a hand-built sample is how the struct outgrew its callers once already");
+    }
+
     private static String quote() {
         return String.valueOf((char) 34);
     }

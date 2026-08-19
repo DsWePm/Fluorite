@@ -143,6 +143,30 @@ void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
  * region flag and the read testing the grid extent -- a cell could be written under one switch and looked
  * for under the other, so turning on a single switch produced cells nobody read.
  */
+/**
+ * A fully initialised sample meaning "nothing occludes anything here".
+ *
+ * <p>EXISTS BECAUSE PARTIAL INITIALISATION ALREADY SHIPPED A BUG. D199 widened this struct with three
+ * fields, and a hand-built instance in volume.slang kept assigning only the original three. The bool that
+ * selects the directional path was therefore uninitialised, and an uninitialised bool chooses a branch
+ * per invocation while an uninitialised float3 becomes radiance -- black speckle everywhere, flickering,
+ * indoors and outdoors, day and night, immune to every volumetric knob, and shifting with unrelated code
+ * changes because that is what undefined values do.
+ *
+ * <p>The struct grew and one of its two construction sites did not. A factory is what makes the next
+ * field addition safe: there is no way to build one of these and forget a member.
+ */
+public VolumeVisibilitySample volumeVisibilityUnoccluded() {
+    VolumeVisibilitySample s;
+    s.sun = 1.0;
+    s.sky = 1.0;
+    s.lightUv = float2(0.5, 0.5);
+    s.skyDirValid = false;
+    s.skyDir = float3(0.0, 1.0, 0.0);
+    s.skyRadiance = float3(0.0, 0.0, 0.0);
+    return s;
+}
+
 public bool volumeInsideVisibilityGrid(float3 p) {
     float cell = worldPush.visGridOrigin.w;
     if (cell <= 0.0) {
@@ -220,13 +244,7 @@ float3 volumeRestirDebugAt(float3 p) {
 }
 
 public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
-    VolumeVisibilitySample result;
-    result.sun = 1.0;
-    result.sky = 1.0;
-    result.lightUv = float2(0.5, 0.5);
-    result.skyDirValid = false;
-    result.skyDir = float3(0.0, 1.0, 0.0);
-    result.skyRadiance = float3(0.0, 0.0, 0.0);
+    VolumeVisibilitySample result = volumeVisibilityUnoccluded();
     // D78A: some authored dimensions deliberately use a tiny unoccluded environment floor. It is an
     // explicit non-physical readability light, so roofs must not gate it. Directional/local emitters
     // still cast their own shadow rays; only the preset's isotropic floor takes this fast path.
