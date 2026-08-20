@@ -463,3 +463,42 @@ float3 source = visSample.skyDirValid ? visSample.skyRadiance * enclosedPhase(..
 3. 删除 `skyReachable` 的朝上射线、`volume_visibility.comp` 及其 3D 纹理
 4. 开关本身退休
 5. **水那边复现同一套**，顺带清理届时失效的 UI 控件（`volumetrics.visibility-max-steps`、`sun-shadow-rays` 的网格档等，届时逐项核对）
+
+## D201 更正：froxel 不是近场机器，D201 的账算错了
+
+用户问「froxel 和步进段岂不是重叠计算双倍」，查证时发现的东西推翻了 D201 赖以成立的模型。
+
+### froxel 服务的是「相机到第一个折射界面」，不是「近场」
+
+`sampleAerialPerspective`（读 froxel 那张纹理的唯一入口）**全代码库只有一个调用点**：`world.rgen.slang:1201`，在 `cameraPrefixIntegral` 里，距离参数是 `prefixLength`。
+
+而本 devlog 早先在排查 view 21 时已经确定：**`tracePrimary` 只在 `MATERIAL_WATER`/`MATERIAL_DIELECTRIC` 时推进原点，其余情况 `queue.ro == 相机原点`**，于是 `prefixLength = 0`。
+
+**所以眼前没有水或玻璃时，froxel 的贡献是零，屏幕上的雾全部来自步进路径。**
+
+### 不重叠：两者是把光线切成两段
+
+`cameraPrefixIntegral` 的横幅写明 pass A「deliberately left this segment's radiometry untouched」，前缀由 froxel 积分一次，叶子从界面开始。没有界面时前缀长度为零，步进路径直接从相机起算。**没有双倍计算。**
+
+这也解释了此前那组实验：**仅步进 ≈ 全部**（前缀通常为空），而**仅 froxel ≈ 只剩消光没有入射散射 = 黑雾、无神光**。那一档是隔离诊断档，不是可用画面 —— 用户观察到的「仅 froxel 黑雾」和「神光只在该档消失」都是预期行为，与 ReSTIR 无关。
+
+### 重算 D201 的账
+
+| 来源 | 射线/帧 | 服务谁 | 在普通场景里 |
+| --- | --- | --- | --- |
+| froxel 的天空线 | 147K | 相机→折射界面 | **几乎不产生贡献** |
+| 烘焙可见性网格 | 131K | 步进路径（=全部）+ 水下天光 | **这才是有效的那一份** |
+
+D201 原表把 froxel 列为「近场」并当作三层中的第一层，**那一层在多数像素上是空的**。因此：
+
+- **把 ReSTIR 接进 froxel（第 1 步）在普通场景里买到的接近于零** —— view 17 变了而画面几乎不动，正是这个原因。
+- **真正要替换的是那张每帧重烘的 ±32 块可见性网格**，它服务步进路径，而步进路径服务全部。
+- 「射线 278K → 147K」这个结论**不成立**：147K 那份本来就大多是空转，删掉它省下的是浪费而不是有效工作；真正的替换对象是 131K 那份。
+
+### 一个与 M25 无关的独立发现
+
+**froxel 每帧 147K 条射线，服务的是一段通常为零长度的区间。** 有水面或玻璃的像素才用得上。这是先于 M25 就存在的开销，值得单独立项评估（例如按屏幕上是否存在折射界面决定是否烘焙），但不属于本里程碑。
+
+### 我的模型错误
+
+我用「froxel = 近场、步进 = 远场」这个模型驱动了 D201 的整个计划、三层来源表、以及第 1 步的实施。这个模型从未被验证过 —— 它来自 `cameraPrefixIntegral` 里「the froxel answers for this stretch: the eye, this pixel's ray, out to a distance」这句注释，而我漏掉了那个 stretch 的长度由折射界面决定，且**同一份 devlog 里我自己早就查明过它通常为零**。
