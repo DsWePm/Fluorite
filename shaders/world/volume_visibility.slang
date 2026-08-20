@@ -310,13 +310,16 @@ public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
             || worldPush.volumeGridSlots == 0u || worldPush.volumeGridAddr == 0) {
         return float3(0.0, 0.0, 0.0); // black: the switch is off
     }
+    uint slots = worldPush.volumeGridSlots;
     ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
-    uint base = volumeHalfBase(worldPush.volumeGridSlots, worldPush.frameIndex + 1u);
-    // STEPPED BY THE CELL EDGE, not by twelve arbitrary distances. Fixed sample points miss cells
-    // whenever the spacing exceeds the cell size, and near the eye the cells are one block while the
-    // froxel that fills them has only 64x36 columns -- so a ray sampled at a dozen points lands in cells
-    // nobody visited and the view reports "no cell anywhere" for a grid that is working. Advancing by the
-    // local edge visits every cell the ray crosses, which is what the question actually means.
+    uint readBase = volumeHalfBase(slots, worldPush.frameIndex + 1u);
+    uint writeBase = volumeHalfBase(slots, worldPush.frameIndex);
+
+    // BOTH HALVES, REPORTED APART. Indoors this said "no cell anywhere" while the froxel was demonstrably
+    // writing cells -- view 17 moves with the switch. That leaves two possibilities which one colour
+    // cannot distinguish: the cells are written to a half nobody reads, or they are not written at all.
+    // Cyan means the write half has this cell and the read half does not, which is a parity or timing
+    // fault; magenta means neither has it, which is an addressing fault.
     float t = 1.0;
     for (uint step = 0u; step < 64u && t < cullDistance; ++step) {
         float3 p = ro + rd * t;
@@ -324,7 +327,7 @@ public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
         float edge = volumeCellEdge(level);
         t += edge;
         int3 coord = volumeCellCoord(p, edge);
-        int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
+        int slot = volumeGridFind(grid, slots, readBase, coord, level,
                                   worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
         if (slot >= 0) {
             VolumeCell c = grid[slot];
@@ -332,8 +335,12 @@ public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
                           volumeCellOpenness(c),
                           c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0);
         }
+        if (volumeGridFind(grid, slots, writeBase, coord, level,
+                           worldPush.frameIndex, worldPush.volumeGridEvictionFrames) >= 0) {
+            return float3(0.0, 1.0, 1.0); // cyan: written, but not where anyone reads
+        }
     }
-    return float3(1.0, 0.0, 1.0); // magenta: no live cell anywhere along this ray
+    return float3(1.0, 0.0, 1.0); // magenta: neither half holds a cell on this ray
 }
 
 /** Debug view 28 reads this after the shading that filled it. See gVolumeRestirProbe. */
