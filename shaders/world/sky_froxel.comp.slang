@@ -162,17 +162,31 @@ float froxelRestirSkyOpen(WorldPush wp, float3 p, inout uint seed) {
     ConstPtr<VolumeCell> gridRead = ConstPtr<VolumeCell>(wp.volumeGridAddr);
     uint frame = wp.frameIndex;
 
+    // EVERY COLUMN ANSWERS FROM THE SAME STABLE HALF, and only one of them pays for the update. Many
+    // columns share a near cell -- adjacent froxel columns are d * FOV / 64 apart, which at eight blocks
+    // is 0.14, far inside a one-block cell -- so letting each column answer from its own write would put
+    // different values inside one cell and read as speckle. The previous frame's half is finished and
+    // nobody is writing it, so it is the one answer they can all agree on.
+    uint readBase = volumeHalfBase(slots, frame + 1u);
+    int prior = volumeGridFind(gridRead, slots, readBase, coord, level, frame,
+                               wp.volumeGridEvictionFrames);
+    float answer = prior >= 0 ? volumeCellOpenness(gridRead[prior]) : skyReachable(p);
+
     uint writeBase = volumeHalfBase(slots, frame);
     int slot = volumeGridClaim(gridRead, slots, writeBase, coord, level, frame,
                                wp.volumeGridEvictionFrames);
     if (slot < 0) {
-        return skyReachable(p); // probe window full: answer the shipped way rather than guess
+        return answer; // probe window full of live strangers; this cell simply does not update
     }
-    uint readBase = volumeHalfBase(slots, frame + 1u);
-    int prior = volumeGridFind(gridRead, slots, readBase, coord, level, frame,
-                               wp.volumeGridEvictionFrames);
-    VolumeCell c = prior >= 0 ? gridRead[prior] : volumeCellEmpty();
+    // The election decides who casts the ray, not who gets an answer. One ray per CELL per frame rather
+    // than one per column, which is where the ray budget actually falls.
+    uint previous;
+    InterlockedExchange(grid[slot].ident.y, frame, previous);
+    if (previous == frame) {
+        return answer;
+    }
 
+    VolumeCell c = prior >= 0 ? gridRead[prior] : volumeCellEmpty();
     // Uniform over the upper hemisphere; the lower half has no sky to find.
     float u1 = rndf(seed);
     float u2 = rndf(seed);
@@ -183,10 +197,7 @@ float froxelRestirSkyOpen(WorldPush wp, float3 p, inout uint seed) {
     volumeCellUpdate(c, dir, wp.mediumSkyRadiance.xyz * vis, vis, 0.15915494309, seed);
     volumeCellClaimStamp(c, coord, level, frame);
     grid[slot] = c;
-
-    // Young cells have not seen enough directions to be trusted with the answer yet, and the shipped
-    // one is right there.
-    return c.stats.x >= VOLUME_M_MATURE ? volumeCellOpenness(c) : skyReachable(p);
+    return answer;
 }
 
 /** One shadow ray. Opaque-only and first-hit: this asks whether a sampled emitter is blocked. */
