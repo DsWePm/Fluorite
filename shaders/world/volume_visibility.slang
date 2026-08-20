@@ -136,22 +136,21 @@ void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
         return; // no cell yet: the scalar answer above stands, which is the shipped one
     }
     VolumeCell c = grid[slot];
-    if (c.dirW.w <= 0.0) {
-        // AN EMPTY RESERVOIR MEANS TWO DIFFERENT THINGS AND THIS ONCE CONFLATED THEM. In a MATURE cell it
-        // means every candidate found zero transmittance -- a sealed cave, and reporting no sky light is
-        // the point of the milestone. In a cell that was created a few frames ago it means no data yet,
-        // and treating that as darkness deleted the near-field fog entirely, because every cell is young
-        // when it is born and the near field is where cells are born fastest.
-        gVolumeRestirProbe = float3(saturate(c.stats.x / VOLUME_M_MAX), 0.0,
-                                   c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0);
-        if (c.stats.x >= VOLUME_M_MATURE) {
-            result.sky = 0.0;
-        }
-        return; // young: leave the scalar answer above, which is the shipped one
-    }
     gVolumeRestirProbe = float3(saturate(c.stats.x / VOLUME_M_MAX),
-                               saturate(c.dirW.w / VOLUME_W_MAX),
+                               volumeCellOpenness(c),
                                c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0);
+
+    // OPENNESS, NOT THE RESERVOIR'S EMPTINESS. This used to read W == 0 as "no sky reaches here", gated
+    // on maturity, and once the froxel started feeding every cell every frame the cells matured at once
+    // and the near field lost its fog along the visibility grid's box -- a rectangular seam in the air,
+    // which is what a region boundary looks like when the two sides disagree about a quantity.
+    //
+    // The cell now carries the mean visibility directly, which is what `sky` has always meant, and it is
+    // the same number the froxel reads. One quantity, one definition, both consumers.
+    result.sky = volumeCellOpenness(c);
+    if (c.dirW.w <= 0.0) {
+        return; // no direction was ever selected: the scalar answer above is the whole answer
+    }
     result.skyDirValid = true;
     result.skyDir = c.dirW.xyz;
     // leT already carries radiance times transmittance; W finishes the estimator. The phase belongs at
