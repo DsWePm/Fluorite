@@ -214,7 +214,20 @@ public final class RtVideoOptions {
                                 fogPhaseG(), fogScatterTint(), fogSunShadowRays()),
                         Section.titled("fluorite.options.rt.section.fogNoise",
                                 fogNoiseEnabled(), fogNoiseContrast(), fogNoiseFieldScale(),
-                                fogNoiseWindSpeed(), fogNoiseWindOffset(), fogNoiseMarchSteps()));
+                                fogNoiseWindSpeed(), fogNoiseWindOffset(), fogNoiseMarchSteps()),
+                        Section.titled("fluorite.options.rt.section.fogTint",
+                                scaleSlider("fluorite.options.rt.fogScatterTintR",
+                                        FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_R),
+                                scaleSlider("fluorite.options.rt.fogScatterTintG",
+                                        FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_G),
+                                scaleSlider("fluorite.options.rt.fogScatterTintB",
+                                        FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_B),
+                                scaleSlider("fluorite.options.rt.fogExtinctionTintR",
+                                        FluoriteConfig.Rt.Volumetrics.EXTINCTION_TINT_R),
+                                scaleSlider("fluorite.options.rt.fogExtinctionTintG",
+                                        FluoriteConfig.Rt.Volumetrics.EXTINCTION_TINT_G),
+                                scaleSlider("fluorite.options.rt.fogExtinctionTintB",
+                                        FluoriteConfig.Rt.Volumetrics.EXTINCTION_TINT_B)));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case POST_PROCESSING -> List.of(
                         Section.titled("fluorite.options.rt.section.exposure",

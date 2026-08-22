@@ -1142,6 +1142,53 @@ public final class FluoriteConfig {
              * Scattering tint, as a named hue. Not a colour picker: the settings UI has no colour control,
              * and an exact RGB belongs in the dimension preset rather than in a per-player override.
              */
+            /**
+             * Free RGB tints, NORMALISED SO A COLOUR CHANGE IS ONLY A COLOUR CHANGE.
+             *
+             * <p>Each triple is divided by its own luminance before use, so moving the sliders changes the
+             * ratio between channels and never the magnitude. That matters because the two things they
+             * multiply are not artistic gains: extinction IS the optical depth, so an unnormalised tint
+             * would make "make the fog warmer" also mean "make the fog thicker"; and albedo is
+             * sigma_s/sigma_t, where the magnitude is how much of what is extinguished comes back.
+             *
+             * <p>SCATTER tints the light the fog sends to the eye -- the colour of the fog itself.
+             * EXTINCTION tints which wavelengths the fog removes from what is behind it. A grey-white
+             * volumetric look wants the first; coloured haze and distance shift want the second.
+             *
+             * <p>All six default to one, which normalises to identity, so the shipped picture is
+             * untouched until a slider moves.
+             */
+            public static final FloatSetting SCATTER_TINT_R =
+                    clampedFloat("fluorite.rt.fog.scatterTintR", "volumetrics.scatter-tint-r", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting SCATTER_TINT_G =
+                    clampedFloat("fluorite.rt.fog.scatterTintG", "volumetrics.scatter-tint-g", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting SCATTER_TINT_B =
+                    clampedFloat("fluorite.rt.fog.scatterTintB", "volumetrics.scatter-tint-b", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting EXTINCTION_TINT_R =
+                    clampedFloat("fluorite.rt.fog.extinctionTintR", "volumetrics.extinction-tint-r", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting EXTINCTION_TINT_G =
+                    clampedFloat("fluorite.rt.fog.extinctionTintG", "volumetrics.extinction-tint-g", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting EXTINCTION_TINT_B =
+                    clampedFloat("fluorite.rt.fog.extinctionTintB", "volumetrics.extinction-tint-b", 1.0f, 0.0f, 4.0f);
+
+            /** Luminance-preserving, and a fully black triple falls back to identity rather than to zero. */
+            private static float[] normalisedTint(float r, float g, float b) {
+                float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                if (lum <= 1.0e-4f) {
+                    return new float[] {1f, 1f, 1f};
+                }
+                return new float[] {r / lum, g / lum, b / lum};
+            }
+
+            public static float[] scatterTintFreeRgb() {
+                return normalisedTint(SCATTER_TINT_R.value(), SCATTER_TINT_G.value(), SCATTER_TINT_B.value());
+            }
+
+            public static float[] extinctionTintRgb() {
+                return normalisedTint(EXTINCTION_TINT_R.value(), EXTINCTION_TINT_G.value(),
+                        EXTINCTION_TINT_B.value());
+            }
+
             public static final StringSetting SCATTER_TINT =
                     string("fluorite.rt.fog.scatterTint", "volumetrics.scatter-tint", "neutral",
                             Volumetrics::sanitizeTint);

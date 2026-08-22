@@ -186,7 +186,12 @@ public final class RtComposite {
       */
     private static Float4 fogExtinction(RtSkyPreset preset) {
         RtSkyPreset.Rgb extinction = preset.fog().extinction();
-        return new Float4(extinction.r(), extinction.g(), extinction.b(), fogStartDistance(preset));
+        // Luminance-preserving, so this shifts WHICH wavelengths the fog removes without shifting how
+        // much it removes. Extinction is the optical depth itself: an unnormalised tint here would make
+        // every colour change a density change too.
+        float[] tint = FluoriteConfig.Rt.Volumetrics.extinctionTintRgb();
+        return new Float4(extinction.r() * tint[0], extinction.g() * tint[1], extinction.b() * tint[2],
+                fogStartDistance(preset));
     }
 
     private static float fogStartDistance(RtSkyPreset preset) {
@@ -877,9 +882,12 @@ public final class RtComposite {
         RtSkyPreset.Rgb albedo = preset.fog().albedo();
         // Named tint is a global hue shift relative to the legacy neutral choice. Dividing by that
         // neutral means the default is exactly identity while authored per-dimension RGB remains the base.
-        float r = albedo.r() * tint[0] / 0.92f;
-        float g = albedo.g() * tint[1] / 0.94f;
-        float b = albedo.b() * tint[2] / 0.96f;
+        // The named tint stays as the coarse choice; the free RGB multiplies on top of it and is
+        // luminance-preserving, so it moves the fog's colour without moving how much light comes back.
+        float[] free = FluoriteConfig.Rt.Volumetrics.scatterTintFreeRgb();
+        float r = albedo.r() * tint[0] * free[0] / 0.92f;
+        float g = albedo.g() * tint[1] * free[1] / 0.94f;
+        float b = albedo.b() * tint[2] * free[2] / 0.96f;
         // D13: this value is sigma_s / sigma_t, not an artistic radiance gain. Clamp at the ABI
         // boundary as well as in the setting so every shader consumer receives a conservative medium,
         // including callers assembled from a future preset whose tint accidentally exceeds one.
