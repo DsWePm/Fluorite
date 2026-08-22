@@ -36,6 +36,13 @@ final class RtSkyMediumLayoutTest {
         // buffer is not the
         // 128-byte push-constant block, so its size is a per-frame upload cost rather than a hard limit —
         // but it is pinned here so growth is a decision rather than a side effect.
+        //
+        // M25 TOOK IT TO 1184 AND GAVE IT BACK. The volumetric hash grid needed a device address and a
+        // slot count; its LOD constant and eviction window then cost nothing, landing in the padding that
+        // first pair left. The grid was measured, found not to pay for itself, and removed, so the five
+        // lanes went with it and the struct is 1168 again — which is the useful thing this line records:
+        // a feature that is withdrawn has to give back its ABI too, or the upload keeps paying rent for
+        // something no shader reads.
         assertEquals(1168, WorldPushData.BYTE_SIZE);
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order

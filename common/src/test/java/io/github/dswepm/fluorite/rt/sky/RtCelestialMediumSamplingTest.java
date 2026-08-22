@@ -30,15 +30,22 @@ final class RtCelestialMediumSamplingTest {
         assertTrue(math.contains("sampleSquareLight("));
         assertTrue(volume.contains("sampleSquareLight("));
         assertTrue(froxel.contains("sampleSquareLight("));
-        assertTrue(visibility.contains("sampleSquareLight("));
         assertTrue(froxel.contains("celestialDirectionVisible(sampledLightDir)"));
-        assertTrue(visibility.contains("celestialDirectionVisible(lightDir)"));
 
         // The old water path enabled the entire orange direct term at one solar elevation.
         assertFalse(volume.contains("sunY > 1.0e-3"));
-        // Froxel and the visibility grid must trace the sampled emitter direction, not its centre.
+        // The froxel must trace the sampled emitter direction, not its centre.
         assertFalse(froxel.contains("sunOccluded(p, sunDir)"));
-        assertFalse(visibility.contains("occluded(p, wp.lightDir.xyz)"));
+
+        // THE VISIBILITY BAKE NO LONGER ASKS ABOUT THE SUN AT ALL, which is why it dropped out of the
+        // list above rather than being loosened within it. Its sun channel lost in game to the single
+        // stochastic shadow ray a marched segment already casts, and its ray now goes into the sky
+        // openness the grid does still own. This asserts the deletion rather than merely tolerating it:
+        // if any celestial sampling comes back here, so does the 131k-ray-a-frame cost that went with it.
+        assertFalse(visibility.contains("sampleSquareLight("));
+        assertFalse(visibility.contains("celestialDirectionVisible("));
+        assertFalse(visibility.contains("lightDir"));
+        assertTrue(visibility.contains("cosineHemisphereUp("));
     }
 
     @Test

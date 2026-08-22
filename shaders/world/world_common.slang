@@ -18,6 +18,15 @@ public static const uint SKY_PROVIDER_LOCAL_AMBIENT = 1u;
 public static const uint SKY_PROVIDER_ENVIRONMENT = 2u;
 public static const uint ENVIRONMENT_AMBIENT_UNOCCLUDED = 1u << 0u;
 public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
+// How many path segments may ADD fog light, counted from the camera. Zero means all of them, which is
+// the shipped behaviour. Bits 4-7, so 0-15.
+//
+// TRANSMITTANCE IS NEVER GATED BY THIS, only in-scatter. Skipping a segment's fog entirely would leave
+// distant geometry unfogged inside reflections while the direct view of the same place is fogged, and a
+// seam that appears only in a mirror is the failure R18 exists to prevent. Dropping in-scatter alone is
+// merely darker, and darker in the segments whose throughput has already decayed most.
+public static const uint ENVIRONMENT_INSCATTER_SEGMENTS_SHIFT = 4u;
+public static const uint ENVIRONMENT_INSCATTER_SEGMENTS_MASK = 0xFu;
 public static const uint ENVIRONMENT_LAYER_SHIFT = 8u;
 public static const uint ENVIRONMENT_LAYER_MASK = 0xFFu;
 

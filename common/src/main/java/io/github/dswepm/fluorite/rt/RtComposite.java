@@ -139,6 +139,7 @@ public final class RtComposite {
      * screen. Clamping the depth and saying so beats a buffer that indexes correctly on one vendor.
      */
     private static final long RESERVOIR_STORE_MAX_BYTES = 4L << 30;
+
     // ---- Ambient participating medium.
     //
     // The active dimension preset supplies the baseline. Weather/time forcing is applied only when that
@@ -191,6 +192,8 @@ public final class RtComposite {
         if (fogActive && preset.fog().localLights()) {
             flags |= 1 << 1; // ENVIRONMENT_FROXEL_LOCAL_LIGHTS
         }
+        // Bits 4-7. Zero is every segment, so the shipped behaviour is still a zero word.
+        flags |= (FluoriteConfig.Rt.Volumetrics.inScatterSegments() & 0xF) << 4;
         if (environment != null) {
             flags |= (environment.layer() & 0xff) << 8;
         }
@@ -231,6 +234,21 @@ public final class RtComposite {
      * and reads occluded, so it blocks the interpolation the way the block blocks the light. See
      * VISIBILITY_CELL_SIZE for the measurement that established it.
      */
+    /**
+     * The snapped grid origin as whole CELL indices, which is the same placement the Float4 below
+     * publishes and the form the bake's reprojection needs.
+     *
+     * <p>Absolute rather than terrain-relative on purpose: the terrain rebases, and a rebase must not
+     * read as the grid having moved. Two frames either side of one would otherwise produce a shift of a
+     * few hundred cells and throw away a history that had not actually gone anywhere.
+     */
+    static int visibilityGridOriginCell(double cam, float cell, int cells) {
+        if (cell <= 0f) {
+            return 0;
+        }
+        return (int) Math.floor(cam / cell) - cells / 2;
+    }
+
     private static Float4 visibilityGridOrigin(double camX, double camY, double camZ, RtTerrain terrain) {
         // GOVERNED BY ITS OWN KNOB, not by the fog toggle, and that is issue #41's fix.
         //
@@ -859,9 +877,12 @@ public final class RtComposite {
         RtSkyPreset.Rgb albedo = preset.fog().albedo();
         // Named tint is a global hue shift relative to the legacy neutral choice. Dividing by that
         // neutral means the default is exactly identity while authored per-dimension RGB remains the base.
-        float r = albedo.r() * tint[0] / 0.92f;
-        float g = albedo.g() * tint[1] / 0.94f;
-        float b = albedo.b() * tint[2] / 0.96f;
+        // The named tint stays as the coarse choice; the free RGB multiplies on top of it and is
+        // luminance-preserving, so it moves the fog's colour without moving how much light comes back.
+        float[] free = FluoriteConfig.Rt.Volumetrics.scatterTintFreeRgb();
+        float r = albedo.r() * tint[0] * free[0] / 0.92f;
+        float g = albedo.g() * tint[1] * free[1] / 0.94f;
+        float b = albedo.b() * tint[2] * free[2] / 0.96f;
         // D13: this value is sigma_s / sigma_t, not an artistic radiance gain. Clamp at the ABI
         // boundary as well as in the setting so every shader consumer receives a conservative medium,
         // including callers assembled from a future preset whose tint accidentally exceeds one.
@@ -2324,6 +2345,10 @@ public final class RtComposite {
         return (int) Math.min(wantDepth, fits);
     }
 
+    private static double frustumVolume(double d, double tanX, double tanY) {
+        return (2.0 * d * tanX) * (2.0 * d * tanY) * d / 3.0;
+    }
+
     private void ensureOutput(RtContext ctx, int width, int height) {
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
@@ -3259,7 +3284,12 @@ public final class RtComposite {
             // predicate that is wrong in the direction of the bug just fixed.
             if (FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
                     && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED) {
-                skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
+                float visCell = FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value();
+                skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle,
+                        visibilityGridOriginCell(camX, visCell, RtSky.VIS_GRID_W),
+                        visibilityGridOriginCell(camY, visCell, RtSky.VIS_GRID_H),
+                        visibilityGridOriginCell(camZ, visCell, RtSky.VIS_GRID_D),
+                        visCell, graphicsUse);
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);

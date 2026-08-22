@@ -448,7 +448,7 @@ struct AmbientAccum {
  * the new input is absent is a change whose effect on screen can only be the new input.
  */
 void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float tB,
-                 float3 scatterAlbedo, float3 sunSource, float3 skySource, float2 vis) {
+                 float3 scatterAlbedo, float3 sunSource, float3 skySource, float skyVis) {
     if (tB <= tA) {
         return;
     }
@@ -457,7 +457,11 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
         return;
     }
     float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
-    float3 source = sunSource * vis.x + skySource * vis.y;
+    // The sun arrives UNSHADOWED here and the caller is what makes that correct: sunSource is zero for
+    // every provider whose sun is traced with rays, and non-zero only for the analytic providers whose
+    // presets are authored unoccluded. The grid stopped answering about the sun when its channel was
+    // deleted, so there is no third case left for a visibility term to express.
+    float3 source = sunSource + skySource * skyVis;
     acc.inScatter += acc.transmittance * scatterAlbedo * source
             * (float3(1.0, 1.0, 1.0) - stepT);
     acc.transmittance *= stepT;
@@ -670,28 +674,45 @@ float noisyDistanceAtBaseTau(float3 ro, float3 rd, NoisyAmbientLayout layout,
     return layout.edge.w;
 }
 
-ScatterVertex sampleNoisyAmbientScatterVertex(float3 sigmaT, float3 albedo,
-                                               float3 ro, float3 rd,
-                                               NoisyAmbientLayout layout, float baseTau,
-                                               inout uint seed) {
-    float sigmaBar = max(luminance(sigmaT), 1.0e-4);
-    float tauTotal = sigmaBar * baseTau;
-    if (tauTotal <= 1.0e-6) {
-        return noScatterVertex();
-    }
-    float tauScalar = sampleScatterTau(tauTotal, seed);
-    ScatterVertex vertex;
-    vertex.pos = ro + rd * noisyDistanceAtBaseTau(
-            ro, rd, layout, tauScalar / sigmaBar);
-    vertex.weight = scatterVertexWeight(sigmaT, albedo, sigmaBar, tauScalar, tauTotal);
-    return vertex;
+/**
+ * The scattering event this march is asked to locate on its way past, if any.
+ *
+ * <p>EXISTS SO THE FIELD IS WALKED ONCE INSTEAD OF TWICE. Sampling the event used to be its own pass:
+ * noisyDistanceAtBaseTau inverted the optical depth by marching the density field from the segment's
+ * start, and then this march walked the identical points again to integrate. Identical is meant exactly
+ * -- same regions in the same order, same step count, same dt, the same ambientNoiseDensity at the same
+ * midpoints -- so the second walk could only ever reproduce numbers the first had already produced.
+ *
+ * <p>What it cost was a fetch of the packed 3D field per step, up to the march cap in each of three
+ * regions, on every segment carrying fog. Folding it in is therefore a removal rather than an
+ * approximation: the event lands at the same distance, the weight is the same closed form, and the
+ * picture is the arithmetic that was already there with one traversal deleted.
+ *
+ * <p>The TOTAL still needs a pass of its own (noisyAmbientLayoutTau), because a truncated exponential
+ * cannot be sampled without knowing where it is truncated. Three walks become two, not one.
+ */
+struct ScatterProbe {
+    // Base-tau at which the event sits. Negative means no event was drawn and this march ignores it.
+    float target;
+    float cumulative;
+    float3 pos;
+    bool found;
+};
+
+ScatterProbe noScatterProbe() {
+    ScatterProbe probe;
+    probe.target = -1.0;
+    probe.cumulative = 0.0;
+    probe.pos = float3(0.0, 0.0, 0.0);
+    probe.found = false;
+    return probe;
 }
 
 /** One region of the canonical view march; gridRegion changes visibility, never density sampling. */
-void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
+void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe probe,
+                                 float3 ro, float3 rd,
                                  float a, float b, int steps, bool gridRegion,
                                  float3 scatterAlbedo, float3 skySource,
-                                 float phaseG, float3 sunSigma, uint sunRays,
                                  bool sourceOn) {
     if (steps <= 0 || b <= a) {
         return;
@@ -701,33 +722,26 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
     for (int i = 0; i < steps; ++i) {
         float t = a + (float(i) + 0.5) * dt;
         float3 p = ro + rd * t;
-        float tau = ambientNoiseDensity(p, dt) * dt;
+        float density = ambientNoiseDensity(p, dt);
+        float tau = density * dt;
+        // Ahead of the zero-density skip below, because the inversion this replaces did not skip either:
+        // it added a zero and walked on. A cell contributing no optical depth cannot hold the event, but
+        // it still has to be stepped over or every later cell is reached at the wrong cumulative depth.
+        if (probe.target >= 0.0 && !probe.found) {
+            if (probe.target <= probe.cumulative + tau && tau > 0.0) {
+                probe.pos = ro + rd * ((t - dt * 0.5)
+                        + clamp((probe.target - probe.cumulative) / density, 0.0, dt));
+                probe.found = true;
+            }
+            probe.cumulative += tau;
+        }
         if (tau <= 0.0) {
             continue;
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
         if (sourceOn) {
-            VolumeVisibilitySample visSample;
-            visSample.sun = 1.0;
-            visSample.sky = 1.0;
-            visSample.lightUv = float2(0.5, 0.5);
-            if (gridRegion) {
-                visSample = sampleVolumeLightVisibility(p);
-            }
-
-            float3 source = skySource * visSample.sky;
-            if (sunRays == 0u && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
-                float3 lightDir = gridRegion
-                        ? sampleSquareLightDirection(worldPush.lightDir.xyz,
-                                worldPush.celestial.xyz, worldPush.lightDir.w,
-                                visSample.lightUv)
-                        : worldPush.lightDir.xyz;
-                // Unlike the analytic constant-source adapter, a numerical step has a position. Use it:
-                // dense pockets then attenuate the sunlight that reaches deeper pockets instead of only
-                // modulating what the camera sees.
-                source += sampledAmbientSunSource(p, rd, lightDir, phaseG, sunSigma)
-                        * visSample.sun;
-            }
+            float skyOpen = gridRegion ? volumeSkyOpenness(p) : 1.0;
+            float3 source = skySource * skyOpen;
             acc.inScatter += acc.transmittance * scatterAlbedo * source
                     * (float3(1.0, 1.0, 1.0) - stepT);
         }
@@ -786,26 +800,39 @@ void integrateNoisyAmbient(inout SegmentIntegral seg, float3 ro, float3 rd,
             ? volumeDiffuseAttenuation(worldPush.fogExtinction.xyz, scatterAlbedo, phaseG)
             : worldPush.fogExtinction.xyz;
 
+    // The event's WEIGHT is known before the march because it depends only on the total; its POSITION
+    // comes out of the march itself. Splitting them that way is what removes the second traversal.
+    ScatterProbe probe = noScatterProbe();
     if (scatterVertexOn()) {
         uint vertexSeed = seed ^ 0xC2B2AE3Du;
         vertexSeed = pcg(vertexSeed);
-        ScatterVertex vertex = sampleNoisyAmbientScatterVertex(
-                worldPush.fogExtinction.xyz, scatterAlbedo, ro, rd,
-                layout, baseTau, vertexSeed);
-        seg.scatterPos = vertex.pos;
-        seg.scatterWeight = vertex.weight;
+        float3 sigmaT = worldPush.fogExtinction.xyz;
+        float sigmaBar = max(luminance(sigmaT), 1.0e-4);
+        float tauTotal = sigmaBar * baseTau;
+        if (tauTotal > 1.0e-6) {
+            float tauScalar = sampleScatterTau(tauTotal, vertexSeed);
+            probe.target = tauScalar / sigmaBar;
+            seg.scatterWeight = scatterVertexWeight(sigmaT, scatterAlbedo, sigmaBar,
+                                                    tauScalar, tauTotal);
+        }
     }
 
     AmbientAccum acc;
     acc.inScatter = float3(0.0, 0.0, 0.0);
     acc.transmittance = float3(1.0, 1.0, 1.0);
     float3 skySource = worldPush.mediumSkyRadiance.xyz;
-    integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.x, layout.edge.y, layout.steps.x,
-            false, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
-    integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.y, layout.edge.z, layout.steps.y,
-            true, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
-    integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.z, layout.edge.w, layout.steps.z,
-            false, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
+    integrateNoisyAmbientRegion(acc, probe, ro, rd, layout.edge.x, layout.edge.y, layout.steps.x,
+            false, scatterAlbedo, skySource, sourceOn);
+    integrateNoisyAmbientRegion(acc, probe, ro, rd, layout.edge.y, layout.edge.z, layout.steps.y,
+            true, scatterAlbedo, skySource, sourceOn);
+    integrateNoisyAmbientRegion(acc, probe, ro, rd, layout.edge.z, layout.edge.w, layout.steps.z,
+            false, scatterAlbedo, skySource, sourceOn);
+    // The far edge when the walk never crossed the target, which is what the inversion returned too:
+    // rounding in a sum can leave the last cell just short of a total assembled from the same terms, and
+    // the segment's end is the only defensible answer there.
+    if (probe.target >= 0.0) {
+        seg.scatterPos = probe.found ? probe.pos : (ro + rd * layout.edge.w);
+    }
     seg.transmittance *= acc.transmittance;
     seg.inScatter += acc.inScatter;
 
@@ -1478,7 +1505,7 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                 acc.inScatter = float3(0.0, 0.0, 0.0);
                 acc.transmittance = float3(1.0, 1.0, 1.0);
                 ambientStep(acc, ro, rd, window.x, tEnter, scatterAlbedo,
-                            gridSunSource, skySource, float2(1.0, 1.0));
+                            gridSunSource, skySource, 1.0);
                 // Guarded, not just relying on ambientStep's own zero-length early-out: the SAMPLE happens
                 // before that check, so a segment that never touches the grid would still pay six 3D
                 // texture fetches to be told six times that it is outside. Most bounce segments in an open
@@ -1493,24 +1520,13 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // whichever side of a shadow boundary that end happened to fall on, which is the
                         // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
                         // shape.
-                        VolumeVisibilitySample visSample = sampleVolumeLightVisibility(
-                                ro + rd * ((tA + tB) * 0.5));
-                        float3 stepSunSource = gridSunSource;
-                        if (sunRays == 0u
-                                && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
-                            float3 gridLightDir = sampleSquareLightDirection(
-                                    worldPush.lightDir.xyz, worldPush.celestial.xyz,
-                                    worldPush.lightDir.w, visSample.lightUv);
-                            stepSunSource = sampledAmbientSunSource(
-                                    ro, rd, gridLightDir, phaseG, sunSigma);
-                        }
+                        float3 midP = ro + rd * ((tA + tB) * 0.5);
                         ambientStep(acc, ro, rd, tA, tB, scatterAlbedo,
-                                    stepSunSource, skySource,
-                                    float2(visSample.sun, visSample.sky));
+                                    gridSunSource, skySource, volumeSkyOpenness(midP));
                     }
                 }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,
-                            gridSunSource, skySource, float2(1.0, 1.0));
+                            gridSunSource, skySource, 1.0);
                 // += rather than =: the enclosed branch above may already have deposited in-scatter.
                 // Unreachable today (every enclosed medium has ambient false), but a future composite
                 // profile that deposits both enclosed and ambient source would otherwise lose the first.
