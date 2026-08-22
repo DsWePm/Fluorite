@@ -1,5 +1,11 @@
-// The bound volumetric visibility grid and the one correct way to read it. R/G are sun visibility and
-// sky openness; BA are the visibility-weighted first moment of the sampled celestial square coordinates.
+// The bound volumetric visibility grid and the one correct way to read it. R is sky openness -- the
+// accumulated fraction of the upper hemisphere that reaches this cell -- and G is the sample count its
+// running mean stands on, which only the bake reads. B and A are constants.
+//
+// IT USED TO ANSWER ABOUT THE SUN TOO, in R, with the sampled celestial square coordinates in BA. That
+// half lost in game to the one stochastic shadow ray a marched segment already casts, and it is gone;
+// volume_visibility.comp.slang holds the reasoning. Sun visibility is a high-frequency quantity and a
+// trilinear grid cannot carry an edge.
 //
 // Separate from the bake for the same reason atmosphere_lut is separate from atmosphere: the bake's
 // descriptor set has exactly one storage image, a binding declared in a module reaches every importer,
@@ -24,38 +30,9 @@ public static const int VIS_GRID_D = 64;
  */
 [[vk::binding(16, 0)]] public Sampler3D volumeVisibilityGrid;
 
-public struct VolumeVisibilitySample {
-    public float sun;
-    public float sky;
-    public float2 lightUv;
-};
-
 /**
- * A fully initialised sample meaning "nothing occludes anything here".
- *
- * <p>EXISTS BECAUSE PARTIAL INITIALISATION ALREADY SHIPPED A BUG, and it outlived the fields that caused
- * it. M25 widened this struct with three members and a hand-built instance in volume.slang kept assigning
- * only the original three; the uninitialised bool among them chose a branch per invocation and the
- * uninitialised float3 became radiance. Black speckle everywhere, flickering, indoors and outdoors, day
- * and night, immune to every volumetric knob, and shifting with unrelated code changes -- which is what
- * undefined values do. Six refuted hypotheses went past before the struct was suspected.
- *
- * <p>M25's three fields are gone again, so this factory now sets exactly the members it always had. It is
- * kept anyway, and that is the point: the defect was never the fields, it was that the struct grew and one
- * of its two construction sites did not. This is what makes the NEXT field addition safe -- there is no
- * way to build one of these and forget a member.
- */
-public VolumeVisibilitySample volumeVisibilityUnoccluded() {
-    VolumeVisibilitySample s;
-    s.sun = 1.0;
-    s.sky = 1.0;
-    s.lightUv = float2(0.5, 0.5);
-    return s;
-}
-
-/**
- * Sun visibility and sky openness at a point in the air. Outside the grid, the boundary's answer; only
- * where no grid has been published at all does this fall back to (1, 1).
+ * Sky openness at a point in the air: the fraction of the upper hemisphere that reaches it. Outside the
+ * grid, the boundary's answer; only where no grid has been published at all does this fall back to 1.
  *
  * <p>OUTSIDE THE GRID IT CLAMPS, and that replaces two decisions this file used to record — a reset to
  * "fully lit" beyond the faces, and a fade toward it over the outermost 6% to hide the seam that reset
@@ -102,17 +79,16 @@ public VolumeVisibilitySample volumeVisibilityUnoccluded() {
  * bake now follows the grid's own knob instead (#41). Which leaves this fallback saying only what it
  * always should have: no grid was asked for, so there is no measurement to report.
  */
-public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
-    VolumeVisibilitySample result = volumeVisibilityUnoccluded();
+public float volumeSkyOpenness(float3 p) {
     // D78A: some authored dimensions deliberately use a tiny unoccluded environment floor. It is an
     // explicit non-physical readability light, so roofs must not gate it. Directional/local emitters
     // still cast their own shadow rays; only the preset's isotropic floor takes this fast path.
     if ((worldPush.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u) {
-        return result;
+        return 1.0;
     }
     float cell = worldPush.visGridOrigin.w;
     if (cell <= 0.0) {
-        return result;
+        return 1.0;
     }
     float3 extent = cell * float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
     // Cell (i,j,k) holds the answer for origin + (i+0.5)*cell, whose normalized coordinate is exactly
@@ -137,26 +113,14 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
         // D194: the top cell is a LOWER bound here, not a measurement, so the honest answer is the
         // unoccluded one rather than a bound dressed up as a reading. Erring bright above the grid is
         // bounded; erring dark is not.
-        return result;
+        return 1.0;
     }
     // Clamped HERE rather than left to the sampler. The descriptor happens to carry CLAMP_TO_EDGE today,
     // so the fetch alone would do the right thing on the remaining axes -- but that address mode is
     // chosen in RtComposite, and a correctness property of this function must not depend on a decision
     // made in another file.
     float3 uvw = saturate(g);
-    float4 v = volumeVisibilityGrid.SampleLevel(uvw, 0.0);
-    result.sun = v.r;
-    result.sky = v.g;
-    result.lightUv = result.sun > 1.0e-5
-            ? clamp(v.ba / result.sun, float2(0.0, 0.0), float2(1.0, 1.0))
-            : float2(0.5, 0.5);
-    return result;
-}
-
-/** Compatibility view for callers that need only the two visibility scalars. */
-public float2 sampleVolumeVisibility(float3 p) {
-    VolumeVisibilitySample result = sampleVolumeLightVisibility(p);
-    return float2(result.sun, result.sky);
+    return saturate(volumeVisibilityGrid.SampleLevel(uvw, 0.0).r);
 }
 
 /**
@@ -191,5 +155,5 @@ public static const float WATER_SKY_GATE_LIFT = 0.5;
  */
 public float waterSurfaceSkyOpenness(float3 p, float skyDepth) {
     float3 gateP = float3(p.x, p.y + skyDepth + WATER_SKY_GATE_LIFT, p.z);
-    return sampleVolumeVisibility(gateP).y;
+    return volumeSkyOpenness(gateP);
 }

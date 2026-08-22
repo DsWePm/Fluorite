@@ -448,7 +448,7 @@ struct AmbientAccum {
  * the new input is absent is a change whose effect on screen can only be the new input.
  */
 void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float tB,
-                 float3 scatterAlbedo, float3 sunSource, float3 skySource, float2 vis) {
+                 float3 scatterAlbedo, float3 sunSource, float3 skySource, float skyVis) {
     if (tB <= tA) {
         return;
     }
@@ -457,7 +457,11 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
         return;
     }
     float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
-    float3 source = sunSource * vis.x + skySource * vis.y;
+    // The sun arrives UNSHADOWED here and the caller is what makes that correct: sunSource is zero for
+    // every provider whose sun is traced with rays, and non-zero only for the analytic providers whose
+    // presets are authored unoccluded. The grid stopped answering about the sun when its channel was
+    // deleted, so there is no third case left for a visibility term to express.
+    float3 source = sunSource + skySource * skyVis;
     acc.inScatter += acc.transmittance * scatterAlbedo * source
             * (float3(1.0, 1.0, 1.0) - stepT);
     acc.transmittance *= stepT;
@@ -691,7 +695,6 @@ ScatterVertex sampleNoisyAmbientScatterVertex(float3 sigmaT, float3 albedo,
 void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
                                  float a, float b, int steps, bool gridRegion,
                                  float3 scatterAlbedo, float3 skySource,
-                                 float phaseG, float3 sunSigma, uint sunRays,
                                  bool sourceOn) {
     if (steps <= 0 || b <= a) {
         return;
@@ -707,24 +710,8 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
         if (sourceOn) {
-            VolumeVisibilitySample visSample = volumeVisibilityUnoccluded();
-            if (gridRegion) {
-                visSample = sampleVolumeLightVisibility(p);
-            }
-
-            float3 source = skySource * visSample.sky;
-            if (sunRays == 0u && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
-                float3 lightDir = gridRegion
-                        ? sampleSquareLightDirection(worldPush.lightDir.xyz,
-                                worldPush.celestial.xyz, worldPush.lightDir.w,
-                                visSample.lightUv)
-                        : worldPush.lightDir.xyz;
-                // Unlike the analytic constant-source adapter, a numerical step has a position. Use it:
-                // dense pockets then attenuate the sunlight that reaches deeper pockets instead of only
-                // modulating what the camera sees.
-                source += sampledAmbientSunSource(p, rd, lightDir, phaseG, sunSigma)
-                        * visSample.sun;
-            }
+            float skyOpen = gridRegion ? volumeSkyOpenness(p) : 1.0;
+            float3 source = skySource * skyOpen;
             acc.inScatter += acc.transmittance * scatterAlbedo * source
                     * (float3(1.0, 1.0, 1.0) - stepT);
         }
@@ -798,11 +785,11 @@ void integrateNoisyAmbient(inout SegmentIntegral seg, float3 ro, float3 rd,
     acc.transmittance = float3(1.0, 1.0, 1.0);
     float3 skySource = worldPush.mediumSkyRadiance.xyz;
     integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.x, layout.edge.y, layout.steps.x,
-            false, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
+            false, scatterAlbedo, skySource, sourceOn);
     integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.y, layout.edge.z, layout.steps.y,
-            true, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
+            true, scatterAlbedo, skySource, sourceOn);
     integrateNoisyAmbientRegion(acc, ro, rd, layout.edge.z, layout.edge.w, layout.steps.z,
-            false, scatterAlbedo, skySource, phaseG, sunSigma, sunRays, sourceOn);
+            false, scatterAlbedo, skySource, sourceOn);
     seg.transmittance *= acc.transmittance;
     seg.inScatter += acc.inScatter;
 
@@ -1475,7 +1462,7 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                 acc.inScatter = float3(0.0, 0.0, 0.0);
                 acc.transmittance = float3(1.0, 1.0, 1.0);
                 ambientStep(acc, ro, rd, window.x, tEnter, scatterAlbedo,
-                            gridSunSource, skySource, float2(1.0, 1.0));
+                            gridSunSource, skySource, 1.0);
                 // Guarded, not just relying on ambientStep's own zero-length early-out: the SAMPLE happens
                 // before that check, so a segment that never touches the grid would still pay six 3D
                 // texture fetches to be told six times that it is outside. Most bounce segments in an open
@@ -1491,23 +1478,12 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
                         // shape.
                         float3 midP = ro + rd * ((tA + tB) * 0.5);
-                        VolumeVisibilitySample visSample = sampleVolumeLightVisibility(midP);
-                        float3 stepSunSource = gridSunSource;
-                        if (sunRays == 0u
-                                && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
-                            float3 gridLightDir = sampleSquareLightDirection(
-                                    worldPush.lightDir.xyz, worldPush.celestial.xyz,
-                                    worldPush.lightDir.w, visSample.lightUv);
-                            stepSunSource = sampledAmbientSunSource(
-                                    ro, rd, gridLightDir, phaseG, sunSigma);
-                        }
                         ambientStep(acc, ro, rd, tA, tB, scatterAlbedo,
-                                    stepSunSource, skySource,
-                                    float2(visSample.sun, visSample.sky));
+                                    gridSunSource, skySource, volumeSkyOpenness(midP));
                     }
                 }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,
-                            gridSunSource, skySource, float2(1.0, 1.0));
+                            gridSunSource, skySource, 1.0);
                 // += rather than =: the enclosed branch above may already have deposited in-scatter.
                 // Unreachable today (every enclosed medium has ambient false), but a future composite
                 // profile that deposits both enclosed and ambient source would otherwise lose the first.

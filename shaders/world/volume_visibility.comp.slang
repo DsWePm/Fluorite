@@ -22,11 +22,32 @@
 // because its sample position moves with the segment. It is also view-independent, which means it can be
 // amortised over frames if it turns out to cost too much; a per-segment ray cannot be amortised at all.
 //
-// Reads the grid's placement and the sun from WorldPush rather than taking them as push constants, for
-// the same reason the froxel does: the consumers read the same field, and two copies of a grid origin
-// that disagree by one cell is a bug that looks like light leaking through walls.
+// AMORTISED IS NOW WHAT IT IS. This bake used to cast two rays per cell per frame and throw both answers
+// away at the end of the frame: one at the sun, one straight up. Both are gone.
+//
+//   The SUN ray is gone because the answer it produced lost, in game, to the one stochastic shadow ray
+//   the marched segments already cast (Rt.Volumetrics.SUN_SHADOW_RAYS, whose default has been 1 for some
+//   time). Trilinear filtering blends the eight nearest cells and every indoor sample is within one cell
+//   of a wall, so the lit peak is averaged down whatever the cell size — the grid could never carry a
+//   light shaft, and it cost 131k rays a frame to not carry one. Sun visibility is a high-frequency
+//   quantity and belongs on a ray.
+//
+//   The ZENITH ray is gone because the question it answered is not the question being asked. "Is there a
+//   roof" is binary, and a binary answer is right for a sealed room and wrong for everything with gaps in
+//   it: a tree canopy blocks the zenith, so every cell under every tree read zero and the fog beneath it
+//   went black. What the fog wants is the FRACTION of the sky that reaches this point, which is an
+//   integral over directions — and the reason one ray had to stand in for that integral was that the
+//   bake had no memory. It has memory now.
+//
+// So the ray budget is one per cell per frame, half what it was, and it draws a new direction each frame
+// and accumulates. The grid is world-anchored and its origin snaps in whole cells, so last frame's answer
+// for this world point is a plain integer offset away — the same reprojection rain_history.comp does,
+// for the same reason.
+//
+// Reads the grid's placement from WorldPush rather than taking it as a push constant, for the same reason
+// the froxel does: the consumers read the same field, and two copies of a grid origin that disagree by
+// one cell is a bug that looks like light leaking through walls.
 
-import atmosphere;
 import world_common;
 
 // 64 x 32 x 64 cells. The extent in blocks is the cell size times these, so the cell size (a runtime
@@ -39,12 +60,41 @@ public static const int VIS_GRID_W = 64;
 public static const int VIS_GRID_H = 32;
 public static const int VIS_GRID_D = 64;
 
+/**
+ * Samples one cell's running mean is allowed to stand on, and therefore how fast it forgets.
+ *
+ * <p>Past this the mean becomes an exponential moving average with weight 1/N, which is what makes the
+ * field respond to a block being placed or broken at all — a true running mean over every frame since
+ * the cell was born would eventually stop moving. At 60 fps, 64 is about a second to converge and about a
+ * second to forget, and the quantity is geometry rather than light, so a second is fast.
+ *
+ * <p>Stored as n/255 in an 8-bit channel, so every integer up to 255 round-trips exactly.
+ */
+static const float VIS_ACCUM_MAX = 64.0;
+
 struct VisPush {
     uint64_t worldPushAddr;
+    // Whole CELLS the grid origin moved since the frame this history was written, so cell (i,j,k) now
+    // holds what cell (i,j,k) + shift held then. The origin snaps to multiples of the cell size on the
+    // CPU, which is what makes this an integer at all — a fractional shift would need a filtered fetch,
+    // and a filtered fetch of an accumulator is a blur that compounds every frame.
+    int3 shift;
+    // 1 discards the history: first frame, a cell-size change, or a jump far enough that no cell of the
+    // old grid describes any cell of the new one.
+    uint reset;
 };
 [[vk::push_constant]] VisPush visPush;
 
+// Binding 0 is the one CONSUMERS read, and it is written every frame with the same record as the history
+// half below. The alternative was to let consumers sample the ping-pong directly, which would mean the
+// sampled descriptor had to alternate with the parity — and that descriptor is written once at pipeline
+// bind rather than per frame. So a stable binding is bought with one extra store per cell, which is much
+// the cheaper half of that trade.
 [[vk::binding(0, 0)]] RWTexture3D<float4> visibilityGrid;
+// The accumulator, ping-ponged. Read is last frame's, write is this frame's; they are different images,
+// so a thread reading a REPROJECTED neighbour cannot race the thread writing that neighbour.
+[[vk::binding(1, 0)]] RWTexture3D<float4> historyWrite;
+[[vk::binding(2, 0)]] RWTexture3D<float4> historyRead;
 // Set 1, its own ring, for the same reason the froxel's is: the TLAS handle changes almost every frame
 // and rewriting a set an in-flight command buffer may still read is the hazard AccelStructureSet exists
 // to guard against.
@@ -55,7 +105,7 @@ struct VisPush {
 // put a shadow over the whole near field.
 static const uint VIS_SHADOW_MASK = 0x01u;
 
-/** One shadow ray. Opaque-only and first-hit: this asks whether the light is blocked, not by what. */
+/** One shadow ray. Opaque-only and first-hit: this asks whether the sky is blocked, not by what. */
 bool occluded(float3 p, float3 dir) {
     RayDesc ray;
     ray.Origin = p;
@@ -70,6 +120,35 @@ bool occluded(float3 p, float3 dir) {
         // it and an implementation may return true once.
     }
     return q.CommittedStatus() != COMMITTED_NOTHING;
+}
+
+/**
+ * A direction over the upper hemisphere, COSINE-WEIGHTED ABOUT +Y, and the weighting is the decision.
+ *
+ * <p>Uniform over solid angle is what an isotropic in-scatter integral actually asks for: a point in a
+ * medium has no normal, so nothing privileges the zenith physically. It is not what this uses, and the
+ * reason is calibration rather than laziness. Under a uniform weight a point two blocks above an open
+ * plain reads about 0.9 rather than 1 — most of the sky near the horizon is distant terrain — so every
+ * outdoor scene would darken by that factor the moment this landed, and the density, albedo and tint
+ * already tuned against the published look would all be tuned against the wrong number.
+ *
+ * <p>Cosine weighting keeps the open sky at 1 and spends its samples where the question is: a canopy or a
+ * ceiling directly overhead is what removes sky from a point of air, and it is exactly what the retired
+ * zenith ray was reaching for with a single sample. So this is the same question, answered over the whole
+ * hemisphere instead of along one line, and it agrees with the published answer in the two cases that
+ * were already right — fully open reads 1, fully sealed reads 0. What changes is everything between,
+ * which is where the tree was.
+ */
+float3 cosineHemisphereUp(float u1, float u2) {
+    float r = sqrt(u1);
+    float phi = 6.28318530718 * u2;
+    return float3(r * cos(phi), sqrt(max(0.0, 1.0 - u1)), r * sin(phi));
+}
+
+/** A uniform float in [0,1) from a hashed state, taking the high bits pcg mixes best. */
+float rnd01(inout uint state) {
+    state = pcg(state);
+    return float(state >> 8u) * (1.0 / 16777216.0);
 }
 
 [shader("compute")]
@@ -87,36 +166,39 @@ void main(uint3 id: SV_DispatchThreadID) {
     // like an indexing bug.
     float3 p = wp.visGridOrigin.xyz + (float3(id) + float3(0.5, 0.5, 0.5)) * cell;
 
-    // Two rays for two quantities, and they are not interchangeable. The directional term needs the sun;
-    // the isotropic terms — the fog's own ambient and the atmosphere's multiple scattering — need to know
-    // whether there is a roof, which is a different question. Gating the ambient on the SUN would drain
-    // the sky out of fog standing in a hillside's shadow, when what removes ambient light is a ceiling.
-    //
-    // Straight up rather than a hemisphere for the second: the ambient really is an integral over
-    // directions, but the question a ceiling asks is binary and one ray settles it, where a hemisphere
-    // would cost as many rays per cell as the whole grid costs now.
-    // One point on the same finite square used by surface and volumetric NEE. Hash WORLD cells rather
-    // than dispatch ids so moving the camera/grid origin does not reshuffle every sample at once; frame
-    // variation turns the finite-emitter estimate into temporal noise instead of a coherent horizon pop.
+    // Hash WORLD cells rather than dispatch ids so moving the camera does not reshuffle every cell's
+    // sequence at once: a cell that survives a reprojection goes on drawing new directions instead of
+    // repeating the ones its own history already contains.
     int3 worldCell = int3(floor(p / max(cell, 1.0e-4)));
-    uint lightSeed = asuint(worldCell.x) * 1973u
+    uint seed = asuint(worldCell.x) * 1973u
             ^ asuint(worldCell.y) * 9277u
             ^ asuint(worldCell.z) * 26699u
             ^ wp.frameIndex * 2654435761u;
-    lightSeed = pcg(lightSeed);
-    float2 lightUv = float2(0.5, 0.5);
-    float sunVis = 0.0;
-    if (wp.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
-        SquareLightSample lightSample = sampleSquareLight(
-                wp.lightDir.xyz, wp.celestial.xyz, wp.lightDir.w, lightSeed);
-        lightUv = lightSample.uv;
-        float3 lightDir = lightSample.direction;
-        sunVis = celestialDirectionVisible(lightDir) && !occluded(p, lightDir) ? 1.0 : 0.0;
-    }
-    float skyVis = occluded(p, float3(0.0, 1.0, 0.0)) ? 0.0 : 1.0;
+    float u1 = rnd01(seed);
+    float u2 = rnd01(seed);
+    float sample01 = occluded(p, cosineHemisphereUp(u1, u2)) ? 0.0 : 1.0;
 
-    // BA preserve the VISIBILITY-WEIGHTED emitter coordinates. After trilinear filtering the consumer
-    // divides this first moment by filtered visibility, so blocked samples cannot pull the surviving
-    // light back toward the square's centre and lose the sunrise colour/visibility correlation.
-    visibilityGrid[int3(id)] = float4(sunVis, skyVis, lightUv * sunVis);
+    // Last frame's answer for THIS world point, which is a whole number of cells away.
+    float open = 0.0;
+    float n = 0.0;
+    if (visPush.reset == 0u) {
+        int3 src = int3(id) + visPush.shift;
+        if (all(src >= int3(0, 0, 0))
+                && src.x < VIS_GRID_W && src.y < VIS_GRID_H && src.z < VIS_GRID_D) {
+            float4 prior = historyRead[src];
+            open = prior.r;
+            n = round(prior.g * 255.0);
+        }
+    }
+    // A running mean while the cell is young, an exponential moving average once it is full. One
+    // expression covers both, because the cap is the only thing that differs between them.
+    n = min(n + 1.0, VIS_ACCUM_MAX);
+    open = open + (sample01 - open) / n;
+
+    // G carries the sample count so a reprojected cell knows how much weight its history has earned.
+    // Consumers read R alone; B and A are held at constants so a half-written record cannot be mistaken
+    // for data.
+    float4 record = float4(open, n * (1.0 / 255.0), 0.0, 1.0);
+    historyWrite[int3(id)] = record;
+    visibilityGrid[int3(id)] = record;
 }

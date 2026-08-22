@@ -239,6 +239,21 @@ public final class RtComposite {
      * and reads occluded, so it blocks the interpolation the way the block blocks the light. See
      * VISIBILITY_CELL_SIZE for the measurement that established it.
      */
+    /**
+     * The snapped grid origin as whole CELL indices, which is the same placement the Float4 below
+     * publishes and the form the bake's reprojection needs.
+     *
+     * <p>Absolute rather than terrain-relative on purpose: the terrain rebases, and a rebase must not
+     * read as the grid having moved. Two frames either side of one would otherwise produce a shift of a
+     * few hundred cells and throw away a history that had not actually gone anywhere.
+     */
+    static int visibilityGridOriginCell(double cam, float cell, int cells) {
+        if (cell <= 0f) {
+            return 0;
+        }
+        return (int) Math.floor(cam / cell) - cells / 2;
+    }
+
     private static Float4 visibilityGridOrigin(double camX, double camY, double camZ, RtTerrain terrain) {
         // GOVERNED BY ITS OWN KNOB, not by the fog toggle, and that is issue #41's fix.
         //
@@ -3274,7 +3289,12 @@ public final class RtComposite {
             // predicate that is wrong in the direction of the bug just fixed.
             if (FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
                     && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED) {
-                skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle, graphicsUse);
+                float visCell = FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value();
+                skyLuts.recordVisibilityBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle,
+                        visibilityGridOriginCell(camX, visCell, RtSky.VIS_GRID_W),
+                        visibilityGridOriginCell(camY, visCell, RtSky.VIS_GRID_H),
+                        visibilityGridOriginCell(camZ, visCell, RtSky.VIS_GRID_D),
+                        visCell, graphicsUse);
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);

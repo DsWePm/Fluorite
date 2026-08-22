@@ -914,39 +914,6 @@ static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there 
 // The volumetric visibility grid, at this pixel's own camera segment. See volumeVisibilityDebug.
 static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 18u;
 
-// An OSCILLOSCOPE for the shaft's edge: the sun visibility along the screen's centre scanline, plotted
-// twice — once as the grid reports it, once as a real ray reports it — so the blur the grid costs can be
-// READ OFF IN PIXELS instead of argued about.
-//
-//   white curve : ray query at the sample point. Ground truth. Binary, so its edges are vertical.
-//   red curve   : sampleVolumeVisibility at the same point. What the fog actually consumes.
-//   grey line   : the screen's vertical centre, so the crosshair's column is findable.
-//
-// Read it as: aim the crosshair at a shaft edge, then measure the HORIZONTAL distance between where the
-// white curve steps and where the red one finishes its ramp. That distance is the penumbra the grid
-// imposes, in pixels, and no A/B between two sessions is needed to see it — both curves are on screen at
-// once, from the same frame, at the same sample points.
-//
-// This exists because three rounds were spent asking "is it sharper now" of a picture. Sub-step count,
-// denoiser and grid resolution all blur a light shaft and all three look identical to the eye; only the
-// last one moves this plot.
-static const uint DEBUG_VIEW_VIS_PROFILE = 19u;
-// The value axis is INSET rather than filling the frame. The first version ran 0 to 1 edge to edge, and a
-// curve sitting at exactly 1 then had its centre on the top edge with half its thickness off-screen —
-// indistinguishable from a curve that was never drawn. That ambiguity cost a whole measurement round: the
-// truth curve read as "missing" when it was really pinned at "fully lit", which are opposite conclusions.
-static const float VIS_PROFILE_LO = 0.08;
-static const float VIS_PROFILE_HI = 0.92;
-// Truth is drawn THICK and the grid THIN on top, so agreement reads as a red core inside a white band and
-// cannot be confused with either curve being absent.
-static const float VIS_PROFILE_TRUE_LINE = 0.022;
-static const float VIS_PROFILE_GRID_LINE = 0.008;
-// Probe range in blocks. Walk toward or away from the shaft to sweep it; a knob would be a second thing
-// to keep in step with a view that exists to settle one question.
-static const float VIS_PROFILE_DIST = 4.0;
-// Full scale of the two DISTANCE curves, in blocks. 16 puts a room's walls in the readable middle of the
-// axis and pins anything that escaped at the top.
-static const float VIS_PROFILE_RANGE = 8.0;
 
 // The exact camera-prefix in-scatter consumed by the normal compositor, before any leaf radiance, RR,
 // exposure or tonemap. Unlike debug 8, this is the camera-to-first-interface segment rather than the
@@ -988,12 +955,16 @@ float3 froxelDebug(float2 uv) {
  */
 // The volumetric visibility grid (M13.2), sampled at the MIDPOINT of this pixel's camera segment.
 //
-//   R : sun visibility     G : sky openness     B : always zero, so the two never blend into a grey
+// FIVE NAMED BANDS, NOT A GRADIENT. This used to be two channels read as four colours; it now carries one
+// scalar, and a scalar drawn as a shade asks the reader to judge a number through a tonemap, which eyes
+// do not do. The honest report of a greyscale field is "grey, but I cannot tell which grey". Quantised,
+// the answer is a colour that can be named and spoken aloud.
 //
-// Read it as four colours rather than as a gradient. Yellow is open ground in daylight. Green is a point
-// the sun cannot reach but the sky can — a hillside's shadow, which must stay green, because draining the
-// ambient light out of a shadow is the specific error the two-ray split exists to prevent. Red is the
-// opposite and is rare: roofed, with a line to the sun through a gap. Black is indoors.
+//   blue : sealed, no sky at all     green : a little     yellow : about half
+//   orange : most of it              red : fully open
+//
+// Dimmed means the cell has not yet gathered its full sample count, so convergence is visible without a
+// sixth colour. Black is a point outside the grid or with no grid published.
 //
 // The midpoint of the camera segment rather than a fixed distance: a fixed distance would report the air
 // on the far side of a wall while the player stands in a room looking at that wall, which is the exact
@@ -1005,120 +976,12 @@ float3 froxelDebug(float2 uv) {
 float3 volumeVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
     CameraRay cam = cameraRay(dispatchIndex, dimensions);
     float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
-    float2 vis = sampleVolumeVisibility(p);
-    return float3(vis.x, vis.y, 0.0);
-}
-
-/**
- * The sun-visibility profile along the centre scanline, grid against ground truth. See
- * DEBUG_VIEW_VIS_PROFILE.
- *
- * Every pixel samples its own COLUMN at the centre ROW, so all rows of the output show the same profile
- * and the vertical axis is free to carry the value. One ray per pixel, which is a debug view's budget.
- */
-float3 visProfileDebug(uint2 dispatchIndex, uint2 dimensions, ConstPtr<PackedPathSegment> queue) {
-    uint centreRow = dimensions.y / 2u;
-    uint2 probePix = uint2(dispatchIndex.x, centreRow);
-    CameraRay cam = cameraRay(probePix, dimensions);
-    // The wall's distance, cast HERE rather than read from the queue's terminal record.
-    //
-    // The queue was the first version and its reading could not be reconciled with the scene: it put the
-    // wall past this view's whole scale in every column, inside a room whose walls are a few blocks away.
-    // Rather than argue about what `ro` means for a terminal segment — a split record, an escaped ray, a
-    // dielectric interface all put something different there — this measures the one thing it needs. Same
-    // reasoning that already replaced visibilityMasked with a RayQuery in this function: a view that
-    // depends on another stage's convention is testing that convention, not the thing it was built for.
-    RayDesc wallRay;
-    wallRay.Origin = cam.origin;
-    wallRay.Direction = cam.dir;
-    wallRay.TMin = 0.0;
-    wallRay.TMax = 4096.0;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> wq;
-    wq.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
-                      CULL_SECONDARY_NO_SELF, wallRay);
-    while (wq.Proceed()) {
-    }
-    float wallDist = wq.CommittedStatus() != COMMITTED_NOTHING
-            ? wq.CommittedRayT()
-            : VIS_PROFILE_RANGE;
-
-    // A FIXED distance along each column's ray, not the camera segment's midpoint.
-    //
-    // The midpoint was the first version and it is the wrong probe for this question. A shaft is a
-    // structure in space; sampling it at a depth that changes per column — a wall three blocks away here,
-    // the open sky through a window there — scrambles a spatial profile into a depth profile, and the
-    // result cannot be read as either. A constant range gives a clean slice.
-    //
-    // Clamped just short of the hit so the probe never lands inside or behind geometry, which would
-    // report the visibility of a point no ray of this pixel ever travelled through.
-    float probeDist = min(VIS_PROFILE_DIST, max(wallDist * 0.9, 0.05));
-    float3 p = cam.origin + cam.dir * probeDist;
-
-    float gridVis = sampleVolumeVisibility(p).x;
-
-    // Ground truth at the SAME point, cast with a RayQuery rather than through visibilityMasked, so this
-    // is CHARACTER FOR CHARACTER what volume_visibility.comp does: same flags, same mask, same tmin. A
-    // debug view that asks the question a different way cannot confirm or refute the bake, and this view
-    // exists because the bake's two channels disagree in a way nothing in the code explains — a sealed
-    // room reads "roof overhead" on the zenith ray and "sun reachable" on the sun ray.
-    //
-    // It also reports the DISTANCE, which the binary answer cannot: "the sun ray escaped" and "the sun
-    // ray was never traced" produce the same 1, and telling them apart is the whole question.
-    RayDesc probe;
-    probe.Origin = p;
-    probe.Direction = worldPush.lightDir.xyz;
-    probe.TMin = 0.05;
-    probe.TMax = 4096.0;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
-    q.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
-                     CULL_SECONDARY_NO_SELF, probe);
-    while (q.Proceed()) {
-    }
-    bool hit = q.CommittedStatus() != COMMITTED_NOTHING;
-    float trueVis = hit ? 0.0 : 1.0;
-    float sunHitDist = hit ? q.CommittedRayT() : VIS_PROFILE_RANGE;
-
-    // Value 0 at the bottom of the frame, 1 at the top, inset so both ends are fully drawn. No vertical
-    // flip: this is a plot, its axis is its own, and copying a flip from a view whose axis meant something
-    // else is a mistake already made three times in this file.
-    float v = (float(dispatchIndex.y) + 0.5) / float(dimensions.y);
-    float trueY = lerp(VIS_PROFILE_LO, VIS_PROFILE_HI, trueVis);
-    float gridY = lerp(VIS_PROFILE_LO, VIS_PROFILE_HI, gridVis);
-
-    float3 col = float3(0.0, 0.0, 0.0);
-    // Gridlines first, so a curve always wins over them: 0, half, 1.
-    if (abs(v - VIS_PROFILE_LO) < 0.002 || abs(v - VIS_PROFILE_HI) < 0.002
-            || abs(v - (VIS_PROFILE_LO + VIS_PROFILE_HI) * 0.5) < 0.0015) {
-        col = float3(0.10, 0.10, 0.14);
-    }
-    // The two DISTANCE curves, under the visibility ones: where the wall is, and how far the sun ray got.
-    // Both scaled by VIS_PROFILE_RANGE, so a curve at the top means "further than that, or escaped".
-    float wallY = lerp(VIS_PROFILE_LO, VIS_PROFILE_HI,
-                       saturate(wallDist / VIS_PROFILE_RANGE));
-    float sunDistY = lerp(VIS_PROFILE_LO, VIS_PROFILE_HI,
-                          saturate(sunHitDist / VIS_PROFILE_RANGE));
-    float probeY = lerp(VIS_PROFILE_LO, VIS_PROFILE_HI, VIS_PROFILE_DIST / VIS_PROFILE_RANGE);
-    if (abs(v - probeY) < 0.002) {
-        col = float3(0.35, 0.28, 0.0);  // dull yellow: where the probe sits on the distance scale
-    }
-    if (abs(v - sunDistY) < VIS_PROFILE_GRID_LINE) {
-        col = float3(0.1, 0.8, 0.9);    // cyan: how far the sun ray travelled before hitting anything
-    }
-    if (abs(v - trueY) < VIS_PROFILE_TRUE_LINE) {
-        col = float3(1.0, 1.0, 1.0);    // ground truth, thick
-    }
-    if (abs(v - gridY) < VIS_PROFILE_GRID_LINE) {
-        col = float3(1.0, 0.1, 0.1);    // the grid, thin
-    }
-    // The wall LAST, so nothing can hide it. Its absence under the truth band was read as "not drawn"
-    // once already, and that reading sent a whole round chasing the wrong thing.
-    if (abs(v - wallY) < VIS_PROFILE_GRID_LINE) {
-        col = float3(0.9, 0.8, 0.1);    // yellow: where the camera ray hits geometry
-    }
-    if (dispatchIndex.x == dimensions.x / 2u) {
-        col = max(col, float3(0.30, 0.30, 0.30)); // the crosshair's column
-    }
-    return col;
+    int band = clamp(int(volumeSkyOpenness(p) * 5.0), 0, 4);
+    return band == 0 ? float3(0.0, 0.0, 0.9)
+         : band == 1 ? float3(0.0, 0.7, 0.2)
+         : band == 2 ? float3(0.9, 0.9, 0.0)
+         : band == 3 ? float3(1.0, 0.45, 0.0)
+                     : float3(0.9, 0.0, 0.0);
 }
 
 float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
@@ -1365,8 +1228,6 @@ void main() {
                     // camera segment's far end. Taken from the queue rather than re-traced: a debug view
                     // that traces its own ray is testing its own ray.
                     ? volumeVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
-                    : pc.debugView == DEBUG_VIEW_VIS_PROFILE
-                    ? visProfileDebug(dispatchIndex, dimensions, queue)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM
                     ? waterSimDebug(screenUv)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM_REACH

@@ -1947,11 +1947,14 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(
                     Component.translatable("fluorite.options.rt.fogSunShadowRays.tooltip")),
             (caption, v) -> Options.genericValueLabel(caption,
-                    Component.translatable(v == 0 ? "fluorite.options.rt.fogSunShadowRays.grid"
-                                                  : "fluorite.options.rt.fogSunShadowRays.rays",
+                    Component.translatable("fluorite.options.rt.fogSunShadowRays.rays",
                                            String.valueOf(v))),
-            new OptionInstance.IntRange(0, 4),
-            Math.clamp(setting.value(), 0, 4),
+            // ONE IS THE FLOOR NOW, and the grid option that used to sit at zero is gone. It lost in
+            // game on both axes at once: slower than a single stochastic ray AND a worse picture, which
+            // is the only combination that makes deleting a published position the right call rather
+            // than a preference. A config still holding 0 clamps up to 1.
+            new OptionInstance.IntRange(1, 4),
+            Math.clamp(setting.value(), 1, 4),
             setting::set);
     }
 
@@ -2284,13 +2287,15 @@ public final class RtVideoOptions {
             // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
             // between hits rather than the hits themselves. See world.rgen's volumeDebug.
             //
-            // 12-16, 25 AND 28 ARE GONE AND THEIR NUMBERS ARE NOT REUSED: the four atmosphere tables,
-            // the celestial dye and the fog noise field, retired once the atmosphere stopped changing,
-            // and the volumetric-ReSTIR cell view, retired with the hash grid it described. Every note
-            // that names a view by number stays true this way, and the shader paints magenta for a
-            // number no arm claims rather than falling through to a plausible picture.
+            // 12-16, 19, 25 AND 28 ARE GONE AND THEIR NUMBERS ARE NOT REUSED: the four atmosphere
+            // tables, the celestial dye and the fog noise field, retired once the atmosphere stopped
+            // changing; the grid-against-ray sun profile, retired with the grid's sun channel it was
+            // built to measure; and the volumetric-ReSTIR cell view, retired with the hash grid it
+            // described. Every note that names a view by number stays true this way, and the shader
+            // paints magenta for a number no arm claims rather than falling through to a plausible
+            // picture.
             new OptionInstance.Enum<>(
-                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 19, 20, 21, 22, 23,
+                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 20, 21, 22, 23,
                             24, 26, 27),
                     Codec.INT),
             Math.clamp(setting.value(), 0, 27),

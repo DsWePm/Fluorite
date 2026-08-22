@@ -1299,30 +1299,32 @@ public final class FluoriteConfig {
                     intValue("fluorite.rt.fog.visibilityMaxSteps", "volumetrics.visibility-max-steps", 6);
 
             /**
-             * Jittered shadow rays the fog's SUN term gets per marched segment. 0 keeps it on the
-             * visibility grid.
+             * Jittered shadow rays the fog's SUN term gets per marched segment. At least one.
              *
-             * <p>The grid cannot carry a light shaft and this is measured, not assumed: debug view 19
-             * plots sun visibility along a scanline from the grid and from a ray at the same points, and
-             * indoors the grid reaches 0 in shadow but only 0.5 where the truth is 1, with a ramp where
-             * the truth is a step. Trilinear blends the eight nearest cells and every indoor sample is
-             * within one cell of a wall, so the lit peak is averaged down whatever the cell size.
+             * <p><b>THE GRID POSITION AT ZERO IS GONE.</b> It kept the sun term on the cached visibility
+             * grid, and it lost in game on both axes at once -- slower than a single stochastic ray and a
+             * worse picture. Slower is the surprising half and it is structural: answering from the grid
+             * meant the bake had to cast a sun ray for all 64x32x64 cells every frame, 131k of them,
+             * whether or not any fog was near enough to read one. Worse was already understood and
+             * measured: trilinear filtering blends the eight nearest cells and every indoor sample is
+             * within one cell of a wall, so the lit peak is averaged down whatever the cell size, and the
+             * grid could not carry a light shaft at any resolution. Retired debug view 19 plotted exactly
+             * that -- grid against ray along one scanline -- and it went with the channel it measured.
              *
-             * <p>The SKY term stays on the grid regardless. It is genuinely low frequency — a room is
-             * dark, a hillside is not — so it needs no edge, and it is 0.072 ms for the whole field.
-             * Splitting the two by their frequency content is the point.
+             * <p>The SKY term stays on the grid, and that split by frequency content is the point. Sky
+             * openness is genuinely low frequency -- a room is dark, a hillside is not -- and it is now
+             * the grid's only product.
              *
              * <p><b>Default 1, and both halves of that are measured.</b> Cost, from flipping this knob at
              * a fixed camera position inside one session: 2 rays cost 2.0 +/- 0.2 ms of
              * {@code gpu.traceIndirect} (17.5 against 15.5, +13%), and the reading is trustworthy because
              * the third plateau returned to the first within 0.2 ms. Benefit: 1 and 2 are hard to tell
-             * apart, and both are visibly better than the grid. So 1 buys the whole visible difference for
-             * about half the cost.
+             * apart. So 1 buys the whole visible difference for about half the cost.
              *
              * <p>One sample per pixel per frame is not a compromise here, it is the regime this kind of
              * renderer is built for: the estimator is unbiased and DLSS-RR already accumulates temporally,
              * which is exactly how production path tracers shade volumetrics. The falsification test for
-             * that claim is in sunInScatterStochastic and it has been run — with the denoiser off the
+             * that claim is in sunInScatterStochastic and it has been run -- with the denoiser off the
              * result is noise, not the blocky bias M9 measured.
              */
             public static final IntSetting SUN_SHADOW_RAYS =
@@ -1788,8 +1790,16 @@ public final class FluoriteConfig {
                     bool("fluorite.rt.fog.volumeEmitterNee", "volumetrics.emitter-nee", false);
 
             /** Bits 23-25 of worldPush.flags. */
+            /**
+             * Bits 23-25 of worldPush.flags. AT LEAST ONE: the grid position this used to allow at zero
+             * is deleted, so a stored 0 -- from a config written before that, or by hand -- clamps up
+             * rather than selecting a path that no longer exists.
+             *
+             * <p>Zero still reaches the shader for providers with no celestial at all, which read it
+             * from skyProvider rather than from here.
+             */
             public static int sunShadowRays() {
-                return Math.clamp(SUN_SHADOW_RAYS.value(), 0, 7);
+                return Math.clamp(SUN_SHADOW_RAYS.value(), 1, 7);
             }
 
             /** Bits 18-22 of worldPush.flags. Clamped so a bad config cannot unroll a raygen loop. */
