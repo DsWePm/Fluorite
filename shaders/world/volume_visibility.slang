@@ -341,10 +341,21 @@ public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
             // anyone to tell a correct reading from a failure by shade is not a diagnostic.
             //
             // Now the data channels move together and nothing in the data can land on a fault colour.
-            float g = 0.15 + 0.65 * volumeCellOpenness(c);
-            return c.stats.x >= VOLUME_M_MATURE
-                    ? float3(g, g, g)
-                    : float3(0.0, g, 0.0);
+            // FIVE NAMED BANDS, NOT A GRADIENT. Greyscale asked the reader to judge a scalar by shade,
+            // through a tonemap, which is not something eyes do -- the honest report was "grey, but I
+            // cannot tell which grey". Quantising it means the answer is a colour you can name.
+            //
+            // None of the five is magenta, cyan or white, which are the only fault colours left, so a
+            // reading can never be confused with a failure.
+            float open01 = volumeCellOpenness(c);
+            int band = clamp(int(open01 * 5.0), 0, 4);
+            float3 ramp = band == 0 ? float3(0.0, 0.0, 0.9)   // blue   : sealed, no sky at all
+                        : band == 1 ? float3(0.0, 0.7, 0.2)   // green  : a little
+                        : band == 2 ? float3(0.9, 0.9, 0.0)   // yellow : about half
+                        : band == 3 ? float3(1.0, 0.45, 0.0)  // orange : most of it
+                                    : float3(0.9, 0.0, 0.0);  // red    : fully open
+            // Still filling: same hue, dimmed, so convergence is visible without a sixth colour.
+            return c.stats.x >= VOLUME_M_MATURE ? ramp : ramp * 0.35;
         }
         if (volumeGridFind(grid, slots, writeBase, coord, level,
                            worldPush.frameIndex, worldPush.volumeGridEvictionFrames) >= 0) {

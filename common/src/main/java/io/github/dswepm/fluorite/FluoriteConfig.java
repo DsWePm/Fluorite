@@ -1107,7 +1107,7 @@ public final class FluoriteConfig {
 
             /** Scales the preset's density. 1 is the preset as authored. */
             public static final FloatSetting DENSITY_SCALE =
-                    clampedFloat("fluorite.rt.fog.densityScale", "volumetrics.density-scale", 1.0f, 0.0f, 10.0f);
+                    clampedFloat("fluorite.rt.fog.densityScale", "volumetrics.density-scale", 1.0f, 0.0f, 64.0f);
 
             /**
              * Multiplies the preset's single-scattering albedo. The external keys retain their legacy

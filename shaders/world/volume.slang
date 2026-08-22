@@ -220,7 +220,17 @@ void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
     //
     // The region is decided the same way the READ decides it, by one shared predicate, so a cell is
     // never written under one switch and looked for under the other.
-    float3 skyRadiance = worldPush.mediumSkyRadiance.xyz;
+    // THE TARGET RANKS DIRECTIONS BY TRANSMITTANCE ALONE, and it must. mediumSkyRadiance is (0,0,0)
+    // for any dimension whose sky comes from the atmosphere model rather than an authored constant --
+    // the overworld -- so multiplying by it drove phat to zero for every candidate and the reservoir
+    // never selected anything. The directional half of D198 has been dead since it was written.
+    //
+    // It is also the right target independently of that bug: the ambient sky source is the same for
+    // every direction in a cell, so it is a constant factor that cannot change the ranking, and the
+    // phase term genuinely varies per direction but the cell serves many view directions at once and
+    // has no single one to evaluate it against. What is left, and what actually distinguishes one
+    // direction from another here, is how much of the sky reaches this point along it.
+    float3 skyRadiance = float3(1.0, 1.0, 1.0);
     if ((worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u || worldPush.volumeGridSlots == 0u
             || worldPush.volumeGridAddr == 0) {
         gVolumeDepositOutcome = 0;
