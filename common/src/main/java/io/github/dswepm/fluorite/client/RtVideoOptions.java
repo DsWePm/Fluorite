@@ -240,6 +240,7 @@ public final class RtVideoOptions {
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
                         bool("fluorite.options.rt.volumeRestir",
                                 FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR),
+                        volumeRestirEviction(), volumeRestirLodPixels(), volumeRestirCandidates(),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",
@@ -1515,6 +1516,49 @@ public final class RtVideoOptions {
             (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
             new OptionInstance.IntRange(1, 31),
             Math.clamp(setting.value(), 1, 31),
+            setting::set);
+    }
+
+    /**
+     * M25's three tuning values, in the settings screen because they are what an experiment moves.
+     *
+     * <p>Eviction is the one to reach for first when fast movement leaves residue: a longer window stops
+     * cells being rebuilt every time the camera returns, at the cost of stale samples lingering after the
+     * light changes.
+     */
+    private static OptionInstance<Integer> volumeRestirEviction() {
+        IntSetting setting = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_EVICTION_FRAMES;
+        return new OptionInstance<>(
+            "fluorite.options.rt.volumeRestirEviction",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.volumeRestirEviction.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(1, 600),
+            Math.clamp(setting.value(), 1, 600),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> volumeRestirLodPixels() {
+        IntSetting setting = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_LOD_PIXELS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.volumeRestirLodPixels",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.volumeRestirLodPixels.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(16, 256),
+            Math.clamp(setting.value(), 16, 256),
+            setting::set);
+    }
+
+    private static OptionInstance<Integer> volumeRestirCandidates() {
+        IntSetting setting = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_CANDIDATES;
+        return new OptionInstance<>(
+            "fluorite.options.rt.volumeRestirCandidates",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.volumeRestirCandidates.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(1, 32),
+            Math.clamp(setting.value(), 1, 32),
             setting::set);
     }
 
