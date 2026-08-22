@@ -333,7 +333,9 @@ public final class RtSky {
             Bake froxelBake = createBake(ctx, stack, "sky_froxel.comp.spv", "sky froxel",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, FROXEL_PUSH_BYTES,
+                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            // The shared sky-openness grid. Written below, once the image exists.
+                            VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}, FROXEL_PUSH_BYTES,
                     froxelTlas.layout);
 
             // LINEAR + CLAMP_TO_EDGE. The multi-scatter bake reads the transmittance table off the
@@ -604,6 +606,10 @@ public final class RtSky {
                 writeStorageImage(vk, stack, set, 1, sky.visibilityHistory[target].view);
                 writeStorageImage(vk, stack, set, 2, sky.visibilityHistory[1 - target].view);
             }
+            // The froxel reads the same openness the marched segments do, with the same LINEAR +
+            // CLAMP_TO_EDGE sampler. One field, one definition, both consumers -- which is what stops the
+            // near and far halves of the fog disagreeing about a quantity along a boundary.
+            writeSampledImage(vk, stack, froxelBake.descriptorSet(), 3, sky.visibilityGrid.view, sampler);
             // One fixed 512² R32 depth image. Low quality dispatches and samples a 256² prefix, so a live
             // option change never rewrites a descriptor still referenced by an in-flight frame.
             sky.rainExposureDepth = ctx.createStorageImage(RAIN_EXPOSURE_MAX, RAIN_EXPOSURE_MAX,
