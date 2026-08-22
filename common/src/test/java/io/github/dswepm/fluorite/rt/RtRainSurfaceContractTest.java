@@ -127,11 +127,12 @@ final class RtRainSurfaceContractTest {
         assertTrue(primary.contains("rainSurfaceDebug"));
         assertTrue(primary.contains("pc.debugView == DEBUG_VIEW_RAIN_PUDDLE"));
         assertTrue(primary.contains("rainPuddleDebug"));
-        // 25 retired with the fog noise view; 26/27 keep their numbers rather than sliding down.
-        // What this guards is that 26 and 27 stay where they are, NOT that the list stops growing, so
-        // M25 extending the ceiling to 28 is the allowed kind of change and reoccupying 25 is not.
+        // 25 retired with the fog noise view and 28 with M25's cell view; 26/27 keep their numbers
+        // rather than sliding down. What this guards is that 26 and 27 stay where they are, NOT that the
+        // list stops growing or shrinking at the top — the ceiling moved to 28 and back to 27 as that
+        // view arrived and was retired. Reoccupying 25 or 28 is what is forbidden.
         assertTrue(options.contains("24, 26, 27"));
-        assertTrue(options.contains("Math.clamp(setting.value(), 0, 28)"));
+        assertTrue(options.contains("Math.clamp(setting.value(), 0, 27)"));
     }
 
     @Test

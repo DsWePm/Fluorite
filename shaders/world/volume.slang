@@ -21,7 +21,6 @@ import atmosphere_lut;
 import environment;
 import volume_source;
 import volume_visibility;
-import volume_hash;
 import world_common;
 import world_core;
 
@@ -182,113 +181,6 @@ public VisibilityResult visibilityThroughAmbient(float3 mediumExtinction, uint m
     }
     return result;
 }
-
-/**
- * Fill one cell: draw candidates over the upper hemisphere, measure each with a shadow ray, resample.
- *
- * <p>ONE THREAD PER CELL PER FRAME, ELECTED WITH AN ATOMIC. The first wiring used a plain read of the
- * stamp followed by a write, and that enforced nothing: every thread landing in a cell reads the stamp
- * before any write lands, so all of them passed the check, all deposited, and all wrote. The rays became
- * per-sample -- voiding D198's economics entirely -- and the concurrent stores tore the 64-byte record,
- * which is what the screen was showing. A check-then-act is not a rule.
- *
- * <p>With the election in place the ray really is per cell per frame: 436k live cells against 5.8-11.5M
- * volume samples means 13-26 samples share every ray drawn here, which is the whole reason a shadow ray
- * in the target is affordable.
- *
- * <p>Writes THIS parity and seeds from the OTHER, so nothing reads a half being written.
- */
-/**
- * What the DEPOSIT did, for debug view 28. Every diagnostic so far has watched the read; the read can
- * only ever report that a cell is absent, never why, and "absent" has been the whole mystery indoors.
- *
- *   -1 = never called for this pixel
- *    0 = switch off, or no table
- *    1 = probe window full, nothing claimed
- *    2 = election lost, another sample owns this cell this frame
- *    3 = deposited
- */
-static int gVolumeDepositOutcome = -1;
-public int volumeDepositOutcome() { return gVolumeDepositOutcome; }
-
-void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
-    // THE CELL'S CONTENT MUST NOT DEPEND ON WHICH THREAD WON THE ELECTION, and the winner is arbitrary
-    // and different every frame. Taking the caller's local sky source made the stored radiance jump
-    // frame to frame -- flicker, from the same root as the seed, which was fixed one round earlier
-    // without following the reasoning through to the data. The frame's medium sky radiance is the same
-    // value for every thread, which is what makes the cell stable.
-    //
-    // The region is decided the same way the READ decides it, by one shared predicate, so a cell is
-    // never written under one switch and looked for under the other.
-    // THE TARGET RANKS DIRECTIONS BY TRANSMITTANCE ALONE, and it must. mediumSkyRadiance is (0,0,0)
-    // for any dimension whose sky comes from the atmosphere model rather than an authored constant --
-    // the overworld -- so multiplying by it drove phat to zero for every candidate and the reservoir
-    // never selected anything. The directional half of D198 has been dead since it was written.
-    //
-    // It is also the right target independently of that bug: the ambient sky source is the same for
-    // every direction in a cell, so it is a constant factor that cannot change the ranking, and the
-    // phase term genuinely varies per direction but the cell serves many view directions at once and
-    // has no single one to evaluate it against. What is left, and what actually distinguishes one
-    // direction from another here, is how much of the sky reaches this point along it.
-    float3 skyRadiance = float3(1.0, 1.0, 1.0);
-    if ((worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u || worldPush.volumeGridSlots == 0u
-            || worldPush.volumeGridAddr == 0) {
-        gVolumeDepositOutcome = 0;
-        return;
-    }
-    uint slots = worldPush.volumeGridSlots;
-    uint frame = worldPush.frameIndex;
-    float dist = length(p - worldPush.camOffset);
-    int level = volumeCellLevel(dist, worldPush.volumeGridLodK);
-    int3 coord = volumeCellCoord(p, volumeCellEdge(level));
-    DevicePtr<VolumeCell> grid = DevicePtr<VolumeCell>(worldPush.volumeGridAddr);
-    ConstPtr<VolumeCell> gridRead = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
-
-    uint writeBase = volumeHalfBase(slots, frame);
-    int slot = volumeGridClaim(gridRead, slots, writeBase, coord, level, frame,
-                               worldPush.volumeGridEvictionFrames);
-    if (slot < 0) {
-        gVolumeDepositOutcome = 1; // probe window full of live strangers
-        return; // contributing nothing beats evicting one
-    }
-    // THE ELECTION. Exactly one thread sees a stamp other than this frame and proceeds; every other
-    // thread that lands in this cell this frame loses the exchange and returns without tracing anything.
-    uint previous;
-    InterlockedExchange(grid[slot].ident.y, frame, previous);
-    if (previous == frame) {
-        gVolumeDepositOutcome = 2;
-        return;
-    }
-
-    // Continue the cell from the OTHER half, which nothing is writing this frame. A cell with no history
-    // there starts empty rather than inheriting whatever the slot held.
-    uint readBase = volumeHalfBase(slots, frame + 1u);
-    int prior = volumeGridFind(gridRead, slots, readBase, coord, level, frame,
-                               worldPush.volumeGridEvictionFrames);
-    VolumeCell c = prior >= 0 ? gridRead[prior] : volumeCellEmpty();
-
-    // Seeded from the CELL, not the pixel: which thread won the election is arbitrary, so a pixel-derived
-    // stream would make the cell's content depend on that arbitrary choice and shimmer between frames.
-    uint seed = volumeCellKey(coord, level) ^ (frame * 2654435761u);
-    uint candidates = max(worldPush.volumeGridCandidates, 1u);
-    for (uint i = 0u; i < candidates; ++i) {
-        // Uniform over the UPPER hemisphere. The lower half has no sky to find, and folding rather than
-        // drawing over the whole sphere keeps the pdf honest at half the candidates.
-        float u1 = rndf(seed);
-        float u2 = rndf(seed);
-        float r = sqrt(max(0.0, 1.0 - u1 * u1));
-        float phi = 6.28318530718 * u2;
-        float3 dir = float3(r * cos(phi), u1, r * sin(phi));
-        VisibilityResult shadow = visibilityThroughAmbient(mediumExtinction, mediumFlags,
-                                                           p, dir, RAY_FAR);
-        volumeCellUpdate(c, dir, skyRadiance * shadow.transmittance,
-                         luminance(shadow.transmittance), 0.15915494309, seed);
-    }
-    volumeCellClaimStamp(c, coord, level, frame);
-    grid[slot] = c;
-    gVolumeDepositOutcome = 3;
-}
-
 
 /** What a segment did to the path: what survives it, and what it added. */
 public struct SegmentIntegral {
@@ -819,13 +711,8 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, float3 ro, float3 rd,
             if (gridRegion) {
                 visSample = sampleVolumeLightVisibility(p);
             }
-            volumeRestirDeposit(p, worldPush.fogExtinction.xyz, MEDIUM_FLAG_AMBIENT);
 
-            // D199: with a live cell the sky term is directional, so the phase belongs here -- this is
-            // the only place that knows rd. Without one this is verbatim the shipped line.
-            float3 source = visSample.skyDirValid
-                    ? visSample.skyRadiance * enclosedPhase(dot(rd, visSample.skyDir), phaseG, scatterAlbedo)
-                    : skySource * visSample.sky;
+            float3 source = skySource * visSample.sky;
             if (sunRays == 0u && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
                 float3 lightDir = gridRegion
                         ? sampleSquareLightDirection(worldPush.lightDir.xyz,
@@ -1605,7 +1492,6 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // shape.
                         float3 midP = ro + rd * ((tA + tB) * 0.5);
                         VolumeVisibilitySample visSample = sampleVolumeLightVisibility(midP);
-                        volumeRestirDeposit(midP, worldPush.fogExtinction.xyz, MEDIUM_FLAG_AMBIENT);
                         float3 stepSunSource = gridSunSource;
                         if (sunRays == 0u
                                 && worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE) {
@@ -1615,19 +1501,9 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                             stepSunSource = sampledAmbientSunSource(
                                     ro, rd, gridLightDir, phaseG, sunSigma);
                         }
-                        // Folded into the source rather than pushed through ambientStep's signature:
-                        // the scalar it takes is an OPENNESS, and a directional estimate is not one. Sky
-                        // openness then reads 1 because the radiance already carries the visibility.
-                        float3 stepSkySource = skySource;
-                        float stepSkyVis = visSample.sky;
-                        if (visSample.skyDirValid) {
-                            stepSkySource = visSample.skyRadiance
-                                    * enclosedPhase(dot(rd, visSample.skyDir), phaseG, scatterAlbedo);
-                            stepSkyVis = 1.0;
-                        }
                         ambientStep(acc, ro, rd, tA, tB, scatterAlbedo,
-                                    stepSunSource, stepSkySource,
-                                    float2(visSample.sun, stepSkyVis));
+                                    stepSunSource, skySource,
+                                    float2(visSample.sun, visSample.sky));
                     }
                 }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,

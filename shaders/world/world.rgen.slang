@@ -27,7 +27,6 @@ import medium;
 import volume;
 import volume_source; // debug 25 shares D66's exact resolution and multiplier helpers
 import volume_visibility; // debug view 18 reads the grid directly
-import volume_hash;        // M25 addressing. 5.3 KB of unreachable SPIR-V until step (d) calls it
 import cloud;
 import segment;
 import water;
@@ -909,10 +908,6 @@ static const float CAUSTIC_DEVIATION_GAIN = 20.0;
 // Expected at the far slice: a faint wash that follows the fog's height profile, brighter toward the sun,
 // with the transmittance darkest where the sightline is longest and lowest. Expected at the NEAR slices:
 // almost nothing, which is the point of distributing the depth axis exponentially (see froxelSliceDepth).
-// M25: the volumetric ReSTIR cell a pixel lands in. A NEW number, not one of the retired ones. 12-16 and
-// 25 are gone and stay gone -- the point of not reusing them is that every note naming a view by number
-// stays true, and reoccupying 12 would have falsified exactly the notes that retirement protected.
-static const uint DEBUG_VIEW_VOLUME_RESTIR = 28u;
 static const uint DEBUG_VIEW_FROXEL = 17u;
 static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
 
@@ -1308,10 +1303,6 @@ void main() {
     // Read outside the probe guard: line ~1582 splits the frame on it, and a release build
     // must still resolve it to false rather than fail to compile.
     bool compositePrefixDebug = pc.debugView == DEBUG_VIEW_COMPOSITE_PREFIX_AB;
-    // Same reason as the line above: 28 describes what the SHADING looked up, so it cannot be painted by
-    // the chain that runs before the shading. Three earlier versions of this view asked their own
-    // question in their own place and disagreed with the shading every time.
-    bool volumeRestirDebug = pc.debugView == DEBUG_VIEW_VOLUME_RESTIR;
 #ifdef FLUORITE_PROBES
     // ---- DIAGNOSTIC SURFACE. Present only in a probe build; -Pfluorite.probes=false keeps every line
     // between here and the matching #endif out of the SPIR-V entirely.
@@ -1320,7 +1311,7 @@ void main() {
     // takes still costs the registers its live range reserves and the instruction cache its body fills,
     // and occupancy is what pass B is short of. The debug chain below is the largest such body in the
     // renderer.
-    if (pc.debugView != 0u && !compositePrefixDebug && !volumeRestirDebug) {
+    if (pc.debugView != 0u && !compositePrefixDebug) {
         // Pass A owns both rain diagnostics -- the direct-hit material/film/exposure view and the puddle
         // storage/basin/result view -- so this stage must not write over either.
         //
@@ -1435,27 +1426,6 @@ void main() {
     }
     float3 leafRadiance = prefix.transmittance * (frameRadiance / float(spp));
     float3 compositeRadiance = prefix.inScatter + leafRadiance;
-    if (volumeRestirDebug) {
-        // The cells along this ray. The shading-recorded probe describes only the MARCHED read, which is
-        // a minority of the screen now that the froxel fills the grid, so it painted "never ran" nearly
-        // everywhere and reported nothing about the half doing most of the work.
-        CameraRay debugCam = cameraRay(dispatchIndex, dimensions);
-        float3 found = volumeRestirDebugMarch(debugCam.origin, debugCam.dir, 512.0);
-        // Magenta means the march found no cell. That has been the whole indoor mystery and the read
-        // cannot explain it, so when it happens the WRITE reports instead: what did the deposit do for
-        // this pixel? Every diagnostic until now watched only the reading half.
-        bool nothingFound = found.x > 0.9 && found.y < 0.1 && found.z > 0.9; // only faults reach 1.0
-        if (nothingFound) {
-            int outcome = volumeDepositOutcome();
-            compositeRadiance = outcome == 3 ? float3(0.0, 0.35, 0.0)   // green: deposited, unreadable
-                              : outcome == 2 ? float3(0.35, 0.35, 0.0)  // olive: election lost
-                              : outcome == 1 ? float3(0.35, 0.0, 0.0)   // dark red: probe window full
-                              : outcome == 0 ? float3(0.0, 0.0, 0.35)   // navy: switch off at deposit
-                                             : float3(1.0, 1.0, 1.0);   // WHITE: deposit never ran here
-        } else {
-            compositeRadiance = found;
-        }
-    }
     if (compositePrefixDebug) {
         if (dispatchIndex.y >= dimensions.y * 3u / 4u) {
             float prefixLum = luminance(max(prefix.inScatter, float3(0.0, 0.0, 0.0)));

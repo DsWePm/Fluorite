@@ -24,7 +24,6 @@
 import atmosphere;
 import light_sampling;
 import volume_source;
-import volume_hash;   // M25: the shared visibility cache
 import world_common;
 
 // 64x36x64, up from the plan's 32^3, and the reason is a light shaft through a two-block window.
@@ -135,69 +134,6 @@ float3 froxelFogTransmittance(WorldPush wp, float3 sigma, float3 ro, float3 rd, 
  */
 float skyReachable(float3 p) {
     return froxelOccluded(p, float3(0.0, 1.0, 0.0), 4096.0) ? 0.0 : 1.0;
-}
-
-/**
- * M25: one ray per cell per frame into the shared world-space cache, and the cache's answer back.
- *
- * <p>THE RAY COUNT DOES NOT CHANGE. This casts exactly the one ray skyReachable casts, in a random
- * hemisphere direction instead of straight up, and returns an accumulated openness instead of that single
- * ray's 0 or 1. The froxel already resolves per cell rather than per pixel, so the amortisation was
- * always there; what was missing was memory across frames, which is the only reason a single ray had to
- * answer a hemisphere question by itself.
- *
- * <p>No election here, unlike the marched deposit: the bake visits each cell from one thread. It still
- * writes the frame's own parity, so a reader taking the other one cannot see a partial record.
- */
-float froxelRestirSkyOpen(WorldPush wp, float3 p, inout uint seed) {
-    uint slots = wp.volumeGridSlots;
-    if ((wp.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u || slots == 0u
-            || wp.volumeGridAddr == 0) {
-        return skyReachable(p);
-    }
-    float dist = length(p - wp.camOffset);
-    int level = volumeCellLevel(dist, wp.volumeGridLodK);
-    int3 coord = volumeCellCoord(p, volumeCellEdge(level));
-    DevicePtr<VolumeCell> grid = DevicePtr<VolumeCell>(wp.volumeGridAddr);
-    ConstPtr<VolumeCell> gridRead = ConstPtr<VolumeCell>(wp.volumeGridAddr);
-    uint frame = wp.frameIndex;
-
-    // EVERY COLUMN ANSWERS FROM THE SAME STABLE HALF, and only one of them pays for the update. Many
-    // columns share a near cell -- adjacent froxel columns are d * FOV / 64 apart, which at eight blocks
-    // is 0.14, far inside a one-block cell -- so letting each column answer from its own write would put
-    // different values inside one cell and read as speckle. The previous frame's half is finished and
-    // nobody is writing it, so it is the one answer they can all agree on.
-    uint readBase = volumeHalfBase(slots, frame + 1u);
-    int prior = volumeGridFind(gridRead, slots, readBase, coord, level, frame,
-                               wp.volumeGridEvictionFrames);
-    float answer = prior >= 0 ? volumeCellOpenness(gridRead[prior]) : skyReachable(p);
-
-    uint writeBase = volumeHalfBase(slots, frame);
-    int slot = volumeGridClaim(gridRead, slots, writeBase, coord, level, frame,
-                               wp.volumeGridEvictionFrames);
-    if (slot < 0) {
-        return answer; // probe window full of live strangers; this cell simply does not update
-    }
-    // The election decides who casts the ray, not who gets an answer. One ray per CELL per frame rather
-    // than one per column, which is where the ray budget actually falls.
-    uint previous;
-    InterlockedExchange(grid[slot].ident.y, frame, previous);
-    if (previous == frame) {
-        return answer;
-    }
-
-    VolumeCell c = prior >= 0 ? gridRead[prior] : volumeCellEmpty();
-    // Uniform over the upper hemisphere; the lower half has no sky to find.
-    float u1 = rndf(seed);
-    float u2 = rndf(seed);
-    float r = sqrt(max(0.0, 1.0 - u1 * u1));
-    float phi = 6.28318530718 * u2;
-    float3 dir = float3(r * cos(phi), u1, r * sin(phi));
-    float vis = froxelOccluded(p, dir, 4096.0) ? 0.0 : 1.0;
-    volumeCellUpdate(c, dir, wp.mediumSkyRadiance.xyz * vis, vis, 0.15915494309, seed);
-    volumeCellClaimStamp(c, coord, level, frame);
-    grid[slot] = c;
-    return answer;
 }
 
 /** One shadow ray. Opaque-only and first-hit: this asks whether a sampled emitter is blocked. */
@@ -404,7 +340,7 @@ void main(uint3 id: SV_DispatchThreadID) {
             // term, a ray at the zenith for the isotropic ones. Gating the ambient on the SUN would be
             // wrong in the other direction — a hillside shadow would drain the sky out of the fog, when
             // what removes ambient light is a roof, not a hill.
-            float skyOpen = unoccludedAmbient ? 1.0 : froxelRestirSkyOpen(wp, p, lightSeed);
+            float skyOpen = unoccludedAmbient ? 1.0 : skyReachable(p);
             AmbientRadianceSource source = evaluateAmbientRadianceSource(
                     rd, sampledLightDir, wp.fogScatter.w,
                     sampledIrradiance, localFogSunT,

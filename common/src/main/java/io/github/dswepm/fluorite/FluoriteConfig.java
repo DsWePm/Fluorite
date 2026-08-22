@@ -1246,39 +1246,6 @@ public final class FluoriteConfig {
             }
 
             /**
-             * M25: replace the cached visibility grid with the world-space ReSTIR hash grid.
-             *
-             * <p>OFF IS THE PUBLISHED RENDERER, which is what makes every comparison this milestone draws
-             * a ratio against something that actually shipped.
-             *
-             * <p>One switch rather than D196's near/far pair. That split existed so each region could be
-             * A/B'd against its own baseline, but a single switch satisfies iron law 8 just as well, the
-             * near/far distinction was never doing the LOD work it resembled -- volumeCellLevel's octaves
-             * do that, continuously -- and two paths meant two things that could break separately.
-             */
-            public static final BooleanSetting VOLUME_RESTIR =
-                    bool("fluorite.rt.fog.volumeRestir", "volumetrics.volume-restir", false);
-
-            /**
-             * D197: the target screen-pixel edge of one hash cell. k = p * FOV / renderHeight, and it is
-             * DERIVED AT RUNTIME rather than baked, because k scales with render height -- baking it
-             * would let a DLSS quality change silently coarsen the grid, which iron law 8 forbids.
-             */
-            public static final IntSetting VOLUME_RESTIR_LOD_PIXELS =
-                    intValue("fluorite.rt.fog.volumeRestirLodPixels",
-                            "volumetrics.volume-restir-lod-pixels", 32);
-
-            /** D197: frames a cell may go untouched before recycling. 45 is 0.75 s at 60 fps. */
-            public static final IntSetting VOLUME_RESTIR_EVICTION_FRAMES =
-                    intValue("fluorite.rt.fog.volumeRestirEvictionFrames",
-                            "volumetrics.volume-restir-eviction-frames", 45);
-
-            /** RIS candidates drawn per cell per frame. One shadow ray each, per cell rather than per sample. */
-            public static final IntSetting VOLUME_RESTIR_CANDIDATES =
-                    intValue("fluorite.rt.fog.volumeRestirCandidates",
-                            "volumetrics.volume-restir-candidates", 4);
-
-            /**
              * Cell size of the volumetric visibility grid, in blocks. 0 turns the grid off entirely and
              * restores the unshadowed fog exactly.
              *
@@ -1830,23 +1797,6 @@ public final class FluoriteConfig {
                 return Math.clamp(VISIBILITY_MAX_STEPS.value(), 1, 31);
             }
 
-
-            /**
-             * D197 measured 2.1-4.3 samples per cell per frame at p=16 -- too few for the spatiotemporal
-             * reuse this milestone exists to prove. The lower clamp keeps a config from asking for a grid
-             * whose cells the frame cannot feed.
-             */
-            public static int volumeRestirLodPixels() {
-                return Math.clamp(VOLUME_RESTIR_LOD_PIXELS.value(), 16, 256);
-            }
-
-            public static int volumeRestirEvictionFrames() {
-                return Math.clamp(VOLUME_RESTIR_EVICTION_FRAMES.value(), 1, 600);
-            }
-
-            public static int volumeRestirCandidates() {
-                return Math.clamp(VOLUME_RESTIR_CANDIDATES.value(), 1, 32);
-            }
 
             /** Runtime bound mirrored by VOLUME_FOG_MARCH_LIMIT in volume_source.slang. */
             public static int fogNoiseMarchSteps() {

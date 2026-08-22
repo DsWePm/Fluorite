@@ -87,17 +87,6 @@ public int volumeFogMarchSteps(float span, float4 fogAmbient, float fieldScale) 
     return clamp(int(ceil(span / detailNyquist)), 1, cap);
 }
 
-/**
- * Luminance, for callers that cannot import math.slang.
- *
- * <p>A SECOND SPELLING ON PURPOSE, and the codebase already had this exact split: world_common holds pcg
- * for the same reason its banner gives -- math.slang declares the ray-tracing bindings, so importing it
- * from a compute bake is a binding overlap rather than a convenience. The froxel bake is such a caller.
- */
-public float volumeLuminance(float3 c) {
-    return dot(c, float3(0.2126, 0.7152, 0.0722));
-}
-
 /** Normalised Henyey-Greenstein phase function. */
 public float volumeHg(float cosT, float g) {
     float g2 = g * g;

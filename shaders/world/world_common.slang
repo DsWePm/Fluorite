@@ -18,17 +18,6 @@ public static const uint SKY_PROVIDER_LOCAL_AMBIENT = 1u;
 public static const uint SKY_PROVIDER_ENVIRONMENT = 2u;
 public static const uint ENVIRONMENT_AMBIENT_UNOCCLUDED = 1u << 0u;
 public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
-// M25's volumetric-ReSTIR switch. RAISED ON THE ReSTIR SIDE, so a zero word is the shipped picture --
-// the convention worldPush.flags bit 1 and bit 15 already follow, and what iron law 8 requires. It lives
-// here rather than in worldPush.flags because that word is full: all 32 bits are allocated.
-//
-// ONE BIT, NOT TWO. D196 split this into near and far so each half could be A/B'd against its own
-// baseline, since D194 had shown the far field's published behaviour is a BOUND while the near field's is
-// a measurement. That reason did not survive contact: a single switch satisfies iron law 8 just as well
-// (off is the whole frame as it ships), the LOD work the split looked like it was doing is actually done
-// by volumeCellLevel's octaves, and the split bought two code paths that could each be wrong on their own
-// -- which is exactly what happened, the near half having been wired into a machine that never calls it.
-public static const uint ENVIRONMENT_VOLUME_RESTIR = 1u << 2u;
 // How many path segments may ADD fog light, counted from the camera. Zero means all of them, which is
 // the shipped behaviour. Bits 4-7, so 0-15.
 //
@@ -325,32 +314,6 @@ public struct WorldPush {
     // measured, which is this knob's off state; the store is unaffected either way, since a neighbour is
     // read from slots that already exist.
     public uint     restirSpatialNeighbours;
-
-    /**
-     * M25 world-space volumetric hash grid: base address and slot count.
-     *
-     * <p>0 and 0 whenever both source switches sit at their published positions, and the read path then
-     * falls back to the cached visibility grid exactly as before. That is the off state iron law 8 asks
-     * for, and it is spelled as an absent buffer rather than as a branch, so there is nothing to forget.
-     *
-     * <p>HERE RATHER THAN IN WorldPushConstants because that block is full at the guaranteed 128-byte
-     * floor -- the slot its banner reserved went to rainPrecipitationAddr -- and because it passes that
-     * banner test anyway: no hit shader has any use for these.
-     */
-    public uint64_t volumeGridAddr;
-    public uint     volumeGridSlots;
-    /**
-     * The LOD constant, `lodPixels * FOV / renderHeight` (D197), and the eviction window in frames.
-     *
-     * <p>k ARRIVES COMPUTED rather than being rebuilt here from the projection matrix, and that is the
-     * point of spending a lane on it: RtComposite sizes the table from the same expression, so the number
-     * that decides how many cells exist and the number that decides which cell a point lands in are one
-     * value with one definition. Recovering it shader-side would put those two on separate paths that
-     * meet only at runtime, where nothing can test that they still agree.
-     */
-    public float    volumeGridLodK;
-    public uint     volumeGridEvictionFrames;
-    public uint     volumeGridCandidates;
 
     /**
      * M18's per-frame sphere emitters -- entities, held blocks, flame particles -- and how many.

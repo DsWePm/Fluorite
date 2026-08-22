@@ -8,7 +8,6 @@
 
 import world_common; // WorldPush's shape
 import world_core;   // the frame's WorldPush itself, which carries the grid's placement
-import volume_hash;  // M25 cell addressing and the cell record
 
 // Must match volume_visibility.comp.slang and RtSky.VIS_GRID_W/H/D.
 public static const int VIS_GRID_W = 64;
@@ -29,22 +28,30 @@ public struct VolumeVisibilitySample {
     public float sun;
     public float sky;
     public float2 lightUv;
-    /**
-     * D199: the direction a volumetric ReSTIR cell settled on, and the sky radiance along it.
-     *
-     * <p>VALID IS FALSE ON EVERY PATH THAT DOES NOT SET IT, which is what keeps iron law 8 structural
-     * here rather than careful. The scalar `sky` above is untouched and still correct on its own, so a
-     * caller that ignores these three fields reproduces the shipped picture exactly -- and every caller
-     * did, up to the commit that added them.
-     *
-     * <p>The pair exists because collapsing a reservoir to `sky` would discard the direction, and the
-     * direction is what D198 spent a shadow ray to obtain. The phase term belongs at the caller, which
-     * is the only place that knows the view direction it must be evaluated against.
-     */
-    public bool skyDirValid;
-    public float3 skyDir;
-    public float3 skyRadiance;
 };
+
+/**
+ * A fully initialised sample meaning "nothing occludes anything here".
+ *
+ * <p>EXISTS BECAUSE PARTIAL INITIALISATION ALREADY SHIPPED A BUG, and it outlived the fields that caused
+ * it. M25 widened this struct with three members and a hand-built instance in volume.slang kept assigning
+ * only the original three; the uninitialised bool among them chose a branch per invocation and the
+ * uninitialised float3 became radiance. Black speckle everywhere, flickering, indoors and outdoors, day
+ * and night, immune to every volumetric knob, and shifting with unrelated code changes -- which is what
+ * undefined values do. Six refuted hypotheses went past before the struct was suspected.
+ *
+ * <p>M25's three fields are gone again, so this factory now sets exactly the members it always had. It is
+ * kept anyway, and that is the point: the defect was never the fields, it was that the struct grew and one
+ * of its two construction sites did not. This is what makes the NEXT field addition safe -- there is no
+ * way to build one of these and forget a member.
+ */
+public VolumeVisibilitySample volumeVisibilityUnoccluded() {
+    VolumeVisibilitySample s;
+    s.sun = 1.0;
+    s.sky = 1.0;
+    s.lightUv = float2(0.5, 0.5);
+    return s;
+}
 
 /**
  * Sun visibility and sky openness at a point in the air. Outside the grid, the boundary's answer; only
@@ -95,110 +102,6 @@ public struct VolumeVisibilitySample {
  * bake now follows the grid's own knob instead (#41). Which leaves this fallback saying only what it
  * always should have: no grid was asked for, so there is no measurement to report.
  */
-/**
- * Replace the scalar sky term with a cell's directional estimate, if this switch is on and the cell is
- * live. Silent on every other path, which is how the off state stays byte-identical.
- *
- * <p>Reads only. The cell is filled where the volume is marched, once per cell per frame rather than once
- * per sample -- the amortisation D198 depends on, and the reason a shadow ray in the target is affordable
- * at all.
- */
-/**
- * What the read below actually saw, for debug view 28.
- *
- * <p>RECORDED BY THE READ ITSELF rather than re-derived by the view. The first three versions of this
- * diagnostic marched their own ray and looked up their own cells, and every one of them disagreed with the
- * shading about where to ask -- the queued origin collapses to the camera, then linear spacing started
- * beyond the room, and then the view painted before the shading it was describing had even run. A
- * diagnostic that performs its own lookup is testing its own lookup.
- *
- * <p>x < 0 means the read never ran here at all.
- */
-static float3 gVolumeRestirProbe = float3(-1.0, 0.0, 0.0);
-
-void volumeRestirSky(float3 p, inout VolumeVisibilitySample result) {
-    if ((worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u || worldPush.volumeGridSlots == 0u
-            || worldPush.volumeGridAddr == 0) {
-        gVolumeRestirProbe = float3(0.0, 0.0, 0.0); // black: switch off, or no table
-        return;
-    }
-    float dist = length(p - worldPush.camOffset);
-    int level = volumeCellLevel(dist, worldPush.volumeGridLodK);
-    int3 coord = volumeCellCoord(p, volumeCellEdge(level));
-    ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
-    // The OTHER parity: the half completed last frame, which no thread is writing now. Reading the half
-    // being filled is what made the first wiring flicker.
-    uint base = volumeHalfBase(worldPush.volumeGridSlots, worldPush.frameIndex + 1u);
-    int slot = volumeGridFind(grid, worldPush.volumeGridSlots, base, coord, level,
-                              worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
-    if (slot < 0) {
-        gVolumeRestirProbe = float3(1.0, 0.0, 1.0); // magenta: probed, found nothing
-        return; // no cell yet: the scalar answer above stands, which is the shipped one
-    }
-    VolumeCell c = grid[slot];
-    gVolumeRestirProbe = float3(saturate(c.stats.x / VOLUME_M_MAX),
-                               volumeCellOpenness(c),
-                               c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0);
-
-    // OPENNESS, NOT THE RESERVOIR'S EMPTINESS. This used to read W == 0 as "no sky reaches here", gated
-    // on maturity, and once the froxel started feeding every cell every frame the cells matured at once
-    // and the near field lost its fog along the visibility grid's box -- a rectangular seam in the air,
-    // which is what a region boundary looks like when the two sides disagree about a quantity.
-    //
-    // The cell now carries the mean visibility directly, which is what `sky` has always meant, and it is
-    // the same number the froxel reads. One quantity, one definition, both consumers.
-    result.sky = volumeCellOpenness(c);
-    if (c.dirW.w <= 0.0) {
-        return; // no direction was ever selected: the scalar answer above is the whole answer
-    }
-    result.skyDirValid = true;
-    result.skyDir = c.dirW.xyz;
-    // leT already carries radiance times transmittance; W finishes the estimator. The phase belongs at
-    // the caller, which is the only place that knows the view direction.
-    result.skyRadiance = c.leT.xyz * c.dirW.w;
-}
-
-/**
- * Whether a point falls inside the cached visibility grid. THE ONE DEFINITION of M25's near/far split.
- *
- * <p>The deposit and the read must agree on it. When they did not -- the deposit testing its caller's own
- * region flag and the read testing the grid extent -- a cell could be written under one switch and looked
- * for under the other, so turning on a single switch produced cells nobody read.
- */
-/**
- * A fully initialised sample meaning "nothing occludes anything here".
- *
- * <p>EXISTS BECAUSE PARTIAL INITIALISATION ALREADY SHIPPED A BUG. D199 widened this struct with three
- * fields, and a hand-built instance in volume.slang kept assigning only the original three. The bool that
- * selects the directional path was therefore uninitialised, and an uninitialised bool chooses a branch
- * per invocation while an uninitialised float3 becomes radiance -- black speckle everywhere, flickering,
- * indoors and outdoors, day and night, immune to every volumetric knob, and shifting with unrelated code
- * changes because that is what undefined values do.
- *
- * <p>The struct grew and one of its two construction sites did not. A factory is what makes the next
- * field addition safe: there is no way to build one of these and forget a member.
- */
-public VolumeVisibilitySample volumeVisibilityUnoccluded() {
-    VolumeVisibilitySample s;
-    s.sun = 1.0;
-    s.sky = 1.0;
-    s.lightUv = float2(0.5, 0.5);
-    s.skyDirValid = false;
-    s.skyDir = float3(0.0, 1.0, 0.0);
-    s.skyRadiance = float3(0.0, 0.0, 0.0);
-    return s;
-}
-
-public bool volumeInsideVisibilityGrid(float3 p) {
-    float cell = worldPush.visGridOrigin.w;
-    if (cell <= 0.0) {
-        return false;
-    }
-    float3 extent = cell * float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
-    float3 g = (p - worldPush.visGridOrigin.xyz) / extent;
-    return g.y <= 1.0 && all(g >= float3(0.0, 0.0, 0.0)) && all(g <= float3(1.0, 1.0, 1.0));
-}
-
 public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     VolumeVisibilitySample result = volumeVisibilityUnoccluded();
     // D78A: some authored dimensions deliberately use a tiny unoccluded environment floor. It is an
@@ -231,9 +134,9 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     // Sideways and downward do clamp: laterally the world plausibly continues as it does here, and below
     // the grid the bottom cell is an UPPER bound, so clamping there errs bright but bounded.
     if (g.y > 1.0) {
-        // D194: above the grid the top cell is a LOWER bound on sky openness, and returning it as though
-        // it were a measurement is what the FAR switch exists to replace. Clamp remains the off state.
-        volumeRestirSky(p, result);
+        // D194: the top cell is a LOWER bound here, not a measurement, so the honest answer is the
+        // unoccluded one rather than a bound dressed up as a reading. Erring bright above the grid is
+        // bounded; erring dark is not.
         return result;
     }
     // Clamped HERE rather than left to the sampler. The descriptor happens to carry CLAMP_TO_EDGE today,
@@ -247,7 +150,6 @@ public VolumeVisibilitySample sampleVolumeLightVisibility(float3 p) {
     result.lightUv = result.sun > 1.0e-5
             ? clamp(v.ba / result.sun, float2(0.0, 0.0), float2(1.0, 1.0))
             : float2(0.5, 0.5);
-    volumeRestirSky(p, result);
     return result;
 }
 
@@ -290,82 +192,4 @@ public static const float WATER_SKY_GATE_LIFT = 0.5;
 public float waterSurfaceSkyOpenness(float3 p, float skyDepth) {
     float3 gateP = float3(p.x, p.y + skyDepth + WATER_SKY_GATE_LIFT, p.z);
     return sampleVolumeVisibility(gateP).y;
-}
-
-/**
- * Debug view 28: the state of the cells along this pixel's camera ray.
- *
- * <p>THE VIEW MAY ASK FOR ITSELF AGAIN, and the reason it may is new rather than a relapse. Every earlier
- * version failed because the sample point disagreed with the shading's -- only the marched path filled
- * cells, and it filled them sparsely and unpredictably. Now the froxel fills every cell in the frustum,
- * once per cell per frame, and the grid is world-anchored: "what is in the cell at this world point" has
- * one answer no matter who asks. The shading-recorded probe could only ever describe the MARCHED read,
- * which is a minority of the screen, so it reported "the read never ran here" over most of the picture
- * and said nothing at all about the froxel.
- *
- * <p>Geometric spacing, dense near the eye where the cells are small.
- */
-public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
-    if ((worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u
-            || worldPush.volumeGridSlots == 0u || worldPush.volumeGridAddr == 0) {
-        return float3(0.0, 0.0, 0.0); // black: the switch is off
-    }
-    uint slots = worldPush.volumeGridSlots;
-    ConstPtr<VolumeCell> grid = ConstPtr<VolumeCell>(worldPush.volumeGridAddr);
-    uint readBase = volumeHalfBase(slots, worldPush.frameIndex + 1u);
-    uint writeBase = volumeHalfBase(slots, worldPush.frameIndex);
-
-    // BOTH HALVES, REPORTED APART. Indoors this said "no cell anywhere" while the froxel was demonstrably
-    // writing cells -- view 17 moves with the switch. That leaves two possibilities which one colour
-    // cannot distinguish: the cells are written to a half nobody reads, or they are not written at all.
-    // Cyan means the write half has this cell and the read half does not, which is a parity or timing
-    // fault; magenta means neither has it, which is an addressing fault.
-    float t = 1.0;
-    for (uint step = 0u; step < 64u && t < cullDistance; ++step) {
-        float3 p = ro + rd * t;
-        int level = volumeCellLevel(length(p - worldPush.camOffset), worldPush.volumeGridLodK);
-        float edge = volumeCellEdge(level);
-        t += edge;
-        int3 coord = volumeCellCoord(p, edge);
-        int slot = volumeGridFind(grid, slots, readBase, coord, level,
-                                  worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
-        if (slot >= 0) {
-            VolumeCell c = grid[slot];
-            // SCALED BELOW THE DIAGNOSTIC COLOURS ON PURPOSE. A sealed indoor cell is mature with zero
-            // openness, which paints (1, 0, 1) -- the exact magenta that means "no cell found". The
-            // correct reading and the failure reading were the same pixel value, so a working grid
-            // indoors was indistinguishable from a broken one. Data lives under 0.8, faults sit at 1.0.
-            // GREYSCALE FOR OPENNESS, GREEN WHILE IMMATURE. The previous key put openness in one channel
-            // and maturity in another, so a sealed indoor cell -- mature, zero openness -- painted
-            // (1, 0, 1): the same magenta that means "no cell found", scaled only in brightness. Asking
-            // anyone to tell a correct reading from a failure by shade is not a diagnostic.
-            //
-            // Now the data channels move together and nothing in the data can land on a fault colour.
-            // FIVE NAMED BANDS, NOT A GRADIENT. Greyscale asked the reader to judge a scalar by shade,
-            // through a tonemap, which is not something eyes do -- the honest report was "grey, but I
-            // cannot tell which grey". Quantising it means the answer is a colour you can name.
-            //
-            // None of the five is magenta, cyan or white, which are the only fault colours left, so a
-            // reading can never be confused with a failure.
-            float open01 = volumeCellOpenness(c);
-            int band = clamp(int(open01 * 5.0), 0, 4);
-            float3 ramp = band == 0 ? float3(0.0, 0.0, 0.9)   // blue   : sealed, no sky at all
-                        : band == 1 ? float3(0.0, 0.7, 0.2)   // green  : a little
-                        : band == 2 ? float3(0.9, 0.9, 0.0)   // yellow : about half
-                        : band == 3 ? float3(1.0, 0.45, 0.0)  // orange : most of it
-                                    : float3(0.9, 0.0, 0.0);  // red    : fully open
-            // Still filling: same hue, dimmed, so convergence is visible without a sixth colour.
-            return c.stats.x >= VOLUME_M_MATURE ? ramp : ramp * 0.35;
-        }
-        if (volumeGridFind(grid, slots, writeBase, coord, level,
-                           worldPush.frameIndex, worldPush.volumeGridEvictionFrames) >= 0) {
-            return float3(0.0, 1.0, 1.0); // cyan: written, but not where anyone reads
-        }
-    }
-    return float3(1.0, 0.0, 1.0); // magenta: neither half holds a cell on this ray
-}
-
-/** Debug view 28 reads this after the shading that filled it. See gVolumeRestirProbe. */
-public float3 volumeRestirProbeResult() {
-    return gVolumeRestirProbe;
 }

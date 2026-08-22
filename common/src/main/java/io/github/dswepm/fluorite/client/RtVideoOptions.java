@@ -238,9 +238,6 @@ public final class RtVideoOptions {
                                 outputTransform(), hdrEnabled(), acesHdrPreset(),
                                 hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
-                        bool("fluorite.options.rt.volumeRestir",
-                                FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR),
-                        volumeRestirEviction(), volumeRestirLodPixels(), volumeRestirCandidates(),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",
@@ -1519,49 +1516,6 @@ public final class RtVideoOptions {
             setting::set);
     }
 
-    /**
-     * M25's three tuning values, in the settings screen because they are what an experiment moves.
-     *
-     * <p>Eviction is the one to reach for first when fast movement leaves residue: a longer window stops
-     * cells being rebuilt every time the camera returns, at the cost of stale samples lingering after the
-     * light changes.
-     */
-    private static OptionInstance<Integer> volumeRestirEviction() {
-        IntSetting setting = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_EVICTION_FRAMES;
-        return new OptionInstance<>(
-            "fluorite.options.rt.volumeRestirEviction",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("fluorite.options.rt.volumeRestirEviction.tooltip")),
-            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
-            new OptionInstance.IntRange(1, 600),
-            Math.clamp(setting.value(), 1, 600),
-            setting::set);
-    }
-
-    private static OptionInstance<Integer> volumeRestirLodPixels() {
-        IntSetting setting = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_LOD_PIXELS;
-        return new OptionInstance<>(
-            "fluorite.options.rt.volumeRestirLodPixels",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("fluorite.options.rt.volumeRestirLodPixels.tooltip")),
-            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
-            new OptionInstance.IntRange(16, 256),
-            Math.clamp(setting.value(), 16, 256),
-            setting::set);
-    }
-
-    private static OptionInstance<Integer> volumeRestirCandidates() {
-        IntSetting setting = FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR_CANDIDATES;
-        return new OptionInstance<>(
-            "fluorite.options.rt.volumeRestirCandidates",
-            OptionInstance.cachedConstantTooltip(
-                    Component.translatable("fluorite.options.rt.volumeRestirCandidates.tooltip")),
-            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
-            new OptionInstance.IntRange(1, 32),
-            Math.clamp(setting.value(), 1, 32),
-            setting::set);
-    }
-
     /** 0 means every segment, which is why the range starts there rather than at one. */
     private static OptionInstance<Integer> fogInScatterSegments() {
         IntSetting setting = FluoriteConfig.Rt.Volumetrics.INSCATTER_SEGMENTS;
@@ -2330,15 +2284,16 @@ public final class RtVideoOptions {
             // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
             // between hits rather than the hits themselves. See world.rgen's volumeDebug.
             //
-            // 12-16 and 25 ARE GONE AND THEIR NUMBERS ARE NOT REUSED: the four atmosphere tables, the
-            // celestial dye and the fog noise field, retired once the atmosphere stopped changing. Every
-            // note that names a view by number stays true this way, and the shader paints magenta for a
+            // 12-16, 25 AND 28 ARE GONE AND THEIR NUMBERS ARE NOT REUSED: the four atmosphere tables,
+            // the celestial dye and the fog noise field, retired once the atmosphere stopped changing,
+            // and the volumetric-ReSTIR cell view, retired with the hash grid it described. Every note
+            // that names a view by number stays true this way, and the shader paints magenta for a
             // number no arm claims rather than falling through to a plausible picture.
             new OptionInstance.Enum<>(
                     List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 19, 20, 21, 22, 23,
-                            24, 26, 27, 28),
+                            24, 26, 27),
                     Codec.INT),
-            Math.clamp(setting.value(), 0, 28),
+            Math.clamp(setting.value(), 0, 27),
             setting::set);
     }
 
