@@ -198,6 +198,19 @@ public VisibilityResult visibilityThroughAmbient(float3 mediumExtinction, uint m
  *
  * <p>Writes THIS parity and seeds from the OTHER, so nothing reads a half being written.
  */
+/**
+ * What the DEPOSIT did, for debug view 28. Every diagnostic so far has watched the read; the read can
+ * only ever report that a cell is absent, never why, and "absent" has been the whole mystery indoors.
+ *
+ *   -1 = never called for this pixel
+ *    0 = switch off, or no table
+ *    1 = probe window full, nothing claimed
+ *    2 = election lost, another sample owns this cell this frame
+ *    3 = deposited
+ */
+static int gVolumeDepositOutcome = -1;
+public int volumeDepositOutcome() { return gVolumeDepositOutcome; }
+
 void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
     // THE CELL'S CONTENT MUST NOT DEPEND ON WHICH THREAD WON THE ELECTION, and the winner is arbitrary
     // and different every frame. Taking the caller's local sky source made the stored radiance jump
@@ -210,6 +223,7 @@ void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
     float3 skyRadiance = worldPush.mediumSkyRadiance.xyz;
     if ((worldPush.environmentFlags & ENVIRONMENT_VOLUME_RESTIR) == 0u || worldPush.volumeGridSlots == 0u
             || worldPush.volumeGridAddr == 0) {
+        gVolumeDepositOutcome = 0;
         return;
     }
     uint slots = worldPush.volumeGridSlots;
@@ -224,13 +238,15 @@ void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
     int slot = volumeGridClaim(gridRead, slots, writeBase, coord, level, frame,
                                worldPush.volumeGridEvictionFrames);
     if (slot < 0) {
-        return; // probe window full of live strangers; contributing nothing beats evicting one
+        gVolumeDepositOutcome = 1; // probe window full of live strangers
+        return; // contributing nothing beats evicting one
     }
     // THE ELECTION. Exactly one thread sees a stamp other than this frame and proceeds; every other
     // thread that lands in this cell this frame loses the exchange and returns without tracing anything.
     uint previous;
     InterlockedExchange(grid[slot].ident.y, frame, previous);
     if (previous == frame) {
+        gVolumeDepositOutcome = 2;
         return;
     }
 
@@ -260,6 +276,7 @@ void volumeRestirDeposit(float3 p, float3 mediumExtinction, uint mediumFlags) {
     }
     volumeCellClaimStamp(c, coord, level, frame);
     grid[slot] = c;
+    gVolumeDepositOutcome = 3;
 }
 
 
