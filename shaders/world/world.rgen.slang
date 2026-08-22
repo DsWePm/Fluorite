@@ -1435,7 +1435,7 @@ void main() {
         // Magenta means the march found no cell. That has been the whole indoor mystery and the read
         // cannot explain it, so when it happens the WRITE reports instead: what did the deposit do for
         // this pixel? Every diagnostic until now watched only the reading half.
-        bool nothingFound = found.x > 0.9 && found.y < 0.1 && found.z > 0.9;
+        bool nothingFound = found.x > 0.9 && found.y < 0.1 && found.z > 0.9; // only faults reach 1.0
         if (nothingFound) {
             int outcome = volumeDepositOutcome();
             compositeRadiance = outcome == 3 ? float3(0.0, 0.35, 0.0)   // green: deposited, unreadable

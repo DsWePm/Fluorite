@@ -331,9 +331,13 @@ public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
                                   worldPush.frameIndex, worldPush.volumeGridEvictionFrames);
         if (slot >= 0) {
             VolumeCell c = grid[slot];
+            // SCALED BELOW THE DIAGNOSTIC COLOURS ON PURPOSE. A sealed indoor cell is mature with zero
+            // openness, which paints (1, 0, 1) -- the exact magenta that means "no cell found". The
+            // correct reading and the failure reading were the same pixel value, so a working grid
+            // indoors was indistinguishable from a broken one. Data lives under 0.8, faults sit at 1.0.
             return float3(saturate(c.stats.x / VOLUME_M_MAX),
                           volumeCellOpenness(c),
-                          c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0);
+                          c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0) * 0.8;
         }
         if (volumeGridFind(grid, slots, writeBase, coord, level,
                            worldPush.frameIndex, worldPush.volumeGridEvictionFrames) >= 0) {
