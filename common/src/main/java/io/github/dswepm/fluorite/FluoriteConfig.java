@@ -1158,6 +1158,24 @@ public final class FluoriteConfig {
              * <p>All six default to one, which normalises to identity, so the shipped picture is
              * untouched until a slider moves.
              */
+            /**
+             * How many path segments may add fog light, counted from the camera. 0 is every segment,
+             * which is the shipped behaviour and the off state.
+             *
+             * <p>Only the in-scatter is dropped; the transmittance of every segment is untouched, so the
+             * air still hides what is behind it at any depth. The alternative -- skipping the fog outright
+             * past the limit -- leaves distant geometry unfogged inside reflections while the direct view
+             * of the same place is fogged, and a seam visible only in a mirror is what R18 exists to
+             * prevent.
+             */
+            public static final IntSetting INSCATTER_SEGMENTS =
+                    intValue("fluorite.rt.fog.inScatterSegments", "volumetrics.inscatter-segments", 0);
+
+            /** Bits 4-7 of environmentFlags, so a bad config cannot reach past the field. */
+            public static int inScatterSegments() {
+                return Math.clamp(INSCATTER_SEGMENTS.value(), 0, 15);
+            }
+
             public static final FloatSetting SCATTER_TINT_R =
                     clampedFloat("fluorite.rt.fog.scatterTintR", "volumetrics.scatter-tint-r", 1.0f, 0.0f, 4.0f);
             public static final FloatSetting SCATTER_TINT_G =

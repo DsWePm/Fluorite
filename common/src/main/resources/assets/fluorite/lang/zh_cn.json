@@ -451,6 +451,8 @@
   "fluorite.options.rt.waterMediumTrace.tooltip": "将中心视线的水体 Radiance、段长、可见度和区块加载状态低频写入 latest.log。仅用于诊断；开启时每帧增加一条向上探测光线。",
   "fluorite.options.rt.fogSegmentSource": "雾内散射来源",
   "fluorite.options.rt.fogSegmentSource.tooltip": "诊断项：路径的哪些段可以贡献雾的内散射。Froxel 负责相机段，弹射段走的是无遮挡的解析式。",
+  "fluorite.options.rt.fogInScatterSegments": "雾照明段数",
+  "fluorite.options.rt.fogInScatterSegments.tooltip": "从相机数起，有多少段光线可以为雾添加光照。0 = 全部，就是当前发布的行为。调低可以省掉最深几段的阴影线和行进，而那几段的贡献本来就小；雾对远处景物的**遮蔽**在任何深度都保留，所以反射里不会出现缺失。",
   "fluorite.options.rt.fogScatterTintR": "雾色 R",
   "fluorite.options.rt.fogScatterTintR.tooltip": "保亮度：调这些只改雾的颜色，绝不改浓度。「雾色」染的是雾送回眼睛的光，也就是雾本身的颜色；「雾吸收」染的是雾从背后景物里拿走哪些波长。",
   "fluorite.options.rt.fogScatterTintG": "雾色 G",

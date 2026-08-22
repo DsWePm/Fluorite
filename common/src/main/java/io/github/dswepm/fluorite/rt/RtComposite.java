@@ -214,6 +214,8 @@ public final class RtComposite {
         if (FluoriteConfig.Rt.Volumetrics.VOLUME_RESTIR.value()) {
             flags |= 1 << 2; // ENVIRONMENT_VOLUME_RESTIR
         }
+        // Bits 4-7. Zero is every segment, so the shipped behaviour is still a zero word.
+        flags |= (FluoriteConfig.Rt.Volumetrics.inScatterSegments() & 0xF) << 4;
         if (environment != null) {
             flags |= (environment.layer() & 0xff) << 8;
         }

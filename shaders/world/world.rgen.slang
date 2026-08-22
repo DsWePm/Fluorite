@@ -189,6 +189,15 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         float segmentEnd = payload.hitT < 0.0 ? RAY_FAR : payload.hitT;
         SegmentIntegral segIntegral = integrateSegment(
                 currentExtinction, activeCurrentMediumFlags(activeMediumFlags), ro, rd, segmentEnd, seed);
+        // Fog light is dropped past the configured segment, and only the light: the transmittance above
+        // stays, so this air still hides what is behind it. The emitter weight goes with the in-scatter
+        // because it is the same quantity arriving by a different route.
+        uint inScatterSegments = (worldPush.environmentFlags >> ENVIRONMENT_INSCATTER_SEGMENTS_SHIFT)
+                & ENVIRONMENT_INSCATTER_SEGMENTS_MASK;
+        if (inScatterSegments != 0u && uint(max(bounce, 0)) >= inScatterSegments) {
+            segIntegral.inScatter = float3(0.0, 0.0, 0.0);
+            segIntegral.scatterWeight = float3(0.0, 0.0, 0.0);
+        }
         // Capture the quantities from THIS trace before payload or throughput advances. The previous
         // diagnostic re-traced the same geometric ray after tracePath returned; that is not evidence for
         // what tracePath integrated when streamed geometry, alpha any-hit, or mutable payload state can

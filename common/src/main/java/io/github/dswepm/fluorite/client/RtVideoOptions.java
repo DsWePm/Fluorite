@@ -211,7 +211,8 @@ public final class RtVideoOptions {
                 case FOG -> List.of(
                         Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
                                 fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                                fogPhaseG(), fogScatterTint(), fogSunShadowRays()),
+                                fogPhaseG(), fogScatterTint(), fogSunShadowRays(),
+                                fogInScatterSegments()),
                         Section.titled("fluorite.options.rt.section.fogNoise",
                                 fogNoiseEnabled(), fogNoiseContrast(), fogNoiseFieldScale(),
                                 fogNoiseWindSpeed(), fogNoiseWindOffset(), fogNoiseMarchSteps()),
@@ -1508,6 +1509,19 @@ public final class RtVideoOptions {
             (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
             new OptionInstance.IntRange(1, 31),
             Math.clamp(setting.value(), 1, 31),
+            setting::set);
+    }
+
+    /** 0 means every segment, which is why the range starts there rather than at one. */
+    private static OptionInstance<Integer> fogInScatterSegments() {
+        IntSetting setting = FluoriteConfig.Rt.Volumetrics.INSCATTER_SEGMENTS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogInScatterSegments",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.fogInScatterSegments.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(0, 15),
+            Math.clamp(setting.value(), 0, 15),
             setting::set);
     }
 
