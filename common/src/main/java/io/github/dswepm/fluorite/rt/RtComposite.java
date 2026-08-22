@@ -173,12 +173,7 @@ public final class RtComposite {
       */
     private static Float4 fogExtinction(RtSkyPreset preset) {
         RtSkyPreset.Rgb extinction = preset.fog().extinction();
-        // Luminance-preserving, so this shifts WHICH wavelengths the fog removes without shifting how
-        // much it removes. Extinction is the optical depth itself: an unnormalised tint here would make
-        // every colour change a density change too.
-        float[] tint = FluoriteConfig.Rt.Volumetrics.extinctionTintRgb();
-        return new Float4(extinction.r() * tint[0], extinction.g() * tint[1], extinction.b() * tint[2],
-                fogStartDistance(preset));
+        return new Float4(extinction.r(), extinction.g(), extinction.b(), fogStartDistance(preset));
     }
 
     private static float fogStartDistance(RtSkyPreset preset) {

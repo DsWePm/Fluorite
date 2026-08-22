@@ -222,13 +222,7 @@ public final class RtVideoOptions {
                                 scaleSlider("fluorite.options.rt.fogScatterTintG",
                                         FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_G),
                                 scaleSlider("fluorite.options.rt.fogScatterTintB",
-                                        FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_B),
-                                scaleSlider("fluorite.options.rt.fogExtinctionTintR",
-                                        FluoriteConfig.Rt.Volumetrics.EXTINCTION_TINT_R),
-                                scaleSlider("fluorite.options.rt.fogExtinctionTintG",
-                                        FluoriteConfig.Rt.Volumetrics.EXTINCTION_TINT_G),
-                                scaleSlider("fluorite.options.rt.fogExtinctionTintB",
-                                        FluoriteConfig.Rt.Volumetrics.EXTINCTION_TINT_B)));
+                                        FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_B)));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case POST_PROCESSING -> List.of(
                         Section.titled("fluorite.options.rt.section.exposure",
@@ -1473,8 +1467,8 @@ public final class RtVideoOptions {
                     Component.translatable("fluorite.options.rt.fogNoiseContrast.tooltip")),
             (caption, v) -> Options.genericValueLabel(caption,
                     Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
-            new OptionInstance.IntRange(0, 400),
-            Math.clamp(Math.round(setting.value() * 100.0f), 0, 400),
+            new OptionInstance.IntRange(0, 800),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 800),
             v -> setting.set(v / 100.0f));
     }
 

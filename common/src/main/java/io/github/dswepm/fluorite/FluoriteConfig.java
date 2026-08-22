@@ -1041,13 +1041,19 @@ public final class FluoriteConfig {
             /**
              * Contrast of the world-anchored heterogeneous density field.
              *
-             * <p>One is D67's calibrated field. Values above one use an odd bounded remap in the shared
-             * shader module rather than clipping negative density: paired samples still sum to two,
-             * every height keeps mean density one, and the local multiplier remains in 0..2.
+             * <p>One is D67's calibrated field. The remap in the shared shader module is exponential
+             * with its own mean divided out, so the local multiplier peaks at 2c/(1-exp(-2c)) -- about
+             * 2x the contrast once past 2 -- instead of the hard 0..2 the previous odd remap could never
+             * exceed at any setting.
+             *
+             * <p>THE RANGE GOES TO 8 BECAUSE THE PEAK IS NOW LINEAR IN IT. Under the old remap 4 was
+             * already the saturation point and anything above it only pushed the field toward binary;
+             * here 4 buys 8x and 8 buys 16x, so the top half of the range is reachable rather than
+             * decorative.
              */
             public static final FloatSetting FOG_NOISE_CONTRAST =
                     clampedFloat("fluorite.rt.fog.noiseContrast", "volumetrics.fog-noise-contrast",
-                            1f, 0f, 4f);
+                            1f, 0f, 8f);
 
             /** One repeat of the packed fog field in blocks: base features are /4, detail is /16. */
             public static final FloatSetting FOG_NOISE_FIELD_SCALE =
@@ -1151,11 +1157,14 @@ public final class FluoriteConfig {
              * would make "make the fog warmer" also mean "make the fog thicker"; and albedo is
              * sigma_s/sigma_t, where the magnitude is how much of what is extinguished comes back.
              *
-             * <p>SCATTER tints the light the fog sends to the eye -- the colour of the fog itself.
-             * EXTINCTION tints which wavelengths the fog removes from what is behind it. A grey-white
-             * volumetric look wants the first; coloured haze and distance shift want the second.
+             * <p>THREE SLIDERS, NOT SIX. There used to be an EXTINCTION triple beside this one, tinting
+             * which wavelengths the fog removes from what is behind it rather than the light it sends to
+             * the eye. Both are real and they are not the same quantity -- but two colour controls that
+             * both move the fog's apparent hue, in ways that only separate when something is BEHIND the
+             * fog, is not a tunable pair. It was removed on the report that it made the fog impossible to
+             * tune, which is the right reason to remove a control: correct and unusable is still unusable.
              *
-             * <p>All six default to one, which normalises to identity, so the shipped picture is
+             * <p>All three default to one, which normalises to identity, so the shipped picture is
              * untouched until a slider moves.
              */
             /**
@@ -1182,13 +1191,6 @@ public final class FluoriteConfig {
                     clampedFloat("fluorite.rt.fog.scatterTintG", "volumetrics.scatter-tint-g", 1.0f, 0.0f, 4.0f);
             public static final FloatSetting SCATTER_TINT_B =
                     clampedFloat("fluorite.rt.fog.scatterTintB", "volumetrics.scatter-tint-b", 1.0f, 0.0f, 4.0f);
-            public static final FloatSetting EXTINCTION_TINT_R =
-                    clampedFloat("fluorite.rt.fog.extinctionTintR", "volumetrics.extinction-tint-r", 1.0f, 0.0f, 4.0f);
-            public static final FloatSetting EXTINCTION_TINT_G =
-                    clampedFloat("fluorite.rt.fog.extinctionTintG", "volumetrics.extinction-tint-g", 1.0f, 0.0f, 4.0f);
-            public static final FloatSetting EXTINCTION_TINT_B =
-                    clampedFloat("fluorite.rt.fog.extinctionTintB", "volumetrics.extinction-tint-b", 1.0f, 0.0f, 4.0f);
-
             /** Luminance-preserving, and a fully black triple falls back to identity rather than to zero. */
             private static float[] normalisedTint(float r, float g, float b) {
                 float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
@@ -1200,11 +1202,6 @@ public final class FluoriteConfig {
 
             public static float[] scatterTintFreeRgb() {
                 return normalisedTint(SCATTER_TINT_R.value(), SCATTER_TINT_G.value(), SCATTER_TINT_B.value());
-            }
-
-            public static float[] extinctionTintRgb() {
-                return normalisedTint(EXTINCTION_TINT_R.value(), EXTINCTION_TINT_G.value(),
-                        EXTINCTION_TINT_B.value());
             }
 
             public static final StringSetting SCATTER_TINT =
