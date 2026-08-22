@@ -1052,7 +1052,7 @@ public final class FluoriteConfig {
             /** One repeat of the packed fog field in blocks: base features are /4, detail is /16. */
             public static final FloatSetting FOG_NOISE_FIELD_SCALE =
                     clampedFloat("fluorite.rt.fog.noiseFieldScale", "volumetrics.fog-noise-field-scale",
-                            384f, 64f, 2048f);
+                            384f, 4f, 512f);
 
             /** Advection speed of the fog density field in blocks per second. */
             public static final FloatSetting FOG_NOISE_WIND_SPEED =

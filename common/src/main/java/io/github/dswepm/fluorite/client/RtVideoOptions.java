@@ -1393,7 +1393,10 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<Integer> fogDensity() {
-        return scaleSlider("fluorite.options.rt.fogDensity", FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE);
+        // 64, not the helper's default 10. The config clamp was raised to 64 and the SLIDER kept its own
+        // ceiling, so the knob silently refused the range it had just been given.
+        return scaleSlider("fluorite.options.rt.fogDensity",
+                FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE, 64.0f);
     }
 
     private static OptionInstance<Boolean> netherFogEnabled() {
@@ -1478,8 +1481,11 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<Integer> fogNoiseFieldScale() {
+        // 4 to 512. Above 512 the field is larger than anything the fog is drawn across, so the top of
+        // the old range bought nothing; below 64 is where the structure a viewer reads as CLOUDINESS
+        // actually lives, and that half was unreachable.
         return blockSlider("fluorite.options.rt.fogNoiseFieldScale",
-                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_FIELD_SCALE, 64, 2048);
+                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_FIELD_SCALE, 4, 512);
     }
 
     private static OptionInstance<Integer> fogNoiseWindSpeed() {
