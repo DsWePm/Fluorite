@@ -174,9 +174,16 @@ public int volumeGridFind(ConstPtr<VolumeCell> grid, uint slots, uint base, int3
         uint at = (slot + step) % slots;
         VolumeCell c = grid[base + at];
         uint stored = volumeCellStoredKey(c);
-        if (stored == 0u) {
-            return -1; // an empty slot ends the probe: nothing past it can belong to this cell
-        }
+        // NO EARLY-OUT ON AN EMPTY SLOT, and the standard open-addressing optimisation it replaces is
+        // WRONG HERE. Stopping at the first empty slot is valid only when insertions never place an entry
+        // past one, which holds for a single table -- but there are two halves and they fill
+        // independently. A cell claimed at offset 3 in the write half, because offsets 0-2 were occupied
+        // THERE, can sit behind an offset in the read half that was simply never written. Slots never
+        // return to zero (the table is cleared once per allocation), so the two halves keep permanently
+        // different occupancy and this mismatch is structural rather than rare.
+        //
+        // It presented as "deposited, but unreadable": the write reported success and the read reported
+        // that no cell existed anywhere. Probing the whole window costs at most eight loads.
         if (stored == key && !volumeCellExpired(volumeCellStamp(c), frame, evictionFrames)) {
             return int(base + at);
         }

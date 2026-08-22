@@ -327,6 +327,28 @@ final class RtVolumeRestirContractTest {
                 "a hand-built sample is how the struct outgrew its callers once already");
     }
 
+    /**
+     * The find probe walks its whole window and never stops at an empty slot.
+     *
+     * <p>Stopping there is the textbook open-addressing optimisation and it is invalid against two
+     * independently filled halves. A cell claimed at offset 3 in the write half, because offsets 0-2 were
+     * occupied THERE, can sit behind an offset in the read half that was never written; slots never
+     * return to zero, so the halves keep permanently different occupancy and the mismatch is structural.
+     *
+     * <p>It cost this milestone a long hunt because of how it presented: the write reported success and
+     * the read reported that no cell existed anywhere, which reads as "nothing is being stored" and sent
+     * every diagnostic looking at the wrong half of the system.
+     */
+    @Test
+    void theFindProbeNeverStopsAtAnEmptySlot() throws IOException {
+        String find = between(code(source("shaders/world/volume_hash.slang")),
+                "public int volumeGridFind(", "\n}");
+        assertFalse(find.contains("return -1; //"), "an early-out inside the probe loop is the defect");
+        assertFalse(find.contains("stored == 0u"),
+                "emptiness must not end the probe when two halves fill independently");
+        assertTrue(find.contains("stored == key && !volumeCellExpired("));
+    }
+
     private static String quote() {
         return String.valueOf((char) 34);
     }
