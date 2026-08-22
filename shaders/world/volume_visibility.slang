@@ -335,9 +335,16 @@ public float3 volumeRestirDebugMarch(float3 ro, float3 rd, float cullDistance) {
             // openness, which paints (1, 0, 1) -- the exact magenta that means "no cell found". The
             // correct reading and the failure reading were the same pixel value, so a working grid
             // indoors was indistinguishable from a broken one. Data lives under 0.8, faults sit at 1.0.
-            return float3(saturate(c.stats.x / VOLUME_M_MAX),
-                          volumeCellOpenness(c),
-                          c.stats.x >= VOLUME_M_MATURE ? 1.0 : 0.0) * 0.8;
+            // GREYSCALE FOR OPENNESS, GREEN WHILE IMMATURE. The previous key put openness in one channel
+            // and maturity in another, so a sealed indoor cell -- mature, zero openness -- painted
+            // (1, 0, 1): the same magenta that means "no cell found", scaled only in brightness. Asking
+            // anyone to tell a correct reading from a failure by shade is not a diagnostic.
+            //
+            // Now the data channels move together and nothing in the data can land on a fault colour.
+            float g = 0.15 + 0.65 * volumeCellOpenness(c);
+            return c.stats.x >= VOLUME_M_MATURE
+                    ? float3(g, g, g)
+                    : float3(0.0, g, 0.0);
         }
         if (volumeGridFind(grid, slots, writeBase, coord, level,
                            worldPush.frameIndex, worldPush.volumeGridEvictionFrames) >= 0) {
