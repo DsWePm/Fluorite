@@ -77,6 +77,15 @@ final class RtLightGrid {
             throw new IllegalStateException("Light grid span count exceeds Java array capacity: " + spanCountLong);
         }
 
+        // M26: every populated cell also gets a RANK among populated cells, which is what addresses its
+        // slice of the presampled light pool. The pool is sized by populated cells rather than by the
+        // dense volume because the dense volume reaches four million cells and the pool carries unpacked
+        // lights -- at eight per cell that would be a gigabyte for a field that is mostly empty.
+        //
+        // The compacted list is the inverse map, and the pool build needs it: it dispatches one thread
+        // per (rank, slot) and has to get from a rank back to the cell it belongs to. Building both here
+        // costs one pass that was already running.
+        int[] cellPoolRanks = new int[volume];
         int populatedCells = 0;
         int maxCellSpans = 0;
         int prefix = 0;
@@ -85,8 +94,19 @@ final class RtLightGrid {
             int count = cellCounts[cell];
             prefix += count;
             if (count != 0) {
+                cellPoolRanks[cell] = populatedCells;
                 populatedCells++;
                 maxCellSpans = Math.max(maxCellSpans, count);
+            } else {
+                // Never read: emitterFindGridCell rejects a zero-span cell before anything looks at the
+                // rank. Sentinel rather than 0 so that if it ever IS read, it indexes nothing plausible.
+                cellPoolRanks[cell] = -1;
+            }
+        }
+        int[] populatedCellIndices = new int[populatedCells];
+        for (int cell = 0, rank = 0; cell < volume; cell++) {
+            if (cellCounts[cell] != 0) {
+                populatedCellIndices[rank++] = cell;
             }
         }
         int[] spanFirstLights = new int[prefix];
@@ -141,7 +161,8 @@ final class RtLightGrid {
         }
 
         return new Data(minX * 16 - rebaseX, minY * 16 - rebaseY, minZ * 16 - rebaseZ,
-                dimX, dimY, dimZ, cellOffsets, cellCounts, cellInvWeightSums,
+                dimX, dimY, dimZ, cellOffsets, cellCounts, cellInvWeightSums, cellPoolRanks,
+                populatedCellIndices,
                 spanFirstLights, spanLightCounts, spanAliasFirstLights, spanAliasLightCounts,
                 spanAccept, populatedCells, spanCountLong);
     }
@@ -154,12 +175,19 @@ final class RtLightGrid {
     }
 
     record Data(int originX, int originY, int originZ, int dimX, int dimY, int dimZ,
-                int[] cellOffsets, int[] cellCounts, float[] cellInvWeightSums,
+                int[] cellOffsets, int[] cellCounts, float[] cellInvWeightSums, int[] cellPoolRanks,
+                int[] populatedCellIndices,
                 int[] spanFirstLights, int[] spanLightCounts,
                 int[] spanAliasFirstLights, int[] spanAliasLightCounts,
                 float[] spanAccept, int populatedCells, long representedSections) {
+        /** 16, not 12: M26's pool rank is the fourth field of LightGridCell. */
         long cellBytes() {
-            return Math.multiplyExact((long) cellOffsets.length, 12L);
+            return Math.multiplyExact((long) cellOffsets.length, 16L);
+        }
+
+        /** The rank-to-cell map the pool build dispatches over. */
+        long populatedCellBytes() {
+            return Math.multiplyExact((long) populatedCellIndices.length, 4L);
         }
 
         long spanBytes() {

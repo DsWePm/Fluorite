@@ -404,6 +404,41 @@ public struct LightGridCell {
     public uint spanOffset;
     public uint spanCount;
     public float invWeightSum;
+    /**
+     * M26: this cell's index among POPULATED cells, which addresses its slice of the presampled pool.
+     *
+     * <p>Ranked rather than linear because the dense grid reaches four million cells while the pool
+     * carries unpacked lights: at eight slots each that would be a gigabyte for a field that is mostly
+     * empty. Undefined when spanCount is zero, and unreachable there -- emitterFindGridCell rejects an
+     * empty cell before anything reads this.
+     */
+    public uint poolRank;
+};
+
+/**
+ * One presampled emitter, already unpacked, ready to be shaded against with no further loads.
+ *
+ * <p>THE POINT OF THE MILESTONE IS THE LOAD IT REMOVES. Sampling an emitter used to walk four dependent
+ * loads -- cell, span, alias, then the Light record itself -- each address waiting on the one before it,
+ * which is latency the occupancy of a ray-tracing shader cannot hide. D31 measured that walk at +20.9 ms
+ * and proved the shadow ray innocent: silencing the ray while keeping the walk made the frame SLOWER.
+ *
+ * <p>Storing the light unpacked rather than by index is what takes the chain to two loads instead of
+ * three. An index would still need the Light record fetched at an address that depends on this read,
+ * which is exactly the kind of link the pool exists to break. The cost is memory: 48 bytes a slot
+ * against 8, which the D202 sizing note weighs against a field that no longer has to be dense.
+ *
+ * <p>`pdf` is the discrete selection probability this slot was drawn with, carried so the estimator
+ * stays unbiased no matter how the pool was filled. The caller still applies the rectangle's own
+ * 1/area density in its geometry term, exactly as sampleVolumeEmitter's contract already says.
+ */
+public struct PooledLight {
+    public float3 pos;
+    public float  pdf;
+    public float3 normal;
+    public float  area;
+    public float3 radiance;
+    public float  reserved;
 };
 
 // One 16-byte Vose alias column for a cell's section distribution. The two light counts are uint16s.

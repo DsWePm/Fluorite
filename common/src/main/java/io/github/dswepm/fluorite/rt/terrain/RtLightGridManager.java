@@ -187,7 +187,8 @@ final class RtLightGridManager {
                     MemoryUtil.memPutInt(cursor, grid.cellOffsets()[i]);
                     MemoryUtil.memPutInt(cursor + 4, grid.cellCounts()[i]);
                     MemoryUtil.memPutFloat(cursor + 8, grid.cellInvWeightSums()[i]);
-                    cursor += 12;
+                    MemoryUtil.memPutInt(cursor + 12, grid.cellPoolRanks()[i]);
+                    cursor += 16;
                 }
                 cursor = upload.mapped + layout.spanOffset;
                 for (int i = 0; i < grid.spanFirstLights().length; i++) {
@@ -198,6 +199,9 @@ final class RtLightGridManager {
                     MemoryUtil.memPutFloat(cursor + 12, grid.spanAccept()[i]);
                     cursor += 16;
                 }
+                cursor = upload.mapped + layout.populatedCellOffset;
+                MemoryUtil.memIntBuffer(cursor, grid.populatedCellIndices().length)
+                        .put(grid.populatedCellIndices());
             }
             upload.flush();
 
@@ -259,6 +263,7 @@ final class RtLightGridManager {
                 grid != null ? grid.originZ() : 0, grid != null ? grid.dimX() : 0,
                 grid != null ? grid.dimY() : 0, grid != null ? grid.dimZ() : 0,
                 uploaded.data.rebaseX(), uploaded.data.rebaseY(), uploaded.data.rebaseZ(),
+                grid != null ? grid.populatedCells() : 0,
                 uploaded.requestId);
         PublishedState old = published;
         // The executor's host-side timeline wait only proves that the transfer completed. It does not
@@ -368,13 +373,14 @@ final class RtLightGridManager {
     record PublishedState(RtBuffer arena, Layout layout, int lightCount,
                           float invGlobalPowerSum,
                           int originX, int originY, int originZ, int dimX, int dimY, int dimZ,
-                          int rebaseX, int rebaseY, int rebaseZ, long generation) {
+                          int rebaseX, int rebaseY, int rebaseZ, int populatedCells,
+                          long generation) {
         private static final PublishedState EMPTY = empty(0L);
 
         private static PublishedState empty(long generation) {
             return new PublishedState(
                     null, Layout.EMPTY, 0, 0.0f,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, generation);
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, generation);
         }
 
         long lightAddress() { return address(layout.lightOffset); }
@@ -382,6 +388,11 @@ final class RtLightGridManager {
         long localAliasAddress() { return layout.hasGrid ? address(layout.localAliasOffset) : 0L; }
         long cellAddress() { return layout.hasGrid ? address(layout.cellOffset) : 0L; }
         long spanAddress() { return layout.hasGrid ? address(layout.spanOffset) : 0L; }
+
+        /** M26: the rank-to-cell map the pool build dispatches over. */
+        long populatedCellAddress() {
+            return layout.hasGrid ? address(layout.populatedCellOffset) : 0L;
+        }
 
         private long address(long offset) {
             return arena != null ? arena.deviceAddress + offset : 0L;
@@ -399,8 +410,9 @@ final class RtLightGridManager {
     }
 
     record Layout(long lightOffset, long globalAliasOffset, long localAliasOffset,
-                  long cellOffset, long spanOffset, long totalBytes, boolean hasGrid) {
-        private static final Layout EMPTY = new Layout(0, 0, 0, 0, 0, 0, false);
+                  long cellOffset, long spanOffset, long populatedCellOffset,
+                  long totalBytes, boolean hasGrid) {
+        private static final Layout EMPTY = new Layout(0, 0, 0, 0, 0, 0, 0, false);
 
         static Layout of(RtLightHierarchy.Data data, boolean includeGrid) {
             long cursor = 0L;
@@ -408,7 +420,7 @@ final class RtLightGridManager {
             cursor = align16(Math.addExact(cursor, data.lightBytes()));
             long globalAliases = cursor;
             cursor = align16(Math.addExact(cursor, data.globalAliases().bytes()));
-            long localAliases = 0L, cells = 0L, spans = 0L;
+            long localAliases = 0L, cells = 0L, spans = 0L, populatedCells = 0L;
             if (includeGrid) {
                 localAliases = cursor;
                 cursor = align16(Math.addExact(cursor, data.localAliases().bytes()));
@@ -416,8 +428,14 @@ final class RtLightGridManager {
                 cursor = align16(Math.addExact(cursor, data.grid().cellBytes()));
                 spans = cursor;
                 cursor = align16(Math.addExact(cursor, data.grid().spanBytes()));
+                // M26's rank-to-cell map. It rides in this arena rather than in a per-frame buffer
+                // because it changes exactly when the grid does, which is rarely -- the POOL is rebuilt
+                // every frame, but the map telling the build which cell a rank belongs to is not.
+                populatedCells = cursor;
+                cursor = align16(Math.addExact(cursor, data.grid().populatedCellBytes()));
             }
-            return new Layout(lights, globalAliases, localAliases, cells, spans, cursor, includeGrid);
+            return new Layout(lights, globalAliases, localAliases, cells, spans, populatedCells,
+                    cursor, includeGrid);
         }
 
         private static long align16(long value) {
