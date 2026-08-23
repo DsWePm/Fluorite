@@ -153,7 +153,7 @@
   "fluorite.options.rt.debugView.11": "水體焦散",
   "fluorite.options.rt.debugView.17": "空氣透視 froxel",
   "fluorite.options.rt.debugView.18": "體積天空開闊度",
-  "fluorite.options.rt.debugView.18.tooltip": "該像素相機段中點處、跨幀累積的上半球可見比例。藍＝完全封閉，綠＝一點點，黃＝約一半，橙＝大部分，紅＝完全開闊；顏色發暗表示該格還在攢樣本。",
+  "fluorite.options.rt.debugView.18.tooltip": "該像素相機段中點處、跨幀累積的上半球可見比例。藏青＝完全封閉（消費者讀到的就是 0），青色＝有地板值——很小但不是 0，足以在沒有光的房間裡把霧照亮——然後依次是藍、綠、黃、橙、紅趨向完全開闊。顏色發暗表示該格還在攢樣本。",
   "fluorite.options.rt.debugView.20": "相機前綴散射",
   "fluorite.options.rt.debugView.21": "合成前綴 A/B",
   "fluorite.options.rt.debugView.22": "雲鏈路探針",

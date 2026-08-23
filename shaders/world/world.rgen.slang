@@ -955,16 +955,23 @@ float3 froxelDebug(float2 uv) {
  */
 // The volumetric visibility grid (M13.2), sampled at the MIDPOINT of this pixel's camera segment.
 //
-// FIVE NAMED BANDS, NOT A GRADIENT. This used to be two channels read as four colours; it now carries one
-// scalar, and a scalar drawn as a shade asks the reader to judge a number through a tonemap, which eyes
-// do not do. The honest report of a greyscale field is "grey, but I cannot tell which grey". Quantised,
-// the answer is a colour that can be named and spoken aloud.
+// NAMED BANDS, NOT A GRADIENT, and the bottom two exist because the first version of this view could not
+// tell a correct reading from the failure it was built to find. A scalar drawn as a shade asks the reader
+// to judge a number through a tonemap, which eyes do not do; quantised, the answer is a colour that can be
+// named and spoken aloud.
 //
-//   blue : sealed, no sky at all     green : a little     yellow : about half
-//   orange : most of it              red : fully open
+//   navy : sealed, below the sampled grid's own quantum   cyan : a FLOOR -- small but not zero
+//   blue : a little   green : some   yellow : about half   orange : most of it   red : fully open
 //
-// Dimmed means the cell has not yet gathered its full sample count, so convergence is visible without a
-// sixth colour. Black is a point outside the grid or with no grid published.
+// WHY NAVY AND CYAN ARE SEPARATE. The bands were uniform fifths, so the lowest one covered 0 to 0.2 and
+// painted a stalled accumulator sitting at 0.125 the same colour as a genuinely sealed cell. A sealed room
+// with visibly lit fog was reported as "the grid says sealed, so the grid is fine" -- and the grid was not
+// fine. A diagnostic whose resolution is coarser than the defect it is pointed at will confirm whichever
+// answer it was aimed with. The split is at 1.5/255 because that is where the UNORM8 grid the consumers
+// actually sample rounds to zero: below it the fog receives nothing, above it the fog receives something.
+//
+// Dimmed means the cell has not yet gathered its full sample count, so convergence is visible without
+// another hue. Black is a point outside the grid or with no grid published.
 //
 // The midpoint of the camera segment rather than a fixed distance: a fixed distance would report the air
 // on the far side of a wall while the player stands in a room looking at that wall, which is the exact
@@ -976,8 +983,15 @@ float3 froxelDebug(float2 uv) {
 float3 volumeVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
     CameraRay cam = cameraRay(dispatchIndex, dimensions);
     float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
-    int band = clamp(int(volumeSkyOpenness(p) * 5.0), 0, 4);
-    return band == 0 ? float3(0.0, 0.0, 0.9)
+    float open = volumeSkyOpenness(p);
+    if (open < 1.5 / 255.0) {
+        return float3(0.0, 0.0, 0.35);   // navy   : sealed, and the consumers see exactly zero
+    }
+    if (open < 0.05) {
+        return float3(0.0, 0.85, 0.95);  // cyan   : a floor -- small, nonzero, and lighting the fog
+    }
+    int band = clamp(int((open - 0.05) * (5.0 / 0.95)), 0, 4);
+    return band == 0 ? float3(0.1, 0.25, 1.0)
          : band == 1 ? float3(0.0, 0.7, 0.2)
          : band == 2 ? float3(0.9, 0.9, 0.0)
          : band == 3 ? float3(1.0, 0.45, 0.0)

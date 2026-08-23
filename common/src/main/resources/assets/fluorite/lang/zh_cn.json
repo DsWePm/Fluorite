@@ -325,7 +325,7 @@
   "fluorite.options.rt.debugView.11": "水体焦散",
   "fluorite.options.rt.debugView.17": "空气透视 froxel",
   "fluorite.options.rt.debugView.18": "体积天空开阔度",
-  "fluorite.options.rt.debugView.18.tooltip": "该像素相机段中点处、跨帧累积的上半球可见比例。蓝＝完全封闭，绿＝一点点，黄＝约一半，橙＝大部分，红＝完全开阔；颜色发暗表示该格还在攒样本。",
+  "fluorite.options.rt.debugView.18.tooltip": "该像素相机段中点处、跨帧累积的上半球可见比例。藏青＝完全封闭（消费者读到的就是 0），青色＝有地板值——很小但不是 0，足以在没有光的房间里把雾照亮——然后依次是蓝、绿、黄、橙、红趋向完全开阔。颜色发暗表示该格还在攒样本。",
   "fluorite.options.rt.debugView.20": "相机前缀散射",
   "fluorite.options.rt.debugView.21": "合成前缀 A/B",
   "fluorite.options.rt.debugView.22": "云链路探针",

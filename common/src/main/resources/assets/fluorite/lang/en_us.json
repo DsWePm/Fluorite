@@ -325,7 +325,7 @@
   "fluorite.options.rt.debugView.11": "Water Caustic",
   "fluorite.options.rt.debugView.17": "Aerial perspective froxel",
   "fluorite.options.rt.debugView.18": "Volume Sky Openness",
-  "fluorite.options.rt.debugView.18.tooltip": "The accumulated fraction of the upper hemisphere reaching this pixel camera-segment midpoint. Blue sealed, green a little, yellow about half, orange most, red fully open; dimmed while the cell is still gathering samples.",
+  "fluorite.options.rt.debugView.18.tooltip": "The accumulated fraction of the upper hemisphere reaching this pixel camera-segment midpoint. Navy sealed (the consumers see zero), cyan a floor - small but not zero, and enough to light fog in a dark room - then blue, green, yellow, orange, red toward fully open. Dimmed while the cell is still gathering samples.",
   "fluorite.options.rt.debugView.20": "Camera-prefix in-scatter",
   "fluorite.options.rt.debugView.21": "Composite prefix A/B",
   "fluorite.options.rt.debugView.22": "Cloud chain probe",

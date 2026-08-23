@@ -68,7 +68,15 @@ public static const int VIS_GRID_D = 64;
  * the cell was born would eventually stop moving. At 60 fps, 64 is about a second to converge and about a
  * second to forget, and the quantity is geometry rather than light, so a second is fast.
  *
- * <p>Stored as n/255 in an 8-bit channel, so every integer up to 255 round-trips exactly.
+ * <p><b>WHICH IS WHY THE HISTORY IS FLOAT AND NOT UNORM8.</b> This is a feedback loop, and an 8-bit
+ * feedback loop has a dead zone. The decay step is open/64; stored as a 0..255 code that is k/64, and
+ * round() only moves the code once k/64 exceeds 0.5. So every code from 1 to 32 was a FIXED POINT: a cell
+ * that had ever been open stalled at up to 32/255 = 0.125 and stayed there for good.
+ *
+ * <p>That is not a rounding nicety, it is a lit sealed room. Build a dirt hut around yourself and the
+ * cells inside it were open a moment earlier; the average decays from 1.0 and then stops at 0.125, which
+ * multiplied by full daylight sky radiance is plainly visible fog in a room with no light in it. The
+ * sampled grid stays UNORM8 because reading it is one-way — quantisation there cannot accumulate.
  */
 static const float VIS_ACCUM_MAX = 64.0;
 
@@ -187,7 +195,7 @@ void main(uint3 id: SV_DispatchThreadID) {
                 && src.x < VIS_GRID_W && src.y < VIS_GRID_H && src.z < VIS_GRID_D) {
             float4 prior = historyRead[src];
             open = prior.r;
-            n = round(prior.g * 255.0);
+            n = prior.g;
         }
     }
     // A running mean while the cell is young, an exponential moving average once it is full. One
@@ -198,7 +206,10 @@ void main(uint3 id: SV_DispatchThreadID) {
     // G carries the sample count so a reprojected cell knows how much weight its history has earned.
     // Consumers read R alone; B and A are held at constants so a half-written record cannot be mistaken
     // for data.
-    float4 record = float4(open, n * (1.0 / 255.0), 0.0, 1.0);
-    historyWrite[int3(id)] = record;
-    visibilityGrid[int3(id)] = record;
+    //
+    // TWO RECORDS, NOT ONE, because the two images have different jobs. The history is the accumulator
+    // and keeps full float precision plus the raw count. The sampled grid is UNORM8 and only ever read,
+    // so it takes the count scaled into its range and loses nothing that can come back around.
+    historyWrite[int3(id)] = float4(open, n, 0.0, 1.0);
+    visibilityGrid[int3(id)] = float4(open, n * (1.0 / 255.0), 0.0, 1.0);
 }

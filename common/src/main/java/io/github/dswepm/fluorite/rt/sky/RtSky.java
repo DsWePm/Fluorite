@@ -593,12 +593,22 @@ public final class RtSky {
             // survived visibility filtering without allocating a second image.
             sky.visibilityGrid = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "volume visibility grid");
-            // The accumulator, which consumers never see. 64x32x64 x 4 B is 512 KiB apiece, so carrying
+            // The accumulator, which consumers never see. 64x32x64 x 8 B is 1 MiB apiece, so carrying
             // two of them to keep the sampled binding stable is not a budget question.
+            //
+            // FLOAT, NOT UNORM8, AND THAT IS A CORRECTNESS REQUIREMENT. This image is a feedback loop:
+            // each frame reads its own previous value and writes back value + (sample - value)/64. In
+            // 8 bits that decrement is smaller than half a code for every code up to 32, so round()
+            // returns the code it was given and the average STALLS -- a cell that had ever seen sky sat
+            // at up to 0.125 for ever, and 0.125 of full daylight sky radiance is a visibly lit sealed
+            // room. R16G16B16A16_SFLOAT rather than a two-channel float because it is on Vulkan's
+            // mandatory storage-image format list, which R16G16_SFLOAT is not; the froxel already uses
+            // it. The sampled grid below stays UNORM8, because reading it is one-way and quantisation
+            // that cannot come back around cannot accumulate.
             sky.visibilityHistory = new RtImage[2];
             for (int i = 0; i < 2; i++) {
                 sky.visibilityHistory[i] = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
-                        VK10.VK_FORMAT_R8G8B8A8_UNORM, "volume visibility history " + i);
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "volume visibility history " + i);
             }
             for (int target = 0; target < 2; target++) {
                 long set = visibilityBakes[target].descriptorSet();
