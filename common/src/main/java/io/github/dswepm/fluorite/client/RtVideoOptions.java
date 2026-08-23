@@ -235,7 +235,10 @@ public final class RtVideoOptions {
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",
-                                FluoriteConfig.Rt.Diagnostics.RESTIR_STATS)));
+                                FluoriteConfig.Rt.Diagnostics.RESTIR_STATS),
+                        bool("fluorite.options.rt.lightPool",
+                                FluoriteConfig.Rt.Composite.LIGHT_POOL),
+                        lightPoolDepth()));
             };
         }
     }
@@ -1913,10 +1916,6 @@ public final class RtVideoOptions {
             setting::set);
     }
 
-    private static OptionInstance<Boolean> fogScatterVertex() {
-        return bool("fluorite.options.rt.fogScatterVertex", FluoriteConfig.Rt.Volumetrics.SCATTER_VERTEX);
-    }
-
     /**
      * Let block emitters light the medium at the sampled scattering event.
      *
@@ -2268,6 +2267,26 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 186),
             setting.value() <= 0 ? 0 : Math.clamp((setting.value() - 1500) / 100 + 1, 1, 186),
             steps -> setting.set(steps == 0 ? 0 : 1500 + (steps - 1) * 100));
+    }
+
+    /**
+     * M26's pool depth, in the settings screen because it is what an experiment moves.
+     *
+     * <p>Deeper means a sample is less likely to keep drawing the same few emitters out of a crowded
+     * cell, at 48 bytes a slot times the populated cells. Too shallow and the pool stops being a sample
+     * of the cell's distribution and becomes a fixed choice; too deep and it stops fitting in cache,
+     * which is the one thing this feature cannot afford to lose.
+     */
+    private static OptionInstance<Integer> lightPoolDepth() {
+        IntSetting setting = FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH;
+        return new OptionInstance<>(
+            "fluorite.options.rt.lightPoolDepth",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.lightPoolDepth.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(1, 32),
+            Math.clamp(setting.value(), 1, 32),
+            setting::set);
     }
 
     private static OptionInstance<Integer> debugView() {
