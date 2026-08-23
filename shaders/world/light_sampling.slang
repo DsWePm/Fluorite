@@ -35,6 +35,25 @@ float emitterUnpackUnsignedFloat(uint bits, uint mantissaBits) {
             * exp2(float(int(exponent) - 15));
 }
 
+/**
+ * A pooled slot as the Light record it copies, so every decode helper below serves both.
+ *
+ * <p>Written as a conversion rather than by templating the helpers because the two structs are not the
+ * same thing and should not be made interchangeable: a Light lives in the terrain arena and is addressed
+ * by index, a PooledLight lives in a per-frame pool and is addressed by rank and slot. Only their packed
+ * geometry is shared, and this is the one place that says so.
+ */
+public Light pooledLightRecord(PooledLight pooled) {
+    Light light;
+    light.pos = pooled.pos;
+    light.le = pooled.le;
+    light.halfUxy = pooled.halfUxy;
+    light.halfUzVx = pooled.halfUzVx;
+    light.halfVyz = pooled.halfVyz;
+    light.section = pooled.section;
+    return light;
+}
+
 public float3 emitterRadiance(Light light) {
     uint packed = light.le;
     return float3(emitterUnpackUnsignedFloat(packed & 0x7ffu, 6u),
@@ -108,8 +127,9 @@ void emitterSelectSection(LightBufferAddresses addresses, uint firstLight, uint 
     lightIndex = firstLight + localIndex;
 }
 
-void emitterSelectGrid(LightBufferAddresses addresses, LightGridCell cell,
-                       inout uint seed, out uint lightIndex) {
+/** Public for M26's pool build, which runs this once per cell per slot so shading never runs it. */
+public void emitterSelectGrid(LightBufferAddresses addresses, LightGridCell cell,
+                              inout uint seed, out uint lightIndex) {
     ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(addresses.gridSpan);
     float aliasSample = rndf(seed) * float(cell.spanCount);
     uint column = min(uint(aliasSample), cell.spanCount - 1u);
@@ -120,8 +140,9 @@ void emitterSelectGrid(LightBufferAddresses addresses, LightGridCell cell,
     emitterSelectSection(addresses, firstLight, count, seed, lightIndex);
 }
 
-float emitterProposalPdf(WorldPush wp, LightBufferAddresses addresses, Light light, float3 le,
-                         LightGridCell cell, int3 cellCoord, bool local) {
+/** Public for the same reason emitterSelectGrid is: the pool records the density it drew with. */
+public float emitterProposalPdf(WorldPush wp, LightBufferAddresses addresses, Light light, float3 le,
+                                LightGridCell cell, int3 cellCoord, bool local) {
     float power = max(0.0, emitterArea(light) * emitterLuminance(le));
     float globalPdf = addresses.globalAlias != 0
             ? power * wp.lightRebase.w : 1.0 / float(wp.lightCount);
@@ -140,6 +161,86 @@ float emitterProposalPdf(WorldPush wp, LightBufferAddresses addresses, Light lig
     }
     float3 deltaF = float3(delta);
     return power * cell.invWeightSum / max(1.0, dot(deltaF, deltaF));
+}
+
+/**
+ * The same proposal, read out of M26's presampled pool instead of walked out of the grid.
+ *
+ * <p><b>TWO DEPENDENT LOADS INSTEAD OF FOUR.</b> The walk below reaches the cell, then a span inside it,
+ * then an alias column, then the Light record, and every address waits on the value before it. That is
+ * latency a ray-tracing shader's occupancy cannot hide, and D31 proved it was the cost rather than the
+ * shadow ray: silencing the ray while keeping the walk made the frame slower still. Here the cell
+ * coordinate is arithmetic, the cell load gives a rank, and the pool slot is the light. The span and the
+ * alias are gone from the sample entirely -- they ran once per cell in the build.
+ *
+ * <p><b>IT IS THE SAME ESTIMATOR, not an approximation of it.</b> The slot was filled by running exactly
+ * the walk this function replaces, and it carries the probability that walk drew it with. Nothing here
+ * re-derives a density, which is the one way a cache like this usually goes wrong.
+ *
+ * <p>The point on the rectangle is still drawn HERE, per sample, from the half-extents the slot carries.
+ * Baking it into the slot would hand every pixel reading that slot the same point -- correlation across
+ * the screen, which temporal accumulation cannot average away because every frame carries the same one.
+ *
+ * <p><b>THREE OUTCOMES, NOT TWO, AND THE THIRD ONE IS THE WHOLE POINT.</b> "The pool cannot answer" and
+ * "the pool answered, and the answer is that this draw contributes nothing" are different facts that
+ * were once both spelled as a false return. The caller then walked the grid in both cases, which handed
+ * a REJECTED draw a second chance instead of the zero the walk itself would have returned -- a pooled
+ * volume brighter than the walk by exactly the rejection rate, for no reason a reader could see.
+ */
+public static const uint EMITTER_POOL_MISS = 0u;   // no jurisdiction here; walk the grid instead
+public static const uint EMITTER_POOL_HIT = 1u;    // `sample` is filled
+public static const uint EMITTER_POOL_REJECT = 2u; // drawn and rejected; contribute zero, do NOT walk
+
+public uint sampleVolumeEmitterPooled(WorldPush wp, LightBufferAddresses addresses, float3 receiver,
+                                      inout uint seed, inout uint proposalSeed,
+                                      out EmitterSample sample) {
+    sample.pos = float3(0.0, 0.0, 0.0);
+    sample.normal = float3(0.0, 1.0, 0.0);
+    sample.radiance = float3(0.0, 0.0, 0.0);
+    sample.area = 0.0;
+    sample.sourcePdf = 0.0;
+    if (wp.lightPoolAddr == 0 || wp.lightPoolDepth == 0u || addresses.gridCell == 0) {
+        return EMITTER_POOL_MISS;
+    }
+    // The same jitter the walk applies, so the two paths agree about which cell a receiver belongs to
+    // near a boundary. Dropping it would make the switch change the picture by more than where a load
+    // happens, which is exactly what an isolation switch must not do.
+    float3 gridLookup = receiver
+            + (float3(rndf(proposalSeed), rndf(proposalSeed), rndf(proposalSeed)) - 0.5)
+              * wp.lightGridOrigin.w;
+    int3 coord = int3(floor((gridLookup - wp.lightGridOrigin.xyz) / wp.lightGridOrigin.w));
+    if (any(coord < int3(0, 0, 0)) || any(coord >= wp.lightGridDims.xyz)) {
+        return EMITTER_POOL_MISS;
+    }
+    uint linear = (uint(coord.z) * uint(wp.lightGridDims.y) + uint(coord.y))
+            * uint(wp.lightGridDims.x) + uint(coord.x);
+    LightGridCell cell = ConstPtr<LightGridCell>(addresses.gridCell)[linear];
+    if (cell.spanCount == 0u) {
+        return EMITTER_POOL_MISS;
+    }
+    uint slot = min(uint(rndf(proposalSeed) * float(wp.lightPoolDepth)), wp.lightPoolDepth - 1u);
+    PooledLight pooled = ConstPtr<PooledLight>(wp.lightPoolAddr)[cell.poolRank * wp.lightPoolDepth + slot];
+    // Negative: the build never drew here, so the grid is still the authority -- walk it.
+    if (pooled.pdf < 0.0) {
+        return EMITTER_POOL_MISS;
+    }
+    // Zero: the build DID draw, and emitterProposalPdf rejected it. sampleVolumeEmitter answers that
+    // with `return false` and volumeNee turns it into black. Walking again here would resample a
+    // distribution that has already been sampled.
+    if (!(pooled.pdf > 0.0)) {
+        return EMITTER_POOL_REJECT;
+    }
+    Light light = pooledLightRecord(pooled);
+    float s = rndf(seed) * 2.0 - 1.0;
+    float t = rndf(seed) * 2.0 - 1.0;
+    sample.pos = light.pos + wp.lightRebase.xyz
+            + s * emitterHalfU(light) + t * emitterHalfV(light);
+    sample.normal = emitterNormal(light);
+    sample.radiance = emitterRadiance(light);
+    sample.area = emitterArea(light);
+    sample.sourcePdf = pooled.pdf;
+    // A zero-area emitter is the walk's other rejection, and it earns the same zero rather than a retry.
+    return sample.area > 0.0 ? EMITTER_POOL_HIT : EMITTER_POOL_REJECT;
 }
 
 /**

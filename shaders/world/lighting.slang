@@ -436,8 +436,39 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
             uint globalsBefore = (sc * globalCandidateCount) / staticCandidateCount;
             uint globalsAfter = ((sc + 1u) * globalCandidateCount) / staticCandidateCount;
             bool useLocal = hasGridCell && globalsAfter == globalsBefore;
-            selectLightGridLight(gridCell, useLocal, proposalSeed, li);
-            Light lg = ConstPtr<Light>(pc.lightBufAddr)[li];
+            // M26 slice two: a LOCAL candidate can come out of the presampled pool, which replaces the
+            // span, the alias column and the Light load with one read. The cell was already found once
+            // for the whole vertex, so what this removes is three dependent loads PER CANDIDATE -- at
+            // the default eight candidates that is the bulk of this loop's memory latency.
+            //
+            // Global candidates keep the walk: the pool is per cell and has nothing to say about a light
+            // outside the neighbourhood, which is exactly the support the global stratum exists to give.
+            Light lg;
+            bool fromPool = false;
+            float pooledLocalPdf = 0.0;
+            if (useLocal && (worldPush.environmentFlags & ENVIRONMENT_LIGHT_POOL_SURFACE) != 0u
+                    && worldPush.lightPoolAddr != 0 && worldPush.lightPoolDepth != 0u) {
+                uint slot = min(uint(rndf(proposalSeed) * float(worldPush.lightPoolDepth)),
+                                worldPush.lightPoolDepth - 1u);
+                PooledLight pooled = ConstPtr<PooledLight>(worldPush.lightPoolAddr)[
+                        gridCell.poolRank * worldPush.lightPoolDepth + slot];
+                // ONLY a negative density sends this back to the walk. A ZERO one is a real answer: the
+                // build drew a light whose LOCAL density is zero, and proposalPdf gives exactly such a
+                // light (1-alpha)*globalPdf and keeps it as a candidate. Treating zero as "empty" here
+                // replaced a candidate the walk would have kept, which is the surface half of the same
+                // bug the volume path had -- and it needs no special case to fix, because the mixture
+                // below already does the right thing with a zero local half.
+                if (pooled.pdf >= 0.0) {
+                    lg = pooledLightRecord(pooled);
+                    li = pooled.lightIndex;
+                    pooledLocalPdf = pooled.pdf;
+                    fromPool = true;
+                }
+            }
+            if (!fromPool) {
+                selectLightGridLight(gridCell, useLocal, proposalSeed, li);
+                lg = ConstPtr<Light>(pc.lightBufAddr)[li];
+            }
             // Soft shadows: uniform point on the emitter rectangle ((s,t) in [-1,1]^2, pdf 1/area).
             float s = rndf(seed) * 2.0 - 1.0;
             float t = rndf(seed) * 2.0 - 1.0;
@@ -449,8 +480,22 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
             // Scaled by this stratum's share of the budget, for the same reason the dynamic one is: the
             // mixture is over all M candidates, and holding some back changed what fraction of them this
             // density describes.
-            sourcePdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability)
-                    * (float(staticCandidateCount) / float(candidateCount));
+            //
+            // THE POOL STORES HALF THE MIXTURE. Its slot carries the LOCAL density, computed by the build
+            // against this same cell; the surface estimator samples alpha*local + (1-alpha)*global and
+            // needs both. The missing half is reconstructed rather than looked up -- power is area times
+            // luminance, and both are already in hand -- so the pooled candidate costs no extra load and
+            // lands on exactly the density proposalPdf would have returned.
+            float mixedPdf;
+            if (fromPool) {
+                float power = max(0.0, area * luminance(le));
+                float globalPdf = pc.lightAliasAddr != 0
+                        ? power * worldPush.lightRebase.w : 1.0 / float(worldPush.lightCount);
+                mixedPdf = localProbability * pooledLocalPdf + (1.0 - localProbability) * globalPdf;
+            } else {
+                mixedPdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability);
+            }
+            sourcePdf = mixedPdf * (float(staticCandidateCount) / float(candidateCount));
         }
         float phat;
         evalSampleContrib(ctx, sp, lightNormal, le, area, phat);
@@ -496,8 +541,19 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
     addresses.localAlias = pc.lightLocalAliasAddr;
     addresses.gridCell = pc.lightGridCellAddr;
     addresses.gridSpan = pc.lightGridSpanAddr;
+    // M26: the pool answers when it has been built, and the walk answers otherwise. Both produce the
+    // same proposal with the same density -- the pool's slots were filled by running the walk -- so this
+    // is a choice of WHERE the loads happen, not of what is sampled.
     EmitterSample emitter;
-    if (!sampleVolumeEmitter(worldPush, addresses, pos, seed, proposalSeed, emitter)) {
+    uint poolStatus = sampleVolumeEmitterPooled(worldPush, addresses, pos, seed, proposalSeed, emitter);
+    // A REJECTED pooled draw is a zero, not a reason to draw again. The walk this pool stands in for
+    // returns false for exactly these lights and volumeNee turns that into black; redrawing would give
+    // the rejection a second chance and leave the pooled fog brighter than the walk it replaces.
+    if (poolStatus == EMITTER_POOL_REJECT) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    if (poolStatus == EMITTER_POOL_MISS
+            && !sampleVolumeEmitter(worldPush, addresses, pos, seed, proposalSeed, emitter)) {
         return float3(0.0, 0.0, 0.0);
     }
     float3 toL = emitter.pos - pos;

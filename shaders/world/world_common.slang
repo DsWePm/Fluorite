@@ -18,6 +18,16 @@ public static const uint SKY_PROVIDER_LOCAL_AMBIENT = 1u;
 public static const uint SKY_PROVIDER_ENVIRONMENT = 2u;
 public static const uint ENVIRONMENT_AMBIENT_UNOCCLUDED = 1u << 0u;
 public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
+// M26 slice two: let SURFACE shading read the presampled pool as well as the volume.
+//
+// Its own bit rather than a share of the volume's switch, because they are two claims. Slice one was
+// validated by toggling the pool and watching gpu.traceIndirect; if that same switch also moved the
+// surface estimator, the measurement it produced would no longer mean what it was taken to mean.
+//
+// Bit 2 is the one M25 vacated when its hash grid was withdrawn. The word is named for the environment
+// and has become the frame's general capability word -- the fog's in-scatter cap already sits in it --
+// which is a smaller wrong than growing WorldPush by sixteen bytes to carry one bit.
+public static const uint ENVIRONMENT_LIGHT_POOL_SURFACE = 1u << 2u;
 // How many path segments may ADD fog light, counted from the camera. Zero means all of them, which is
 // the shipped behaviour. Bits 4-7, so 0-15.
 //
@@ -316,6 +326,21 @@ public struct WorldPush {
     public uint     restirSpatialNeighbours;
 
     /**
+     * M26's presampled emitter pool: base address and slots per cell.
+     *
+     * <p>0 and 0 whenever the switch sits at its published position, and every sampler then walks the
+     * grid exactly as it always has. That is the off state iron law 8 asks for, spelled as an absent
+     * buffer rather than as a branch, so there is nothing to forget.
+     *
+     * <p>HERE RATHER THAN IN WorldPushConstants, and not by preference: that block is 128 bytes, which is
+     * the guaranteed floor, and counting its fields leaves four bytes -- half an address. M25 handed
+     * five lanes back to this struct when its hash grid was withdrawn; these two are a live feature
+     * taking two of them, which is what that space is for.
+     */
+    public uint64_t lightPoolAddr;
+    public uint     lightPoolDepth;
+
+    /**
      * M18's per-frame sphere emitters -- entities, held blocks, flame particles -- and how many.
      *
      * <p>THESE POSITIONS ARE ALREADY IN CURRENT REBASED SPACE and must NOT have lightRebase added, unlike
@@ -404,6 +429,60 @@ public struct LightGridCell {
     public uint spanOffset;
     public uint spanCount;
     public float invWeightSum;
+    /**
+     * M26: this cell's index among POPULATED cells, which addresses its slice of the presampled pool.
+     *
+     * <p>Ranked rather than linear because the dense grid reaches four million cells while the pool
+     * carries unpacked lights: at eight slots each that would be a gigabyte for a field that is mostly
+     * empty. Undefined when spanCount is zero, and unreachable there -- emitterFindGridCell rejects an
+     * empty cell before anything reads this.
+     */
+    public uint poolRank;
+};
+
+/**
+ * One presampled emitter: the Light record itself, plus the probability it was drawn with.
+ *
+ * <p>THE POINT OF THE MILESTONE IS THE LOAD IT REMOVES. Sampling an emitter used to walk four dependent
+ * loads -- cell, span, alias, then the Light record -- each address waiting on the one before it, which
+ * is latency a ray-tracing shader's occupancy cannot hide. D31 measured that walk at +20.9 ms and proved
+ * the shadow ray innocent: silencing the ray while keeping the walk made the frame SLOWER, which can
+ * only be the walk and the register pressure around it.
+ *
+ * <p>CARRYING THE RECORD RATHER THAN AN INDEX is what takes the chain to two loads instead of three. An
+ * index would leave the Light to be fetched at an address depending on this read, which is precisely the
+ * link the pool exists to break. It costs 16 bytes a slot over an index, and nothing else: these are the
+ * same packed lanes Light already stores, so emitterRadiance, emitterHalfU/V, emitterArea and
+ * emitterNormal decode a pooled slot with no new code and no new arithmetic.
+ *
+ * <p>THE RECTANGLE POINT IS NOT BAKED IN, and that is the reason this holds half-extents rather than a
+ * finished position. Drawing the point at build time would give every pixel that reads a slot the same
+ * point on the emitter -- correlation across the screen rather than noise, which no temporal accumulator
+ * removes because it is not noise. So the slot chooses the LIGHT and the sample still chooses the point.
+ *
+ * <p>`pdf` is the discrete selection probability the slot was drawn with, carried so the estimator stays
+ * unbiased however the pool was filled. The caller still applies the rectangle's own 1/area density in
+ * its geometry term, exactly as sampleVolumeEmitter's contract already says.
+ */
+public struct PooledLight {
+    public float3 pos;      // raw, unrebased: the sampler adds lightRebase as it always has
+    public float  pdf;      // 0 means this slot holds nothing
+    public uint   le;
+    public uint   halfUxy;
+    public uint   halfUzVx;
+    public uint   halfVyz;
+    public uint   section;
+    /**
+     * The emitter's index in the terrain light buffer, and it is NOT spare bookkeeping.
+     *
+     * <p>A surface sample goes into a ReSTIR reservoir, and storedLightStillPresent re-loads Light by
+     * this index a frame later to decide whether the stored sample may be reused. A pooled slot that
+     * could not name its light would validate reuse against whatever now sits at some other index --
+     * which is not a crash, it is last frame's light wearing this frame's geometry.
+     *
+     * <p>The volume path never reads it: M is one there and nothing is reused.
+     */
+    public uint   lightIndex;
 };
 
 // One 16-byte Vose alias column for a cell's section distribution. The two light counts are uint16s.

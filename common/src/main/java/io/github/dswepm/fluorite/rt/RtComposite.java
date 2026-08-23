@@ -70,6 +70,7 @@ import io.github.dswepm.fluorite.rt.overlay.RtWorldOverlay;
 import io.github.dswepm.fluorite.rt.overlay.RtRainStreaks;
 import io.github.dswepm.fluorite.rt.pipeline.RtHdrCompositePipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtLensPipeline;
+import io.github.dswepm.fluorite.rt.pipeline.RtLightPoolPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtSdrPresentPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
@@ -191,6 +192,12 @@ public final class RtComposite {
         }
         if (fogActive && preset.fog().localLights()) {
             flags |= 1 << 1; // ENVIRONMENT_FROXEL_LOCAL_LIGHTS
+        }
+        // M26 slice two. Bit 2, vacated when M25's hash grid was withdrawn. Raised on the POOL side, so
+        // a zero word is the published renderer.
+        if (FluoriteConfig.Rt.Composite.LIGHT_POOL.value()
+                && FluoriteConfig.Rt.Composite.LIGHT_POOL_SURFACE.value()) {
+            flags |= 1 << 2; // ENVIRONMENT_LIGHT_POOL_SURFACE
         }
         // Bits 4-7. Zero is every segment, so the shipped behaviour is still a zero word.
         flags |= (FluoriteConfig.Rt.Volumetrics.inScatterSegments() & 0xF) << 4;
@@ -1561,6 +1568,9 @@ public final class RtComposite {
     // settle the question. It is also the dial most likely to move -- resolution and step count are
     // both one constant away.
     private static final int GPU_ZONE_CLOUD_SHADOW = 14;
+    // M26's pool build. Its own zone because the whole milestone is a claim about where a cost moved:
+    // this number has to be readable against gpu.traceIndirect, or "the walk got cheaper" is unfalsifiable.
+    private static final int GPU_ZONE_LIGHT_POOL = 15;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtLensPipeline lensPipeline;
@@ -1605,6 +1615,39 @@ public final class RtComposite {
      * than one 130 MB fill that happens once per allocation.
      */
     private boolean reservoirStoreNeedsClear;
+    /**
+     * M26's presampled emitter pool. Null whenever the switch sits at its published position, so the off
+     * state costs no VRAM either.
+     *
+     * <p>Sized by POPULATED cells rather than by the dense grid, and it has to be: the dense grid reaches
+     * four million cells while a slot carries a light record. Ranked, the pool is proportional to the
+     * cells that actually hold one.
+     */
+    private RtBuffer lightPool;
+    private long lightPoolSlots;
+    /**
+     * The depth the pool was SIZED with, which is the only depth anything may publish or dispatch.
+     *
+     * <p>The knob is read in exactly one place -- ensureLightPool -- and everything downstream reads
+     * this instead. Reading the live config at the push-constant site would let a knob moved between the
+     * resize and the record address a pool built for a different depth, and the shader indexes by
+     * `rank * depth + slot`: a depth larger than the pool's runs off the end of the allocation. The
+     * clamps that used to guard each site were a second, independent copy of the config's own bound,
+     * which is a defect waiting for the day the two disagree; IntSetting already sanitises on every
+     * write, so value() cannot return an out-of-range depth in the first place.
+     */
+    private int lightPoolDepth;
+    /**
+     * High-water mark of the pool's allocation, so a shrink cannot hide the worst case that sized it.
+     *
+     * <p>The mark was introduced believing it would also keep the log short, on the reasoning that only
+     * a new peak prints. It does not, and the first run said so plainly: 530 lines in four minutes,
+     * because the populated cell count grows MONOTONICALLY while chunks stream in, so every resize is a
+     * new peak and "only on a new peak" is every resize. That is why the line is at debug rather than
+     * info -- the mark earns its keep by reporting the peak, not by rationing the output.
+     */
+    private long lightPoolPeakBytes;
+    private RtLightPoolPipeline lightPoolPipeline;
     private final RtRestirStats restirStats = new RtRestirStats(PUSH_RING);
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
@@ -2105,7 +2148,8 @@ public final class RtComposite {
                         "gpu.skyBake", "gpu.visBake", "gpu.froxelBake",
                         "gpu.waterSim", "gpu.waterDeform",
                         "gpu.entityBlas", "gpu.tlasBuild", "gpu.rainExposure", "gpu.rainStreak",
-                        "gpu.lensSpatial", "gpu.displayMap", "gpu.bloomFlare", "gpu.cloudShadow");
+                        "gpu.lensSpatial", "gpu.displayMap", "gpu.bloomFlare", "gpu.cloudShadow",
+                        "gpu.lightPool");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -2347,6 +2391,59 @@ public final class RtComposite {
 
     private static double frustumVolume(double d, double tanX, double tanY) {
         return (2.0 * d * tanX) * (2.0 * d * tanY) * d / 3.0;
+    }
+
+    /** 48 bytes: PooledLight. Mirrored from world_common.slang and pinned by RtLightPoolContractTest. */
+    private static final long POOLED_LIGHT_BYTES = 48L;
+
+    /**
+     * Match the pool to the light grid that was published, reallocating only when the shape changes.
+     *
+     * <p>NOT IN ensureOutput, which is the resize path and calls waitIdle. This size follows the light
+     * grid rather than the window: it moves when the terrain republishes, which is a background build
+     * landing at an arbitrary frame, and stalling the device for it would turn a routine chunk load into
+     * a hitch. The old buffer is retired behind the graphics use instead, which is what that mechanism is
+     * for.
+     */
+    private void ensureLightPool(RtContext ctx, RtTerrain terrain,
+                                 RtGpuExecutor.GraphicsUse graphicsUse) {
+        long cells = 0L;
+        int depth = 0;
+        long want = 0L;
+        if (FluoriteConfig.Rt.Composite.LIGHT_POOL.value() && terrain != null) {
+            cells = Math.max(0, terrain.lightGridPopulatedCells());
+            depth = FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value();
+            want = Math.multiplyExact(cells, depth);
+        }
+        // The DEPTH is in this condition and not only the slot count, because the product hides it: a
+        // cell count that halves while the depth doubles wants the same allocation and a different
+        // stride, and returning early there would leave every later read indexing by the old one.
+        if (lightPoolSlots == want && lightPoolDepth == depth) {
+            return;
+        }
+        if (lightPool != null) {
+            RtBuffer retiring = lightPool;
+            ctx.gpuExecutor().retireAfterGraphics(graphicsUse, retiring::destroy);
+            lightPool = null;
+        }
+        lightPoolSlots = want;
+        lightPoolDepth = depth;
+        if (want > 0L) {
+            long bytes = Math.multiplyExact(want, POOLED_LIGHT_BYTES);
+            lightPool = ctx.createBuffer(bytes,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    false, "light presample pool " + want + " slots");
+            // The pool's footprint is linear in the depth knob, and the depth that stops a many-light
+            // room from flickering was measured to cost nothing in TIME -- so space is the only term
+            // left before that depth can become a default. Nothing else reports this number: the frame
+            // profile has no VRAM column and the buffer's debug name never reaches the log.
+            if (bytes > lightPoolPeakBytes) {
+                lightPoolPeakBytes = bytes;
+                FluoriteMod.LOGGER.debug(
+                        "Light presample pool peak: {} populated cells x depth {} = {} slots, {} MiB",
+                        cells, depth, want, Math.round(bytes / 1048576.0 * 10.0) / 10.0);
+            }
+        }
     }
 
     private void ensureOutput(RtContext ctx, int width, int height) {
@@ -2754,6 +2851,8 @@ public final class RtComposite {
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_COMMAND_BUFFER, cmd.address(), "composite command buffer");
         int debugView = debugView();
         RtTerrain terrain = RtTerrain.currentOrNull();
+        // Before the push block is assembled, because the address it publishes has to be this frame's.
+        ensureLightPool(ctx, terrain, graphicsUse);
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope frameLabel = RtDebugLabels.scope(ctx, cmd, "composite frame")) {
             // RR drives the upscale: trace + jitter at render res, DLSS-RR denoises+upscales to display.
             // Jitter is suppressed for the no-RR reference and for the debug guide views (raw inspection).
@@ -3114,6 +3213,12 @@ public final class RtComposite {
                     // read of a slot that already exists, so this one can follow the knob directly.
                     reservoirStore != null
                             ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0,
+                    // M26's presampled pool. Read back out of the ALLOCATION rather than from the
+                    // knob, like the reservoir shape above: the shader indexes it by a cell's rank, so a
+                    // depth from the live config against a pool sized by a stale one addresses past the
+                    // end.
+                    lightPool != null ? lightPool.deviceAddress : 0L,
+                    lightPool != null ? lightPoolDepth : 0,
                     // M18's per-frame sphere emitters, finally reaching a shader. The address and count
                     // come from the frame's own entity build rather than from any cached state: the buffer
                     // is reallocated every frame, so a stale address here would be a use-after-free that
@@ -3293,6 +3398,24 @@ public final class RtComposite {
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_LIGHT_POOL);
+            }
+            // M26. Recorded among the bakes so the barrier below -- "bakes visible to the trace's
+            // sampling" -- already covers it; the pool has no dependency on the TLAS and does not want
+            // its own synchronisation point.
+            if (lightPool != null && terrain != null) {
+                if (lightPoolPipeline == null) {
+                    lightPoolPipeline = RtLightPoolPipeline.create(ctx);
+                }
+                lightPoolPipeline.record(cmd, pushBuf.deviceAddress,
+                        terrain.lightBufferAddress(), terrain.lightLocalAliasBufferAddress(),
+                        terrain.lightGridCellBufferAddress(), terrain.lightGridSpanBufferAddress(),
+                        terrain.lightGridPopulatedCellAddress(), lightPool.deviceAddress,
+                        lightPoolDepth,
+                        terrain.lightGridPopulatedCells(), (int) frameCounter);
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_LIGHT_POOL);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_RAIN_EXPOSURE);
             }
             if (rainExposure.resolution() > 0) {
@@ -3861,6 +3984,17 @@ public final class RtComposite {
             reservoirStore = null;
             reservoirDepth = 0;
             reservoirPaths = 0;
+        }
+        if (lightPool != null) {
+            lightPool.destroy();
+            lightPool = null;
+            lightPoolSlots = 0L;
+            lightPoolDepth = 0;
+            lightPoolPeakBytes = 0L;
+        }
+        if (lightPoolPipeline != null) {
+            lightPoolPipeline.destroy();
+            lightPoolPipeline = null;
         }
         restirStats.destroy();
         destroyGuideImages();

@@ -977,6 +977,72 @@ public final class FluoriteConfig {
                     clampedInt("fluorite.rt.dynamicRisCandidates",
                             "composite.dynamic-ris-candidates", 0, 0, 8);
 
+            /**
+             * M26: presample each populated light-grid cell a small pool of emitters once a frame, and
+             * let shading read from it instead of walking the grid.
+             *
+             * <p>OFF IS THE PUBLISHED RENDERER, which is what makes this an isolation switch rather than
+             * a quality level. What it changes is where the walk happens, not what the walk answers: a
+             * pooled slot carries the same light with the same selection probability the walk would have
+             * produced, so the estimator is the same estimator.
+             *
+             * <p>It exists because "let block emitters light the fog" is unaffordable without it. That
+             * feature costs a four-deep dependent load chain per sample; D31 proved the shadow ray
+             * innocent and D207 killed the segment-count mitigation, leaving only this.
+             */
+            public static final BooleanSetting LIGHT_POOL =
+                    bool("fluorite.rt.lightPool", "composite.light-pool", false);
+
+            /**
+             * M26 slice two: let SURFACE shading read the pool as well, not just the volume.
+             *
+             * <p>OFF IS THE PUBLISHED RENDERER, and this needs its own switch rather than riding on
+             * LIGHT_POOL because they are two claims. Slice one was validated by toggling that switch and
+             * watching gpu.traceIndirect; if the same switch also moved the surface estimator, the
+             * measurement it produced would stop meaning what it was taken to mean.
+             *
+             * <p>What it changes: a LOCAL RIS candidate reads one pool slot instead of walking a span, an
+             * alias column and the Light record. The cell was already found once for the whole shading
+             * vertex, so what this removes is three dependent loads PER CANDIDATE -- eight of them at the
+             * default budget. Global candidates keep the walk; the pool is per cell and has nothing to say
+             * about a light outside the neighbourhood, which is the support the global stratum exists for.
+             *
+             * <p><b>The candidates become correlated, and that is the honest cost.</b> They are drawn from
+             * one pool of LIGHT_POOL_DEPTH entries rather than independently, so the estimator stays
+             * unbiased -- each slot carries the density it was drawn with -- while its variance rises.
+             * Depth wants to be at least the candidate count for that reason, which matters more here than
+             * for the volume, where only one sample is ever drawn.
+             */
+            public static final BooleanSetting LIGHT_POOL_SURFACE =
+                    bool("fluorite.rt.lightPoolSurface", "composite.light-pool-surface", false);
+
+            /**
+             * Slots drawn per populated cell per frame, at 48 bytes a slot times the populated cells.
+             *
+             * <p><b>THIS IS THE KNOB THAT DECIDES WHETHER A LIT ROOM FLICKERS.</b> A cell is sixteen
+             * blocks on a side, every pixel and every scatter event inside it draws from these slots, and
+             * the slots are redrawn every frame. So the cell's brightness this frame is the average of
+             * DEPTH independent one-sample estimates, and its frame-to-frame wobble falls only as one
+             * over the square root of the depth. The grid walk this pool replaces gave every pixel its
+             * own draw, so the same cell averaged thousands and never wobbled at all -- which is why the
+             * pool can introduce a flicker the walk does not have. It is ReGIR's known cost, not a
+             * defect, and depth is the whole of the defence.
+             *
+             * <p>The default was eight, and eight visibly flickered in a many-light room under heavy fog:
+             * a whole sixteen-block region pulsing together, low-frequency and cell-coherent, which is
+             * exactly the shape a denoiser reads as real lighting and leaves alone. Thirty-two stopped it
+             * dead and was measured to cost nothing -- 0.009 ms of build, and gpu.traceIndirect unmoved
+             * at 78.871 -> 78.867 across adjacent fixed-pose plateaus -- for about 24 MiB at render
+             * distance 16.
+             *
+             * <p>The ceiling is sixty-four so that a denser room than the one measured still has a knob
+             * left. Past that the pool stops fitting in cache, which is the one thing this feature cannot
+             * afford to lose; a room that still flickers at sixty-four wants RIS across the slots rather
+             * than more of them.
+             */
+            public static final IntSetting LIGHT_POOL_DEPTH =
+                    clampedInt("fluorite.rt.lightPoolDepth", "composite.light-pool-depth", 32, 1, 64);
+
             public static final IntSetting RESTIR_SPATIAL_NEIGHBOURS =
                     clampedInt("fluorite.rt.restirSpatialNeighbours",
                             "composite.restir-spatial-neighbours", 0, 0, 8);
