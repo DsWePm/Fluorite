@@ -35,6 +35,25 @@ float emitterUnpackUnsignedFloat(uint bits, uint mantissaBits) {
             * exp2(float(int(exponent) - 15));
 }
 
+/**
+ * A pooled slot as the Light record it copies, so every decode helper below serves both.
+ *
+ * <p>Written as a conversion rather than by templating the helpers because the two structs are not the
+ * same thing and should not be made interchangeable: a Light lives in the terrain arena and is addressed
+ * by index, a PooledLight lives in a per-frame pool and is addressed by rank and slot. Only their packed
+ * geometry is shared, and this is the one place that says so.
+ */
+public Light pooledLightRecord(PooledLight pooled) {
+    Light light;
+    light.pos = pooled.pos;
+    light.le = pooled.le;
+    light.halfUxy = pooled.halfUxy;
+    light.halfUzVx = pooled.halfUzVx;
+    light.halfVyz = pooled.halfVyz;
+    light.section = pooled.section;
+    return light;
+}
+
 public float3 emitterRadiance(Light light) {
     uint packed = light.le;
     return float3(emitterUnpackUnsignedFloat(packed & 0x7ffu, 6u),
@@ -108,8 +127,9 @@ void emitterSelectSection(LightBufferAddresses addresses, uint firstLight, uint 
     lightIndex = firstLight + localIndex;
 }
 
-void emitterSelectGrid(LightBufferAddresses addresses, LightGridCell cell,
-                       inout uint seed, out uint lightIndex) {
+/** Public for M26's pool build, which runs this once per cell per slot so shading never runs it. */
+public void emitterSelectGrid(LightBufferAddresses addresses, LightGridCell cell,
+                              inout uint seed, out uint lightIndex) {
     ConstPtr<LightGridSpan> spans = ConstPtr<LightGridSpan>(addresses.gridSpan);
     float aliasSample = rndf(seed) * float(cell.spanCount);
     uint column = min(uint(aliasSample), cell.spanCount - 1u);
@@ -120,8 +140,9 @@ void emitterSelectGrid(LightBufferAddresses addresses, LightGridCell cell,
     emitterSelectSection(addresses, firstLight, count, seed, lightIndex);
 }
 
-float emitterProposalPdf(WorldPush wp, LightBufferAddresses addresses, Light light, float3 le,
-                         LightGridCell cell, int3 cellCoord, bool local) {
+/** Public for the same reason emitterSelectGrid is: the pool records the density it drew with. */
+public float emitterProposalPdf(WorldPush wp, LightBufferAddresses addresses, Light light, float3 le,
+                                LightGridCell cell, int3 cellCoord, bool local) {
     float power = max(0.0, emitterArea(light) * emitterLuminance(le));
     float globalPdf = addresses.globalAlias != 0
             ? power * wp.lightRebase.w : 1.0 / float(wp.lightCount);

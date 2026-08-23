@@ -416,29 +416,38 @@ public struct LightGridCell {
 };
 
 /**
- * One presampled emitter, already unpacked, ready to be shaded against with no further loads.
+ * One presampled emitter: the Light record itself, plus the probability it was drawn with.
  *
  * <p>THE POINT OF THE MILESTONE IS THE LOAD IT REMOVES. Sampling an emitter used to walk four dependent
- * loads -- cell, span, alias, then the Light record itself -- each address waiting on the one before it,
- * which is latency the occupancy of a ray-tracing shader cannot hide. D31 measured that walk at +20.9 ms
- * and proved the shadow ray innocent: silencing the ray while keeping the walk made the frame SLOWER.
+ * loads -- cell, span, alias, then the Light record -- each address waiting on the one before it, which
+ * is latency a ray-tracing shader's occupancy cannot hide. D31 measured that walk at +20.9 ms and proved
+ * the shadow ray innocent: silencing the ray while keeping the walk made the frame SLOWER, which can
+ * only be the walk and the register pressure around it.
  *
- * <p>Storing the light unpacked rather than by index is what takes the chain to two loads instead of
- * three. An index would still need the Light record fetched at an address that depends on this read,
- * which is exactly the kind of link the pool exists to break. The cost is memory: 48 bytes a slot
- * against 8, which the D202 sizing note weighs against a field that no longer has to be dense.
+ * <p>CARRYING THE RECORD RATHER THAN AN INDEX is what takes the chain to two loads instead of three. An
+ * index would leave the Light to be fetched at an address depending on this read, which is precisely the
+ * link the pool exists to break. It costs 16 bytes a slot over an index, and nothing else: these are the
+ * same packed lanes Light already stores, so emitterRadiance, emitterHalfU/V, emitterArea and
+ * emitterNormal decode a pooled slot with no new code and no new arithmetic.
  *
- * <p>`pdf` is the discrete selection probability this slot was drawn with, carried so the estimator
- * stays unbiased no matter how the pool was filled. The caller still applies the rectangle's own
- * 1/area density in its geometry term, exactly as sampleVolumeEmitter's contract already says.
+ * <p>THE RECTANGLE POINT IS NOT BAKED IN, and that is the reason this holds half-extents rather than a
+ * finished position. Drawing the point at build time would give every pixel that reads a slot the same
+ * point on the emitter -- correlation across the screen rather than noise, which no temporal accumulator
+ * removes because it is not noise. So the slot chooses the LIGHT and the sample still chooses the point.
+ *
+ * <p>`pdf` is the discrete selection probability the slot was drawn with, carried so the estimator stays
+ * unbiased however the pool was filled. The caller still applies the rectangle's own 1/area density in
+ * its geometry term, exactly as sampleVolumeEmitter's contract already says.
  */
 public struct PooledLight {
-    public float3 pos;
-    public float  pdf;
-    public float3 normal;
-    public float  area;
-    public float3 radiance;
-    public float  reserved;
+    public float3 pos;      // raw, unrebased: the sampler adds lightRebase as it always has
+    public float  pdf;      // 0 means this slot holds nothing
+    public uint   le;
+    public uint   halfUxy;
+    public uint   halfUzVx;
+    public uint   halfVyz;
+    public uint   section;
+    public uint   reserved;
 };
 
 // One 16-byte Vose alias column for a cell's section distribution. The two light counts are uint16s.
