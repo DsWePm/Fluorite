@@ -47,6 +47,8 @@
   "fluorite.options.rt.restirStats": "ReSTIR 重用統計",
   "fluorite.options.rt.lightPool": "光源預取樣池",
   "fluorite.options.rt.lightPool.tooltip": "每幀為每個有光源的網格單元抽一小池發光體，著色時直接讀池而不再走網格。關檔就是目前發布的行為：池裡裝的是同樣的光源、同樣的選中機率，所以它改的是**載入發生在哪裡**，不是取樣的是什麼。它存在的目的是讓「發光體照亮體積」付得起。",
+  "fluorite.options.rt.lightPoolSurface": "表面也用池",
+  "fluorite.options.rt.lightPoolSurface.tooltip": "讓表面著色也讀預取樣池，而不只是體積。需要先開「光源預取樣池」。一個局部 RIS 候選從走 span、alias、光源記錄變成讀一個槽 —— 每個候選省掉三層相依載入，預設有八個候選。代價是候選之間變得相關（它們共用一個池），估計仍然無偏但雜訊上升；把「光源池深度」調到不低於候選數。",
   "fluorite.options.rt.lightPoolDepth": "光源池深度",
   "fluorite.options.rt.lightPoolDepth.tooltip": "每個有光源的格每幀抽多少個槽。調深能讓取樣不容易在擁擠的格裡反覆抽到同幾個發光體，代價是每槽 48 位元組。太淺池就從「對該格分布的一次取樣」退化成一個固定選擇；太深就裝不進快取，而快取正是這個特性賴以成立的東西。",
   "fluorite.options.rt.restirStats.tooltip": "每秒將各層深度的 ReSTIR 時間重用接受率寫入 latest.log。用它判斷某一層深度是否配得上那 265 MB，還是每個影格都在為被拒絕的資料付出代價。僅用於診斷；ReSTIR 重用深度為 0 時不做任何事。",

@@ -994,6 +994,29 @@ public final class FluoriteConfig {
                     bool("fluorite.rt.lightPool", "composite.light-pool", false);
 
             /**
+             * M26 slice two: let SURFACE shading read the pool as well, not just the volume.
+             *
+             * <p>OFF IS THE PUBLISHED RENDERER, and this needs its own switch rather than riding on
+             * LIGHT_POOL because they are two claims. Slice one was validated by toggling that switch and
+             * watching gpu.traceIndirect; if the same switch also moved the surface estimator, the
+             * measurement it produced would stop meaning what it was taken to mean.
+             *
+             * <p>What it changes: a LOCAL RIS candidate reads one pool slot instead of walking a span, an
+             * alias column and the Light record. The cell was already found once for the whole shading
+             * vertex, so what this removes is three dependent loads PER CANDIDATE -- eight of them at the
+             * default budget. Global candidates keep the walk; the pool is per cell and has nothing to say
+             * about a light outside the neighbourhood, which is the support the global stratum exists for.
+             *
+             * <p><b>The candidates become correlated, and that is the honest cost.</b> They are drawn from
+             * one pool of LIGHT_POOL_DEPTH entries rather than independently, so the estimator stays
+             * unbiased -- each slot carries the density it was drawn with -- while its variance rises.
+             * Depth wants to be at least the candidate count for that reason, which matters more here than
+             * for the volume, where only one sample is ever drawn.
+             */
+            public static final BooleanSetting LIGHT_POOL_SURFACE =
+                    bool("fluorite.rt.lightPoolSurface", "composite.light-pool-surface", false);
+
+            /**
              * Slots drawn per populated cell per frame.
              *
              * <p>Deeper means a sample is less likely to keep drawing the same few emitters out of a

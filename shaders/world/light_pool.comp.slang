@@ -65,7 +65,7 @@ void main(uint3 id: SV_DispatchThreadID) {
     empty.halfUzVx = 0u;
     empty.halfVyz = 0u;
     empty.section = 0u;
-    empty.reserved = 0u;
+    empty.lightIndex = 0u;
 
     if (poolPush.populatedCellAddr == 0 || poolPush.gridCellAddr == 0
             || poolPush.gridSpanAddr == 0 || poolPush.localAliasAddr == 0
@@ -125,6 +125,6 @@ void main(uint3 id: SV_DispatchThreadID) {
     out.halfUzVx = light.halfUzVx;
     out.halfVyz = light.halfVyz;
     out.section = light.section;
-    out.reserved = 0u;
+    out.lightIndex = lightIndex;
     pool[slotIndex] = out;
 }

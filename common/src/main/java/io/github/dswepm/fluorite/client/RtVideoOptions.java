@@ -238,6 +238,8 @@ public final class RtVideoOptions {
                                 FluoriteConfig.Rt.Diagnostics.RESTIR_STATS),
                         bool("fluorite.options.rt.lightPool",
                                 FluoriteConfig.Rt.Composite.LIGHT_POOL),
+                        bool("fluorite.options.rt.lightPoolSurface",
+                                FluoriteConfig.Rt.Composite.LIGHT_POOL_SURFACE),
                         lightPoolDepth()));
             };
         }

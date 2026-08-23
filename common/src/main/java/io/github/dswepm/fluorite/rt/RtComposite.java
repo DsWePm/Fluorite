@@ -193,6 +193,12 @@ public final class RtComposite {
         if (fogActive && preset.fog().localLights()) {
             flags |= 1 << 1; // ENVIRONMENT_FROXEL_LOCAL_LIGHTS
         }
+        // M26 slice two. Bit 2, vacated when M25's hash grid was withdrawn. Raised on the POOL side, so
+        // a zero word is the published renderer.
+        if (FluoriteConfig.Rt.Composite.LIGHT_POOL.value()
+                && FluoriteConfig.Rt.Composite.LIGHT_POOL_SURFACE.value()) {
+            flags |= 1 << 2; // ENVIRONMENT_LIGHT_POOL_SURFACE
+        }
         // Bits 4-7. Zero is every segment, so the shipped behaviour is still a zero word.
         flags |= (FluoriteConfig.Rt.Volumetrics.inScatterSegments() & 0xF) << 4;
         if (environment != null) {

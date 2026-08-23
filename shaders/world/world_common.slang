@@ -18,6 +18,16 @@ public static const uint SKY_PROVIDER_LOCAL_AMBIENT = 1u;
 public static const uint SKY_PROVIDER_ENVIRONMENT = 2u;
 public static const uint ENVIRONMENT_AMBIENT_UNOCCLUDED = 1u << 0u;
 public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
+// M26 slice two: let SURFACE shading read the presampled pool as well as the volume.
+//
+// Its own bit rather than a share of the volume's switch, because they are two claims. Slice one was
+// validated by toggling the pool and watching gpu.traceIndirect; if that same switch also moved the
+// surface estimator, the measurement it produced would no longer mean what it was taken to mean.
+//
+// Bit 2 is the one M25 vacated when its hash grid was withdrawn. The word is named for the environment
+// and has become the frame's general capability word -- the fog's in-scatter cap already sits in it --
+// which is a smaller wrong than growing WorldPush by sixteen bytes to carry one bit.
+public static const uint ENVIRONMENT_LIGHT_POOL_SURFACE = 1u << 2u;
 // How many path segments may ADD fog light, counted from the camera. Zero means all of them, which is
 // the shipped behaviour. Bits 4-7, so 0-15.
 //
@@ -462,7 +472,17 @@ public struct PooledLight {
     public uint   halfUzVx;
     public uint   halfVyz;
     public uint   section;
-    public uint   reserved;
+    /**
+     * The emitter's index in the terrain light buffer, and it is NOT spare bookkeeping.
+     *
+     * <p>A surface sample goes into a ReSTIR reservoir, and storedLightStillPresent re-loads Light by
+     * this index a frame later to decide whether the stored sample may be reused. A pooled slot that
+     * could not name its light would validate reuse against whatever now sits at some other index --
+     * which is not a crash, it is last frame's light wearing this frame's geometry.
+     *
+     * <p>The volume path never reads it: M is one there and nothing is reused.
+     */
+    public uint   lightIndex;
 };
 
 // One 16-byte Vose alias column for a cell's section distribution. The two light counts are uint16s.

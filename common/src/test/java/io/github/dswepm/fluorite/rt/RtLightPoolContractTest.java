@@ -133,7 +133,71 @@ final class RtLightPoolContractTest {
         // float3 + float + six uints: 12 + 4 + 24 = 40, padded by std430's float3 alignment to 48.
         assertTrue(record.contains("float3 pos;"));
         assertTrue(record.contains("float  pdf;"));
-        assertTrue(record.contains("uint   reserved;"));
+        assertTrue(record.contains("uint   lightIndex;"));
+    }
+
+    /**
+     * A pooled surface sample has to name its light, and this is not spare bookkeeping.
+     *
+     * <p>Surface samples go into ReSTIR reservoirs, and storedLightStillPresent re-loads Light by the
+     * stored index a frame later to decide whether the sample may be reused. A slot that could not name
+     * its light would validate reuse against whatever now sits at some other index -- not a crash, but
+     * last frame's light wearing this frame's geometry.
+     */
+    @Test
+    void aPooledSurfaceSampleCarriesTheLightIndexTheReservoirWillRevalidate() throws IOException {
+        String build = shader("light_pool.comp.slang");
+        String lighting = shader("lighting.slang");
+
+        assertTrue(build.contains("out.lightIndex = lightIndex;"));
+        assertTrue(lighting.contains("li = pooled.lightIndex;"));
+    }
+
+    /**
+     * The pool stores HALF the surface mixture, and the other half is reconstructed rather than looked up.
+     *
+     * <p>The volume path samples locally or globally and its stored density is the whole answer. The
+     * surface path samples alpha*local + (1-alpha)*global, so a pooled candidate that used the slot's
+     * density raw would be weighted by the wrong probability -- unbiased sampling with the wrong pdf is
+     * just bias. Power is area times luminance and both are already in hand, so the missing half costs no
+     * load.
+     */
+    @Test
+    void thePooledSurfaceCandidateRebuildsTheFullMixtureDensity() throws IOException {
+        String lighting = shader("lighting.slang");
+        assertTrue(lighting.contains(
+                "mixedPdf = localProbability * pooledLocalPdf + (1.0 - localProbability) * globalPdf;"));
+        // And the walk's own density is still what a non-pooled candidate uses.
+        assertTrue(lighting.contains(
+                "mixedPdf = proposalPdf(lg, le, gridCell, gridCellCoord, localProbability);"));
+    }
+
+    /**
+     * Global candidates keep the walk, because the pool has nothing to say about a distant light.
+     *
+     * <p>The pool is built per cell over its own neighbourhood; the global stratum exists precisely to
+     * give lights outside that neighbourhood support. Serving a global candidate from the pool would
+     * quietly delete that support and leave distant emitters unsampleable.
+     */
+    @Test
+    void onlyLocalCandidatesComeFromThePool() throws IOException {
+        String lighting = shader("lighting.slang");
+        assertTrue(lighting.contains("if (useLocal && (worldPush.environmentFlags "
+                + "& ENVIRONMENT_LIGHT_POOL_SURFACE) != 0u"));
+        assertTrue(lighting.contains("selectLightGridLight(gridCell, useLocal, proposalSeed, li);"));
+    }
+
+    /** The surface switch is its own, because slice one's measurement depends on it being separate. */
+    @Test
+    void theSurfaceSwitchIsSeparateFromTheVolumeOne() throws IOException {
+        String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
+        String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
+
+        assertTrue(config.contains(
+                "\"fluorite.rt.lightPoolSurface\", \"composite.light-pool-surface\", false"));
+        // Nested under the pool's own switch: a surface read with no pool built is an address of zero.
+        assertTrue(composite.contains("if (FluoriteConfig.Rt.Composite.LIGHT_POOL.value()\n"
+                + "                && FluoriteConfig.Rt.Composite.LIGHT_POOL_SURFACE.value())"));
     }
 
     /** Push constants are scalars, because a vector's alignment already cost this project a session. */
