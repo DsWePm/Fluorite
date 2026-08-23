@@ -452,7 +452,13 @@ public Reservoir risInitial(BsdfContext ctx, inout uint seed, inout uint proposa
                                 worldPush.lightPoolDepth - 1u);
                 PooledLight pooled = ConstPtr<PooledLight>(worldPush.lightPoolAddr)[
                         gridCell.poolRank * worldPush.lightPoolDepth + slot];
-                if (pooled.pdf > 0.0) {
+                // ONLY a negative density sends this back to the walk. A ZERO one is a real answer: the
+                // build drew a light whose LOCAL density is zero, and proposalPdf gives exactly such a
+                // light (1-alpha)*globalPdf and keeps it as a candidate. Treating zero as "empty" here
+                // replaced a candidate the walk would have kept, which is the surface half of the same
+                // bug the volume path had -- and it needs no special case to fix, because the mixture
+                // below already does the right thing with a zero local half.
+                if (pooled.pdf >= 0.0) {
                     lg = pooledLightRecord(pooled);
                     li = pooled.lightIndex;
                     pooledLocalPdf = pooled.pdf;
@@ -539,8 +545,15 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
     // same proposal with the same density -- the pool's slots were filled by running the walk -- so this
     // is a choice of WHERE the loads happen, not of what is sampled.
     EmitterSample emitter;
-    bool pooled = sampleVolumeEmitterPooled(worldPush, addresses, pos, seed, proposalSeed, emitter);
-    if (!pooled && !sampleVolumeEmitter(worldPush, addresses, pos, seed, proposalSeed, emitter)) {
+    uint poolStatus = sampleVolumeEmitterPooled(worldPush, addresses, pos, seed, proposalSeed, emitter);
+    // A REJECTED pooled draw is a zero, not a reason to draw again. The walk this pool stands in for
+    // returns false for exactly these lights and volumeNee turns that into black; redrawing would give
+    // the rejection a second chance and leave the pooled fog brighter than the walk it replaces.
+    if (poolStatus == EMITTER_POOL_REJECT) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    if (poolStatus == EMITTER_POOL_MISS
+            && !sampleVolumeEmitter(worldPush, addresses, pos, seed, proposalSeed, emitter)) {
         return float3(0.0, 0.0, 0.0);
     }
     float3 toL = emitter.pos - pos;

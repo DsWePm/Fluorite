@@ -72,9 +72,9 @@ final class RtLightPoolContractTest {
         String sampling = shader("light_sampling.slang");
 
         assertTrue(build.contains("float pdf = emitterProposalPdf("));
-        assertTrue(build.contains("out.pdf = pdf;"));
+        assertTrue(build.contains("out.pdf = max(0.0, pdf);"));
 
-        String pooled = between(sampling, "public bool sampleVolumeEmitterPooled(",
+        String pooled = between(sampling, "public uint sampleVolumeEmitterPooled(",
                 "/**\n * One nearby-emitter proposal for a volume event.");
         assertTrue(pooled.contains("sample.sourcePdf = pooled.pdf;"));
         assertFalse(pooled.contains("emitterProposalPdf("));
@@ -101,20 +101,84 @@ final class RtLightPoolContractTest {
     }
 
     /**
-     * An empty slot falls back to the walk rather than being retried, and the reason is the estimator.
+     * The slot's density has THREE states, and the sign is what separates the two that look alike.
      *
-     * <p>The build records an empty slot whenever it drew a zero-power or out-of-neighbourhood light,
-     * which is exactly what emitterProposalPdf refuses to paper over with a global density. Redrawing
-     * such a slot against the grid would resample a distribution that had already been sampled.
+     * <p>"Nothing was drawn here" and "a light was drawn and its local density is zero" are different
+     * facts. The first leaves the grid as the authority, so the reader must walk it. The second is an
+     * answer -- emitterProposalPdf's refusal to substitute a global density for a rejected local draw --
+     * and walking again would hand that rejection a second chance at contributing.
+     *
+     * <p>Negative is reserved for the first, and the build clamps so that the second can never produce
+     * it by accident. An encoding whose middle state can be forged is worth nothing.
      */
     @Test
-    void anEmptySlotIsRecordedRatherThanRedrawn() throws IOException {
+    void theSlotDensityHasThreeStatesAndTheSignSeparatesThem() throws IOException {
         String build = shader("light_pool.comp.slang");
         String sampling = shader("light_sampling.slang");
 
-        assertTrue(build.contains("if (!(pdf > 0.0))"));
-        assertTrue(build.contains("pool[slotIndex] = empty;"));
-        assertTrue(sampling.contains("if (!(pooled.pdf > 0.0))"));
+        assertTrue(build.contains("empty.pdf = -1.0;"));
+        assertTrue(build.contains("out.pdf = max(0.0, pdf);"));
+        // And a rejected draw is no longer erased: the record is written whatever the density came to.
+        assertFalse(build.contains("if (!(pdf > 0.0))"));
+
+        assertTrue(sampling.contains("public static const uint EMITTER_POOL_MISS = 0u;"));
+        assertTrue(sampling.contains("public static const uint EMITTER_POOL_HIT = 1u;"));
+        assertTrue(sampling.contains("public static const uint EMITTER_POOL_REJECT = 2u;"));
+        assertTrue(sampling.contains("if (pooled.pdf < 0.0) {\n        return EMITTER_POOL_MISS;"));
+        assertTrue(sampling.contains("if (!(pooled.pdf > 0.0)) {\n        return EMITTER_POOL_REJECT;"));
+    }
+
+    /**
+     * A rejected pooled draw contributes zero. It is NOT redrawn, and the difference is measurable.
+     *
+     * <p>sampleVolumeEmitter answers a rejected draw with false, and volumeNee turns that into black.
+     * The pool stands in for that walk, so it owes the same zero. Falling through to the walk instead --
+     * which is what a two-state result forced -- gives every rejection a second draw, leaving the pooled
+     * fog brighter than the walk it replaces by exactly the rejection rate. That is the switch changing
+     * the picture, which is the one thing an isolation switch may not do.
+     */
+    @Test
+    void aRejectedPooledDrawContributesZeroRatherThanBeingRedrawn() throws IOException {
+        String lighting = shader("lighting.slang");
+
+        assertTrue(lighting.contains("if (poolStatus == EMITTER_POOL_REJECT) {\n"
+                + "        return float3(0.0, 0.0, 0.0);\n    }"));
+        // And the walk is reached ONLY from a miss, never from a rejection.
+        assertTrue(lighting.contains("if (poolStatus == EMITTER_POOL_MISS\n"
+                + "            && !sampleVolumeEmitter("));
+    }
+
+    /**
+     * The SURFACE reader keeps a zero-density light instead of replacing it, because its walk does.
+     *
+     * <p>proposalPdf never rejects: an out-of-neighbourhood light gets (1-alpha)*globalPdf and counts as
+     * a candidate like any other. So the surface half of the same bug ran the other way -- treating a
+     * zero density as "empty" and redrawing DELETED a candidate the walk would have kept. It needs no
+     * special case to fix, because the mixture already does the right thing with a zero local half; it
+     * needs only to stop calling zero empty.
+     */
+    @Test
+    void theSurfaceCandidateKeepsAZeroDensityLightRatherThanReplacingIt() throws IOException {
+        String lighting = shader("lighting.slang");
+        assertTrue(lighting.contains("if (pooled.pdf >= 0.0) {"));
+        assertFalse(lighting.contains("if (pooled.pdf > 0.0) {"));
+    }
+
+    /**
+     * The pool's footprint reaches the log, because a default depth cannot be chosen without it.
+     *
+     * <p>Depth 32 was measured to cost nothing in time -- 0.009 ms of build, and gpu.traceIndirect
+     * unmoved across adjacent fixed-pose plateaus -- which leaves space as the only term still unknown.
+     * Nothing else reports it: the frame profile has no VRAM column and the buffer's debug name never
+     * reaches the log. A high-water mark rather than every resize, because the grid republishes several
+     * times a second while chunks load.
+     */
+    @Test
+    void thePoolReportsItsPeakFootprint() throws IOException {
+        String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
+        assertTrue(composite.contains("if (bytes > lightPoolPeakBytes) {"));
+        assertTrue(composite.contains("\"Light presample pool peak: {} populated cells x depth {} "
+                + "= {} slots, {} MiB\""));
     }
 
     /**

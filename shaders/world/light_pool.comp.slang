@@ -57,9 +57,14 @@ void main(uint3 id: SV_DispatchThreadID) {
     DevicePtr<PooledLight> pool = DevicePtr<PooledLight>(poolPush.poolAddr);
     // Written on every path below, because a slot that keeps last frame's contents while reporting this
     // frame's rank is a light in the wrong place rather than an absent one.
+    //
+    // A NEGATIVE density is the "no light was drawn here at all" marker, and the sign carries real
+    // meaning: pdf == 0 means a light WAS drawn and its local density came out zero, which is a
+    // different fact with a different correct response. See the three-state contract on
+    // sampleVolumeEmitterPooled.
     PooledLight empty;
     empty.pos = float3(0.0, 0.0, 0.0);
-    empty.pdf = 0.0;
+    empty.pdf = -1.0;
     empty.le = 0u;
     empty.halfUxy = 0u;
     empty.halfUzVx = 0u;
@@ -109,17 +114,25 @@ void main(uint3 id: SV_DispatchThreadID) {
     Light light = ConstPtr<Light>(poolPush.lightAddr)[lightIndex];
     float3 le = emitterRadiance(light);
     float pdf = emitterProposalPdf(wp, addresses, light, le, cell, coord, true);
-    if (!(pdf > 0.0)) {
-        // A zero-power or out-of-neighbourhood draw. Recorded as an empty slot rather than substituted
-        // with a global proposal, which is the same refusal emitterProposalPdf itself documents: quietly
-        // swapping densities would change the estimator this pool is supposed to reproduce exactly.
-        pool[slotIndex] = empty;
-        return;
-    }
 
+    // A ZERO-DENSITY DRAW IS STILL A DRAW, and erasing it was a bug on both sides of the pool.
+    //
+    // emitterProposalPdf returns zero for a zero-power or out-of-neighbourhood light, and the two
+    // readers owe that outcome two DIFFERENT answers. The volume walk returns false and contributes
+    // nothing -- it refuses to substitute a global density for a rejected local draw, which is what its
+    // own comment above says. The surface walk does not reject at all: proposalPdf hands such a light
+    // (1-alpha)*globalPdf and the candidate counts like any other.
+    //
+    // The first version recorded this as an empty slot, so the volume reader redrew against the grid --
+    // giving a rejected draw a second chance instead of a zero -- and the surface reader replaced a
+    // candidate the walk would have kept. Both are the switch changing the picture, which is the one
+    // thing an isolation switch may not do. Recording the light with its real (possibly zero) density
+    // lets each reader give its own walk's answer with no special case at all.
     PooledLight out;
     out.pos = light.pos;
-    out.pdf = pdf;
+    // Clamped, so that a negative can only ever mean "nothing was drawn". The three-state encoding is
+    // worth exactly as much as the guarantee that its middle state cannot be produced by accident.
+    out.pdf = max(0.0, pdf);
     out.le = light.le;
     out.halfUxy = light.halfUxy;
     out.halfUzVx = light.halfUzVx;

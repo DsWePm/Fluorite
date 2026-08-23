@@ -181,13 +181,17 @@ public float emitterProposalPdf(WorldPush wp, LightBufferAddresses addresses, Li
  * Baking it into the slot would hand every pixel reading that slot the same point -- correlation across
  * the screen, which temporal accumulation cannot average away because every frame carries the same one.
  *
- * <p>Falls back to the walk when the pool has nothing to say: no pool published, a cell outside the grid,
- * or an empty slot. Empty slots are real and expected -- the build records one whenever it drew a
- * zero-power or out-of-neighbourhood light, which is what emitterProposalPdf already refuses to paper
- * over. Retrying such a draw against the grid would be a different estimator, so the fallback returns
- * what the grid alone would have returned for the same reason.
+ * <p><b>THREE OUTCOMES, NOT TWO, AND THE THIRD ONE IS THE WHOLE POINT.</b> "The pool cannot answer" and
+ * "the pool answered, and the answer is that this draw contributes nothing" are different facts that
+ * were once both spelled as a false return. The caller then walked the grid in both cases, which handed
+ * a REJECTED draw a second chance instead of the zero the walk itself would have returned -- a pooled
+ * volume brighter than the walk by exactly the rejection rate, for no reason a reader could see.
  */
-public bool sampleVolumeEmitterPooled(WorldPush wp, LightBufferAddresses addresses, float3 receiver,
+public static const uint EMITTER_POOL_MISS = 0u;   // no jurisdiction here; walk the grid instead
+public static const uint EMITTER_POOL_HIT = 1u;    // `sample` is filled
+public static const uint EMITTER_POOL_REJECT = 2u; // drawn and rejected; contribute zero, do NOT walk
+
+public uint sampleVolumeEmitterPooled(WorldPush wp, LightBufferAddresses addresses, float3 receiver,
                                       inout uint seed, inout uint proposalSeed,
                                       out EmitterSample sample) {
     sample.pos = float3(0.0, 0.0, 0.0);
@@ -196,7 +200,7 @@ public bool sampleVolumeEmitterPooled(WorldPush wp, LightBufferAddresses address
     sample.area = 0.0;
     sample.sourcePdf = 0.0;
     if (wp.lightPoolAddr == 0 || wp.lightPoolDepth == 0u || addresses.gridCell == 0) {
-        return false;
+        return EMITTER_POOL_MISS;
     }
     // The same jitter the walk applies, so the two paths agree about which cell a receiver belongs to
     // near a boundary. Dropping it would make the switch change the picture by more than where a load
@@ -206,18 +210,25 @@ public bool sampleVolumeEmitterPooled(WorldPush wp, LightBufferAddresses address
               * wp.lightGridOrigin.w;
     int3 coord = int3(floor((gridLookup - wp.lightGridOrigin.xyz) / wp.lightGridOrigin.w));
     if (any(coord < int3(0, 0, 0)) || any(coord >= wp.lightGridDims.xyz)) {
-        return false;
+        return EMITTER_POOL_MISS;
     }
     uint linear = (uint(coord.z) * uint(wp.lightGridDims.y) + uint(coord.y))
             * uint(wp.lightGridDims.x) + uint(coord.x);
     LightGridCell cell = ConstPtr<LightGridCell>(addresses.gridCell)[linear];
     if (cell.spanCount == 0u) {
-        return false;
+        return EMITTER_POOL_MISS;
     }
     uint slot = min(uint(rndf(proposalSeed) * float(wp.lightPoolDepth)), wp.lightPoolDepth - 1u);
     PooledLight pooled = ConstPtr<PooledLight>(wp.lightPoolAddr)[cell.poolRank * wp.lightPoolDepth + slot];
+    // Negative: the build never drew here, so the grid is still the authority -- walk it.
+    if (pooled.pdf < 0.0) {
+        return EMITTER_POOL_MISS;
+    }
+    // Zero: the build DID draw, and emitterProposalPdf rejected it. sampleVolumeEmitter answers that
+    // with `return false` and volumeNee turns it into black. Walking again here would resample a
+    // distribution that has already been sampled.
     if (!(pooled.pdf > 0.0)) {
-        return false;
+        return EMITTER_POOL_REJECT;
     }
     Light light = pooledLightRecord(pooled);
     float s = rndf(seed) * 2.0 - 1.0;
@@ -228,7 +239,8 @@ public bool sampleVolumeEmitterPooled(WorldPush wp, LightBufferAddresses address
     sample.radiance = emitterRadiance(light);
     sample.area = emitterArea(light);
     sample.sourcePdf = pooled.pdf;
-    return sample.sourcePdf > 0.0 && sample.area > 0.0;
+    // A zero-area emitter is the walk's other rejection, and it earns the same zero rather than a retry.
+    return sample.area > 0.0 ? EMITTER_POOL_HIT : EMITTER_POOL_REJECT;
 }
 
 /**

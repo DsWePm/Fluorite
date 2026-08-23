@@ -1625,6 +1625,15 @@ public final class RtComposite {
      */
     private RtBuffer lightPool;
     private long lightPoolSlots;
+    /**
+     * High-water mark of the pool's allocation, and the reason it is a MARK rather than a running value.
+     *
+     * <p>The pool is resized by every light-grid republish, which during chunk loading is several times a
+     * second, so logging each resize would put formatted output on the render thread at that rate -- the
+     * exact defect the restir-stats comment below records having had to undo once already. What the
+     * question actually needs is the worst case, and a high-water mark answers it in O(log n) lines.
+     */
+    private long lightPoolPeakBytes;
     private RtLightPoolPipeline lightPoolPipeline;
     private final RtRestirStats restirStats = new RtRestirStats(PUSH_RING);
     private RtImage displayImage;
@@ -2385,10 +2394,12 @@ public final class RtComposite {
      */
     private void ensureLightPool(RtContext ctx, RtTerrain terrain,
                                  RtGpuExecutor.GraphicsUse graphicsUse) {
+        long cells = 0L;
+        long depth = 0L;
         long want = 0L;
         if (FluoriteConfig.Rt.Composite.LIGHT_POOL.value() && terrain != null) {
-            long cells = Math.max(0, terrain.lightGridPopulatedCells());
-            long depth = Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value(), 1, 32);
+            cells = Math.max(0, terrain.lightGridPopulatedCells());
+            depth = Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value(), 1, 32);
             want = Math.multiplyExact(cells, depth);
         }
         if (lightPoolSlots == want) {
@@ -2401,9 +2412,20 @@ public final class RtComposite {
         }
         lightPoolSlots = want;
         if (want > 0L) {
-            lightPool = ctx.createBuffer(Math.multiplyExact(want, POOLED_LIGHT_BYTES),
+            long bytes = Math.multiplyExact(want, POOLED_LIGHT_BYTES);
+            lightPool = ctx.createBuffer(bytes,
                     VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                     false, "light presample pool " + want + " slots");
+            // The pool's footprint is linear in the depth knob, and the depth that stops a many-light
+            // room from flickering was measured to cost nothing in TIME -- so space is the only term
+            // left before that depth can become a default. Nothing else reports this number: the frame
+            // profile has no VRAM column and the buffer's debug name never reaches the log.
+            if (bytes > lightPoolPeakBytes) {
+                lightPoolPeakBytes = bytes;
+                FluoriteMod.LOGGER.info(
+                        "Light presample pool peak: {} populated cells x depth {} = {} slots, {} MiB",
+                        cells, depth, want, Math.round(bytes / 1048576.0 * 10.0) / 10.0);
+            }
         }
     }
 
@@ -3952,6 +3974,7 @@ public final class RtComposite {
             lightPool.destroy();
             lightPool = null;
             lightPoolSlots = 0L;
+            lightPoolPeakBytes = 0L;
         }
         if (lightPoolPipeline != null) {
             lightPoolPipeline.destroy();
