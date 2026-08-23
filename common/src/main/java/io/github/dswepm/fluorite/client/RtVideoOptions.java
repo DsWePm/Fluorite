@@ -2286,8 +2286,10 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(
                     Component.translatable("fluorite.options.rt.lightPoolDepth.tooltip")),
             (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
-            new OptionInstance.IntRange(1, 32),
-            Math.clamp(setting.value(), 1, 32),
+            // Paired with LIGHT_POOL_DEPTH's own bound in FluoriteConfig; a slider whose range is
+            // narrower than the setting's silently pins any value the config file already holds.
+            new OptionInstance.IntRange(1, 64),
+            setting.value(),
             setting::set);
     }
 

@@ -1017,15 +1017,31 @@ public final class FluoriteConfig {
                     bool("fluorite.rt.lightPoolSurface", "composite.light-pool-surface", false);
 
             /**
-             * Slots drawn per populated cell per frame.
+             * Slots drawn per populated cell per frame, at 48 bytes a slot times the populated cells.
              *
-             * <p>Deeper means a sample is less likely to keep drawing the same few emitters out of a
-             * crowded cell, at 48 bytes a slot times the populated cells. Too shallow and the pool
-             * becomes a fixed choice rather than a sample of the cell's distribution; too deep and it
-             * stops fitting in cache, which is the one thing this feature cannot afford to lose.
+             * <p><b>THIS IS THE KNOB THAT DECIDES WHETHER A LIT ROOM FLICKERS.</b> A cell is sixteen
+             * blocks on a side, every pixel and every scatter event inside it draws from these slots, and
+             * the slots are redrawn every frame. So the cell's brightness this frame is the average of
+             * DEPTH independent one-sample estimates, and its frame-to-frame wobble falls only as one
+             * over the square root of the depth. The grid walk this pool replaces gave every pixel its
+             * own draw, so the same cell averaged thousands and never wobbled at all -- which is why the
+             * pool can introduce a flicker the walk does not have. It is ReGIR's known cost, not a
+             * defect, and depth is the whole of the defence.
+             *
+             * <p>The default was eight, and eight visibly flickered in a many-light room under heavy fog:
+             * a whole sixteen-block region pulsing together, low-frequency and cell-coherent, which is
+             * exactly the shape a denoiser reads as real lighting and leaves alone. Thirty-two stopped it
+             * dead and was measured to cost nothing -- 0.009 ms of build, and gpu.traceIndirect unmoved
+             * at 78.871 -> 78.867 across adjacent fixed-pose plateaus -- for about 24 MiB at render
+             * distance 16.
+             *
+             * <p>The ceiling is sixty-four so that a denser room than the one measured still has a knob
+             * left. Past that the pool stops fitting in cache, which is the one thing this feature cannot
+             * afford to lose; a room that still flickers at sixty-four wants RIS across the slots rather
+             * than more of them.
              */
             public static final IntSetting LIGHT_POOL_DEPTH =
-                    clampedInt("fluorite.rt.lightPoolDepth", "composite.light-pool-depth", 8, 1, 32);
+                    clampedInt("fluorite.rt.lightPoolDepth", "composite.light-pool-depth", 32, 1, 64);
 
             public static final IntSetting RESTIR_SPATIAL_NEIGHBOURS =
                     clampedInt("fluorite.rt.restirSpatialNeighbours",

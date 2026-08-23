@@ -220,7 +220,7 @@
   "fluorite.options.rt.lightPoolSurface": "表面也用池",
   "fluorite.options.rt.lightPoolSurface.tooltip": "让表面着色也读预采样池，而不只是体积。需要先开「光源预采样池」。一个局部 RIS 候选从走 span、alias、光源记录变成读一个槽 —— 每个候选省掉三层依赖加载，默认有八个候选。代价是候选之间变得相关（它们共用一个池），估计仍然无偏但噪声上升；把「光源池深度」调到不低于候选数。",
   "fluorite.options.rt.lightPoolDepth": "光源池深度",
-  "fluorite.options.rt.lightPoolDepth.tooltip": "每个有光源的格每帧抽多少个槽。调深能让采样不容易在拥挤的格里反复抽到同几个发光体，代价是每槽 48 字节。太浅池就从「对该格分布的一次采样」退化成一个固定选择；太深就装不进缓存，而缓存正是这个特性赖以成立的东西。",
+  "fluorite.options.rt.lightPoolDepth.tooltip": "每个有光源的格每帧抽多少个槽，每槽 48 字节。一个格是 16 格见方，格内所有像素共用这些槽，而且每帧重抽 —— 所以该格这一帧的亮度是这么多个单样本估计的平均，逐帧摆动只按深度的平方根倒数下降。深度 8 在多光源房间加浓雾时会明显闪烁，整块 16 格区域一起明暗；32 能压住，且实测在时间上是零，代价是渲染距离 16 下约 24 MiB。太深就装不进缓存，而缓存正是这个特性赖以成立的东西。",
   "fluorite.options.rt.restirStats.tooltip": "每秒把各层深度的 ReSTIR 时间复用接受率写入 latest.log。用它判断某一层深度是否配得上那 265 MB，还是每帧都在为被拒绝的数据付钱。仅用于诊断；ReSTIR 复用深度为 0 时不做任何事。",
   "fluorite.options.rt.sunSize": "太阳大小",
   "fluorite.options.rt.sunSize.tooltip": "太阳和月亮圆盘的角半径。圆盘越大，投射的半影越柔和。",

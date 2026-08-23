@@ -1626,12 +1626,25 @@ public final class RtComposite {
     private RtBuffer lightPool;
     private long lightPoolSlots;
     /**
-     * High-water mark of the pool's allocation, and the reason it is a MARK rather than a running value.
+     * The depth the pool was SIZED with, which is the only depth anything may publish or dispatch.
      *
-     * <p>The pool is resized by every light-grid republish, which during chunk loading is several times a
-     * second, so logging each resize would put formatted output on the render thread at that rate -- the
-     * exact defect the restir-stats comment below records having had to undo once already. What the
-     * question actually needs is the worst case, and a high-water mark answers it in O(log n) lines.
+     * <p>The knob is read in exactly one place -- ensureLightPool -- and everything downstream reads
+     * this instead. Reading the live config at the push-constant site would let a knob moved between the
+     * resize and the record address a pool built for a different depth, and the shader indexes by
+     * `rank * depth + slot`: a depth larger than the pool's runs off the end of the allocation. The
+     * clamps that used to guard each site were a second, independent copy of the config's own bound,
+     * which is a defect waiting for the day the two disagree; IntSetting already sanitises on every
+     * write, so value() cannot return an out-of-range depth in the first place.
+     */
+    private int lightPoolDepth;
+    /**
+     * High-water mark of the pool's allocation, so a shrink cannot hide the worst case that sized it.
+     *
+     * <p>The mark was introduced believing it would also keep the log short, on the reasoning that only
+     * a new peak prints. It does not, and the first run said so plainly: 530 lines in four minutes,
+     * because the populated cell count grows MONOTONICALLY while chunks stream in, so every resize is a
+     * new peak and "only on a new peak" is every resize. That is why the line is at debug rather than
+     * info -- the mark earns its keep by reporting the peak, not by rationing the output.
      */
     private long lightPoolPeakBytes;
     private RtLightPoolPipeline lightPoolPipeline;
@@ -2395,14 +2408,17 @@ public final class RtComposite {
     private void ensureLightPool(RtContext ctx, RtTerrain terrain,
                                  RtGpuExecutor.GraphicsUse graphicsUse) {
         long cells = 0L;
-        long depth = 0L;
+        int depth = 0;
         long want = 0L;
         if (FluoriteConfig.Rt.Composite.LIGHT_POOL.value() && terrain != null) {
             cells = Math.max(0, terrain.lightGridPopulatedCells());
-            depth = Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value(), 1, 32);
+            depth = FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value();
             want = Math.multiplyExact(cells, depth);
         }
-        if (lightPoolSlots == want) {
+        // The DEPTH is in this condition and not only the slot count, because the product hides it: a
+        // cell count that halves while the depth doubles wants the same allocation and a different
+        // stride, and returning early there would leave every later read indexing by the old one.
+        if (lightPoolSlots == want && lightPoolDepth == depth) {
             return;
         }
         if (lightPool != null) {
@@ -2411,6 +2427,7 @@ public final class RtComposite {
             lightPool = null;
         }
         lightPoolSlots = want;
+        lightPoolDepth = depth;
         if (want > 0L) {
             long bytes = Math.multiplyExact(want, POOLED_LIGHT_BYTES);
             lightPool = ctx.createBuffer(bytes,
@@ -2422,7 +2439,7 @@ public final class RtComposite {
             // profile has no VRAM column and the buffer's debug name never reaches the log.
             if (bytes > lightPoolPeakBytes) {
                 lightPoolPeakBytes = bytes;
-                FluoriteMod.LOGGER.info(
+                FluoriteMod.LOGGER.debug(
                         "Light presample pool peak: {} populated cells x depth {} = {} slots, {} MiB",
                         cells, depth, want, Math.round(bytes / 1048576.0 * 10.0) / 10.0);
             }
@@ -3201,9 +3218,7 @@ public final class RtComposite {
                     // depth from the live config against a pool sized by a stale one addresses past the
                     // end.
                     lightPool != null ? lightPool.deviceAddress : 0L,
-                    lightPool != null
-                            ? Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value(), 1, 32)
-                            : 0,
+                    lightPool != null ? lightPoolDepth : 0,
                     // M18's per-frame sphere emitters, finally reaching a shader. The address and count
                     // come from the frame's own entity build rather than from any cached state: the buffer
                     // is reallocated every frame, so a stale address here would be a use-after-free that
@@ -3396,7 +3411,7 @@ public final class RtComposite {
                         terrain.lightBufferAddress(), terrain.lightLocalAliasBufferAddress(),
                         terrain.lightGridCellBufferAddress(), terrain.lightGridSpanBufferAddress(),
                         terrain.lightGridPopulatedCellAddress(), lightPool.deviceAddress,
-                        Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value(), 1, 32),
+                        lightPoolDepth,
                         terrain.lightGridPopulatedCells(), (int) frameCounter);
             }
             if (gpuTimers != null) {
@@ -3974,6 +3989,7 @@ public final class RtComposite {
             lightPool.destroy();
             lightPool = null;
             lightPoolSlots = 0L;
+            lightPoolDepth = 0;
             lightPoolPeakBytes = 0L;
         }
         if (lightPoolPipeline != null) {

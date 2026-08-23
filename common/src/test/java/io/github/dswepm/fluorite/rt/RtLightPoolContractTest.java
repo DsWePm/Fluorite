@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -167,18 +168,68 @@ final class RtLightPoolContractTest {
     /**
      * The pool's footprint reaches the log, because a default depth cannot be chosen without it.
      *
-     * <p>Depth 32 was measured to cost nothing in time -- 0.009 ms of build, and gpu.traceIndirect
-     * unmoved across adjacent fixed-pose plateaus -- which leaves space as the only term still unknown.
-     * Nothing else reports it: the frame profile has no VRAM column and the buffer's debug name never
-     * reaches the log. A high-water mark rather than every resize, because the grid republishes several
-     * times a second while chunks load.
+     * <p>Nothing else reports it: the frame profile has no VRAM column and the buffer's debug name never
+     * reaches the log. At DEBUG rather than info, and the reason is measured rather than assumed -- the
+     * first run printed 530 lines in four minutes, because the populated cell count only ever grows
+     * while chunks stream in, so "only on a new peak" turned out to be every single resize.
      */
     @Test
-    void thePoolReportsItsPeakFootprint() throws IOException {
+    void thePoolReportsItsPeakFootprintWithoutFloodingTheLog() throws IOException {
         String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
         assertTrue(composite.contains("if (bytes > lightPoolPeakBytes) {"));
-        assertTrue(composite.contains("\"Light presample pool peak: {} populated cells x depth {} "
-                + "= {} slots, {} MiB\""));
+        assertTrue(composite.contains("FluoriteMod.LOGGER.debug(\n"
+                + "                        \"Light presample pool peak:"));
+    }
+
+    /**
+     * ONE reader of the depth knob, and what the pool publishes is the depth it was SIZED with.
+     *
+     * <p>The shader indexes the pool by `rank * depth + slot`, so a depth larger than the one the
+     * allocation was made for runs off the end of the buffer. Reading the live config at the record site
+     * makes that reachable by moving a slider between the resize and the record; reading the field the
+     * resize wrote does not.
+     *
+     * <p>The per-site Math.clamp calls that used to stand in for this were worse than redundant. They
+     * were a second, independent copy of the config's own bound -- four places to update when the
+     * ceiling moves, and no failure at all on the day one is missed, just a depth quietly pinned lower
+     * than the setting says. IntSetting sanitises on every write, so value() cannot be out of range.
+     */
+    @Test
+    void theDepthKnobIsReadInExactlyOnePlace() throws IOException {
+        String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
+
+        assertEquals(1, countOf(composite, "Composite.LIGHT_POOL_DEPTH"),
+                "the depth knob belongs to ensureLightPool alone");
+        assertTrue(composite.contains("depth = FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value();"));
+        assertFalse(composite.contains("Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH"));
+        // Published and dispatched from the field the resize wrote, never from the knob.
+        assertTrue(composite.contains("lightPool != null ? lightPoolDepth : 0,"));
+        assertTrue(composite.contains("lightPoolSlots = want;\n        lightPoolDepth = depth;"));
+        // And the early-out watches the depth too: the product hides a change that halves the cells
+        // while doubling the depth, which wants the same bytes and a different stride.
+        assertTrue(composite.contains("if (lightPoolSlots == want && lightPoolDepth == depth) {"));
+    }
+
+    /**
+     * The shipped default is the depth that was measured not to flicker, and the slider can reach the top.
+     *
+     * <p>Eight was the default and eight visibly flickered in a many-light room under heavy fog -- a
+     * whole sixteen-block cell pulsing together, because every pixel in a cell shares its slots and the
+     * slots are redrawn each frame. Thirty-two stopped it for 0.009 ms of build and no measurable trace
+     * time. A default that ships a known artefact is not a default, it is a trap the user has to find.
+     *
+     * <p>The slider's range is pinned against the setting's own, because a slider that stops short of
+     * the config's ceiling silently pins whatever a hand-edited toml already holds.
+     */
+    @Test
+    void theDefaultDepthIsTheOneMeasuredNotToFlicker() throws IOException {
+        String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
+        String options = source(
+                "common/src/main/java/io/github/dswepm/fluorite/client/RtVideoOptions.java");
+
+        assertTrue(config.contains(
+                "\"fluorite.rt.lightPoolDepth\", \"composite.light-pool-depth\", 32, 1, 64)"));
+        assertTrue(options.contains("new OptionInstance.IntRange(1, 64),"));
     }
 
     /**
@@ -278,6 +329,16 @@ final class RtLightPoolContractTest {
         assertFalse(push.contains("float3"));
         assertTrue(push.contains("uint poolDepth;"));
         assertTrue(push.contains("uint populatedCells;"));
+    }
+
+    /** Counts occurrences outside comments, so an explanation of a rule cannot break the rule. */
+    private static int countOf(String source, String needle) {
+        String bare = stripLineComments(source);
+        int n = 0;
+        for (int i = bare.indexOf(needle); i >= 0; i = bare.indexOf(needle, i + needle.length())) {
+            n++;
+        }
+        return n;
     }
 
     private static String stripLineComments(String source) {
