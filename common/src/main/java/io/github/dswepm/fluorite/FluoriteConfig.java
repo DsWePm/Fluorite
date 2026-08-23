@@ -977,6 +977,33 @@ public final class FluoriteConfig {
                     clampedInt("fluorite.rt.dynamicRisCandidates",
                             "composite.dynamic-ris-candidates", 0, 0, 8);
 
+            /**
+             * M26: presample each populated light-grid cell a small pool of emitters once a frame, and
+             * let shading read from it instead of walking the grid.
+             *
+             * <p>OFF IS THE PUBLISHED RENDERER, which is what makes this an isolation switch rather than
+             * a quality level. What it changes is where the walk happens, not what the walk answers: a
+             * pooled slot carries the same light with the same selection probability the walk would have
+             * produced, so the estimator is the same estimator.
+             *
+             * <p>It exists because "let block emitters light the fog" is unaffordable without it. That
+             * feature costs a four-deep dependent load chain per sample; D31 proved the shadow ray
+             * innocent and D207 killed the segment-count mitigation, leaving only this.
+             */
+            public static final BooleanSetting LIGHT_POOL =
+                    bool("fluorite.rt.lightPool", "composite.light-pool", false);
+
+            /**
+             * Slots drawn per populated cell per frame.
+             *
+             * <p>Deeper means a sample is less likely to keep drawing the same few emitters out of a
+             * crowded cell, at 48 bytes a slot times the populated cells. Too shallow and the pool
+             * becomes a fixed choice rather than a sample of the cell's distribution; too deep and it
+             * stops fitting in cache, which is the one thing this feature cannot afford to lose.
+             */
+            public static final IntSetting LIGHT_POOL_DEPTH =
+                    clampedInt("fluorite.rt.lightPoolDepth", "composite.light-pool-depth", 8, 1, 32);
+
             public static final IntSetting RESTIR_SPATIAL_NEIGHBOURS =
                     clampedInt("fluorite.rt.restirSpatialNeighbours",
                             "composite.restir-spatial-neighbours", 0, 0, 8);

@@ -40,10 +40,14 @@ final class RtSkyMediumLayoutTest {
         // M25 TOOK IT TO 1184 AND GAVE IT BACK. The volumetric hash grid needed a device address and a
         // slot count; its LOD constant and eviction window then cost nothing, landing in the padding that
         // first pair left. The grid was measured, found not to pay for itself, and removed, so the five
-        // lanes went with it and the struct is 1168 again — which is the useful thing this line records:
-        // a feature that is withdrawn has to give back its ABI too, or the upload keeps paying rent for
-        // something no shader reads.
-        assertEquals(1168, WorldPushData.BYTE_SIZE);
+        // lanes went with it and the struct returned to 1168 — a feature that is withdrawn has to give
+        // back its ABI too, or the upload keeps paying rent for something no shader reads.
+        //
+        // M26 SPENDS TWO OF THEM AGAIN: the presampled light pool's address and its depth. That is what
+        // the space is for, and the difference from M25 matters — this one is load-bearing for a feature
+        // that stays. The push-constant block was checked first and had four bytes free, which is half an
+        // address, so there was no cheaper home for it.
+        assertEquals(1184, WorldPushData.BYTE_SIZE);
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

@@ -1605,6 +1605,16 @@ public final class RtComposite {
      * than one 130 MB fill that happens once per allocation.
      */
     private boolean reservoirStoreNeedsClear;
+    /**
+     * M26's presampled emitter pool. Null whenever the switch sits at its published position, so the off
+     * state costs no VRAM either.
+     *
+     * <p>Sized by POPULATED cells rather than by the dense grid, and it has to be: the dense grid reaches
+     * four million cells while a slot carries a light record. Ranked, the pool is proportional to the
+     * cells that actually hold one.
+     */
+    private RtBuffer lightPool;
+    private long lightPoolSlots;
     private final RtRestirStats restirStats = new RtRestirStats(PUSH_RING);
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
@@ -2349,6 +2359,42 @@ public final class RtComposite {
         return (2.0 * d * tanX) * (2.0 * d * tanY) * d / 3.0;
     }
 
+    /** 48 bytes: PooledLight. Mirrored from world_common.slang and pinned by RtLightPoolContractTest. */
+    private static final long POOLED_LIGHT_BYTES = 48L;
+
+    /**
+     * Match the pool to the light grid that was published, reallocating only when the shape changes.
+     *
+     * <p>NOT IN ensureOutput, which is the resize path and calls waitIdle. This size follows the light
+     * grid rather than the window: it moves when the terrain republishes, which is a background build
+     * landing at an arbitrary frame, and stalling the device for it would turn a routine chunk load into
+     * a hitch. The old buffer is retired behind the graphics use instead, which is what that mechanism is
+     * for.
+     */
+    private void ensureLightPool(RtContext ctx, RtTerrain terrain,
+                                 RtGpuExecutor.GraphicsUse graphicsUse) {
+        long want = 0L;
+        if (FluoriteConfig.Rt.Composite.LIGHT_POOL.value() && terrain != null) {
+            long cells = Math.max(0, terrain.lightGridPopulatedCells());
+            long depth = Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value(), 1, 32);
+            want = Math.multiplyExact(cells, depth);
+        }
+        if (lightPoolSlots == want) {
+            return;
+        }
+        if (lightPool != null) {
+            RtBuffer retiring = lightPool;
+            ctx.gpuExecutor().retireAfterGraphics(graphicsUse, retiring::destroy);
+            lightPool = null;
+        }
+        lightPoolSlots = want;
+        if (want > 0L) {
+            lightPool = ctx.createBuffer(Math.multiplyExact(want, POOLED_LIGHT_BYTES),
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    false, "light presample pool " + want + " slots");
+        }
+    }
+
     private void ensureOutput(RtContext ctx, int width, int height) {
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
@@ -2754,6 +2800,8 @@ public final class RtComposite {
         RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_COMMAND_BUFFER, cmd.address(), "composite command buffer");
         int debugView = debugView();
         RtTerrain terrain = RtTerrain.currentOrNull();
+        // Before the push block is assembled, because the address it publishes has to be this frame's.
+        ensureLightPool(ctx, terrain, graphicsUse);
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope frameLabel = RtDebugLabels.scope(ctx, cmd, "composite frame")) {
             // RR drives the upscale: trace + jitter at render res, DLSS-RR denoises+upscales to display.
             // Jitter is suppressed for the no-RR reference and for the debug guide views (raw inspection).
@@ -3114,6 +3162,14 @@ public final class RtComposite {
                     // read of a slot that already exists, so this one can follow the knob directly.
                     reservoirStore != null
                             ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0,
+                    // M26's presampled pool. Read back out of the ALLOCATION rather than from the
+                    // knob, like the reservoir shape above: the shader indexes it by a cell's rank, so a
+                    // depth from the live config against a pool sized by a stale one addresses past the
+                    // end.
+                    lightPool != null ? lightPool.deviceAddress : 0L,
+                    lightPool != null
+                            ? Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value(), 1, 32)
+                            : 0,
                     // M18's per-frame sphere emitters, finally reaching a shader. The address and count
                     // come from the frame's own entity build rather than from any cached state: the buffer
                     // is reallocated every frame, so a stale address here would be a use-after-free that
@@ -3861,6 +3917,11 @@ public final class RtComposite {
             reservoirStore = null;
             reservoirDepth = 0;
             reservoirPaths = 0;
+        }
+        if (lightPool != null) {
+            lightPool.destroy();
+            lightPool = null;
+            lightPoolSlots = 0L;
         }
         restirStats.destroy();
         destroyGuideImages();

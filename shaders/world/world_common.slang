@@ -316,6 +316,21 @@ public struct WorldPush {
     public uint     restirSpatialNeighbours;
 
     /**
+     * M26's presampled emitter pool: base address and slots per cell.
+     *
+     * <p>0 and 0 whenever the switch sits at its published position, and every sampler then walks the
+     * grid exactly as it always has. That is the off state iron law 8 asks for, spelled as an absent
+     * buffer rather than as a branch, so there is nothing to forget.
+     *
+     * <p>HERE RATHER THAN IN WorldPushConstants, and not by preference: that block is 128 bytes, which is
+     * the guaranteed floor, and counting its fields leaves four bytes -- half an address. M25 handed
+     * five lanes back to this struct when its hash grid was withdrawn; these two are a live feature
+     * taking two of them, which is what that space is for.
+     */
+    public uint64_t lightPoolAddr;
+    public uint     lightPoolDepth;
+
+    /**
      * M18's per-frame sphere emitters -- entities, held blocks, flame particles -- and how many.
      *
      * <p>THESE POSITIONS ARE ALREADY IN CURRENT REBASED SPACE and must NOT have lightRebase added, unlike

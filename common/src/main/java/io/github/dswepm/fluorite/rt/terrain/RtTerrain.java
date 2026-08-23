@@ -276,6 +276,16 @@ public final class RtTerrain {
         return lightGrid.published().spanAddress();
     }
 
+    /** M26: the rank-to-cell map the presampled pool's build dispatches over. */
+    public long lightGridPopulatedCellAddress() {
+        return lightGrid.published().populatedCellAddress();
+    }
+
+    /** M26: how many cells hold a light, which is what the pool is sized by. */
+    public int lightGridPopulatedCells() {
+        return lightGrid.published().populatedCells();
+    }
+
     public int lightGridOriginX() {
         RtLightGridManager.PublishedState hierarchy = lightGrid.published();
         return hierarchy.originX() + hierarchy.rebaseX() - blockX;
