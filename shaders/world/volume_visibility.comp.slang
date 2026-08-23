@@ -86,7 +86,20 @@ struct VisPush {
     // holds what cell (i,j,k) + shift held then. The origin snaps to multiples of the cell size on the
     // CPU, which is what makes this an integer at all — a fractional shift would need a filtered fetch,
     // and a filtered fetch of an accumulator is a blur that compounds every frame.
-    int3 shift;
+    //
+    // THREE SCALARS, NOT AN int3, AND THAT IS NOT A STYLE CHOICE. A three-component integer vector takes
+    // 16-byte alignment, so declared after the 8-byte address it would begin at byte 16 while the CPU
+    // writes it at byte 8. The fields then land one slot apart with no error anywhere: shift.x reads the
+    // Z shift, shift.y reads the reset flag, shift.z reads padding, and reset reads padding and is
+    // therefore never true.
+    //
+    // What that looked like was a sealed room whose fog came back whenever the player MOVED and faded
+    // again when they stopped -- because standing still makes every shift zero, which is the one input
+    // for which a wrong layout and a right one agree. Scalars have no alignment to get wrong, which is
+    // the convention rain_history.comp already follows.
+    int shiftX;
+    int shiftY;
+    int shiftZ;
     // 1 discards the history: first frame, a cell-size change, or a jump far enough that no cell of the
     // old grid describes any cell of the new one.
     uint reset;
@@ -190,7 +203,7 @@ void main(uint3 id: SV_DispatchThreadID) {
     float open = 0.0;
     float n = 0.0;
     if (visPush.reset == 0u) {
-        int3 src = int3(id) + visPush.shift;
+        int3 src = int3(id) + int3(visPush.shiftX, visPush.shiftY, visPush.shiftZ);
         if (all(src >= int3(0, 0, 0))
                 && src.x < VIS_GRID_W && src.y < VIS_GRID_H && src.z < VIS_GRID_D) {
             float4 prior = historyRead[src];

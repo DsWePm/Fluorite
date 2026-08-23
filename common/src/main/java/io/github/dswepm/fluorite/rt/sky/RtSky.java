@@ -1016,6 +1016,9 @@ public final class RtSky {
                     stack.longs(visibilityBake.descriptorSet(), tlasSet), null);
             ByteBuffer pushData = stack.malloc(VIS_PUSH_BYTES);
             pushData.putLong(0, worldPushAddr);
+            // Scalars at 8/12/16/20, matching VisPush field for field. The shader declares three
+            // separate ints rather than an int3 deliberately: a three-component integer vector takes
+            // 16-byte alignment and would begin at byte 16, silently reading these one slot across.
             pushData.putInt(8, shiftX).putInt(12, shiftY).putInt(16, shiftZ);
             pushData.putInt(20, reset ? 1 : 0);
             pushData.putInt(24, 0).putInt(28, 0);

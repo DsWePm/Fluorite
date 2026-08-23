@@ -86,12 +86,34 @@ float sliceDepth(int z, float maxDist) {
     return froxelSliceDepth((float(z) + 0.5) / float(FROXEL_D), maxDist);
 }
 
+/**
+ * Openness for the DENSITY field, and it must never fall back to a ray.
+ *
+ * <p>froxelSkyOpenness casts one where the grid cannot answer, which is right for a per-cell lighting
+ * query made once per slice. This is called once per density sample inside a march, so the same fallback
+ * would put a shadow ray inside an inner loop. Outside the grid it answers "open", which is also the
+ * honest default: beyond about 32 blocks there is no measurement, and the published field is structured
+ * everywhere.
+ */
+float froxelStructureOpenness(WorldPush wp, float3 p) {
+    float cell = wp.visGridOrigin.w;
+    if (cell <= 0.0) {
+        return 1.0;
+    }
+    float3 g = (p - wp.visGridOrigin.xyz) / (cell * VIS_GRID_DIMS);
+    if (any(g < float3(0.0, 0.0, 0.0)) || any(g > float3(1.0, 1.0, 1.0))) {
+        return 1.0;
+    }
+    return saturate(volumeVisibility.SampleLevel(g, 0.0).r);
+}
+
 float froxelFogNoiseMultiplier(WorldPush wp, float3 p, float footprint) {
     if (!volumeFogNoiseOn(wp.fogParams, wp.fogAmbient)) {
         return 1.0;
     }
     float2 packed = fogNoise.SampleLevel(volumeFogNoiseUv(wp.fogNoiseOrigin, p), 0.0).rg;
-    return volumeFogNoiseMultiplier(packed, wp.fogAmbient, wp.fogNoiseOrigin.w, footprint);
+    return volumeFogNoiseMultiplier(packed, wp.fogAmbient, wp.fogNoiseOrigin.w, footprint,
+                                    volumeFogStructureStrength(froxelStructureOpenness(wp, p)));
 }
 
 float froxelFogDensity(WorldPush wp, float3 p, float footprint) {

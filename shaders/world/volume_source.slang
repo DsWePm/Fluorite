@@ -93,8 +93,8 @@ float volumeExpMean(float x) {
  * shader has no way to ask for; it is worth building only if the drift is visible in game.
  */
 public float volumeFogNoiseResolvedMultiplier(float2 signedNoise, float2 resolved,
-                                               float4 fogAmbient) {
-    float contrast = max(fogAmbient.x, 0.0);
+                                               float4 fogAmbient, float strength) {
+    float contrast = max(fogAmbient.x, 0.0) * saturate(strength);
     if (contrast <= 0.0) {
         return 1.0;
     }
@@ -116,10 +116,35 @@ public float volumeFogNoiseResolvedMultiplier(float2 signedNoise, float2 resolve
  * mean zero, time/weather still control the expected physical density alone.
  */
 public float volumeFogNoiseMultiplier(float2 packedNoise, float4 fogAmbient,
-                                      float fieldScale, float footprint) {
+                                      float fieldScale, float footprint, float strength) {
     float2 signedNoise = packedNoise * 2.0 - 1.0;
     return volumeFogNoiseResolvedMultiplier(
-            signedNoise, volumeFogNoiseResolved(fieldScale, footprint), fogAmbient);
+            signedNoise, volumeFogNoiseResolved(fieldScale, footprint), fogAmbient, strength);
+}
+
+/**
+ * How much STRUCTURE the air at a point is allowed to have, from how much sky reaches it.
+ *
+ * <p>Structured fog is a weather phenomenon. The field models banks and clear pockets produced by wind
+ * shear and by ground that radiates its heat away overnight, and both of those are things that happen to
+ * air with the sky over it. Air in a sealed room has neither, and the renderer was giving it both: an
+ * unlit cellar had fog that drifted past in bands, which reads as weather indoors.
+ *
+ * <p>So the structure fades with sky openness and the density falls back to the smooth height profile --
+ * one still, uniform body of air, which is what a closed room actually contains.
+ *
+ * <p><b>THE KNEE IS AT A QUARTER, NOT AT ZERO, AND THAT IS THE WHOLE DESIGN.</b> Fading linearly would
+ * take a third of the structure out from under a forest canopy, and fog banks between trees are exactly
+ * the picture this field exists to produce. A cave mouth, an overhang and a canopy all sit well above a
+ * quarter open; only a genuinely enclosed space is below it. So the rule reaches the place it was written
+ * for and nothing else.
+ *
+ * <p>Smoothstep rather than a step, because a hard edge here would draw the visibility grid's own cell
+ * boundaries into the fog as a change of texture -- the same failure a hard visibility cutoff produced,
+ * one property along.
+ */
+public float volumeFogStructureStrength(float skyOpenness) {
+    return smoothstep(0.0, 0.25, skyOpenness);
 }
 
 /** Sanitised user-approved hard cap shared by every numerical fog interval. */

@@ -88,13 +88,18 @@ float ambientNoiseMultiplier(float3 p, float footprint) {
     }
     float2 packed = fogNoise.SampleLevel(
             volumeFogNoiseUv(worldPush.fogNoiseOrigin, p), 0.0).rg;
+    // The openness read belongs HERE rather than at the call sites, and that is a correctness point
+    // rather than a tidiness one. The density field has to be one function of position: total optical
+    // depth, in-scatter and the sampled event all walk it, and if any of them applied a different
+    // strength the segment would extinguish by one number and emit by another.
     return volumeFogNoiseMultiplier(packed, worldPush.fogAmbient,
-                                    worldPush.fogNoiseOrigin.w, footprint);
+                                    worldPush.fogNoiseOrigin.w, footprint,
+                                    volumeFogStructureStrength(volumeSkyOpenness(p)));
 }
 
 /** Debug 25 uses the exact final multiplier function consumed by normal transport. */
 public float ambientNoiseDebugMultiplier(float4 sample) {
-    return volumeFogNoiseResolvedMultiplier(sample.xy, sample.zw, worldPush.fogAmbient);
+    return volumeFogNoiseResolvedMultiplier(sample.xy, sample.zw, worldPush.fogAmbient, 1.0);
 }
 
 float ambientNoiseDensity(float3 p, float footprint) {
