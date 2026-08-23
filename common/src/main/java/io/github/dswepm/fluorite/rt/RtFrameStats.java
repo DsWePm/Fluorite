@@ -96,6 +96,11 @@ public final class RtFrameStats {
                     // primary trace on paper and nothing has weighed it; resolution and step count are
                     // each one constant away, and a shared number could not say which to turn.
                     "gpu.cloudShadow",
+                    // M26's presampled emitter pool. Its own column because the whole milestone is a
+                    // claim about where a cost MOVED: this number only means anything read against
+                    // gpu.traceIndirect, and folded into anything else "the walk got cheaper" would be
+                    // unfalsifiable.
+                    "gpu.lightPool",
                     // The two water passes. The spectrum is deliberately absent -- it runs inline in
                     // the raygen shaders, so it is measured by the water.waves isolation switch
                     // against gpu.tracePrimary/gpu.traceIndirect, not by a zone.

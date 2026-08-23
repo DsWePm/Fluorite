@@ -496,8 +496,12 @@ public float3 volumeNee(float3 mediumExtinction, uint mediumFlags, float3 pos, f
     addresses.localAlias = pc.lightLocalAliasAddr;
     addresses.gridCell = pc.lightGridCellAddr;
     addresses.gridSpan = pc.lightGridSpanAddr;
+    // M26: the pool answers when it has been built, and the walk answers otherwise. Both produce the
+    // same proposal with the same density -- the pool's slots were filled by running the walk -- so this
+    // is a choice of WHERE the loads happen, not of what is sampled.
     EmitterSample emitter;
-    if (!sampleVolumeEmitter(worldPush, addresses, pos, seed, proposalSeed, emitter)) {
+    bool pooled = sampleVolumeEmitterPooled(worldPush, addresses, pos, seed, proposalSeed, emitter);
+    if (!pooled && !sampleVolumeEmitter(worldPush, addresses, pos, seed, proposalSeed, emitter)) {
         return float3(0.0, 0.0, 0.0);
     }
     float3 toL = emitter.pos - pos;

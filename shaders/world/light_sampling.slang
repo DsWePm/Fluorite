@@ -164,6 +164,74 @@ public float emitterProposalPdf(WorldPush wp, LightBufferAddresses addresses, Li
 }
 
 /**
+ * The same proposal, read out of M26's presampled pool instead of walked out of the grid.
+ *
+ * <p><b>TWO DEPENDENT LOADS INSTEAD OF FOUR.</b> The walk below reaches the cell, then a span inside it,
+ * then an alias column, then the Light record, and every address waits on the value before it. That is
+ * latency a ray-tracing shader's occupancy cannot hide, and D31 proved it was the cost rather than the
+ * shadow ray: silencing the ray while keeping the walk made the frame slower still. Here the cell
+ * coordinate is arithmetic, the cell load gives a rank, and the pool slot is the light. The span and the
+ * alias are gone from the sample entirely -- they ran once per cell in the build.
+ *
+ * <p><b>IT IS THE SAME ESTIMATOR, not an approximation of it.</b> The slot was filled by running exactly
+ * the walk this function replaces, and it carries the probability that walk drew it with. Nothing here
+ * re-derives a density, which is the one way a cache like this usually goes wrong.
+ *
+ * <p>The point on the rectangle is still drawn HERE, per sample, from the half-extents the slot carries.
+ * Baking it into the slot would hand every pixel reading that slot the same point -- correlation across
+ * the screen, which temporal accumulation cannot average away because every frame carries the same one.
+ *
+ * <p>Falls back to the walk when the pool has nothing to say: no pool published, a cell outside the grid,
+ * or an empty slot. Empty slots are real and expected -- the build records one whenever it drew a
+ * zero-power or out-of-neighbourhood light, which is what emitterProposalPdf already refuses to paper
+ * over. Retrying such a draw against the grid would be a different estimator, so the fallback returns
+ * what the grid alone would have returned for the same reason.
+ */
+public bool sampleVolumeEmitterPooled(WorldPush wp, LightBufferAddresses addresses, float3 receiver,
+                                      inout uint seed, inout uint proposalSeed,
+                                      out EmitterSample sample) {
+    sample.pos = float3(0.0, 0.0, 0.0);
+    sample.normal = float3(0.0, 1.0, 0.0);
+    sample.radiance = float3(0.0, 0.0, 0.0);
+    sample.area = 0.0;
+    sample.sourcePdf = 0.0;
+    if (wp.lightPoolAddr == 0 || wp.lightPoolDepth == 0u || addresses.gridCell == 0) {
+        return false;
+    }
+    // The same jitter the walk applies, so the two paths agree about which cell a receiver belongs to
+    // near a boundary. Dropping it would make the switch change the picture by more than where a load
+    // happens, which is exactly what an isolation switch must not do.
+    float3 gridLookup = receiver
+            + (float3(rndf(proposalSeed), rndf(proposalSeed), rndf(proposalSeed)) - 0.5)
+              * wp.lightGridOrigin.w;
+    int3 coord = int3(floor((gridLookup - wp.lightGridOrigin.xyz) / wp.lightGridOrigin.w));
+    if (any(coord < int3(0, 0, 0)) || any(coord >= wp.lightGridDims.xyz)) {
+        return false;
+    }
+    uint linear = (uint(coord.z) * uint(wp.lightGridDims.y) + uint(coord.y))
+            * uint(wp.lightGridDims.x) + uint(coord.x);
+    LightGridCell cell = ConstPtr<LightGridCell>(addresses.gridCell)[linear];
+    if (cell.spanCount == 0u) {
+        return false;
+    }
+    uint slot = min(uint(rndf(proposalSeed) * float(wp.lightPoolDepth)), wp.lightPoolDepth - 1u);
+    PooledLight pooled = ConstPtr<PooledLight>(wp.lightPoolAddr)[cell.poolRank * wp.lightPoolDepth + slot];
+    if (!(pooled.pdf > 0.0)) {
+        return false;
+    }
+    Light light = pooledLightRecord(pooled);
+    float s = rndf(seed) * 2.0 - 1.0;
+    float t = rndf(seed) * 2.0 - 1.0;
+    sample.pos = light.pos + wp.lightRebase.xyz
+            + s * emitterHalfU(light) + t * emitterHalfV(light);
+    sample.normal = emitterNormal(light);
+    sample.radiance = emitterRadiance(light);
+    sample.area = emitterArea(light);
+    sample.sourcePdf = pooled.pdf;
+    return sample.sourcePdf > 0.0 && sample.area > 0.0;
+}
+
+/**
  * One nearby-emitter proposal for a volume event. Grid selection is preferred when available and the
  * global alias is the full-support fallback. sourcePdf is the discrete light-selection probability;
  * the caller applies the rectangle's uniform 1/area density in its own geometry term.

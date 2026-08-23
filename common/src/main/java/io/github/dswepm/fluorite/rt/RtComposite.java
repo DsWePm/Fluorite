@@ -70,6 +70,7 @@ import io.github.dswepm.fluorite.rt.overlay.RtWorldOverlay;
 import io.github.dswepm.fluorite.rt.overlay.RtRainStreaks;
 import io.github.dswepm.fluorite.rt.pipeline.RtHdrCompositePipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtLensPipeline;
+import io.github.dswepm.fluorite.rt.pipeline.RtLightPoolPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtSdrPresentPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
@@ -1561,6 +1562,9 @@ public final class RtComposite {
     // settle the question. It is also the dial most likely to move -- resolution and step count are
     // both one constant away.
     private static final int GPU_ZONE_CLOUD_SHADOW = 14;
+    // M26's pool build. Its own zone because the whole milestone is a claim about where a cost moved:
+    // this number has to be readable against gpu.traceIndirect, or "the walk got cheaper" is unfalsifiable.
+    private static final int GPU_ZONE_LIGHT_POOL = 15;
     private RtGpuTimers gpuTimers;
     private RtDisplayPipeline displayPipeline;
     private RtLensPipeline lensPipeline;
@@ -1615,6 +1619,7 @@ public final class RtComposite {
      */
     private RtBuffer lightPool;
     private long lightPoolSlots;
+    private RtLightPoolPipeline lightPoolPipeline;
     private final RtRestirStats restirStats = new RtRestirStats(PUSH_RING);
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
@@ -2115,7 +2120,8 @@ public final class RtComposite {
                         "gpu.skyBake", "gpu.visBake", "gpu.froxelBake",
                         "gpu.waterSim", "gpu.waterDeform",
                         "gpu.entityBlas", "gpu.tlasBuild", "gpu.rainExposure", "gpu.rainStreak",
-                        "gpu.lensSpatial", "gpu.displayMap", "gpu.bloomFlare", "gpu.cloudShadow");
+                        "gpu.lensSpatial", "gpu.displayMap", "gpu.bloomFlare", "gpu.cloudShadow",
+                        "gpu.lightPool");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -3349,6 +3355,24 @@ public final class RtComposite {
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
+                gpuTimers.begin(cmd, pushSlot, GPU_ZONE_LIGHT_POOL);
+            }
+            // M26. Recorded among the bakes so the barrier below -- "bakes visible to the trace's
+            // sampling" -- already covers it; the pool has no dependency on the TLAS and does not want
+            // its own synchronisation point.
+            if (lightPool != null && terrain != null) {
+                if (lightPoolPipeline == null) {
+                    lightPoolPipeline = RtLightPoolPipeline.create(ctx);
+                }
+                lightPoolPipeline.record(cmd, pushBuf.deviceAddress,
+                        terrain.lightBufferAddress(), terrain.lightLocalAliasBufferAddress(),
+                        terrain.lightGridCellBufferAddress(), terrain.lightGridSpanBufferAddress(),
+                        terrain.lightGridPopulatedCellAddress(), lightPool.deviceAddress,
+                        Math.clamp(FluoriteConfig.Rt.Composite.LIGHT_POOL_DEPTH.value(), 1, 32),
+                        terrain.lightGridPopulatedCells(), (int) frameCounter);
+            }
+            if (gpuTimers != null) {
+                gpuTimers.end(cmd, pushSlot, GPU_ZONE_LIGHT_POOL);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_RAIN_EXPOSURE);
             }
             if (rainExposure.resolution() > 0) {
@@ -3922,6 +3946,10 @@ public final class RtComposite {
             lightPool.destroy();
             lightPool = null;
             lightPoolSlots = 0L;
+        }
+        if (lightPoolPipeline != null) {
+            lightPoolPipeline.destroy();
+            lightPoolPipeline = null;
         }
         restirStats.destroy();
         destroyGuideImages();
