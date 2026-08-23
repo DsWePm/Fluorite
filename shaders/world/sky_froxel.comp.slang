@@ -53,6 +53,11 @@ struct FroxelPush {
 [[vk::binding(0, 0)]] Sampler2D transmittanceLut;
 [[vk::binding(1, 0)]] Sampler3D fogNoise;
 [[vk::binding(2, 0)]] RWTexture3D<float4> aerialPerspective;
+// The volumetric visibility grid's sky openness, LINEAR + CLAMP_TO_EDGE, the same table and the same
+// sampler the ray-tracing side reads. Bound here rather than imported from volume_visibility.slang for
+// the reason the mask below gives: that module declares the ray-tracing pipeline's set-0 bindings, and a
+// compute shader inheriting them is a validation error.
+[[vk::binding(3, 0)]] Sampler3D volumeVisibility;
 // Set 1, its own ring: the TLAS handle changes almost every frame, and rewriting one set's binding while
 // an earlier frame's command buffer may still be reading it is the hazard RtPipeline.setTlas exists to
 // guard against. Reusing RtOverlayPipelines.AccelStructureSet rather than growing set 0 is what keeps
@@ -81,12 +86,34 @@ float sliceDepth(int z, float maxDist) {
     return froxelSliceDepth((float(z) + 0.5) / float(FROXEL_D), maxDist);
 }
 
+/**
+ * Openness for the DENSITY field, and it must never fall back to a ray.
+ *
+ * <p>froxelSkyOpenness casts one where the grid cannot answer, which is right for a per-cell lighting
+ * query made once per slice. This is called once per density sample inside a march, so the same fallback
+ * would put a shadow ray inside an inner loop. Outside the grid it answers "open", which is also the
+ * honest default: beyond about 32 blocks there is no measurement, and the published field is structured
+ * everywhere.
+ */
+float froxelStructureOpenness(WorldPush wp, float3 p) {
+    float cell = wp.visGridOrigin.w;
+    if (cell <= 0.0) {
+        return 1.0;
+    }
+    float3 g = (p - wp.visGridOrigin.xyz) / (cell * VIS_GRID_DIMS);
+    if (any(g < float3(0.0, 0.0, 0.0)) || any(g > float3(1.0, 1.0, 1.0))) {
+        return 1.0;
+    }
+    return saturate(volumeVisibility.SampleLevel(g, 0.0).r);
+}
+
 float froxelFogNoiseMultiplier(WorldPush wp, float3 p, float footprint) {
     if (!volumeFogNoiseOn(wp.fogParams, wp.fogAmbient)) {
         return 1.0;
     }
     float2 packed = fogNoise.SampleLevel(volumeFogNoiseUv(wp.fogNoiseOrigin, p), 0.0).rg;
-    return volumeFogNoiseMultiplier(packed, wp.fogAmbient, wp.fogNoiseOrigin.w, footprint);
+    return volumeFogNoiseMultiplier(packed, wp.fogAmbient, wp.fogNoiseOrigin.w, footprint,
+                                    volumeFogStructureStrength(froxelStructureOpenness(wp, p)));
 }
 
 float froxelFogDensity(WorldPush wp, float3 p, float footprint) {
@@ -117,23 +144,51 @@ float3 froxelFogTransmittance(WorldPush wp, float3 sigma, float3 ro, float3 rd, 
     return exp(-sigma * tau);
 }
 
+// Must match volume_visibility.comp.slang, volume_visibility.slang and RtSky.VIS_GRID_W/H/D. Restated
+// rather than imported for the same reason the shadow mask below is: those modules carry bindings this
+// compute set does not have.
+static const float3 VIS_GRID_DIMS = float3(64.0, 32.0, 64.0);
+
 /**
- * Whether this cell can see the sky, asked with a ray rather than read from the grid.
+ * Whether this cell can see the sky, asked with a ray only where the shared grid cannot answer.
  *
- * The grid was tried first and is the wrong instrument, which M9 predicted in the sentence that shipped
- * with it: its cells are eight blocks on a side, it "cannot tell three blocks outside a cave mouth from
- * deep inside one", and the note ends by saying fine volumetric occlusion is M13's job. A house is
- * shorter than one cell, so the cell holding a sealed room also holds the open sky above its roof and
- * averages to open — measured exactly that way, red everywhere indoors and out, with the terrain
- * silhouette visible at the horizon because the grid IS working, just not at a useful scale.
+ * <p>THE GRID WAS TRIED FIRST AND REJECTED, and the rejection was right at the time. M9 predicted it in
+ * the sentence that shipped with it: cells eight blocks on a side "cannot tell three blocks outside a
+ * cave mouth from deep inside one". A house is shorter than one cell, so the cell holding a sealed room
+ * also held the open sky above its roof and averaged to open -- measured exactly that way, lit everywhere
+ * indoors and out, with the terrain silhouette visible at the horizon because the grid WAS working, just
+ * not at a useful scale.
  *
- * A froxel already resolves what a room needs, so it answers for itself. Straight up rather than a
- * hemisphere: the ambient really is an integral over directions, but the question a ceiling asks is
- * binary and one ray settles it, where a proper hemisphere would cost as many rays per cell as the whole
- * grid costs now.
+ * <p>Two things changed and both are load-bearing. The cell size is one block by default rather than
+ * eight, which is the size at which the lattice lands on block centres and a one-block wall can hold a
+ * cell of its own. And the grid's answer is an accumulated hemisphere fraction rather than one zenith
+ * ray's 0 or 1, so it now carries strictly more than the ray it replaces here -- a canopy reads as a
+ * fraction on the grid and as a hard zero on the ray.
+ *
+ * <p>OUTSIDE THE GRID THE RAY STAYS, and nothing is extrapolated. The grid reaches about 32 blocks
+ * horizontally at the default cell while this froxel reaches the fog's cull distance, so roughly the far
+ * third of the depth axis has no cell to read and casts for itself exactly as before. Clamping to the
+ * boundary would have been cheaper and is what the read path does for the marched segments -- but those
+ * ask from inside a scene, where the boundary is a plausible continuation, whereas here it would be
+ * asserting that a point 500 blocks out has the openness of one 32 blocks out.
+ *
+ * <p>ONE FRAME STALE, DELIBERATELY. This bake is recorded before the visibility bake, so it reads the
+ * grid that bake wrote last frame. Reordering them would need a barrier between two dispatches that have
+ * no other reason to synchronise, to buy an update to a field whose own time constant is 64 frames.
  */
 float skyReachable(float3 p) {
     return froxelOccluded(p, float3(0.0, 1.0, 0.0), 4096.0) ? 0.0 : 1.0;
+}
+
+float froxelSkyOpenness(WorldPush wp, float3 p) {
+    float cell = wp.visGridOrigin.w;
+    if (cell > 0.0) {
+        float3 g = (p - wp.visGridOrigin.xyz) / (cell * VIS_GRID_DIMS);
+        if (all(g >= float3(0.0, 0.0, 0.0)) && all(g <= float3(1.0, 1.0, 1.0))) {
+            return saturate(volumeVisibility.SampleLevel(g, 0.0).r);
+        }
+    }
+    return skyReachable(p);
 }
 
 /** One shadow ray. Opaque-only and first-hit: this asks whether a sampled emitter is blocked. */
@@ -340,7 +395,7 @@ void main(uint3 id: SV_DispatchThreadID) {
             // term, a ray at the zenith for the isotropic ones. Gating the ambient on the SUN would be
             // wrong in the other direction — a hillside shadow would drain the sky out of the fog, when
             // what removes ambient light is a roof, not a hill.
-            float skyOpen = unoccludedAmbient ? 1.0 : skyReachable(p);
+            float skyOpen = unoccludedAmbient ? 1.0 : froxelSkyOpenness(wp, p);
             AmbientRadianceSource source = evaluateAmbientRadianceSource(
                     rd, sampledLightDir, wp.fogScatter.w,
                     sampledIrradiance, localFogSunT,

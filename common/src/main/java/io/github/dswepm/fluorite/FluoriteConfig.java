@@ -1041,18 +1041,24 @@ public final class FluoriteConfig {
             /**
              * Contrast of the world-anchored heterogeneous density field.
              *
-             * <p>One is D67's calibrated field. Values above one use an odd bounded remap in the shared
-             * shader module rather than clipping negative density: paired samples still sum to two,
-             * every height keeps mean density one, and the local multiplier remains in 0..2.
+             * <p>One is D67's calibrated field. The remap in the shared shader module is exponential
+             * with its own mean divided out, so the local multiplier peaks at 2c/(1-exp(-2c)) -- about
+             * 2x the contrast once past 2 -- instead of the hard 0..2 the previous odd remap could never
+             * exceed at any setting.
+             *
+             * <p>THE RANGE GOES TO 8 BECAUSE THE PEAK IS NOW LINEAR IN IT. Under the old remap 4 was
+             * already the saturation point and anything above it only pushed the field toward binary;
+             * here 4 buys 8x and 8 buys 16x, so the top half of the range is reachable rather than
+             * decorative.
              */
             public static final FloatSetting FOG_NOISE_CONTRAST =
                     clampedFloat("fluorite.rt.fog.noiseContrast", "volumetrics.fog-noise-contrast",
-                            1f, 0f, 4f);
+                            1f, 0f, 8f);
 
             /** One repeat of the packed fog field in blocks: base features are /4, detail is /16. */
             public static final FloatSetting FOG_NOISE_FIELD_SCALE =
                     clampedFloat("fluorite.rt.fog.noiseFieldScale", "volumetrics.fog-noise-field-scale",
-                            384f, 64f, 2048f);
+                            384f, 4f, 512f);
 
             /** Advection speed of the fog density field in blocks per second. */
             public static final FloatSetting FOG_NOISE_WIND_SPEED =
@@ -1107,7 +1113,7 @@ public final class FluoriteConfig {
 
             /** Scales the preset's density. 1 is the preset as authored. */
             public static final FloatSetting DENSITY_SCALE =
-                    clampedFloat("fluorite.rt.fog.densityScale", "volumetrics.density-scale", 1.0f, 0.0f, 10.0f);
+                    clampedFloat("fluorite.rt.fog.densityScale", "volumetrics.density-scale", 1.0f, 0.0f, 64.0f);
 
             /**
              * Multiplies the preset's single-scattering albedo. The external keys retain their legacy
@@ -1142,6 +1148,62 @@ public final class FluoriteConfig {
              * Scattering tint, as a named hue. Not a colour picker: the settings UI has no colour control,
              * and an exact RGB belongs in the dimension preset rather than in a per-player override.
              */
+            /**
+             * Free RGB tints, NORMALISED SO A COLOUR CHANGE IS ONLY A COLOUR CHANGE.
+             *
+             * <p>Each triple is divided by its own luminance before use, so moving the sliders changes the
+             * ratio between channels and never the magnitude. That matters because the two things they
+             * multiply are not artistic gains: extinction IS the optical depth, so an unnormalised tint
+             * would make "make the fog warmer" also mean "make the fog thicker"; and albedo is
+             * sigma_s/sigma_t, where the magnitude is how much of what is extinguished comes back.
+             *
+             * <p>THREE SLIDERS, NOT SIX. There used to be an EXTINCTION triple beside this one, tinting
+             * which wavelengths the fog removes from what is behind it rather than the light it sends to
+             * the eye. Both are real and they are not the same quantity -- but two colour controls that
+             * both move the fog's apparent hue, in ways that only separate when something is BEHIND the
+             * fog, is not a tunable pair. It was removed on the report that it made the fog impossible to
+             * tune, which is the right reason to remove a control: correct and unusable is still unusable.
+             *
+             * <p>All three default to one, which normalises to identity, so the shipped picture is
+             * untouched until a slider moves.
+             */
+            /**
+             * How many path segments may add fog light, counted from the camera. 0 is every segment,
+             * which is the shipped behaviour and the off state.
+             *
+             * <p>Only the in-scatter is dropped; the transmittance of every segment is untouched, so the
+             * air still hides what is behind it at any depth. The alternative -- skipping the fog outright
+             * past the limit -- leaves distant geometry unfogged inside reflections while the direct view
+             * of the same place is fogged, and a seam visible only in a mirror is what R18 exists to
+             * prevent.
+             */
+            public static final IntSetting INSCATTER_SEGMENTS =
+                    intValue("fluorite.rt.fog.inScatterSegments", "volumetrics.inscatter-segments", 0);
+
+            /** Bits 4-7 of environmentFlags, so a bad config cannot reach past the field. */
+            public static int inScatterSegments() {
+                return Math.clamp(INSCATTER_SEGMENTS.value(), 0, 15);
+            }
+
+            public static final FloatSetting SCATTER_TINT_R =
+                    clampedFloat("fluorite.rt.fog.scatterTintR", "volumetrics.scatter-tint-r", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting SCATTER_TINT_G =
+                    clampedFloat("fluorite.rt.fog.scatterTintG", "volumetrics.scatter-tint-g", 1.0f, 0.0f, 4.0f);
+            public static final FloatSetting SCATTER_TINT_B =
+                    clampedFloat("fluorite.rt.fog.scatterTintB", "volumetrics.scatter-tint-b", 1.0f, 0.0f, 4.0f);
+            /** Luminance-preserving, and a fully black triple falls back to identity rather than to zero. */
+            private static float[] normalisedTint(float r, float g, float b) {
+                float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                if (lum <= 1.0e-4f) {
+                    return new float[] {1f, 1f, 1f};
+                }
+                return new float[] {r / lum, g / lum, b / lum};
+            }
+
+            public static float[] scatterTintFreeRgb() {
+                return normalisedTint(SCATTER_TINT_R.value(), SCATTER_TINT_G.value(), SCATTER_TINT_B.value());
+            }
+
             public static final StringSetting SCATTER_TINT =
                     string("fluorite.rt.fog.scatterTint", "volumetrics.scatter-tint", "neutral",
                             Volumetrics::sanitizeTint);
@@ -1234,30 +1296,32 @@ public final class FluoriteConfig {
                     intValue("fluorite.rt.fog.visibilityMaxSteps", "volumetrics.visibility-max-steps", 6);
 
             /**
-             * Jittered shadow rays the fog's SUN term gets per marched segment. 0 keeps it on the
-             * visibility grid.
+             * Jittered shadow rays the fog's SUN term gets per marched segment. At least one.
              *
-             * <p>The grid cannot carry a light shaft and this is measured, not assumed: debug view 19
-             * plots sun visibility along a scanline from the grid and from a ray at the same points, and
-             * indoors the grid reaches 0 in shadow but only 0.5 where the truth is 1, with a ramp where
-             * the truth is a step. Trilinear blends the eight nearest cells and every indoor sample is
-             * within one cell of a wall, so the lit peak is averaged down whatever the cell size.
+             * <p><b>THE GRID POSITION AT ZERO IS GONE.</b> It kept the sun term on the cached visibility
+             * grid, and it lost in game on both axes at once -- slower than a single stochastic ray and a
+             * worse picture. Slower is the surprising half and it is structural: answering from the grid
+             * meant the bake had to cast a sun ray for all 64x32x64 cells every frame, 131k of them,
+             * whether or not any fog was near enough to read one. Worse was already understood and
+             * measured: trilinear filtering blends the eight nearest cells and every indoor sample is
+             * within one cell of a wall, so the lit peak is averaged down whatever the cell size, and the
+             * grid could not carry a light shaft at any resolution. Retired debug view 19 plotted exactly
+             * that -- grid against ray along one scanline -- and it went with the channel it measured.
              *
-             * <p>The SKY term stays on the grid regardless. It is genuinely low frequency — a room is
-             * dark, a hillside is not — so it needs no edge, and it is 0.072 ms for the whole field.
-             * Splitting the two by their frequency content is the point.
+             * <p>The SKY term stays on the grid, and that split by frequency content is the point. Sky
+             * openness is genuinely low frequency -- a room is dark, a hillside is not -- and it is now
+             * the grid's only product.
              *
              * <p><b>Default 1, and both halves of that are measured.</b> Cost, from flipping this knob at
              * a fixed camera position inside one session: 2 rays cost 2.0 +/- 0.2 ms of
              * {@code gpu.traceIndirect} (17.5 against 15.5, +13%), and the reading is trustworthy because
              * the third plateau returned to the first within 0.2 ms. Benefit: 1 and 2 are hard to tell
-             * apart, and both are visibly better than the grid. So 1 buys the whole visible difference for
-             * about half the cost.
+             * apart. So 1 buys the whole visible difference for about half the cost.
              *
              * <p>One sample per pixel per frame is not a compromise here, it is the regime this kind of
              * renderer is built for: the estimator is unbiased and DLSS-RR already accumulates temporally,
              * which is exactly how production path tracers shade volumetrics. The falsification test for
-             * that claim is in sunInScatterStochastic and it has been run — with the denoiser off the
+             * that claim is in sunInScatterStochastic and it has been run -- with the denoiser off the
              * result is noise, not the blocky bias M9 measured.
              */
             public static final IntSetting SUN_SHADOW_RAYS =
@@ -1723,14 +1787,23 @@ public final class FluoriteConfig {
                     bool("fluorite.rt.fog.volumeEmitterNee", "volumetrics.emitter-nee", false);
 
             /** Bits 23-25 of worldPush.flags. */
+            /**
+             * Bits 23-25 of worldPush.flags. AT LEAST ONE: the grid position this used to allow at zero
+             * is deleted, so a stored 0 -- from a config written before that, or by hand -- clamps up
+             * rather than selecting a path that no longer exists.
+             *
+             * <p>Zero still reaches the shader for providers with no celestial at all, which read it
+             * from skyProvider rather than from here.
+             */
             public static int sunShadowRays() {
-                return Math.clamp(SUN_SHADOW_RAYS.value(), 0, 7);
+                return Math.clamp(SUN_SHADOW_RAYS.value(), 1, 7);
             }
 
             /** Bits 18-22 of worldPush.flags. Clamped so a bad config cannot unroll a raygen loop. */
             public static int visibilityMaxSteps() {
                 return Math.clamp(VISIBILITY_MAX_STEPS.value(), 1, 31);
             }
+
 
             /** Runtime bound mirrored by VOLUME_FOG_MARCH_LIMIT in volume_source.slang. */
             public static int fogNoiseMarchSteps() {

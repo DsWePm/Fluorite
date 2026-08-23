@@ -36,26 +36,76 @@ public float2 volumeFogNoiseResolved(float fieldScale, float footprint) {
                   1.0 - smoothstep(detailSize * 0.5, detailSize, footprint));
 }
 
-/** Combine an already decoded sample so diagnostics cannot drift from the transport answer. */
+/**
+ * E[exp(x*u)] for u uniform on [-1,1]. The normalisation the multiplier below divides by.
+ *
+ * <p>The series near zero is not an optimisation, it is the removable singularity: sinh(x)/x is 0/0 at
+ * x = 0 and the value there has to be exactly 1, because that is the case where the structure has faded
+ * out entirely and the density must come back to the mean it was authored at.
+ */
+float volumeExpMean(float x) {
+    float a = abs(x);
+    if (a < 1.0e-3) {
+        return 1.0 + a * a * (1.0 / 6.0);
+    }
+    return sinh(a) / a;
+}
+
+/**
+ * Combine an already decoded sample so diagnostics cannot drift from the transport answer.
+ *
+ * <p><b>WHY THE MULTIPLIER IS NO LONGER BOUNDED AT TWO.</b> The remap this replaces was odd and bounded:
+ * f(-x) = -f(x) and f(+-1) = +-1, giving 1 + shaped over 0..2 with the mean pinned at one. That pinning
+ * was exact and it was exact for a structural reason -- the baked field is PAIRED, every sample having a
+ * partner with exactly the opposite variation, so the field mean of any f is the mean of
+ * (f(v) + f(-v)) / 2, and holding that at 1 for every v forces f(v) + f(-v) = 2. Which forces f <= 2.
+ *
+ * <p>So two was not a tuning ceiling that the contrast slider had failed to reach. It was the ceiling,
+ * and raising the slider from 1 to 4 only pushed the distribution toward a binary 0-or-2 field. A fog
+ * bank that reads as a wall with clear pockets torn through it needs local multipliers of five and ten,
+ * and no exactly mean-preserving odd remap can produce one.
+ *
+ * <p><b>WHAT REPLACED IT.</b> exp(contrast * variation), which is the lognormal shape real fog and cloud
+ * liquid-water content actually follow, divided by the mean of that exponential. Three properties, and
+ * the third is why the division tracks the fade instead of being a constant:
+ *
+ * <ul>
+ *   <li>The peak is exp(contrast) and that is a hard bound, because |variation| <= 1 by construction --
+ *       the resolved weights sum to at most one and each decoded channel is within +-1.</li>
+ *   <li>At contrast 0 this is exactly 1, so switching the structure off is still exactly height fog.</li>
+ *   <li>Where the footprint has faded a frequency away, its resolved weight goes to zero, and BOTH the
+ *       exponent and the normalisation go to one with it. Distant fog therefore returns to its authored
+ *       mean density however high the contrast is set, which is the property the fade exists for and the
+ *       one a constant normalisation would have destroyed -- the horizon would have shifted density
+ *       every time the structure slider moved.</li>
+ * </ul>
+ *
+ * <p><b>WHAT IS APPROXIMATE, NAMED RATHER THAN DISCOVERED LATER.</b> The mean is now preserved only in
+ * the aggregate, not pairwise, and the aggregate is computed against a UNIFORM reference distribution
+ * for the decoded channels. The real field is more saturated than uniform: the bake multiplies the raw
+ * paired difference by 3.8 and clamps, deliberately, because the raw differences occupied too little of
+ * their range. A more saturated field has a larger true E[exp], so dividing by the uniform figure
+ * under-normalises and the mean density rises somewhat with contrast rather than holding.
+ *
+ * <p>That residual is monotone, bounded by cosh(contrast)/(sinh(contrast)/contrast), and points the same
+ * way the slider is being pushed -- thicker. The fog density knob is the intended trim. Replacing the
+ * reference with a figure measured off the baked volume is the exact fix and needs a reduction pass the
+ * shader has no way to ask for; it is worth building only if the drift is visible in game.
+ */
 public float volumeFogNoiseResolvedMultiplier(float2 signedNoise, float2 resolved,
-                                               float4 fogAmbient) {
-    float contrast = max(fogAmbient.x, 0.0);
+                                               float4 fogAmbient, float strength) {
+    float contrast = max(fogAmbient.x, 0.0) * saturate(strength);
     if (contrast <= 0.0) {
         return 1.0;
     }
     float detailShare = clamp(fogAmbient.y, 0.0, 1.0);
-    float variation = clamp(signedNoise.x * resolved.x * (1.0 - detailShare)
-                          + signedNoise.y * resolved.y * detailShare, -1.0, 1.0);
-
-    // D68A: increasing a linear multiplier past one and then clipping negative density would raise the
-    // field's mean -- the positive half keeps growing after the negative half hits zero. This rational
-    // remap is odd and bounded instead: f(-x)=-f(x), f(+-1)=+-1, and contrast=1 is the old answer. The
-    // paired half-period field therefore still sums to two at every height, while 1..4 can push ordinary
-    // variations progressively nearer the physical 0..2 density limits. One reciprocal, no extra fetch.
-    float shaped = contrast <= 1.0
-            ? contrast * variation
-            : (contrast * variation) / (1.0 + (contrast - 1.0) * abs(variation));
-    return 1.0 + clamp(shaped, -1.0, 1.0);
+    // Split rather than folded, because each channel needs its own normalisation: they are independent
+    // draws, so the mean of their product is the product of their means.
+    float baseWeight = resolved.x * (1.0 - detailShare);
+    float detailWeight = resolved.y * detailShare;
+    float variation = signedNoise.x * baseWeight + signedNoise.y * detailWeight;
+    return exp(contrast * variation)
+            / (volumeExpMean(contrast * baseWeight) * volumeExpMean(contrast * detailWeight));
 }
 
 /**
@@ -66,10 +116,35 @@ public float volumeFogNoiseResolvedMultiplier(float2 signedNoise, float2 resolve
  * mean zero, time/weather still control the expected physical density alone.
  */
 public float volumeFogNoiseMultiplier(float2 packedNoise, float4 fogAmbient,
-                                      float fieldScale, float footprint) {
+                                      float fieldScale, float footprint, float strength) {
     float2 signedNoise = packedNoise * 2.0 - 1.0;
     return volumeFogNoiseResolvedMultiplier(
-            signedNoise, volumeFogNoiseResolved(fieldScale, footprint), fogAmbient);
+            signedNoise, volumeFogNoiseResolved(fieldScale, footprint), fogAmbient, strength);
+}
+
+/**
+ * How much STRUCTURE the air at a point is allowed to have, from how much sky reaches it.
+ *
+ * <p>Structured fog is a weather phenomenon. The field models banks and clear pockets produced by wind
+ * shear and by ground that radiates its heat away overnight, and both of those are things that happen to
+ * air with the sky over it. Air in a sealed room has neither, and the renderer was giving it both: an
+ * unlit cellar had fog that drifted past in bands, which reads as weather indoors.
+ *
+ * <p>So the structure fades with sky openness and the density falls back to the smooth height profile --
+ * one still, uniform body of air, which is what a closed room actually contains.
+ *
+ * <p><b>THE KNEE IS AT A QUARTER, NOT AT ZERO, AND THAT IS THE WHOLE DESIGN.</b> Fading linearly would
+ * take a third of the structure out from under a forest canopy, and fog banks between trees are exactly
+ * the picture this field exists to produce. A cave mouth, an overhang and a canopy all sit well above a
+ * quarter open; only a genuinely enclosed space is below it. So the rule reaches the place it was written
+ * for and nothing else.
+ *
+ * <p>Smoothstep rather than a step, because a hard edge here would draw the visibility grid's own cell
+ * boundaries into the fog as a change of texture -- the same failure a hard visibility cutoff produced,
+ * one property along.
+ */
+public float volumeFogStructureStrength(float skyOpenness) {
+    return smoothstep(0.0, 0.25, skyOpenness);
 }
 
 /** Sanitised user-approved hard cap shared by every numerical fog interval. */

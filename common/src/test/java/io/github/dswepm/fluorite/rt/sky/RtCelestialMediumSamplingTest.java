@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -30,15 +31,83 @@ final class RtCelestialMediumSamplingTest {
         assertTrue(math.contains("sampleSquareLight("));
         assertTrue(volume.contains("sampleSquareLight("));
         assertTrue(froxel.contains("sampleSquareLight("));
-        assertTrue(visibility.contains("sampleSquareLight("));
         assertTrue(froxel.contains("celestialDirectionVisible(sampledLightDir)"));
-        assertTrue(visibility.contains("celestialDirectionVisible(lightDir)"));
 
         // The old water path enabled the entire orange direct term at one solar elevation.
         assertFalse(volume.contains("sunY > 1.0e-3"));
-        // Froxel and the visibility grid must trace the sampled emitter direction, not its centre.
+        // The froxel must trace the sampled emitter direction, not its centre.
         assertFalse(froxel.contains("sunOccluded(p, sunDir)"));
-        assertFalse(visibility.contains("occluded(p, wp.lightDir.xyz)"));
+
+        // THE VISIBILITY BAKE NO LONGER ASKS ABOUT THE SUN AT ALL, which is why it dropped out of the
+        // list above rather than being loosened within it. Its sun channel lost in game to the single
+        // stochastic shadow ray a marched segment already casts, and its ray now goes into the sky
+        // openness the grid does still own. This asserts the deletion rather than merely tolerating it:
+        // if any celestial sampling comes back here, so does the 131k-ray-a-frame cost that went with it.
+        assertFalse(visibility.contains("sampleSquareLight("));
+        assertFalse(visibility.contains("celestialDirectionVisible("));
+        assertFalse(visibility.contains("lightDir"));
+        assertTrue(visibility.contains("cosineHemisphereUp("));
+    }
+
+    /**
+     * The visibility bake's push block, whose two spellings have to agree byte for byte.
+     *
+     * <p>WHAT THIS GUARDS IS A DEFECT THAT PRODUCES NO ERROR ANYWHERE. The shift arrived as an int3
+     * declared after an 8-byte address. A three-component integer vector takes 16-byte alignment, so the
+     * shader began reading it at byte 16 while the CPU wrote it at byte 8, and the fields landed one slot
+     * apart: shift.x read the Z shift, shift.y read the reset flag, shift.z read padding, and reset read
+     * padding and was therefore never true. Nothing warns, nothing validates, and the picture is correct
+     * whenever every shift is zero -- which is to say, whenever the player stands still.
+     *
+     * <p>So it presented as a sealed room whose fog returned when the player MOVED and faded again when
+     * they stopped, which points at the accumulator rather than at a struct. Scalars have no alignment to
+     * get wrong; rain_history.comp already follows that convention.
+     */
+    @Test
+    void theVisibilityBakeShiftIsScalarSoItCannotSlipAnAlignmentSlot() throws IOException {
+        String bake = shader("volume_visibility.comp.slang");
+        String sky = source("common/src/main/java/io/github/dswepm/fluorite/rt/sky/RtSky.java");
+
+        // Three scalars, in this order, immediately after the address.
+        assertTrue(bake.contains("uint64_t worldPushAddr;"));
+        assertTrue(bake.contains("int shiftX;"));
+        assertTrue(bake.contains("int shiftY;"));
+        assertTrue(bake.contains("int shiftZ;"));
+        // The vector form is what broke; a reader reaching for it again should fail here first.
+        assertFalse(bake.contains("int3 shift;"));
+        assertFalse(bake.contains("visPush.shift;"));
+        assertTrue(bake.contains("int3(visPush.shiftX, visPush.shiftY, visPush.shiftZ)"));
+
+        // And the offsets the CPU actually writes, which is the other half of the agreement.
+        assertTrue(sky.contains("putInt(8, shiftX).putInt(12, shiftY).putInt(16, shiftZ)"));
+        assertTrue(sky.contains("putInt(20, reset ? 1 : 0)"));
+        assertTrue(sky.contains("VIS_PUSH_BYTES = 32"));
+    }
+
+    /**
+     * Structure is weather, so it fades where no sky reaches -- and every consumer of the density field
+     * has to apply the same fade or the segment extinguishes by one number and emits by another.
+     */
+    @Test
+    void indoorAirLosesItsStructureAndEveryDensityConsumerAgrees() throws IOException {
+        String source = shader("volume_source.slang");
+        String volume = shader("volume.slang");
+        String froxel = shader("sky_froxel.comp.slang");
+
+        assertTrue(source.contains("public float volumeFogStructureStrength(float skyOpenness)"));
+        assertTrue(source.contains("smoothstep(0.0, 0.25, skyOpenness)"));
+
+        // ONE application point per stage, and it is the shared density function rather than any call
+        // site. Total optical depth, in-scatter and the sampled event all walk the same field.
+        assertEquals(1, countOccurrences(volume, "volumeFogStructureStrength("));
+        assertTrue(volume.contains("volumeFogStructureStrength(volumeSkyOpenness(p))"));
+        assertEquals(1, countOccurrences(froxel, "volumeFogStructureStrength("));
+
+        // The froxel's density openness must NOT be the one that casts a ray when the grid cannot
+        // answer: this is called per density sample inside a march, and that fallback would put a shadow
+        // ray in an inner loop.
+        assertTrue(froxel.contains("froxelStructureOpenness(wp, p)"));
+        assertFalse(froxel.contains("volumeFogStructureStrength(froxelSkyOpenness("));
     }
 
     @Test
@@ -165,6 +234,14 @@ final class RtCelestialMediumSamplingTest {
             throw new IOException("Could not locate repository root from " + System.getProperty("user.dir"));
         }
         return root;
+    }
+
+    private static int countOccurrences(String haystack, String needle) {
+        int n = 0;
+        for (int i = haystack.indexOf(needle); i >= 0; i = haystack.indexOf(needle, i + 1)) {
+            n++;
+        }
+        return n;
     }
 
     private static String shader(String name) throws IOException {

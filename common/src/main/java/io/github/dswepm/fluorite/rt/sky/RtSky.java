@@ -76,7 +76,10 @@ public final class RtSky {
     public static final int VIS_GRID_H = 32;
     public static final int VIS_GRID_D = 64;
     private static final int VIS_GROUP = 4; // matches [numthreads(4, 4, 4)]
-    private static final int VIS_PUSH_BYTES = 8; // WorldPush address; the grid's placement is a field in it
+    // WorldPush address, the integer cell shift since the frame the history was written, and a reset
+    // flag. The grid's PLACEMENT stays a WorldPush field because consumers read the same one; only the
+    // shift is the bake's own business, and only the bake can be told it without growing that struct.
+    private static final int VIS_PUSH_BYTES = 32;
     /** D110 high tier; low dispatches only the top-left 256² of this fixed allocation. */
     public static final int RAIN_EXPOSURE_MAX = 512;
     private static final int RAIN_EXPOSURE_GROUP = 8;
@@ -121,7 +124,15 @@ public final class RtSky {
     private final Bake skyViewBake;
     private final Bake mediumSkyReduceBake;
     private final Bake froxelBake;
-    private final Bake visibilityBake;
+    private final Bake[] visibilityBakes;
+    /** Parity written LAST frame, so this frame reads it and writes the other. */
+    private int visibilityHistoryRead;
+    /** Grid origin in whole cells at the frame the history was written; absent means nothing to reuse. */
+    private boolean visibilityHistoryValid;
+    private int visibilityOriginCellX;
+    private int visibilityOriginCellY;
+    private int visibilityOriginCellZ;
+    private float visibilityHistoryCell;
     private final Bake rainExposureBake;
     private final Bake[] rainHistoryBakes;
     private final Bake cloudNoiseBake;
@@ -142,6 +153,7 @@ public final class RtSky {
     private RtImage skyViewMulti;
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
+    private RtImage[] visibilityHistory;
     private RtImage rainExposureDepth;
     private RtImage[] rainWetHistory;
     private int rainWetHistoryRead;
@@ -254,7 +266,7 @@ public final class RtSky {
     private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
                   Bake mediumSkyReduceBake, Bake froxelBake,
                   RtOverlayPipelines.AccelStructureSet froxelTlas,
-                  Bake visibilityBake, RtOverlayPipelines.AccelStructureSet visibilityTlas,
+                  Bake[] visibilityBakes, RtOverlayPipelines.AccelStructureSet visibilityTlas,
                   Bake rainExposureBake, Bake[] rainHistoryBakes,
                   RtOverlayPipelines.AccelStructureSet rainExposureTlas,
                   Bake cloudNoiseBake, Bake fogNoiseBake, Bake cloudWeatherBake, Bake cloudWarpBake,
@@ -267,7 +279,7 @@ public final class RtSky {
         this.mediumSkyReduceBake = mediumSkyReduceBake;
         this.froxelBake = froxelBake;
         this.froxelTlas = froxelTlas;
-        this.visibilityBake = visibilityBake;
+        this.visibilityBakes = visibilityBakes;
         this.rainExposureBake = rainExposureBake;
         this.rainHistoryBakes = rainHistoryBakes;
         this.cloudNoiseBake = cloudNoiseBake;
@@ -321,7 +333,9 @@ public final class RtSky {
             Bake froxelBake = createBake(ctx, stack, "sky_froxel.comp.spv", "sky froxel",
                     new int[]{VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                             VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, FROXEL_PUSH_BYTES,
+                            VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            // The shared sky-openness grid. Written below, once the image exists.
+                            VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}, FROXEL_PUSH_BYTES,
                     froxelTlas.layout);
 
             // LINEAR + CLAMP_TO_EDGE. The multi-scatter bake reads the transmittance table off the
@@ -421,9 +435,19 @@ public final class RtSky {
 
             RtOverlayPipelines.AccelStructureSet visibilityTlas = RtOverlayPipelines.accelStructureSet(
                     ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "volume visibility TLAS");
-            Bake visibilityBake = createBake(ctx, stack, "volume_visibility.comp.spv", "volume visibility",
-                    new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, VIS_PUSH_BYTES,
-                    visibilityTlas.layout);
+            // Two of them, one per history parity, each with its read and write halves written once at
+            // creation. The alternative is rewriting one set's descriptors every frame, which is the
+            // hazard AccelStructureSet exists to avoid -- and rain_history.comp already solved this the
+            // same way, for the same reason.
+            Bake[] visibilityBakes = new Bake[2];
+            for (int target = 0; target < 2; target++) {
+                visibilityBakes[target] = createBake(ctx, stack, "volume_visibility.comp.spv",
+                        "volume visibility " + target,
+                        new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, VIS_PUSH_BYTES,
+                        visibilityTlas.layout);
+            }
             RtOverlayPipelines.AccelStructureSet rainExposureTlas = RtOverlayPipelines.accelStructureSet(
                     ctx, VK10.VK_SHADER_STAGE_COMPUTE_BIT, "rain exposure TLAS");
             Bake rainExposureBake = createBake(ctx, stack, "rain_exposure.comp.spv", "rain exposure",
@@ -440,7 +464,7 @@ public final class RtSky {
 
             RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
                     mediumSkyReduceBake, froxelBake, froxelTlas,
-                    visibilityBake, visibilityTlas, rainExposureBake, rainHistoryBakes, rainExposureTlas,
+                    visibilityBakes, visibilityTlas, rainExposureBake, rainHistoryBakes, rainExposureTlas,
                     cloudNoiseBake, fogNoiseBake, cloudWeatherBake, cloudWarpBake, cloudShadowBake,
                     sampler, noiseSampler, rainHistorySampler);
             sky.waterSimBakes = waterSimBakes;
@@ -569,7 +593,33 @@ public final class RtSky {
             // survived visibility filtering without allocating a second image.
             sky.visibilityGrid = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "volume visibility grid");
-            writeStorageImage(vk, stack, visibilityBake.descriptorSet(), 0, sky.visibilityGrid.view);
+            // The accumulator, which consumers never see. 64x32x64 x 8 B is 1 MiB apiece, so carrying
+            // two of them to keep the sampled binding stable is not a budget question.
+            //
+            // FLOAT, NOT UNORM8, AND THAT IS A CORRECTNESS REQUIREMENT. This image is a feedback loop:
+            // each frame reads its own previous value and writes back value + (sample - value)/64. In
+            // 8 bits that decrement is smaller than half a code for every code up to 32, so round()
+            // returns the code it was given and the average STALLS -- a cell that had ever seen sky sat
+            // at up to 0.125 for ever, and 0.125 of full daylight sky radiance is a visibly lit sealed
+            // room. R16G16B16A16_SFLOAT rather than a two-channel float because it is on Vulkan's
+            // mandatory storage-image format list, which R16G16_SFLOAT is not; the froxel already uses
+            // it. The sampled grid below stays UNORM8, because reading it is one-way and quantisation
+            // that cannot come back around cannot accumulate.
+            sky.visibilityHistory = new RtImage[2];
+            for (int i = 0; i < 2; i++) {
+                sky.visibilityHistory[i] = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "volume visibility history " + i);
+            }
+            for (int target = 0; target < 2; target++) {
+                long set = visibilityBakes[target].descriptorSet();
+                writeStorageImage(vk, stack, set, 0, sky.visibilityGrid.view);
+                writeStorageImage(vk, stack, set, 1, sky.visibilityHistory[target].view);
+                writeStorageImage(vk, stack, set, 2, sky.visibilityHistory[1 - target].view);
+            }
+            // The froxel reads the same openness the marched segments do, with the same LINEAR +
+            // CLAMP_TO_EDGE sampler. One field, one definition, both consumers -- which is what stops the
+            // near and far halves of the fog disagreeing about a quantity along a boundary.
+            writeSampledImage(vk, stack, froxelBake.descriptorSet(), 3, sky.visibilityGrid.view, sampler);
             // One fixed 512² R32 depth image. Low quality dispatches and samples a 256² prefix, so a live
             // option change never rewrites a descriptor still referenced by an in-flight frame.
             sky.rainExposureDepth = ctx.createStorageImage(RAIN_EXPOSURE_MAX, RAIN_EXPOSURE_MAX,
@@ -928,12 +978,35 @@ public final class RtSky {
      * identical field. That stability under rotation is something a view-space structure cannot have, and
      * it is why the bounce segments get a grid of their own rather than a second read of the froxel.
      *
-     * <p>Takes only the WorldPush address. The grid's origin and cell size are fields in that buffer
-     * because the consumers read them too, and the one thing that must not drift between the shader that
-     * writes a cell and the shader that reads it is where the cell IS.
+     * <p>Takes the WorldPush address plus the grid's origin in whole cells. The origin and cell size are
+     * fields in that buffer because the consumers read them too, and the one thing that must not drift
+     * between the shader that writes a cell and the shader that reads it is where the cell IS. The
+     * origin in CELLS is a second spelling of the same placement, and it is here rather than there
+     * because only this bake needs it: the difference between two frames of it is the reprojection.
+     *
+     * <p>Snapped in whole cells on the CPU (see RtComposite.visibilityGridOrigin), which is what makes
+     * the shift an integer. A fractional shift would need a filtered fetch of an accumulator, and that is
+     * a blur compounding every frame rather than a reprojection.
      */
     public void recordVisibilityBake(VkCommandBuffer cmd, long worldPushAddr, long tlas,
+                                     int originCellX, int originCellY, int originCellZ, float cellSize,
                                      RtGpuExecutor.GraphicsUse graphicsUse) {
+        if (visibilityHistory == null) {
+            return;
+        }
+        // Cell (i,j,k) of the new grid sits where cell (i,j,k) + shift of the old one sat.
+        int shiftX = visibilityHistoryValid ? originCellX - visibilityOriginCellX : 0;
+        int shiftY = visibilityHistoryValid ? originCellY - visibilityOriginCellY : 0;
+        int shiftZ = visibilityHistoryValid ? originCellZ - visibilityOriginCellZ : 0;
+        // A cell-size change re-scales what every cell MEANS, so no shift can carry the history across
+        // one; a jump wider than the grid leaves no cell with a predecessor to carry.
+        boolean reset = !visibilityHistoryValid
+                || visibilityHistoryCell != cellSize
+                || Math.abs(shiftX) >= VIS_GRID_W
+                || Math.abs(shiftY) >= VIS_GRID_H
+                || Math.abs(shiftZ) >= VIS_GRID_D;
+        int write = 1 - visibilityHistoryRead;
+        Bake visibilityBake = visibilityBakes[write];
         try (MemoryStack stack = MemoryStack.stackPush();
              RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "volume visibility bake")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, visibilityBake.pipeline());
@@ -943,6 +1016,12 @@ public final class RtSky {
                     stack.longs(visibilityBake.descriptorSet(), tlasSet), null);
             ByteBuffer pushData = stack.malloc(VIS_PUSH_BYTES);
             pushData.putLong(0, worldPushAddr);
+            // Scalars at 8/12/16/20, matching VisPush field for field. The shader declares three
+            // separate ints rather than an int3 deliberately: a three-component integer vector takes
+            // 16-byte alignment and would begin at byte 16, silently reading these one slot across.
+            pushData.putInt(8, shiftX).putInt(12, shiftY).putInt(16, shiftZ);
+            pushData.putInt(20, reset ? 1 : 0);
+            pushData.putInt(24, 0).putInt(28, 0);
             VK10.vkCmdPushConstants(cmd, visibilityBake.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
             // One thread per CELL. Unlike the froxel there is nothing to accumulate along an axis, so no
@@ -951,6 +1030,12 @@ public final class RtSky {
                     (VIS_GRID_H + VIS_GROUP - 1) / VIS_GROUP,
                     (VIS_GRID_D + VIS_GROUP - 1) / VIS_GROUP);
         }
+        visibilityHistoryRead = write;
+        visibilityHistoryValid = true;
+        visibilityOriginCellX = originCellX;
+        visibilityOriginCellY = originCellY;
+        visibilityOriginCellZ = originCellZ;
+        visibilityHistoryCell = cellSize;
     }
 
     /**
@@ -1459,6 +1544,15 @@ public final class RtSky {
             visibilityGrid.destroy();
             visibilityGrid = null;
         }
+        if (visibilityHistory != null) {
+            for (RtImage image : visibilityHistory) {
+                if (image != null) {
+                    image.destroy();
+                }
+            }
+            visibilityHistory = null;
+            visibilityHistoryValid = false;
+        }
         if (rainExposureDepth != null) {
             rainExposureDepth.destroy();
             rainExposureDepth = null;
@@ -1539,7 +1633,9 @@ public final class RtSky {
         if (waterObstacleBake != null) {
             waterObstacleBake.destroy(vk);
         }
-        visibilityBake.destroy(vk);
+        for (Bake visibility : visibilityBakes) {
+            visibility.destroy(vk);
+        }
         rainExposureBake.destroy(vk);
         for (Bake history : rainHistoryBakes) {
             history.destroy(vk);

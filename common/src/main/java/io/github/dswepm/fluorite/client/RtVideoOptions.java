@@ -211,10 +211,18 @@ public final class RtVideoOptions {
                 case FOG -> List.of(
                         Section.of(fogEnabled(), fogDensity(), fogAlbedoScale(),
                                 fogHeightBase(), fogHeightScale(), fogStartDistance(), fogCullDistance(),
-                                fogPhaseG(), fogScatterTint(), fogSunShadowRays()),
+                                fogPhaseG(), fogScatterTint(), fogSunShadowRays(),
+                                fogInScatterSegments()),
                         Section.titled("fluorite.options.rt.section.fogNoise",
                                 fogNoiseEnabled(), fogNoiseContrast(), fogNoiseFieldScale(),
-                                fogNoiseWindSpeed(), fogNoiseWindOffset(), fogNoiseMarchSteps()));
+                                fogNoiseWindSpeed(), fogNoiseWindOffset(), fogNoiseMarchSteps()),
+                        Section.titled("fluorite.options.rt.section.fogTint",
+                                scaleSlider("fluorite.options.rt.fogScatterTintR",
+                                        FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_R),
+                                scaleSlider("fluorite.options.rt.fogScatterTintG",
+                                        FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_G),
+                                scaleSlider("fluorite.options.rt.fogScatterTintB",
+                                        FluoriteConfig.Rt.Volumetrics.SCATTER_TINT_B)));
                 case UPSCALING -> List.of(Section.of(dlssEnabled(), dlssQuality()));
                 case POST_PROCESSING -> List.of(
                         Section.titled("fluorite.options.rt.section.exposure",
@@ -1377,7 +1385,10 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<Integer> fogDensity() {
-        return scaleSlider("fluorite.options.rt.fogDensity", FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE);
+        // 64, not the helper's default 10. The config clamp was raised to 64 and the SLIDER kept its own
+        // ceiling, so the knob silently refused the range it had just been given.
+        return scaleSlider("fluorite.options.rt.fogDensity",
+                FluoriteConfig.Rt.Volumetrics.DENSITY_SCALE, 64.0f);
     }
 
     private static OptionInstance<Boolean> netherFogEnabled() {
@@ -1456,14 +1467,17 @@ public final class RtVideoOptions {
                     Component.translatable("fluorite.options.rt.fogNoiseContrast.tooltip")),
             (caption, v) -> Options.genericValueLabel(caption,
                     Component.literal(String.format(Locale.ROOT, "%.2f", v / 100.0))),
-            new OptionInstance.IntRange(0, 400),
-            Math.clamp(Math.round(setting.value() * 100.0f), 0, 400),
+            new OptionInstance.IntRange(0, 800),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 800),
             v -> setting.set(v / 100.0f));
     }
 
     private static OptionInstance<Integer> fogNoiseFieldScale() {
+        // 4 to 512. Above 512 the field is larger than anything the fog is drawn across, so the top of
+        // the old range bought nothing; below 64 is where the structure a viewer reads as CLOUDINESS
+        // actually lives, and that half was unreachable.
         return blockSlider("fluorite.options.rt.fogNoiseFieldScale",
-                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_FIELD_SCALE, 64, 2048);
+                FluoriteConfig.Rt.Volumetrics.FOG_NOISE_FIELD_SCALE, 4, 512);
     }
 
     private static OptionInstance<Integer> fogNoiseWindSpeed() {
@@ -1493,6 +1507,19 @@ public final class RtVideoOptions {
             (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
             new OptionInstance.IntRange(1, 31),
             Math.clamp(setting.value(), 1, 31),
+            setting::set);
+    }
+
+    /** 0 means every segment, which is why the range starts there rather than at one. */
+    private static OptionInstance<Integer> fogInScatterSegments() {
+        IntSetting setting = FluoriteConfig.Rt.Volumetrics.INSCATTER_SEGMENTS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogInScatterSegments",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.fogInScatterSegments.tooltip")),
+            (caption, v) -> Options.genericValueLabel(caption, Component.literal(String.valueOf(v))),
+            new OptionInstance.IntRange(0, 15),
+            Math.clamp(setting.value(), 0, 15),
             setting::set);
     }
 
@@ -1914,11 +1941,14 @@ public final class RtVideoOptions {
             OptionInstance.cachedConstantTooltip(
                     Component.translatable("fluorite.options.rt.fogSunShadowRays.tooltip")),
             (caption, v) -> Options.genericValueLabel(caption,
-                    Component.translatable(v == 0 ? "fluorite.options.rt.fogSunShadowRays.grid"
-                                                  : "fluorite.options.rt.fogSunShadowRays.rays",
+                    Component.translatable("fluorite.options.rt.fogSunShadowRays.rays",
                                            String.valueOf(v))),
-            new OptionInstance.IntRange(0, 4),
-            Math.clamp(setting.value(), 0, 4),
+            // ONE IS THE FLOOR NOW, and the grid option that used to sit at zero is gone. It lost in
+            // game on both axes at once: slower than a single stochastic ray AND a worse picture, which
+            // is the only combination that makes deleting a published position the right call rather
+            // than a preference. A config still holding 0 clamps up to 1.
+            new OptionInstance.IntRange(1, 4),
+            Math.clamp(setting.value(), 1, 4),
             setting::set);
     }
 
@@ -2251,12 +2281,15 @@ public final class RtVideoOptions {
             // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
             // between hits rather than the hits themselves. See world.rgen's volumeDebug.
             //
-            // 12-16 and 25 ARE GONE AND THEIR NUMBERS ARE NOT REUSED: the four atmosphere tables, the
-            // celestial dye and the fog noise field, retired once the atmosphere stopped changing. Every
-            // note that names a view by number stays true this way, and the shader paints magenta for a
-            // number no arm claims rather than falling through to a plausible picture.
+            // 12-16, 19, 25 AND 28 ARE GONE AND THEIR NUMBERS ARE NOT REUSED: the four atmosphere
+            // tables, the celestial dye and the fog noise field, retired once the atmosphere stopped
+            // changing; the grid-against-ray sun profile, retired with the grid's sun channel it was
+            // built to measure; and the volumetric-ReSTIR cell view, retired with the hash grid it
+            // described. Every note that names a view by number stays true this way, and the shader
+            // paints magenta for a number no arm claims rather than falling through to a plausible
+            // picture.
             new OptionInstance.Enum<>(
-                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 19, 20, 21, 22, 23,
+                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 20, 21, 22, 23,
                             24, 26, 27),
                     Codec.INT),
             Math.clamp(setting.value(), 0, 27),
