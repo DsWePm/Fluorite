@@ -14,6 +14,19 @@ dependencies {
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
 }
 
+// Source encoding, spelled rather than inherited. javac without -encoding uses the platform charset,
+// and that charset changed under this project's feet: JEP 400 made UTF-8 the JVM default in Java 18, so
+// a daemon on 25 reads these files correctly and a daemon on 17 reads them as the machine's ANSI code
+// page. Eighteen string literals in the compiled sources are non-ASCII -- the degree sign in the
+// settings screen among them -- so that difference is not confined to comments; it reaches the UI.
+tasks.withType(JavaCompile).configureEach {
+    it.options.encoding = "UTF-8"
+}
+tasks.withType(GroovyCompile).configureEach {
+    it.options.encoding = "UTF-8"
+    it.groovyOptions.encoding = "UTF-8"
+}
+
 test {
     useJUnitPlatform()
 }
