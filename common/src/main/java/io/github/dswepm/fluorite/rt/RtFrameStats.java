@@ -153,7 +153,12 @@ public final class RtFrameStats {
                     // purpose -- so that a half-built field looks like the renderer did before it
                     // existed -- which means the debug view cannot tell "not filled yet" from "genuinely
                     // open". This number can. Zero pending is what licenses reading a red region as red.
-                    "skyLightSectionsPending", "skyLightSectionsRead"},
+                    "skyLightSectionsPending", "skyLightSectionsRead",
+                    // Sections filled from ONE probe because Minecraft had no DataLayer for them. Those
+                    // carry a single value across a whole 16-block cube, so one straddling a cave roof
+                    // takes the roof's open sky down over the cave. If this is a large share of the
+                    // sections read, the field is coarse where it claims to be per block.
+                    "skyLightSectionsProbed"},
             true);
 
     private static final List<GarbageCollectorMXBean> GC_BEANS = ManagementFactory.getGarbageCollectorMXBeans();

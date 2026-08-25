@@ -116,6 +116,7 @@ public final class RtSkyLightField {
     private static final ConcurrentLinkedQueue<Long> INBOX = new ConcurrentLinkedQueue<>();
 
     private int lastRead;
+    private int lastProbed;
     private Object anchoredLevel;
     private boolean hasSkyLight = true;
     private int baseSectionY = Integer.MIN_VALUE;
@@ -249,12 +250,14 @@ public final class RtSkyLightField {
             // field that read nothing as one that read whatever it last did, which is a counter that
             // lies exactly when it is being trusted to say the fill has stopped.
             lastRead = 0;
+            lastProbed = 0;
             return false;
         }
         LayerLightEventListener sky = level.getLightEngine().getLayerListener(LightLayer.SKY);
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
         int done = 0;
         lastRead = 0;
+        lastProbed = 0;
         while (done < SECTION_BUDGET && !pending.isEmpty()) {
             int index = pending.poll();
             sectionQueued[index] = false;
@@ -287,6 +290,11 @@ public final class RtSkyLightField {
         int worldSecZ = slotWorldZ[sz];
         DataLayer layer = sky.getDataLayerData(SectionPos.of(worldSecX, worldSecY, worldSecZ));
         if (layer == null) {
+            // ONE VALUE FOR 4096 CELLS, which is the coarse grid this class exists to avoid -- so it is
+            // counted. A probed section straddling a cave roof takes the roof's open sky down over the
+            // cave below it, which is the failure mode a coarse field has and this one is not supposed
+            // to.
+            lastProbed++;
             probe.set(worldSecX * 16 + 8, worldSecY * 16 + 8, worldSecZ * 16 + 8);
             fillSection(sx, sy, sz, scale(sky.getLightValue(probe)));
             return;
@@ -368,6 +376,11 @@ public final class RtSkyLightField {
     /** Sections read during the last update, so a stalled fill is distinguishable from a finished one. */
     public int sectionsReadLastUpdate() {
         return lastRead;
+    }
+
+    /** How many of those had no DataLayer and were filled from a single probe. */
+    public int sectionsProbedLastUpdate() {
+        return lastProbed;
     }
 
     public void invalidate() {

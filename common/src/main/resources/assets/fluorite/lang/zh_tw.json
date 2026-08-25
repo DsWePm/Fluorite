@@ -285,6 +285,8 @@
   "fluorite.options.rt.farFogSkyLight.tooltip": "可見性網格之外的霧，改用 Minecraft 自己的天空光來定開闊度，而不是直接當成露天。行進中的霧在視線穿過網格盒子處被切成三段，只有中間那段問過網格 —— 所以約 32 格之外的霧無論頭頂是什麼都按完全露天照亮，這正是洞裡近處霧正確、遠處霧發光的原因。露天空氣的天光處處是滿值，所以露天觀感是構造上不變。代價是外側兩段每步多一次場取樣，而且不打任何射線：這份泛洪填充 Minecraft 早就算好了。",
   "fluorite.options.rt.farFogSkyLightCurve": "天光曲線",
   "fluorite.options.rt.farFogSkyLightCurve.tooltip": "遠處霧把天光值送進的指數曲線。1 就是原樣。天光是從開口每格衰減 1 的泛洪填充，不是「能看見多少天空」，所以洞口附近讀得比實際偏亮；如果開口附近的遠景太亮，把這個調到 1 以上。需要先開「遠處霧用天光」。",
+  "fluorite.options.rt.debugProbeDistance": "除錯取樣距離",
+  "fluorite.options.rt.debugProbeDistance.tooltip": "體積場除錯檢視沿視線取樣的距離，單位格。0 保持原來的「眼睛到主射線命中點的中點」—— 那正是這些檢視容易被誤讀的原因：往洞裡看時如果近處有牆，取樣點根本出不了洞口，不管洞有多深。固定距離問的是一個沒有這種前提的問題。故意不按幾何體裁剪：探針落在石頭裡就讀作封閉，那是真實答案而不是偽影。",
   "fluorite.options.rt.fogSegmentSource": "霧內散射來源",
   "fluorite.options.rt.fogSegmentSource.tooltip": "診斷項：路徑的哪些段可以貢獻霧的內散射。Froxel 負責相機段，彈射段走的是無遮擋的解析式。",
   "fluorite.options.rt.fogInScatterSegments": "霧照明段數",

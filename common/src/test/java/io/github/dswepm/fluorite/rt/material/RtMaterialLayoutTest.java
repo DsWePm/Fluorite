@@ -57,7 +57,7 @@ final class RtMaterialLayoutTest {
         ByteBuffer data = ByteBuffer.allocateDirect(WorldPushConstantsData.BYTE_SIZE)
                 .order(ByteOrder.nativeOrder());
         new WorldPushConstantsData(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L,
-                15, 16, 17).write(data);
+                15, 16, 17, 18.0f).write(data);
         assertEquals(4L, data.getLong(WorldPushConstantsData.MATERIAL_TABLE_ADDR_OFFSET));
         assertEquals(5L, data.getLong(WorldPushConstantsData.MATERIAL_EXTENSION_ADDR_OFFSET));
         assertEquals(6L, data.getLong(WorldPushConstantsData.LIGHT_BUF_ADDR_OFFSET));
@@ -69,5 +69,9 @@ final class RtMaterialLayoutTest {
         assertEquals(15, data.getInt(WorldPushConstantsData.FRAME_INDEX_OFFSET));
         assertEquals(16, data.getInt(WorldPushConstantsData.DEBUG_VIEW_OFFSET));
         assertEquals(17, data.getInt(WorldPushConstantsData.SHADE_FLAGS_OFFSET));
+        // M27's debug probe distance, at 124 -- the four bytes this block was already rounding up to
+        // reach Vulkan's guaranteed 128. The size assertion above is what makes that claim rather than
+        // this line: if it ever needed a byte more, 128 would have become 136 and said so.
+        assertEquals(18.0f, data.getFloat(WorldPushConstantsData.DEBUG_PROBE_OFFSET));
     }
 }

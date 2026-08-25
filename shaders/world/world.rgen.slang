@@ -997,9 +997,23 @@ float3 froxelDebug(float2 uv) {
  * pass stopped, so a pixel showing water is sampling wherever the refracted continuation ended and will
  * jump about. Read it on stone.
  */
-float3 skyLightDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
+/**
+ * Where the two volumetric field views sample, shared so that flipping between them compares one point.
+ *
+ * <p>Zero is the midpoint they have always used, so the published diagnostic is unchanged with the knob
+ * down. Anything else is a fixed distance along the view ray, which is the reading that needs no caveat
+ * about where the geometry behind the pixel happens to be.
+ */
+float3 debugProbePoint(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
     CameraRay cam = cameraRay(dispatchIndex, dimensions);
-    float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
+    if (pc.debugProbe <= 0.0) {
+        return cam.origin + (hitPos - cam.origin) * 0.5;
+    }
+    return cam.origin + normalize(cam.dir) * pc.debugProbe;
+}
+
+float3 skyLightDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
+    float3 p = debugProbePoint(dispatchIndex, dimensions, hitPos);
     float open = skyLightAt(p);
     if (open < 1.5 / 255.0) {
         return float3(0.0, 0.0, 0.35);   // navy   : sky light 0, the sealed answer
@@ -1016,8 +1030,7 @@ float3 skyLightDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
 }
 
 float3 volumeVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
-    CameraRay cam = cameraRay(dispatchIndex, dimensions);
-    float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
+    float3 p = debugProbePoint(dispatchIndex, dimensions, hitPos);
     float open = volumeSkyOpenness(p);
     if (open < 1.5 / 255.0) {
         return float3(0.0, 0.0, 0.35);   // navy   : sealed, and the consumers see exactly zero

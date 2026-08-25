@@ -3552,7 +3552,13 @@ public final class RtComposite {
                     // 0 when the reuse-depth knob is 0, which the shading reads as "no reservoir store"
                     // and answers with the single-frame RIS that predates this buffer.
                     reservoirStore != null ? reservoirStore.deviceAddress : 0L,
-                    (int) frameCounter, debugView, shadeFlags()).write(pushConstants);
+                    (int) frameCounter, debugView, shadeFlags(),
+                    // Diagnostic only, and it rides in the four bytes this block was already padding to
+                    // reach Vulkan's guaranteed 128. Zero keeps the midpoint the volumetric debug views
+                    // have always sampled at, so the published diagnostic is unchanged with the knob
+                    // down.
+                    FluoriteConfig.Rt.Volumetrics.DEBUG_PROBE_DISTANCE.value())
+                    .write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 if (gpuTimers != null) {

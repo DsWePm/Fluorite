@@ -81,6 +81,24 @@ public struct WorldPushConstants {
     // shader deliberately never dereferences that struct — see the note at the top of world.rchit — and
     // a per-hit BDA load to read one bit would cost more than the feature it gates.
     public uint shadeFlags;
+    /**
+     * How far along the view ray the volumetric debug views sample, in blocks. Zero keeps the midpoint.
+     *
+     * <p>THE MIDPOINT IS WHY THOSE VIEWS KEEP BEING MISREAD. They sample halfway between the eye and
+     * where the primary pass stopped, so what a pixel reports depends on how far away the geometry
+     * behind it happens to be -- look into a cave at a near wall and the sample never leaves the mouth,
+     * however deep the cave goes. Every reading taken from them so far has had to be qualified with
+     * that, and one of those qualifications turned out to be hiding the question being asked.
+     *
+     * <p>A fixed distance answers a question with no such caveat: at N blocks along where I am looking,
+     * what does the field say. It deliberately does NOT clamp to the geometry -- a probe inside rock
+     * reads sealed, which is a true and useful answer rather than an artefact.
+     *
+     * <p>It fits because the block was 124 bytes rounded up to Vulkan's guaranteed 128, so these four
+     * were already being uploaded as padding. That is the whole budget: the next field here needs a
+     * different home.
+     */
+    public float debugProbe;
 };
 
 /**

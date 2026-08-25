@@ -742,6 +742,7 @@ public final class RtSky {
         // field is complete rather than evidence nothing ran.
         RtFrameStats.FRAME.count("skyLightSectionsPending", skyLightField.pendingSections());
         RtFrameStats.FRAME.count("skyLightSectionsRead", skyLightField.sectionsReadLastUpdate());
+        RtFrameStats.FRAME.count("skyLightSectionsProbed", skyLightField.sectionsProbedLastUpdate());
     }
 
     /** A section changed its lighting, so whatever this field holds for it is now historical. */

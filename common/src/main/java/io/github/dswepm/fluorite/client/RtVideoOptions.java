@@ -232,6 +232,8 @@ public final class RtVideoOptions {
                                 outputTransform(), hdrEnabled(), acesHdrPreset(),
                                 hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
+                        scaleSlider("fluorite.options.rt.debugProbeDistance",
+                                FluoriteConfig.Rt.Volumetrics.DEBUG_PROBE_DISTANCE, 256.0f),
                         bool("fluorite.options.rt.farFogSkyLight",
                                 FluoriteConfig.Rt.Volumetrics.FAR_FOG_SKY_LIGHT),
                         scaleSlider("fluorite.options.rt.farFogSkyLightCurve",

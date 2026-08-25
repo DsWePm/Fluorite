@@ -1119,6 +1119,22 @@ public final class FluoriteConfig {
              * shaft reads 0 where a hemisphere integral would find sky. It is used where the grid has no
              * reach, not in place of it.
              */
+            /**
+             * Blocks along the view ray at which the volumetric debug views sample. Zero is the midpoint.
+             *
+             * <p>Those views have been misread three times running, always the same way: they sample
+             * halfway between the eye and where the primary pass stopped, so what a pixel reports
+             * depends on how far the geometry behind it happens to be. Looking into a cave whose near
+             * wall is close, the sample never leaves the mouth however deep the cave runs -- and "the
+             * whole screen is red including the deep part" is exactly what that looks like.
+             *
+             * <p>A fixed distance has no such caveat. It is not clamped to the geometry on purpose: a
+             * probe inside rock reads sealed, which is true and useful rather than an artefact.
+             */
+            public static final FloatSetting DEBUG_PROBE_DISTANCE =
+                    clampedFloat("fluorite.rt.fog.debugProbeDistance",
+                            "volumetrics.debug-probe-distance", 0.0f, 0.0f, 256.0f);
+
             public static final BooleanSetting FAR_FOG_SKY_LIGHT =
                     bool("fluorite.rt.fog.farSkyLight", "volumetrics.far-fog-sky-light", false);
 
