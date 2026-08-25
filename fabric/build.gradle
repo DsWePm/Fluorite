@@ -204,12 +204,25 @@ tasks.named("check").configure {
 
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
+	// Spelled rather than inherited: javac without -encoding uses the platform charset, and JEP 400
+	// changed what that is between the JDKs this project has run on. Eighteen non-ASCII string literals
+	// in the compiled sources -- the settings screen's degree sign among them -- turn that into mojibake
+	// in the UI rather than a curiosity in a comment.
+	it.options.encoding = "UTF-8"
 }
 
 java {
 	sourceCompatibility = JavaVersion.VERSION_25
 	targetCompatibility = JavaVersion.VERSION_25
 	withSourcesJar()
+	// Declared for the same reason neoforge declares it: without a toolchain this module compiles with
+	// the daemon's own JVM, which is whatever JAVA_HOME points at. `options.release = 25` above then
+	// fails outright on an older JDK -- and it failed for real, on a machine whose JAVA_HOME is 17 and
+	// where every previous build had silently reused a daemon started on 25. A build that works only
+	// while a daemon from an earlier shell happens to still be alive is not a build that works.
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
 }
 
 tasks.named("jar", Jar).configure {

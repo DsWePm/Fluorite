@@ -113,6 +113,8 @@ tasks.withType(net.neoforged.nfrtgradle.NeoFormRuntimeTask).configureEach {
 
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
+	// Same reason fabric spells it; the two modules compile the same non-ASCII sources under common/.
+	it.options.encoding = "UTF-8"
 }
 
 java {

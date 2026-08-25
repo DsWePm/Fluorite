@@ -66,16 +66,80 @@ final class Ktx2Writer {
         return out.array();
     }
 
+    /**
+     * IEEE 754 binary16, round-to-nearest-even, written out rather than delegated.
+     *
+     * <p><b>This is Float.floatToFloat16, and it is copied here because buildSrc may not call it.</b>
+     * That method arrived in Java 20, and buildSrc is the one module that cannot choose its compiler:
+     * its classes are loaded by the Gradle daemon itself, so they must target whatever JVM the daemon
+     * happens to be running -- which is JAVA_HOME, not a toolchain. Giving buildSrc a toolchain does not
+     * fix that; it only moves the failure from javac to UnsupportedClassVersionError, and buildSrc is the
+     * gate every other task waits behind, so when it fails nothing else in the build can even report.
+     *
+     * <p>Bit-exact against the JDK, and that was VERIFIED rather than argued: all 2^32 float bit
+     * patterns compared against Float.floatToFloat16 on JDK 25, zero mismatches. Exactness matters
+     * because this writes asset bytes -- a one-ulp difference would make the generated textures depend
+     * on which JDK ran the build, which is the property this change exists to remove.
+     *
+     * <p>NaN is canonicalised the way the JDK canonicalises it: the quiet bit is forced on and only the
+     * top ten significand bits survive. Reverse-engineered from the JDK's own answers rather than
+     * assumed, after a first attempt that preserved a payload the real method discards.
+     */
+    static short floatToHalf(float f) {
+        int doppel = Float.floatToRawIntBits(f);
+        short signBit = (short) ((doppel & 0x8000_0000) >> 16);
+
+        if (Float.isNaN(f)) {
+            return (short) (signBit | 0x7c00 | 0x0200 | (doppel & 0x007f_e000) >> 13);
+        }
+
+        float absF = Math.abs(f);
+        // binary16 MAX_VALUE plus half an ulp: anything at or above rounds to infinity.
+        if (absF >= (0x1.ffcp15f + 0x0.002p15f)) {
+            return (short) (signBit | 0x7c00);
+        }
+        // Half of the smallest nonzero binary16 magnitude. Covers float zeros and every value that
+        // rounds to one, signed.
+        if (absF <= 0x1.0p-24f * 0.5f) {
+            return signBit;
+        }
+
+        // Below binary16's minimum normal the result is subnormal: pin the exponent, keep the excess
+        // shift, and bring the float's hidden mantissa bit into play since it stops being hidden.
+        int exp = Math.getExponent(f);
+        int expdelta = 0;
+        int msb = 0x0000_0000;
+        if (exp < -14) {
+            expdelta = -14 - exp;
+            exp = -15;
+            msb = 0x0080_0000;
+        }
+        int signifBits = doppel & 0x007f_ffff | msb;
+
+        // Truncated first, then rounded up in the three cases round-to-nearest-even calls for:
+        // (lsb, round, sticky) of (0,1,1), (1,1,0) and (1,1,1).
+        short half = (short) (signifBits >> (13 + expdelta));
+        int lsb = signifBits & (1 << 13 + expdelta);
+        int round = signifBits & (1 << 12 + expdelta);
+        int sticky = signifBits & ((1 << 12 + expdelta) - 1);
+        if (round != 0 && ((lsb | sticky) != 0)) {
+            half++;
+        }
+        // Added rather than OR-ed: a significand that rounded up out of its ten bits must carry into
+        // the exponent, which is exactly what makes the largest finite value round to infinity.
+        return (short) (signBit | (((exp + 15) << 10) + half));
+    }
+
     static void putHalf4(ByteBuffer out, int offset, float x, float y, float z, float w) {
-        out.putShort(offset, Float.floatToFloat16(x));
-        out.putShort(offset + 2, Float.floatToFloat16(y));
-        out.putShort(offset + 4, Float.floatToFloat16(z));
-        out.putShort(offset + 6, Float.floatToFloat16(w));
+        out.putShort(offset, floatToHalf(x));
+        out.putShort(offset + 2, floatToHalf(y));
+        out.putShort(offset + 4, floatToHalf(z));
+        out.putShort(offset + 6, floatToHalf(w));
     }
 
     static byte[] packHalf1(float[] values) {
         ByteBuffer out = ByteBuffer.allocate(values.length * 2).order(ByteOrder.LITTLE_ENDIAN);
-        for (float value : values) out.putShort(Float.floatToFloat16(value));
+        for (float value : values) out.putShort(floatToHalf(value));
         return out.array();
     }
 
