@@ -280,6 +280,8 @@
   "fluorite.options.rt.cloudSecondary.full": "完整",
   "fluorite.options.rt.waterMediumTrace": "水體介質執行記錄",
   "fluorite.options.rt.waterMediumTrace.tooltip": "將中心視線的水體 Radiance、段長、可見度和區塊載入狀態低頻寫入 latest.log。僅用於診斷；開啟時每幀增加一條向上探測光線。",
+  "fluorite.options.rt.farFogOcclusion": "遠處霧遮蔽",
+  "fluorite.options.rt.farFogOcclusion.tooltip": "讓可見性網格之外的霧也去查網格，而不是直接當成露天。行進中的霧在視線穿過網格盒子處被切成三段，而只有中間那段問過網格 —— 所以大約 32 格之外的霧無論頭頂是什麼都按完全露天照亮，這正是洞裡近處霧正確、遠處霧發光的原因。打開它只改變「在哪裡提問」：遠處的答案取自網格的邊界格，洞裡那格是有頂的、露天時是開闊的，所以露天觀感不變。代價是外側兩段每步多一次網格取樣。",
   "fluorite.options.rt.fogSegmentSource": "霧內散射來源",
   "fluorite.options.rt.fogSegmentSource.tooltip": "診斷項：路徑的哪些段可以貢獻霧的內散射。Froxel 負責相機段，彈射段走的是無遮擋的解析式。",
   "fluorite.options.rt.fogInScatterSegments": "霧照明段數",

@@ -1101,6 +1101,33 @@ public final class FluoriteConfig {
                     bool("fluorite.rt.fog.heightFog", "volumetrics.height-fog", true);
 
             /** Exact hot-path gate. Off exits before every fog-noise texture fetch and numerical march. */
+            /**
+             * #41: let fog BEYOND the visibility box ask the grid instead of assuming an open sky.
+             *
+             * <p>OFF IS THE PUBLISHED RENDERER. The marched ambient splits at the box's faces and only
+             * the middle region ever consulted the grid; before and after it, sky openness was the
+             * literal 1.0. So fog past roughly 32 blocks received full unoccluded sky regardless of what
+             * was overhead -- which is the reported symptom exactly: cave fog correct nearby and glowing
+             * in the distance.
+             *
+             * <p>What turning it on changes is only WHERE THE QUESTION IS ASKED, not what answers it.
+             * volumeSkyOpenness already clamps an out-of-range coordinate to the boundary cell, which is
+             * M25's decision and not a new one; in a cave that boundary is roofed and in the open it is
+             * open, so the published outdoor look is unchanged by construction.
+             *
+             * <p>The honest weakness is that the far answer is an EXTRAPOLATION from the box's face
+             * rather than a measurement at the sample. Standing inside a cave looking at a mouth further
+             * away than the box reaches, the face is still cave, so genuinely open sky beyond it reads
+             * closed. Same trade M25 already recorded and accepted, over a larger span.
+             *
+             * <p>A switch rather than a straight fix because the cost is real and unmeasured: one 3D
+             * fetch per step in the outer regions, up to the march cap on each side, on top of the noise
+             * sampling those steps already do. Iron law 7 wants that measured against a runtime toggle
+             * rather than a checkout.
+             */
+            public static final BooleanSetting FAR_FOG_OCCLUSION =
+                    bool("fluorite.rt.fog.farOcclusion", "volumetrics.far-fog-occlusion", false);
+
             public static final BooleanSetting FOG_NOISE_ENABLED =
                     bool("fluorite.rt.fog.noiseEnabled", "volumetrics.fog-noise-enabled", false);
 

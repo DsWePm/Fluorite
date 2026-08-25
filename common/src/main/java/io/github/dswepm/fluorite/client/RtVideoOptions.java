@@ -232,6 +232,8 @@ public final class RtVideoOptions {
                                 outputTransform(), hdrEnabled(), acesHdrPreset(),
                                 hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
+                        bool("fluorite.options.rt.farFogOcclusion",
+                                FluoriteConfig.Rt.Volumetrics.FAR_FOG_OCCLUSION),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",

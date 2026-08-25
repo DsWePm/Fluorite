@@ -452,6 +452,8 @@
   "fluorite.options.rt.cloudSecondary.full": "完整",
   "fluorite.options.rt.waterMediumTrace": "水体介质运行日志",
   "fluorite.options.rt.waterMediumTrace.tooltip": "将中心视线的水体 Radiance、段长、可见度和区块加载状态低频写入 latest.log。仅用于诊断；开启时每帧增加一条向上探测光线。",
+  "fluorite.options.rt.farFogOcclusion": "远处雾遮蔽",
+  "fluorite.options.rt.farFogOcclusion.tooltip": "让可见性网格之外的雾也去查网格，而不是直接当成露天。行进中的雾在视线穿过网格盒子处被切成三段，而只有中间那段问过网格 —— 所以大约 32 格之外的雾无论头顶是什么都按完全露天照亮，这正是洞里近处雾正确、远处雾发光的原因。打开它只改变「在哪里提问」：远处的答案取自网格的边界格，洞里那格是有顶的、露天时是开阔的，所以露天观感不变。代价是外侧两段每步多一次网格取样。",
   "fluorite.options.rt.fogSegmentSource": "雾内散射来源",
   "fluorite.options.rt.fogSegmentSource.tooltip": "诊断项：路径的哪些段可以贡献雾的内散射。Froxel 负责相机段，弹射段走的是无遮挡的解析式。",
   "fluorite.options.rt.fogInScatterSegments": "雾照明段数",

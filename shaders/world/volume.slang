@@ -723,6 +723,26 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe prob
         return;
     }
     float dt = (b - a) / float(steps);
+    // #41. THE ONE PLACE THE FOG DECIDES IT IS OUTDOORS, and until now the outer two regions decided it
+    // unconditionally.
+    //
+    // makeNoisyAmbientLayout splits the march where the ray crosses the visibility box, and only the
+    // middle region ever asked the grid; before and after, skyOpen was the literal 1.0. So fog past the
+    // box -- about 32 blocks horizontally at the default cell -- received the full unoccluded sky no
+    // matter what was overhead. That is the whole of the reported symptom: near cave fog correct,
+    // distant cave fog glowing.
+    //
+    // M25 did not touch this. It changed what volumeSkyOpenness does with an OUT-OF-RANGE coordinate,
+    // from resetting to 1 to clamping at the boundary -- a fix for a call that happens. This code never
+    // made the call, so that change reached it exactly never.
+    //
+    // Asking is therefore all this needs: the clamp already decides what a sample beyond the box gets,
+    // and in a cave the boundary cell is roofed while outdoors it is open, so the published outdoor look
+    // is unchanged by construction. What it costs is one 3D fetch per step in the outer regions, on top
+    // of the noise sampling each of those steps already does. Hoisted out of the loop because it is a
+    // frame constant and a per-step uniform branch is a per-step uniform branch.
+    bool askGrid = gridRegion
+            || (worldPush.environmentFlags & ENVIRONMENT_FAR_FOG_OCCLUSION) != 0u;
     [loop]
     for (int i = 0; i < steps; ++i) {
         float t = a + (float(i) + 0.5) * dt;
@@ -745,7 +765,7 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe prob
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
         if (sourceOn) {
-            float skyOpen = gridRegion ? volumeSkyOpenness(p) : 1.0;
+            float skyOpen = askGrid ? volumeSkyOpenness(p) : 1.0;
             float3 source = skySource * skyOpen;
             acc.inScatter += acc.transmittance * scatterAlbedo * source
                     * (float3(1.0, 1.0, 1.0) - stepT);
