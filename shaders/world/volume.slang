@@ -1295,16 +1295,20 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
         float3 skySigmaSource = multiScatterOn()
                 ? volumeDiffuseAttenuation(sigmaT, albedo, mediumPhaseGFlags(mediumFlags))
                 : sigmaT;
-        // ONE RAY STRAIGHT UP, and it answers both questions the sky term has.
+        // ONE RAY STRAIGHT UP, and it answers exactly ONE of the sky term's two questions.
         //
         // How deep is this point: waterHitT is the distance to where the column of water above it ends,
         // measured rather than derived, so a second pool at another height and the camera's own body no
-        // longer share one number.
+        // longer share one number. That is the whole of what this ray contributes; only waterHitT is
+        // read below.
         //
-        // Is there sky up there at all: the same ray's transmittance. Water tints it and passes it
-        // through; rock stops it. So a flooded cave under an overhang goes dark because the ray says so,
-        // which is what settles the question the CPU's upward surface scan could not answer -- that scan
-        // only finds where the water stops, not whether anything is above it.
+        // WHETHER THERE IS SKY UP THERE IS NOT THIS RAY'S ANSWER, and this comment used to claim it was.
+        // Using the ray's transmittance for openness was a real earlier implementation and it was
+        // replaced, for the reason the next paragraph gives: a ray is binary, so one block of rock
+        // overhead dropped the sky term from full to nothing. A flooded cave under an overhang goes dark
+        // because the GRID says so. The claim survived the code that justified it, which is the way a
+        // comment becomes worse than no comment -- the next reader looks for a transmittance that
+        // nothing multiplies.
         //
         // This replaced M9's CPU sky-light grid factor (removed in M15.0), whose grid carried a second
         // depth falloff of its own: vanilla
