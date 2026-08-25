@@ -147,7 +147,18 @@ float3 froxelFogTransmittance(WorldPush wp, float3 sigma, float3 ro, float3 rd, 
 // Must match volume_visibility.comp.slang, volume_visibility.slang and RtSky.VIS_GRID_W/H/D. Restated
 // rather than imported for the same reason the shadow mask below is: those modules carry bindings this
 // compute set does not have.
-static const float3 VIS_GRID_DIMS = float3(64.0, 32.0, 64.0);
+//
+// SPELLED AS THE THREE NAMED EXTENTS, not as one anonymous float3, because a bare literal is the copy
+// that gets missed. The other three sites all declare VIS_GRID_W/H/D and refer to each other by those
+// names; this one used to be the only place the numbers appeared without them, so a grep for the
+// constant found three of the four copies and a change to the grid's height would have left the froxel
+// dividing by the old extent -- reading the shared grid at the wrong coordinate, silently, with no
+// error anywhere. RtVisibilityGridDimsTest pins all four together, since the language cannot.
+static const int VIS_GRID_W = 64;
+static const int VIS_GRID_H = 32;
+static const int VIS_GRID_D = 64;
+static const float3 VIS_GRID_DIMS =
+        float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
 
 /**
  * Whether this cell can see the sky, asked with a ray only where the shared grid cannot answer.
