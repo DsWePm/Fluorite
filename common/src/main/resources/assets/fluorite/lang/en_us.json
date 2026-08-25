@@ -338,6 +338,7 @@
   "fluorite.options.rt.debugView.23": "Water simulation field",
   "fluorite.options.rt.debugView.24": "Water sim reach",
   "fluorite.options.rt.debugView.26": "Rain material / film / exposure",
+  "fluorite.options.rt.debugView.29": "MC Sky Light Field",
   "fluorite.options.rt.debugView.27": "Puddle storage / basin / result",
   "fluorite.options.rt.fog": "Volumetric Fog",
   "fluorite.options.rt.fog.tooltip": "The world's ambient participating medium. Integrated per path segment, so it appears in reflections and refractions, not just the direct view.",

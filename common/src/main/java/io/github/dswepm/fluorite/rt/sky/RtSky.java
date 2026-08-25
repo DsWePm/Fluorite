@@ -153,6 +153,29 @@ public final class RtSky {
     private RtImage skyViewMulti;
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
+
+    // ---- M27: Minecraft's own sky light, where the ray-traced grid has no reach --------------------
+    /** R8_UNORM, 384 blocks on every axis, addressed as a torus horizontally. */
+    private RtImage skyLightImage;
+    /**
+     * The field's only copy, mapped, written by the CPU and read by the copy below.
+     *
+     * <p>Not a Java array that gets gathered into a staging buffer: at 56 MB that would be the same
+     * bytes twice, once on the collector's heap. Holding the image's own row-major layout also means a
+     * section is a sub-box of the buffer as well as of the image, so the copy reads it in place.
+     */
+    private RtBuffer skyLightMirror;
+    private RtSkyLightField skyLightField;
+    private final int[] skyLightUploadScratch = new int[SKY_LIGHT_UPLOADS_PER_FRAME];
+
+    /**
+     * Sections copied per frame, bounding the upload at a quarter of a megabyte.
+     *
+     * <p>Higher than the CPU's own refill budget on purpose: a re-window queues a 576-section slab all
+     * at once and the reads trickle in behind their own budget, so this only has to keep up with them
+     * rather than with the queue.
+     */
+    private static final int SKY_LIGHT_UPLOADS_PER_FRAME = 256;
     private RtImage[] visibilityHistory;
     private RtImage rainExposureDepth;
     private RtImage[] rainWetHistory;
@@ -593,6 +616,15 @@ public final class RtSky {
             // survived visibility filtering without allocating a second image.
             sky.visibilityGrid = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
                     VK10.VK_FORMAT_R8G8B8A8_UNORM, "volume visibility grid");
+            // M27. Cleared to ONE rather than zero: an unfilled field has to look like the renderer did
+            // before it existed, and full sky is that. Zero would black the distance out for the second
+            // or two after every dimension change.
+            int skyLightBytes = RtSkyLightField.DIM * RtSkyLightField.DIM * RtSkyLightField.DIM;
+            sky.skyLightMirror = ctx.createUploadBuffer(skyLightBytes, "mc sky light mirror");
+            sky.skyLightField = new RtSkyLightField(
+                    MemoryUtil.memByteBuffer(sky.skyLightMirror.mapped, skyLightBytes));
+            sky.skyLightImage = ctx.createSampledImage3D(RtSkyLightField.DIM, RtSkyLightField.DIM,
+                    RtSkyLightField.DIM, VK10.VK_FORMAT_R8_UNORM, "mc sky light field", 1.0f);
             // The accumulator, which consumers never see. 64x32x64 x 8 B is 1 MiB apiece, so carrying
             // two of them to keep the sampled binding stable is not a budget question.
             //
@@ -684,6 +716,81 @@ public final class RtSky {
     /** M13.2 visibility grid: R sun, G sky, BA visibility-weighted celestial sample coordinates. */
     public long visibilityGridView() {
         return visibilityGrid == null ? 0L : visibilityGrid.view;
+    }
+
+    public long skyLightFieldView() {
+        return skyLightImage == null ? 0L : skyLightImage.view;
+    }
+
+    /** Whether the field has anything to say; false in a dimension with no sky light at all. */
+    public boolean skyLightUsable() {
+        return skyLightField != null && skyLightField.usable();
+    }
+
+    /** World Y of the field's bottom plane, which the shader needs because the vertical axis is absolute. */
+    public int skyLightOriginY() {
+        return skyLightField == null ? 0 : skyLightField.originBlockY();
+    }
+
+    /** Re-window the field around the camera and read back this frame's share of it. */
+    public void updateSkyLightField(ClientLevel level, double camX, double camY, double camZ) {
+        if (skyLightField != null) {
+            skyLightField.update(level, camX, camY, camZ);
+        }
+    }
+
+    /** A section changed its lighting, so whatever this field holds for it is now historical. */
+    public void markSkyLightSectionDirty(int sectionX, int sectionY, int sectionZ) {
+        if (skyLightField != null) {
+            skyLightField.markSectionDirty(sectionX, sectionY, sectionZ);
+        }
+    }
+
+    /**
+     * Copy the sections the CPU refilled into the image, in one command with one region each.
+     *
+     * <p>bufferRowLength and bufferImageHeight name the FIELD's extent rather than the region's, which
+     * is what lets a scattered section be copied without gathering it first: Vulkan then walks the
+     * source with the same stride the mirror was written with, and bufferOffset is simply the section's
+     * own first cell.
+     *
+     * <p>Recorded among the frame's bakes, so the barrier that already makes those visible to the trace
+     * covers this too. The image never leaves GENERAL layout, so there is no transition to pay for
+     * either -- a partial upload flipping the layout of 56 MB every frame to write 256 KB would cost far
+     * more than the copy.
+     */
+    public void recordSkyLightUpload(VkCommandBuffer cmd) {
+        if (skyLightField == null || skyLightImage == null || skyLightMirror == null
+                || !skyLightField.hasUploads()) {
+            return;
+        }
+        int n = skyLightField.drainUploads(skyLightUploadScratch);
+        if (n <= 0) {
+            return;
+        }
+        // One flush for the frame. VMA makes this a no-op on coherent memory, and a section's bytes are
+        // spread across sixteen planes of the mirror, so a per-section range would cover more of the
+        // buffer than the whole-buffer call does.
+        skyLightMirror.flush();
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkBufferImageCopy.Buffer copies = VkBufferImageCopy.calloc(n, stack);
+            for (int i = 0; i < n; i++) {
+                int index = skyLightUploadScratch[i];
+                int sx = index % RtSkyLightField.SECTIONS;
+                int sy = (index / RtSkyLightField.SECTIONS) % RtSkyLightField.SECTIONS;
+                int sz = index / (RtSkyLightField.SECTIONS * RtSkyLightField.SECTIONS);
+                VkBufferImageCopy region = copies.get(i);
+                region.bufferOffset(RtSkyLightField.cellIndex(sx * 16, sy * 16, sz * 16))
+                        .bufferRowLength(RtSkyLightField.DIM)
+                        .bufferImageHeight(RtSkyLightField.DIM);
+                region.imageSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                        .mipLevel(0).baseArrayLayer(0).layerCount(1);
+                region.imageOffset().set(sx * 16, sy * 16, sz * 16);
+                region.imageExtent().set(16, 16, 16);
+            }
+            VK10.vkCmdCopyBufferToImage(cmd, skyLightMirror.handle, skyLightImage.image,
+                    VK10.VK_IMAGE_LAYOUT_GENERAL, copies);
+        }
     }
 
     /** D105 directional depth map shared by every opaque path vertex. */

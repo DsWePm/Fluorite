@@ -75,6 +75,7 @@ import io.github.dswepm.fluorite.rt.pipeline.RtSdrPresentPipeline;
 import io.github.dswepm.fluorite.rt.pipeline.RtExposure;
 import io.github.dswepm.fluorite.rt.pipeline.RtPipeline;
 import io.github.dswepm.fluorite.rt.sky.RtSky;
+import io.github.dswepm.fluorite.rt.sky.RtSkyLightField;
 import io.github.dswepm.fluorite.rt.sky.RtDimensionControls;
 import io.github.dswepm.fluorite.rt.sky.RtEnvironmentTextures;
 import io.github.dswepm.fluorite.rt.sky.RtHighCloudTextures;
@@ -1446,6 +1447,29 @@ public final class RtComposite {
      * {@code emissionStrength} lives: that is compiled at resource-reload time, and a slider that needed a
      * material recompile to take effect could not be moved while looking at what it changes.
      */
+    /**
+     * Where M27's sky-light field sits, in the form the shader can use without losing precision.
+     *
+     * <p>The horizontal offsets are REDUCED MODULO the field's extent, and that is a requirement rather
+     * than a tidy-up. The raw rebase offset is a world coordinate and can reach tens of millions, where a
+     * float has whole blocks of error -- and the shader only ever uses these modulo the extent, because
+     * the field is a torus. Taking the multiple out here, in integers, is what keeps the remainder exact.
+     *
+     * <p>The vertical one is not reduced, because that axis does not wrap: the field spans the whole
+     * world height, so what the shader needs is the distance from its fixed floor.
+     */
+    private Float4 skyLightPlacement(RtTerrain terrain) {
+        if (skyLuts == null || terrain == null || !skyLuts.skyLightUsable()) {
+            return new Float4(0f, 0f, 0f, 0f);
+        }
+        int dim = RtSkyLightField.DIM;
+        return new Float4(
+                Math.floorMod(terrain.blockX, dim),
+                terrain.blockY - skyLuts.skyLightOriginY(),
+                Math.floorMod(terrain.blockZ, dim),
+                1f);
+    }
+
     private static Float4 emitterTint() {
         float[] tint = RtEmitterTint.current();
         return new Float4(tint[0], tint[1], tint[2], 0f);
@@ -1859,6 +1883,7 @@ public final class RtComposite {
     private boolean rainExposureAnchorValid;
     private long atlasSampler;
     private long lutSampler;
+    private long skyLightSampler;
     private long tilingSampler;
     private long environmentSampler;
     private long environmentTransferSampler;
@@ -2230,6 +2255,7 @@ public final class RtComposite {
                     skyLuts.skyViewMultiView(), lutSampler(ctx));
             worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
             worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
+            worldPipeline.setSkyLightField(skyLuts.skyLightFieldView(), skyLightSampler(ctx));
             // NOT the LUT sampler. Every table above is a parameterisation over [0,1] and must clamp;
             // cloud and fog noise are sampled at WORLD COORDINATES divided by a feature size, which
             // leaves that range immediately and has to wrap. See tilingSampler.
@@ -3128,6 +3154,11 @@ public final class RtComposite {
             if (level != null) {
                 logWaterCoefficients(wtr, wtg, wtb);
             }
+            // M27, and it must be BEFORE the push below rather than among the bakes: this call is what
+            // decides where the field is anchored, and the push publishes that anchor. Updating after it
+            // would offer the shader one frame's placement for another frame's contents, which is a
+            // 384-block error and looks like the world's lighting having slid sideways.
+            skyLuts.updateSkyLightField(level, camX, camY, camZ);
             new WorldPushData(
                     frameInvViewProj,
                     new Float3((float) (camX - terrain.blockX), (float) (camY - terrain.blockY),
@@ -3229,7 +3260,8 @@ public final class RtComposite {
                     // away, which reads as "RIS got worse" rather than as "the setting did nothing".
                     fe.dynamicLightCount() > 0
                             ? FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() : 0,
-                    emitterTint()
+                    emitterTint(),
+                    skyLightPlacement(terrain)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -3414,6 +3446,10 @@ public final class RtComposite {
                         lightPoolDepth,
                         terrain.lightGridPopulatedCells(), (int) frameCounter);
             }
+            // M27. Among the bakes so the "bakes visible to the trace's sampling" barrier below covers
+            // it, and outside any timer zone because it is a transfer rather than a dispatch -- it would
+            // charge its cost to whichever neighbour it was folded into.
+            skyLuts.recordSkyLightUpload(cmd);
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_LIGHT_POOL);
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_RAIN_EXPOSURE);
@@ -4076,6 +4112,13 @@ public final class RtComposite {
             }
             lutSampler = 0L;
         }
+        if (skyLightSampler != 0L) {
+            RtContext ctx = RtContext.currentOrNull();
+            if (ctx != null) {
+                VK10.vkDestroySampler(ctx.vk(), skyLightSampler, null);
+            }
+            skyLightSampler = 0L;
+        }
         if (tilingSampler != 0L) {
             RtContext ctx = RtContext.currentOrNull();
             if (ctx != null) {
@@ -4187,6 +4230,36 @@ public final class RtComposite {
      * the extremes of the sky at u = 0 and u = 1, so the one place wrapping is visible is the one place
      * the answer changes fastest.
      */
+    /**
+     * Repeating horizontally, clamped vertically: M27's field is a torus in x and z and is not in y.
+     *
+     * <p>Its own sampler rather than the atmosphere LUT's, because handing that one over would compile,
+     * run, and CLAMP the horizontal axes -- so every sample past the field's window would read the edge
+     * column instead of wrapping to the column that actually holds that world position. Silently, and
+     * over the whole distance this field exists to cover.
+     */
+    private long skyLightSampler(RtContext ctx) {
+        if (skyLightSampler == 0L) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack).sType$Default()
+                        .magFilter(VK10.VK_FILTER_LINEAR).minFilter(VK10.VK_FILTER_LINEAR)
+                        .mipmapMode(VK10.VK_SAMPLER_MIPMAP_MODE_NEAREST)
+                        .addressModeU(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .addressModeV(VK10.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+                        .addressModeW(VK10.VK_SAMPLER_ADDRESS_MODE_REPEAT)
+                        .minLod(0f).maxLod(0f);
+                LongBuffer p = stack.mallocLong(1);
+                if (VK10.vkCreateSampler(ctx.vk(), sci, null, p) != VK10.VK_SUCCESS) {
+                    throw new IllegalStateException("vkCreateSampler(sky light field) failed");
+                }
+                skyLightSampler = p.get(0);
+                RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, skyLightSampler,
+                        "sky light field sampler");
+            }
+        }
+        return skyLightSampler;
+    }
+
     private long lutSampler(RtContext ctx) {
         if (lutSampler == 0L) {
             try (MemoryStack stack = MemoryStack.stackPush()) {

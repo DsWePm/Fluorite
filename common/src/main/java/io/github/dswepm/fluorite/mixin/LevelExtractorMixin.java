@@ -1,6 +1,7 @@
 package io.github.dswepm.fluorite.mixin;
 
 import io.github.dswepm.fluorite.FluoriteLifecycle;
+import io.github.dswepm.fluorite.rt.sky.RtSkyLightField;
 import io.github.dswepm.fluorite.rt.terrain.RtTerrain;
 import net.minecraft.client.renderer.extract.LevelExtractor;
 import net.minecraft.core.BlockPos;
@@ -20,9 +21,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *       {@code setBlockDirty(pos, old, new)} render-shape path.</li>
  * </ul>
  *
- * <p>We deliberately do <em>not</em> hook {@code setSectionDirty}: lighting-only invalidations
- * ({@code ClientChunkCache.onLightUpdate}) route straight through it, and we ray-trace lighting, so a
- * light change never alters our geometry. Hooking the block entry points keeps us off that churn.
+ * <p>We deliberately do not route {@code setSectionDirty} into the TERRAIN: lighting-only invalidations
+ * ({@code ClientChunkCache.onLightUpdate}) come through it, and we ray-trace lighting, so a light change
+ * never alters our geometry. Hooking the block entry points keeps the mesher off that churn.
+ *
+ * <p><b>M27 hooks it anyway, for a consumer that reasoning does not cover.</b> The sky-light field IS
+ * Minecraft's lighting, mirrored to the GPU, so a light change is exactly what makes its copy wrong --
+ * a torch lit in a cave or a roof broken open leaves it describing a world that no longer exists. It
+ * takes the private four-argument overload, which is where the public one, the with-neighbours one and
+ * the range one all end up. Nothing about the terrain changes: this marks one section of one field.
  */
 @Mixin(LevelExtractor.class)
 public class LevelExtractorMixin {
@@ -34,6 +41,12 @@ public class LevelExtractorMixin {
     @Inject(method = "setBlocksDirty(IIIIII)V", at = @At("HEAD"))
     private void fluorite$rtBlocksDirty(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, CallbackInfo ci) {
         RtTerrain.markBlocksDirty(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
+    @Inject(method = "setSectionDirty(IIIZ)V", at = @At("HEAD"))
+    private void fluorite$rtSectionLightDirty(int sectionX, int sectionY, int sectionZ,
+                                              boolean important, CallbackInfo ci) {
+        RtSkyLightField.onSectionLightChanged(sectionX, sectionY, sectionZ);
     }
 
     /**

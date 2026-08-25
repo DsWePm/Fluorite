@@ -383,6 +383,83 @@ public final class RtContext {
     }
 
     /**
+     * A 3D image that is only ever SAMPLED and copied into, never written by a shader.
+     *
+     * <p>The storage bit is what forces createStorageImage3D's callers onto the handful of formats
+     * Vulkan guarantees for storage images. R8_UNORM is not one of them -- it is universally supported
+     * for SAMPLING with linear filtering, and not required to be supported for storage at all, so asking
+     * for a storage view of it is a device-dependent failure rather than a portable one. A field the CPU
+     * fills and the shader reads needs neither the bit nor the risk.
+     *
+     * <p>Left in GENERAL layout for its whole life, like the other 3D fields here. GENERAL serves both
+     * sampling and transfer-destination, so a per-frame upload needs no layout transition of its own --
+     * and a partial upload transitioning the whole image every frame would be a barrier over 56 MB to
+     * write a few hundred kilobytes.
+     *
+     * @param clearValue what every texel starts as, in the format's own units. Not zero for a field
+     *                   whose unfilled state has to look like the renderer's published behaviour.
+     */
+    public RtImage createSampledImage3D(int width, int height, int depth, int format, String label,
+                                        float clearValue) {
+        int usage = VK10.VK_IMAGE_USAGE_SAMPLED_BIT | VK10.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        long image;
+        long allocation;
+        long view;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkImageCreateInfo ici = VkImageCreateInfo.calloc(stack).sType$Default()
+                    .imageType(VK10.VK_IMAGE_TYPE_3D).format(format)
+                    .mipLevels(1).arrayLayers(1).samples(VK10.VK_SAMPLE_COUNT_1_BIT)
+                    .tiling(VK10.VK_IMAGE_TILING_OPTIMAL).usage(usage)
+                    .sharingMode(VK10.VK_SHARING_MODE_EXCLUSIVE)
+                    .initialLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED);
+            ici.extent().set(width, height, depth);
+            VmaAllocationCreateInfo iaci = VmaAllocationCreateInfo.calloc(stack)
+                    .usage(Vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+            LongBuffer pImage = stack.mallocLong(1);
+            PointerBuffer pAlloc = stack.mallocPointer(1);
+            check(Vma.vmaCreateImage(vma, ici, iaci, pImage, pAlloc, null), "vmaCreateImage(sampled 3D)");
+            image = pImage.get(0);
+            allocation = pAlloc.get(0);
+            RtDebugLabels.nameImage(this, image, label);
+
+            VkImageViewCreateInfo vci = VkImageViewCreateInfo.calloc(stack).sType$Default()
+                    .image(image).viewType(VK10.VK_IMAGE_VIEW_TYPE_3D).format(format);
+            vci.subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                    .levelCount(1).layerCount(1);
+            LongBuffer pView = stack.mallocLong(1);
+            check(VK10.vkCreateImageView(vk, vci, null, pView), "vkCreateImageView(sampled 3D)");
+            view = pView.get(0);
+            RtDebugLabels.nameImageView(this, view, label + " view");
+        }
+        long imageFinal = image;
+        float clearFinal = clearValue;
+        submitSync(cmd -> {
+            try (MemoryStack stack = MemoryStack.stackPush();
+                 RtDebugLabels.Scope ignored = RtDebugLabels.scope(this, cmd, "init " + label)) {
+                VkImageMemoryBarrier.Buffer b = VkImageMemoryBarrier.calloc(1, stack);
+                b.get(0).sType$Default().oldLayout(VK10.VK_IMAGE_LAYOUT_UNDEFINED)
+                        .newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                        .srcAccessMask(0)
+                        .dstAccessMask(VK10.VK_ACCESS_SHADER_READ_BIT | VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                        .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                        .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                        .image(imageFinal);
+                b.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                        .levelCount(1).layerCount(1);
+                VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, null, null, b);
+                VkClearColorValue clear = VkClearColorValue.calloc(stack);
+                clear.float32(0, clearFinal).float32(1, clearFinal)
+                        .float32(2, clearFinal).float32(3, clearFinal);
+                VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
+                range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).levelCount(1).layerCount(1);
+                VK10.vkCmdClearColorImage(cmd, imageFinal, VK10.VK_IMAGE_LAYOUT_GENERAL, clear, range);
+            }
+        });
+        return new RtImage(vma, vk, image, allocation, view, view, 1, width, height);
+    }
+
+    /**
      * A 3D storage image with a mip chain, for a field that is SAMPLED AT VARYING FOOTPRINTS.
      *
      * <p>Two views, because Vulkan will not let one serve both jobs: a storage view must name exactly one

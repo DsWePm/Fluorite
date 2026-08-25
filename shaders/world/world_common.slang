@@ -380,6 +380,25 @@ public struct WorldPush {
      * Tinting one side of that comparison and not the other would reject every stored sample.
      */
     public float4   emitterTint;
+
+    /**
+     * Where Minecraft's sky-light field sits, and whether it may be read at all.
+     *
+     * <p>x and z are the terrain rebase offsets REDUCED MODULO the field's extent, which is not an
+     * optimisation but a precision requirement: the raw offset is a world coordinate and can reach tens
+     * of millions, where a float has whole blocks of error. The field is addressed modulo its extent
+     * anyway, so an integer multiple of the extent is exactly the part that cannot matter -- taking it
+     * out on the CPU, in integers, is what keeps the remainder exact.
+     *
+     * <p>y is the rebase offset MINUS the world Y of the field's bottom plane, because the vertical axis
+     * does not wrap: the field spans the whole world height, so its floor is a fixed world plane rather
+     * than something that follows the camera.
+     *
+     * <p>w is zero when there is nothing to read -- a dimension with no sky light, or a field that has
+     * not been anchored yet -- and the reader then returns the published answer rather than a measured
+     * one. A dimension's sky is a property of the dimension; this field is not entitled to overrule it.
+     */
+    public float4   skyLightField;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

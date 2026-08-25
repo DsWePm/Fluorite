@@ -2313,9 +2313,9 @@ public final class RtVideoOptions {
             // picture.
             new OptionInstance.Enum<>(
                     List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 20, 21, 22, 23,
-                            24, 26, 27),
+                            24, 26, 27, 29),
                     Codec.INT),
-            Math.clamp(setting.value(), 0, 27),
+            Math.clamp(setting.value(), 0, 29),
             setting::set);
     }
 

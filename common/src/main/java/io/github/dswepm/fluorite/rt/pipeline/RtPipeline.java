@@ -110,6 +110,7 @@ public final class RtPipeline {
     private final int cloudWeatherBinding;
     private final int cloudWarpBinding;
     private final int cloudShadowBinding;
+    private final int skyLightBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
@@ -120,7 +121,8 @@ public final class RtPipeline {
                         int environmentTransferBinding, int environmentDiskEntryBinding,
                         int environmentDiskExitBinding, int rainExposureBinding,
                         int rainWetHistoryBinding, int highCloudPatchBinding,
-                        int cloudWeatherBinding, int cloudWarpBinding, int cloudShadowBinding) {
+                        int cloudWeatherBinding, int cloudWarpBinding, int cloudShadowBinding,
+                        int skyLightBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -162,6 +164,7 @@ public final class RtPipeline {
         this.cloudWeatherBinding = cloudWeatherBinding;
         this.cloudWarpBinding = cloudWarpBinding;
         this.cloudShadowBinding = cloudShadowBinding;
+        this.skyLightBinding = skyLightBinding;
     }
 
     /**
@@ -284,6 +287,12 @@ public final class RtPipeline {
             // square there is no answer to extrapolate, so the edge texel is the honest fallback.
             int cloudShadowBinding = skyAtlas ? cloudWarpBinding + cloudWarpSamplers : -1;
             int cloudShadowSamplers = skyAtlas ? 1 : 0;
+            // M27's sky-light field. REPEAT horizontally and CLAMP vertically, which is the addressing
+            // scheme rather than a taste: the field is a torus in x and z so a texel holds whichever
+            // world column congruent to it is currently in the window, while the vertical axis spans the
+            // whole world height and has a real floor to clamp against.
+            int skyLightBinding = skyAtlas ? cloudShadowBinding + cloudShadowSamplers : -1;
+            int skyLightSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers
                     + cloudNoiseSamplers + waterHeightSamplers + fogNoiseSamplers
@@ -291,7 +300,7 @@ public final class RtPipeline {
                     + environmentDiskEntrySamplers + environmentDiskExitSamplers
                     + rainExposureSamplers + rainWetHistorySamplers
                     + highCloudPatchSamplers + cloudWeatherSamplers + cloudWarpSamplers
-                    + cloudShadowSamplers;
+                    + cloudShadowSamplers + skyLightSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -366,6 +375,9 @@ public final class RtPipeline {
                 binds.get(cloudShadowBinding).binding(cloudShadowBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(skyLightBinding).binding(skyLightBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -380,7 +392,7 @@ public final class RtPipeline {
                     + environmentDiskEntrySamplers + environmentDiskExitSamplers
                     + rainExposureSamplers + rainWetHistorySamplers
                     + highCloudPatchSamplers + cloudWeatherSamplers + cloudWarpSamplers
-                    + cloudShadowSamplers;
+                    + cloudShadowSamplers + skyLightSamplers;
             int poolSizeCount = 2 + (combinedSamplers > 0 ? 1 : 0);
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(poolSizeCount, stack);
             poolSizes.get(0).type(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).descriptorCount(RING);
@@ -571,7 +583,7 @@ public final class RtPipeline {
                     environmentRadianceBinding, environmentTransferBinding,
                     environmentDiskEntryBinding, environmentDiskExitBinding, rainExposureBinding,
                     rainWetHistoryBinding, highCloudPatchBinding, cloudWeatherBinding,
-                    cloudWarpBinding, cloudShadowBinding);
+                    cloudWarpBinding, cloudShadowBinding, skyLightBinding);
         }
     }
 
@@ -683,6 +695,18 @@ public final class RtPipeline {
     /** Bind the aerial-perspective froxel (M10.4). */
     public void setAerialPerspectiveLut(long imageView, long sampler) {
         writeAtlasBinding(froxelBinding, imageView, sampler);
+    }
+
+    /**
+     * Bind M27's sky-light field, which answers where the ray-traced visibility grid has no reach.
+     *
+     * <p>Wants a sampler repeating in U and W and clamping in V. Handing it the atmosphere LUT sampler
+     * would compile, run, and clamp the horizontal axes -- so every sample past the field's window would
+     * silently read the window's edge column instead of wrapping to the right one, which is the same
+     * class of wrong answer this field exists to remove.
+     */
+    public void setSkyLightField(long imageView, long sampler) {
+        writeAtlasBinding(skyLightBinding, imageView, sampler);
     }
 
     /** Bind the volumetric visibility grid (M13.2), sampled by the fog on every marched segment. */

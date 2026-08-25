@@ -47,7 +47,12 @@ final class RtSkyMediumLayoutTest {
         // the space is for, and the difference from M25 matters — this one is load-bearing for a feature
         // that stays. The push-constant block was checked first and had four bytes free, which is half an
         // address, so there was no cheaper home for it.
-        assertEquals(1184, WorldPushData.BYTE_SIZE);
+        //
+        // M27 SPENDS A WHOLE VECTOR, reaching 1200: where Minecraft's sky-light field is anchored, and
+        // whether it may be read at all. Four floats rather than fewer because there is no smaller thing
+        // to spend -- three are the placement and the fourth is the usability flag, and packing the flag
+        // into a sign bit would save nothing this struct's alignment would not take straight back.
+        assertEquals(1200, WorldPushData.BYTE_SIZE);
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

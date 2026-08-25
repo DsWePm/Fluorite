@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -132,7 +133,58 @@ final class RtRainSurfaceContractTest {
         // list stops growing or shrinking at the top — the ceiling moved to 28 and back to 27 as that
         // view arrived and was retired. Reoccupying 25 or 28 is what is forbidden.
         assertTrue(options.contains("24, 26, 27"));
-        assertTrue(options.contains("Math.clamp(setting.value(), 0, 27)"));
+        // The CEILING is not pinned to a number, because this test's own note above says it may move --
+        // it went to 28 and back to 27 as a view arrived and was retired, and M27 took it to 29. What is
+        // worth guarding is the thing that silently breaks: a view listed but unreachable because the
+        // clamp stops below it. So the ceiling is checked against the list rather than against a
+        // constant, and the assertion keeps working the next time a view is added or retired.
+        // Both halves are read from the SAME slice of the file, because RtVideoOptions has dozens of
+        // Math.clamp(setting.value(), ...) calls and a search over the whole file finds whichever knob
+        // happens to come first -- which is how this assertion first read a ceiling of 8.
+        String debugViewOption = options.substring(debugViewOptionStart(options));
+        assertEquals(highestListedDebugView(debugViewOption), debugViewClampCeiling(debugViewOption),
+                "the debug view clamp must reach the highest view the list offers");
+    }
+
+    /**
+     * Where the debug-view option begins, which is what both readers below have to be anchored on.
+     *
+     * <p>Its translation key, because that is the one string unique to this option -- the enum list and
+     * the clamp around it are shapes that repeat for every knob in the file.
+     */
+    private static int debugViewOptionStart(String options) {
+        int key = options.indexOf("\"fluorite.options.rt.debugView\"");
+        assertTrue(key >= 0, "no debug view option found in RtVideoOptions");
+        return key;
+    }
+
+    /** The largest view number in RtVideoOptions' debug-view enum list. */
+    private static int highestListedDebugView(String options) {
+        String list = between(options, "List.of(", ")");
+        int max = -1;
+        for (String part : list.split("[^0-9]+")) {
+            if (!part.isEmpty()) {
+                max = Math.max(max, Integer.parseInt(part));
+            }
+        }
+        assertTrue(max >= 0, "no debug view numbers found in the enum list");
+        return max;
+    }
+
+    private static int debugViewClampCeiling(String options) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("Math\\.clamp\\(setting\\.value\\(\\), 0, (\\d+)\\)")
+                .matcher(options);
+        assertTrue(m.find(), "no debug view clamp found");
+        return Integer.parseInt(m.group(1));
+    }
+
+    private static String between(String haystack, String start, String end) {
+        int a = haystack.indexOf(start);
+        assertTrue(a >= 0, () -> "missing: " + start);
+        int b = haystack.indexOf(end, a + start.length());
+        assertTrue(b > a, () -> "missing terminator after: " + start);
+        return haystack.substring(a + start.length(), b);
     }
 
     @Test

@@ -24,6 +24,7 @@ import math;
 import bsdf;
 import rain_surface;
 import medium;
+import sky_light_field;
 import volume;
 import volume_source; // debug 25 shares D66's exact resolution and multiplier helpers
 import volume_visibility; // debug view 18 reads the grid directly
@@ -913,6 +914,9 @@ static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there 
 
 // The volumetric visibility grid, at this pixel's own camera segment. See volumeVisibilityDebug.
 static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 18u;
+// M27. 29 rather than 28: 12-16, 19, 25 and 28 are retired and their numbers are never reused, so that
+// every note naming a view by number stays true.
+static const uint DEBUG_VIEW_SKY_LIGHT = 29u;
 
 
 // The exact camera-prefix in-scatter consumed by the normal compositor, before any leaf radiance, RR,
@@ -980,6 +984,37 @@ float3 froxelDebug(float2 uv) {
 // This is the grid ITSELF, with no fog arithmetic anywhere in it. If the room reads black here and its fog
 // is still lit, the grid is right and the consumer is wrong; if it reads yellow here, the grid is wrong and
 // nothing downstream can fix it.
+/**
+ * Minecraft's sky light at this pixel's own camera segment, with no fog arithmetic anywhere in it.
+ *
+ * <p>Deliberately the same midpoint and the same bands as the visibility view beside it, so the two can
+ * be flipped between and compared directly -- they answer different questions about the same point, and
+ * the whole reason this field exists is that one of them has range where the other does not. Read them
+ * together: where the visibility view is navy and this one is not, the flood fill disagrees with the
+ * hemisphere integral, which past 32 blocks is the only one of the two that has an opinion at all.
+ *
+ * <p>MIND THE MIDPOINT. Like its neighbour this samples halfway between the eye and where the primary
+ * pass stopped, so a pixel showing water is sampling wherever the refracted continuation ended and will
+ * jump about. Read it on stone.
+ */
+float3 skyLightDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
+    CameraRay cam = cameraRay(dispatchIndex, dimensions);
+    float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
+    float open = skyLightAt(p);
+    if (open < 1.5 / 255.0) {
+        return float3(0.0, 0.0, 0.35);   // navy   : sky light 0, the sealed answer
+    }
+    if (open < 0.05) {
+        return float3(0.0, 0.85, 0.95);  // cyan   : a floor -- one step of flood fill away from sealed
+    }
+    int band = clamp(int((open - 0.05) * (5.0 / 0.95)), 0, 4);
+    return band == 0 ? float3(0.1, 0.25, 1.0)
+         : band == 1 ? float3(0.0, 0.7, 0.2)
+         : band == 2 ? float3(0.9, 0.9, 0.0)
+         : band == 3 ? float3(1.0, 0.45, 0.0)
+                     : float3(0.9, 0.0, 0.0);   // red : sky light 15, fully open
+}
+
 float3 volumeVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
     CameraRay cam = cameraRay(dispatchIndex, dimensions);
     float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
@@ -1242,6 +1277,8 @@ void main() {
                     // camera segment's far end. Taken from the queue rather than re-traced: a debug view
                     // that traces its own ray is testing its own ray.
                     ? volumeVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
+                    : pc.debugView == DEBUG_VIEW_SKY_LIGHT
+                    ? skyLightDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM
                     ? waterSimDebug(screenUv)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM_REACH
