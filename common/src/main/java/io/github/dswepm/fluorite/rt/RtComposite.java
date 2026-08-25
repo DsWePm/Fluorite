@@ -200,6 +200,10 @@ public final class RtComposite {
                 && FluoriteConfig.Rt.Composite.LIGHT_POOL_SURFACE.value()) {
             flags |= 1 << 2; // ENVIRONMENT_LIGHT_POOL_SURFACE
         }
+        // M27 slice two. Bit 3, raised on the FIX side so a zero word is the published renderer.
+        if (FluoriteConfig.Rt.Volumetrics.FAR_FOG_SKY_LIGHT.value()) {
+            flags |= 1 << 3; // ENVIRONMENT_FAR_FOG_SKY_LIGHT
+        }
         // Bits 4-7. Zero is every segment, so the shipped behaviour is still a zero word.
         flags |= (FluoriteConfig.Rt.Volumetrics.inScatterSegments() & 0xF) << 4;
         if (environment != null) {
@@ -1467,7 +1471,9 @@ public final class RtComposite {
                 Math.floorMod(terrain.blockX, dim),
                 terrain.blockY - skyLuts.skyLightOriginY(),
                 Math.floorMod(terrain.blockZ, dim),
-                1f);
+                // The curve, in the lane that would otherwise be a bare flag. Never zero while the field
+                // is usable, so the shader's "w <= 0 means nothing to read" test still holds.
+                Math.max(0.25f, FluoriteConfig.Rt.Volumetrics.FAR_FOG_SKY_LIGHT_CURVE.value()));
     }
 
     private static Float4 emitterTint() {

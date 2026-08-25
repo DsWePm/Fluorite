@@ -20,6 +20,7 @@ import trace;
 import atmosphere_lut;
 import environment;
 import volume_source;
+import sky_light_field;
 import volume_visibility;
 import world_common;
 import world_core;
@@ -723,6 +724,24 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe prob
         return;
     }
     float dt = (b - a) / float(steps);
+    // M27 slice two. THE ONE PLACE THE FOG DECIDES IT IS OUTDOORS, and outside the box it decided so
+    // unconditionally: skyOpen was the literal 1.0 there, so fog past roughly 32 blocks took full open
+    // sky whatever was overhead. That is the whole of #41's symptom.
+    //
+    // Two things were tried before this. M25 changed what volumeSkyOpenness does with an out-of-range
+    // coordinate, from resetting to 1 to clamping at the boundary -- which never reached here, because
+    // this code was not calling it. Then calling it was tried, and rejected in game: clamping darkened
+    // distant fog OUTDOORS too, because a hundred blocks away the boundary cell is a measurement of
+    // somewhere else. Both failures are one failure. There was no data out there.
+    //
+    // Minecraft's sky light is data out there, and it costs no rays because Minecraft already ran the
+    // flood fill. It is a DIFFERENT QUANTITY from the grid's hemisphere integral -- a fill that falls one
+    // step per block from an opening, not a fraction of visible sky -- which is why it answers only
+    // where the grid has nothing to say rather than replacing it. The two agree at both ends that
+    // matter: open air reads 15 and 1, sealed rock reads 0 and 0, so the boundary between them is
+    // seamless in exactly the cases a seam would be visible.
+    bool farSkyLight = (worldPush.environmentFlags & ENVIRONMENT_FAR_FOG_SKY_LIGHT) != 0u;
+    float skyLightCurve = worldPush.skyLightField.w;
     [loop]
     for (int i = 0; i < steps; ++i) {
         float t = a + (float(i) + 0.5) * dt;
@@ -745,7 +764,12 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe prob
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
         if (sourceOn) {
-            float skyOpen = gridRegion ? volumeSkyOpenness(p) : 1.0;
+            // The curve is applied HERE and not inside skyLightAt, so the debug view keeps showing the
+            // field as Minecraft stores it. A dial that also moved the diagnostic would make the
+            // diagnostic agree with whatever the dial was set to.
+            float skyOpen = gridRegion
+                    ? volumeSkyOpenness(p)
+                    : (farSkyLight ? pow(skyLightAt(p), skyLightCurve) : 1.0);
             float3 source = skySource * skyOpen;
             acc.inScatter += acc.transmittance * scatterAlbedo * source
                     * (float3(1.0, 1.0, 1.0) - stepT);

@@ -1101,6 +1101,41 @@ public final class FluoriteConfig {
                     bool("fluorite.rt.fog.heightFog", "volumetrics.height-fog", true);
 
             /** Exact hot-path gate. Off exits before every fog-noise texture fetch and numerical march. */
+            /**
+             * #41: fog beyond the visibility box takes its sky openness from Minecraft's sky light.
+             *
+             * <p>OFF IS THE PUBLISHED RENDERER. The marched ambient splits at the box's faces and only
+             * the middle region ever consulted the grid; outside it, sky openness was the literal 1.0,
+             * so fog past roughly 32 blocks was lit as fully outdoors regardless of what was overhead.
+             *
+             * <p>Clamping to the box's boundary cell was tried first and rejected in game: it darkened
+             * distant fog OUTDOORS as well, because a hundred blocks out that cell is a measurement of
+             * somewhere else. Sky light has no such problem -- open air reads 15 everywhere, so the
+             * outdoor look is unchanged by construction rather than by adjustment.
+             *
+             * <p>What it is NOT is the same quantity as the grid. Sky light is a flood fill that falls
+             * one step per block from an opening, so a cave ten blocks inside a lit mouth reads 5 where
+             * the fraction of sky actually reaching it is nearer zero, and a chamber with a vertical
+             * shaft reads 0 where a hemisphere integral would find sky. It is used where the grid has no
+             * reach, not in place of it.
+             */
+            public static final BooleanSetting FAR_FOG_SKY_LIGHT =
+                    bool("fluorite.rt.fog.farSkyLight", "volumetrics.far-fog-sky-light", false);
+
+            /**
+             * The curve the far fog puts sky light through, as an exponent.
+             *
+             * <p>One, meaning raw, because that is the honest starting point and not because it is the
+             * right answer. Sky light's one-step-per-block falloff is not a fraction of visible sky: a
+             * cave mouth's neighbourhood reads far higher than a hemisphere integral would, so if the
+             * distance near openings comes out too bright this is the dial, and above one is the
+             * direction. Left as a dial rather than a tuned constant because which value looks right is
+             * a judgement about a picture, not something the code can derive.
+             */
+            public static final FloatSetting FAR_FOG_SKY_LIGHT_CURVE =
+                    clampedFloat("fluorite.rt.fog.farSkyLightCurve",
+                            "volumetrics.far-fog-sky-light-curve", 1.0f, 0.25f, 4.0f);
+
             public static final BooleanSetting FOG_NOISE_ENABLED =
                     bool("fluorite.rt.fog.noiseEnabled", "volumetrics.fog-noise-enabled", false);
 

@@ -28,6 +28,9 @@ public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
 // and has become the frame's general capability word -- the fog's in-scatter cap already sits in it --
 // which is a smaller wrong than growing WorldPush by sixteen bytes to carry one bit.
 public static const uint ENVIRONMENT_LIGHT_POOL_SURFACE = 1u << 2u;
+// M27 slice two: let fog OUTSIDE the visibility box take its sky openness from Minecraft's own sky
+// light instead of assuming an open sky. Off is the published renderer.
+public static const uint ENVIRONMENT_FAR_FOG_SKY_LIGHT = 1u << 3u;
 // How many path segments may ADD fog light, counted from the camera. Zero means all of them, which is
 // the shipped behaviour. Bits 4-7, so 0-15.
 //
@@ -397,6 +400,12 @@ public struct WorldPush {
      * <p>w is zero when there is nothing to read -- a dimension with no sky light, or a field that has
      * not been anchored yet -- and the reader then returns the published answer rather than a measured
      * one. A dimension's sky is a property of the dimension; this field is not entitled to overrule it.
+     *
+     * <p>When it is NOT zero it is the fog's response CURVE, which is one lane doing two jobs on
+     * purpose. The flag and the curve are both "how much should this field be believed", they are never
+     * needed apart -- a curve with nothing to read is meaningless and a reading with no curve has no
+     * consumer -- and the alternative was another sixteen bytes of push for one float. The reader tests
+     * it as a flag; the fog raises the sample to it.
      */
     public float4   skyLightField;
 };
