@@ -199,6 +199,10 @@ public final class RtComposite {
                 && FluoriteConfig.Rt.Composite.LIGHT_POOL_SURFACE.value()) {
             flags |= 1 << 2; // ENVIRONMENT_LIGHT_POOL_SURFACE
         }
+        // #41. Bit 3. Raised on the FIX side, so a zero word is the published renderer.
+        if (FluoriteConfig.Rt.Volumetrics.FAR_FOG_OCCLUSION.value()) {
+            flags |= 1 << 3; // ENVIRONMENT_FAR_FOG_OCCLUSION
+        }
         // Bits 4-7. Zero is every segment, so the shipped behaviour is still a zero word.
         flags |= (FluoriteConfig.Rt.Volumetrics.inScatterSegments() & 0xF) << 4;
         if (environment != null) {

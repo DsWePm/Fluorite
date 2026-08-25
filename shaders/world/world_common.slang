@@ -28,6 +28,9 @@ public static const uint ENVIRONMENT_FROXEL_LOCAL_LIGHTS = 1u << 1u;
 // and has become the frame's general capability word -- the fog's in-scatter cap already sits in it --
 // which is a smaller wrong than growing WorldPush by sixteen bytes to carry one bit.
 public static const uint ENVIRONMENT_LIGHT_POOL_SURFACE = 1u << 2u;
+// #41: let a marched fog step OUTSIDE the visibility box still ask the grid, instead of being handed a
+// fully open sky. Off is the published renderer, which is what makes the A/B mean anything.
+public static const uint ENVIRONMENT_FAR_FOG_OCCLUSION = 1u << 3u;
 // How many path segments may ADD fog light, counted from the camera. Zero means all of them, which is
 // the shipped behaviour. Bits 4-7, so 0-15.
 //
