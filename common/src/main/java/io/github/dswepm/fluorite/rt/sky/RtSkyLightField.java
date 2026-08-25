@@ -245,6 +245,10 @@ public final class RtSkyLightField {
 
     private boolean fill(ClientLevel level) {
         if (pending.isEmpty()) {
+            // Zeroed on the way out too. Leaving the previous frame's count standing would report a
+            // field that read nothing as one that read whatever it last did, which is a counter that
+            // lies exactly when it is being trusted to say the fill has stopped.
+            lastRead = 0;
             return false;
         }
         LayerLightEventListener sky = level.getLightEngine().getLayerListener(LightLayer.SKY);
