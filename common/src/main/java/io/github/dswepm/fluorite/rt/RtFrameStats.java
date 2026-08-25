@@ -147,7 +147,13 @@ public final class RtFrameStats {
                     "dynamicLightUploadBytes", "dynamicLightFlushes",
                     "rainExposureCpuQueries", "rainExposureUploadBytes",
                     "rainStreakInstances", "rainImpactRays", "rainImpactsSpawned",
-                    "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements"},
+                    "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements",
+                    // M27. Sections of the sky-light field still waiting to be read, and sections read
+                    // this frame. The first is the one that matters: an unfilled cell reads FULL SKY on
+                    // purpose -- so that a half-built field looks like the renderer did before it
+                    // existed -- which means the debug view cannot tell "not filled yet" from "genuinely
+                    // open". This number can. Zero pending is what licenses reading a red region as red.
+                    "skyLightSectionsPending", "skyLightSectionsRead"},
             true);
 
     private static final List<GarbageCollectorMXBean> GC_BEANS = ManagementFactory.getGarbageCollectorMXBeans();

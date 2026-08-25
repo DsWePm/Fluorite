@@ -734,9 +734,14 @@ public final class RtSky {
 
     /** Re-window the field around the camera and read back this frame's share of it. */
     public void updateSkyLightField(ClientLevel level, double camX, double camY, double camZ) {
-        if (skyLightField != null) {
-            skyLightField.update(level, camX, camY, camZ);
+        if (skyLightField == null) {
+            return;
         }
+        skyLightField.update(level, camX, camY, camZ);
+        // Reported every frame rather than only while filling, so a column of zeros is evidence the
+        // field is complete rather than evidence nothing ran.
+        RtFrameStats.FRAME.count("skyLightSectionsPending", skyLightField.pendingSections());
+        RtFrameStats.FRAME.count("skyLightSectionsRead", skyLightField.sectionsReadLastUpdate());
     }
 
     /** A section changed its lighting, so whatever this field holds for it is now historical. */

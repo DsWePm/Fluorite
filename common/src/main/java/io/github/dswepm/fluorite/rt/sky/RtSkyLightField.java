@@ -115,6 +115,7 @@ public final class RtSkyLightField {
      */
     private static final ConcurrentLinkedQueue<Long> INBOX = new ConcurrentLinkedQueue<>();
 
+    private int lastRead;
     private Object anchoredLevel;
     private boolean hasSkyLight = true;
     private int baseSectionY = Integer.MIN_VALUE;
@@ -249,6 +250,7 @@ public final class RtSkyLightField {
         LayerLightEventListener sky = level.getLightEngine().getLayerListener(LightLayer.SKY);
         BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
         int done = 0;
+        lastRead = 0;
         while (done < SECTION_BUDGET && !pending.isEmpty()) {
             int index = pending.poll();
             sectionQueued[index] = false;
@@ -262,6 +264,7 @@ public final class RtSkyLightField {
             uploads.add(index);
             done++;
         }
+        lastRead = done;
         return done > 0;
     }
 
@@ -345,6 +348,22 @@ public final class RtSkyLightField {
 
     public boolean hasUploads() {
         return !uploads.isEmpty();
+    }
+
+    /**
+     * Sections still owed a read, which is the only way to tell an unfilled cell from an open one.
+     *
+     * <p>They are the same byte by design: full sky is the renderer's published answer, so an unfilled
+     * field looks like the old renderer rather than like a hole. The cost of that choice is exactly this
+     * ambiguity, and the counter is what pays it back -- a red region with pending at zero is red.
+     */
+    public int pendingSections() {
+        return pending.size();
+    }
+
+    /** Sections read during the last update, so a stalled fill is distinguishable from a finished one. */
+    public int sectionsReadLastUpdate() {
+        return lastRead;
     }
 
     public void invalidate() {
