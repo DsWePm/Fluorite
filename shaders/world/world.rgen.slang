@@ -917,6 +917,9 @@ static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 18u;
 // M27. 29 rather than 28: 12-16, 19, 25 and 28 are retired and their numbers are never reused, so that
 // every note naming a view by number stays true.
 static const uint DEBUG_VIEW_SKY_LIGHT = 29u;
+// The value the FOG ends up with, region split included -- as opposed to the two views above, which show
+// the two fields raw and cannot say which of them a given point actually reaches.
+static const uint DEBUG_VIEW_FOG_SKY_OPEN = 30u;
 
 
 // The exact camera-prefix in-scatter consumed by the normal compositor, before any leaf radiance, RR,
@@ -1010,6 +1013,48 @@ float3 debugProbePoint(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
         return cam.origin + (hitPos - cam.origin) * 0.5;
     }
     return cam.origin + normalize(cam.dir) * pc.debugProbe;
+}
+
+/**
+ * What the marched fog actually multiplies its sky source by, at the probe point.
+ *
+ * <p>THE OTHER TWO VIEWS SHOW FIELDS; THIS SHOWS THE ANSWER. The fog splits its march at the visibility
+ * box and reads a different field on each side, so a point can be navy in one view and irrelevant to the
+ * fog at that point -- which is exactly the ambiguity that has made every reading so far need a caveat.
+ * This runs the same expression integrateNoisyAmbientRegion runs, deciding the region by whether the
+ * probe point is inside the box, so a bright pixel here is light the fog is genuinely being given.
+ *
+ * <p>Bands are the neighbours': navy is what the consumers see as nothing, cyan is a small nonzero floor,
+ * red is fully open. Read it with Debug Probe Distance set, or the midpoint caveat applies here too.
+ */
+float3 fogSkyOpenDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
+    float3 p = debugProbePoint(dispatchIndex, dimensions, hitPos);
+    float cell = worldPush.visGridOrigin.w;
+    float3 lo = worldPush.visGridOrigin.xyz;
+    float3 hi = lo + cell * float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
+    bool inBox = cell > 0.0 && all(p >= lo) && all(p <= hi);
+
+    float open;
+    if (inBox) {
+        open = volumeSkyOpenness(p);
+    } else if ((worldPush.environmentFlags & ENVIRONMENT_FAR_FOG_SKY_LIGHT) != 0u) {
+        open = pow(skyLightAt(p), worldPush.skyLightField.w);
+    } else {
+        open = 1.0;
+    }
+
+    if (open < 1.5 / 255.0) {
+        return float3(0.0, 0.0, 0.35);   // navy   : the fog is given nothing here
+    }
+    if (open < 0.05) {
+        return float3(0.0, 0.85, 0.95);  // cyan   : a floor -- small, nonzero, and lighting the fog
+    }
+    int band = clamp(int((open - 0.05) * (5.0 / 0.95)), 0, 4);
+    return band == 0 ? float3(0.1, 0.25, 1.0)
+         : band == 1 ? float3(0.0, 0.7, 0.2)
+         : band == 2 ? float3(0.9, 0.9, 0.0)
+         : band == 3 ? float3(1.0, 0.45, 0.0)
+                     : float3(0.9, 0.0, 0.0);   // red : fully open, the pre-M27 constant
 }
 
 float3 skyLightDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
@@ -1292,6 +1337,8 @@ void main() {
                     ? volumeVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
                     : pc.debugView == DEBUG_VIEW_SKY_LIGHT
                     ? skyLightDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
+                    : pc.debugView == DEBUG_VIEW_FOG_SKY_OPEN
+                    ? fogSkyOpenDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM
                     ? waterSimDebug(screenUv)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM_REACH

@@ -340,6 +340,7 @@
   "fluorite.options.rt.debugView.26": "Rain material / film / exposure",
   "fluorite.options.rt.debugView.29": "MC Sky Light Field",
   "fluorite.options.rt.debugView.27": "Puddle storage / basin / result",
+  "fluorite.options.rt.debugView.30": "Fog Sky Openness (Used)",
   "fluorite.options.rt.fog": "Volumetric Fog",
   "fluorite.options.rt.fog.tooltip": "The world's ambient participating medium. Integrated per path segment, so it appears in reflections and refractions, not just the direct view.",
   "fluorite.options.rt.fogDensity": "Fog Density",
