@@ -102,11 +102,86 @@ final class RtSkyLightFogContractTest {
                 "the capability word must not be sampled inside the step loop");
     }
 
+    /**
+     * Above the grid's box, with the switch down, the answer is still the constant it always was.
+     *
+     * <p>That region used to be an unconditional 1.0 -- every air sample more than half the grid's
+     * height above the camera was told the sky was wide open however much rock was over it, which is
+     * #41's defect surviving in a smaller region. It is also position dependent by construction, because
+     * the ceiling rides on the camera: descending pulls rock that was "above the box" into it and the
+     * fog overhead goes from fully lit to measured. Iron law 8 says the off state has to be
+     * indistinguishable from what shipped, and here that is the constant.
+     */
+    @Test
+    void theAboveGridAnswerFallsBackToTheConstantWithTheSwitchDown() throws IOException {
+        String visibility = shader("volume_visibility.slang");
+        assertTrue(visibility.contains(
+                "return (worldPush.environmentFlags & ENVIRONMENT_FAR_FOG_SKY_LIGHT) != 0u\n"
+                        + "                ? skyLightAt(p)\n"
+                        + "                : 1.0;"));
+    }
+
+    /**
+     * Above the box is READ, never CLAMPED -- the half of D194 that has not expired.
+     *
+     * <p>Sky openness is monotone non-decreasing as you rise, so the top cell is a lower bound on
+     * everything above it and reporting it would dress a bound up as a measurement, erring dark with no
+     * ceiling on how wrong. M27 does not touch that argument; what it removed was the premise that the
+     * unoccluded constant was therefore the only answer left. So this guard must stay an early return
+     * ahead of the clamped fetch rather than becoming a fourth clamped axis.
+     */
+    @Test
+    void aboveTheBoxIsNeverClampedToTheTopCell() throws IOException {
+        String visibility = shader("volume_visibility.slang");
+        int guard = visibility.indexOf("if (g.y > 1.0) {");
+        int clamp = visibility.indexOf("float3 uvw = saturate(g);");
+        assertTrue(guard >= 0, "the +Y guard must exist");
+        assertTrue(clamp > guard, "the +Y guard must return before the clamped fetch");
+    }
+
+    /**
+     * EVERY IMPORTER OF volume_visibility MUST ALSO IMPORT sky_light_field, and that is a build-time
+     * property rather than a style one.
+     *
+     * <p>A binding declared in a module reaches every importer. sky_light_field declares binding 30, and
+     * binding a shader whose descriptor set layout does not contain it is a validation error -- the note
+     * at the top of that file records the froxel compute set as exactly that case, and the note at the
+     * top of volume_visibility records the bake's set as another. Reading the field from inside
+     * volumeSkyOpenness makes the two modules' importer sets have to agree, so this pins the agreement
+     * where adding an importer trips over it instead of where the validation layer does.
+     */
+    @Test
+    void everyImporterOfTheVisibilityReaderAlsoCarriesTheSkyLightBinding() throws IOException {
+        Path shaders = repositoryRoot().resolve("shaders/world");
+        int importers = 0;
+        try (var entries = Files.list(shaders)) {
+            for (Path file : entries.filter(f -> f.toString().endsWith(".slang")).toList()) {
+                String text = Files.readString(file);
+                if (!text.contains("import volume_visibility;")) {
+                    continue;
+                }
+                importers++;
+                assertTrue(text.contains("import sky_light_field;"),
+                        file.getFileName() + " imports volume_visibility, which now reads binding 30, "
+                                + "so its descriptor set has to carry sky_light_field as well");
+            }
+        }
+        // A sweep that finds nothing PASSES, which would make a rename silently retire this check rather
+        // than fail it. volume.slang and world.rgen.slang are the two importers today; the floor only has
+        // to prove the sweep is still looking at something.
+        assertTrue(importers >= 2, "expected to find the visibility reader's importers, found " + importers);
+    }
+
     private static String shader(String name) throws IOException {
         return source("shaders/world/" + name);
     }
 
     private static String source(String relativePath) throws IOException {
+        // Normalised, because the working tree carries CRLF while every pattern here is written with LF.
+        return String.join("\n", Files.readAllLines(repositoryRoot().resolve(relativePath)));
+    }
+
+    private static Path repositoryRoot() throws IOException {
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath();
         while (root != null && !Files.isRegularFile(root.resolve("settings.gradle"))) {
             root = root.getParent();
@@ -115,7 +190,6 @@ final class RtSkyLightFogContractTest {
             throw new IOException("Could not locate repository root from "
                     + System.getProperty("user.dir"));
         }
-        // Normalised, because the working tree carries CRLF while every pattern here is written with LF.
-        return String.join("\n", Files.readAllLines(root.resolve(relativePath)));
+        return root;
     }
 }

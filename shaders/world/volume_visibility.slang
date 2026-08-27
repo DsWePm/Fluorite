@@ -14,6 +14,12 @@
 
 import world_common; // WorldPush's shape
 import world_core;   // the frame's WorldPush itself, which carries the grid's placement
+// M27's field, for the one region this grid has no cells in: above its box. Safe to import HERE and
+// nowhere lower, because it declares binding 30 and a binding declared in a module reaches every
+// importer -- the note at the top of sky_light_field.slang and the one above are the same rule. This
+// module's only importers are volume.slang and world.rgen.slang, and both already import it, so the
+// set of shaders carrying binding 30 does not change.
+import sky_light_field;
 
 // Must match volume_visibility.comp.slang and RtSky.VIS_GRID_W/H/D.
 public static const int VIS_GRID_W = 64;
@@ -63,10 +69,13 @@ public static const int VIS_GRID_D = 64;
  *   <li>Standing inside a cave mouth whose opening is further than the grid reaches, the boundary in
  *       that direction is roofed, so genuinely open sky beyond it is reported closed and distant outdoor
  *       fog darkens. Opposite direction to the error being removed, and far smaller.</li>
- *   <li>Above the grid nothing is clamped (see the +Y note below), so a sample more than half the grid's
- *       height overhead reads open. In a cavern taller than that, the air near its ceiling is lit. Same
- *       direction as the original defect, over a much smaller region, and it is the price of the deep
- *       water fix rather than an oversight.</li>
+ *   <li>Above the grid nothing is clamped (see the +Y note below), so a sample more than half the
+ *       grid's height overhead used to read open. In a cavern taller than that, the air near its ceiling
+ *       was lit — the same direction as the original defect, over a smaller region. <b>M27 closed
+ *       that</b>: above the box this now reads Minecraft's sky light, which is a measurement of the
+ *       point rather than a constant, and it agrees with the constant outdoors. What remains is the
+ *       difference between a flood fill and a hemisphere integral, which is the same approximation the
+ *       far region already runs on.</li>
  * </ul>
  *
  * <p>The no-grid fallback below is the one case this cannot help, because there is nothing to clamp to.
@@ -110,10 +119,32 @@ public float volumeSkyOpenness(float3 p) {
     // Sideways and downward do clamp: laterally the world plausibly continues as it does here, and below
     // the grid the bottom cell is an UPPER bound, so clamping there errs bright but bounded.
     if (g.y > 1.0) {
-        // D194: the top cell is a LOWER bound here, not a measurement, so the honest answer is the
-        // unoccluded one rather than a bound dressed up as a reading. Erring bright above the grid is
-        // bounded; erring dark is not.
-        return 1.0;
+        // D194 SAID "RETURN 1.0", AND ITS REASON HAS SINCE EXPIRED. The argument was that the top cell
+        // is a lower bound rather than a measurement, so reporting it would dress a bound up as a
+        // reading -- true, and it left the unoccluded constant as the only remaining answer BECAUSE
+        // THERE WAS NO DATA UP THERE. M27 put data up there. Its field spans the whole world height, so
+        // a point above this box is inside it, and reading a third field is neither clamping to a
+        // boundary cell nor asserting a bound: it is a different measurement of the same point.
+        //
+        // WHAT IT WAS COSTING. Every air sample more than half the grid's height above the camera --
+        // 16 blocks at the default cell -- was told the sky was wide open however much rock was over
+        // it. That is #41's original defect surviving in a smaller region, and it is position
+        // dependent by construction: the ceiling rides on the camera, so descending pulls rock that was
+        // "above the box" into it and the fog overhead goes from fully lit to measured. Fog brightness
+        // that changes because the viewer moved is what sent this milestone looking in the first place.
+        //
+        // OUTDOORS IS UNCHANGED, which is what makes this safe to take: open sky is sky light 15, which
+        // is 1.0, exactly the constant this replaces. Only a roofed sample moves, and it moves darker.
+        // The deep-water case that motivated D194 is also unchanged -- waterSurfaceSkyOpenness asks from
+        // just above the surface, and open water's surface is 15.
+        //
+        // The curve stays off this path on purpose. FAR_FOG_SKY_LIGHT_CURVE is applied by the fog to the
+        // far region, never inside a field reader, so that the debug views keep showing what Minecraft
+        // stores rather than what the dial is set to; that contract is pinned by
+        // RtSkyLightFogContractTest. This reader is one of those views' sources.
+        return (worldPush.environmentFlags & ENVIRONMENT_FAR_FOG_SKY_LIGHT) != 0u
+                ? skyLightAt(p)
+                : 1.0;
     }
     // Clamped HERE rather than left to the sampler. The descriptor happens to carry CLAMP_TO_EDGE today,
     // so the fetch alone would do the right thing on the remaining axes -- but that address mode is
