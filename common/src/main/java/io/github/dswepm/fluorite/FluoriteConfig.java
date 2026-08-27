@@ -1347,6 +1347,39 @@ public final class FluoriteConfig {
              * Neither touches extinction, so what a segment hides stays exactly as it was and only what it
              * emits moves — the same separation of "too bright" from "too opaque" the water switch makes.
              */
+            /**
+             * Which of the marched fog's two light sources may contribute. Diagnostic; "both" ships.
+             *
+             * <p>SEGMENT_SOURCE below could not answer this. It gates `sourceOn`, and the sky source and
+             * the sun term both sit behind that one flag -- so setting it to froxel-only proves the
+             * marched path is responsible and stops there. A whole milestone went into the sky half of
+             * that function before the ambiguity was noticed, and the question "is it even the sky" had
+             * still not been asked.
+             *
+             * <p>Bits 16-17 of environmentFlags. Zero is both, so the published renderer is a zero word.
+             */
+            public static final StringSetting FOG_LIGHT_SOURCE =
+                    string("fluorite.rt.fog.lightSource", "volumetrics.fog-light-source", "both",
+                            Volumetrics::sanitizeFogLightSource);
+
+            private static String sanitizeFogLightSource(String value) {
+                String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+                return switch (v) {
+                    case "sky", "sun", "none" -> v;
+                    default -> "both";
+                };
+            }
+
+            /** Bits 16-17 of environmentFlags. */
+            public static int fogLightSourceId() {
+                return switch (FOG_LIGHT_SOURCE.get()) {
+                    case "sky" -> 1;
+                    case "sun" -> 2;
+                    case "none" -> 3;
+                    default -> 0;
+                };
+            }
+
             public static final StringSetting SEGMENT_SOURCE =
                     string("fluorite.rt.fog.segmentSource", "volumetrics.segment-source", "both",
                             Volumetrics::sanitizeSegmentSource);

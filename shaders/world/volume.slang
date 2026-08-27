@@ -825,6 +825,13 @@ void integrateNoisyAmbient(inout SegmentIntegral seg, float3 ro, float3 rd,
     uint sunRays = worldPush.skyProvider == SKY_PROVIDER_ATMOSPHERE
             ? ((worldPush.flags >> 23u) & 7u) : 0u;
     bool sourceOn = ((worldPush.flags >> 16u) & 1u) == 0u;
+    // The marched fog has TWO sources and one switch used to cover both. segment-source gates sourceOn,
+    // which sits in front of the sky term below AND the sun term at the end of this function, so
+    // turning it down narrows the search to "the marched path" and no further. This splits them.
+    uint fogLightSource = (worldPush.environmentFlags >> ENVIRONMENT_FOG_LIGHT_SOURCE_SHIFT)
+            & ENVIRONMENT_FOG_LIGHT_SOURCE_MASK;
+    bool skySourceOn = sourceOn && (fogLightSource == 0u || fogLightSource == 1u);
+    bool sunSourceOn = sourceOn && (fogLightSource == 0u || fogLightSource == 2u);
     float3 sunSigma = multiScatterOn()
             ? volumeDiffuseAttenuation(worldPush.fogExtinction.xyz, scatterAlbedo, phaseG)
             : worldPush.fogExtinction.xyz;
@@ -851,11 +858,11 @@ void integrateNoisyAmbient(inout SegmentIntegral seg, float3 ro, float3 rd,
     acc.transmittance = float3(1.0, 1.0, 1.0);
     float3 skySource = worldPush.mediumSkyRadiance.xyz;
     integrateNoisyAmbientRegion(acc, probe, ro, rd, layout.edge.x, layout.edge.y, layout.steps.x,
-            false, scatterAlbedo, skySource, sourceOn);
+            false, scatterAlbedo, skySource, skySourceOn);
     integrateNoisyAmbientRegion(acc, probe, ro, rd, layout.edge.y, layout.edge.z, layout.steps.y,
-            true, scatterAlbedo, skySource, sourceOn);
+            true, scatterAlbedo, skySource, skySourceOn);
     integrateNoisyAmbientRegion(acc, probe, ro, rd, layout.edge.z, layout.edge.w, layout.steps.z,
-            false, scatterAlbedo, skySource, sourceOn);
+            false, scatterAlbedo, skySource, skySourceOn);
     // The far edge when the walk never crossed the target, which is what the inversion returned too:
     // rounding in a sum can leave the last cell just short of a total assembled from the same terms, and
     // the segment's end is the only defensible answer there.
@@ -865,7 +872,7 @@ void integrateNoisyAmbient(inout SegmentIntegral seg, float3 ro, float3 rd,
     seg.transmittance *= acc.transmittance;
     seg.inScatter += acc.inScatter;
 
-    if (sourceOn && sunRays > 0u) {
+    if (sunSourceOn && sunRays > 0u) {
         uint fogSeed = seed ^ 0x9E3779B9u;
         fogSeed = pcg(fogSeed);
         if (scatterVertexOn() && any(seg.scatterWeight > 0.0)) {

@@ -31,6 +31,15 @@ public static const uint ENVIRONMENT_LIGHT_POOL_SURFACE = 1u << 2u;
 // M27 slice two: let fog OUTSIDE the visibility box take its sky openness from Minecraft's own sky
 // light instead of assuming an open sky. Off is the published renderer.
 public static const uint ENVIRONMENT_FAR_FOG_SKY_LIGHT = 1u << 3u;
+// Which of the marched fog's two light sources may contribute. 0 = both, 1 = sky only, 2 = sun only,
+// 3 = neither, so a zero word is the published renderer.
+//
+// SPLIT BECAUSE segment-source COULD NOT. That switch gates `sourceOn`, which the sky source and the
+// sun term BOTH sit behind -- so turning it down proves only that the marched path is responsible and
+// says nothing about which half. A whole milestone went into the sky side of this function before that
+// ambiguity was noticed.
+public static const uint ENVIRONMENT_FOG_LIGHT_SOURCE_SHIFT = 16u;
+public static const uint ENVIRONMENT_FOG_LIGHT_SOURCE_MASK = 0x3u;
 // How many path segments may ADD fog light, counted from the camera. Zero means all of them, which is
 // the shipped behaviour. Bits 4-7, so 0-15.
 //

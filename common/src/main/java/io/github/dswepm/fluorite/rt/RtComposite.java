@@ -206,6 +206,8 @@ public final class RtComposite {
         }
         // Bits 4-7. Zero is every segment, so the shipped behaviour is still a zero word.
         flags |= (FluoriteConfig.Rt.Volumetrics.inScatterSegments() & 0xF) << 4;
+        // Bits 16-17. Zero is both sources, so the shipped behaviour is still a zero word.
+        flags |= (FluoriteConfig.Rt.Volumetrics.fogLightSourceId() & 0b11) << 16;
         if (environment != null) {
             flags |= (environment.layer() & 0xff) << 8;
         }

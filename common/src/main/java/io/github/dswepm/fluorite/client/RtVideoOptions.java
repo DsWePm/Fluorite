@@ -231,7 +231,7 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.outputTransform",
                                 outputTransform(), hdrEnabled(), acesHdrPreset(),
                                 hdrPaperWhite(), hdrPeak()));
-                case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
+                case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(), fogLightSource(),
                         scaleSlider("fluorite.options.rt.debugProbeDistance",
                                 FluoriteConfig.Rt.Volumetrics.DEBUG_PROBE_DISTANCE, 256.0f),
                         bool("fluorite.options.rt.farFogSkyLight",
@@ -1965,6 +1965,18 @@ public final class RtVideoOptions {
      * and resolves visibility per world-space cell, every bounce segment runs the unshadowed closed form,
      * and on screen the two are added. Silencing one is the only way to say which produced a brightness.
      */
+    private static OptionInstance<String> fogLightSource() {
+        StringSetting setting = FluoriteConfig.Rt.Volumetrics.FOG_LIGHT_SOURCE;
+        return new OptionInstance<>(
+            "fluorite.options.rt.fogLightSource",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.fogLightSource.tooltip")),
+            (caption, value) -> Component.translatable("fluorite.options.rt.fogLightSource." + value),
+            new OptionInstance.Enum<>(List.of("both", "sky", "sun", "none"), Codec.STRING),
+            setting.get(),
+            setting::set);
+    }
+
     private static OptionInstance<String> fogSegmentSource() {
         StringSetting setting = FluoriteConfig.Rt.Volumetrics.SEGMENT_SOURCE;
         return new OptionInstance<>(
