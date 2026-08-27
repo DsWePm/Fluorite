@@ -18,7 +18,7 @@ Minecraft 26.2 的 Vulkan 硬件光追渲染 mod（Fabric + NeoForge，包名 `i
 ## 常用工具速查
 
 - 基准：`tools/bench-world.sh [name]` 还原世界 → `./gradlew :fabric:runClient -PbenchWidth=1920 -PbenchHeight=1080 -PbenchWorld=<name>`。帧统计走配置键 `frame-stats.enabled`（`run/config/fluorite.toml`，改前先关游戏），输出在 `run/rt-frame-stats/frame.csv`。**不要在 gradle 命令行加 `-Dfluorite.rt.frameStats=true`**：`-D` 设的是 Gradle 守护进程的系统属性，而构建里没有任何 `-D` 转发到客户端 JVM（`fabric/build.gradle` 只传 `--enable-native-access` 与 `-Xss16m`），所以那个写法静默无效——曾按它跑过一次并以为统计开着。同名系统属性本身是有效的，但必须作为客户端 JVM 的 vmArg。
-- 诊断：视频设置 → Fluorite Settings → 诊断 → 「调试视图」1–29（1–7=guide buffer；8–25=体积/水/LUT/可见性，22=云链路、23/24=水仿真、25=雾密度阶段；26/27=降雨材质与水洼，由 pass A 拥有；29=MC 天光场）。12–16/19/25/28 已退役且编号不复用。**给用户报选项时用界面上的中文名，不要报编号**——枚举下标是代码里的东西，用户对应不上。隔离开关 `water.scatter-source`、`volumetrics.segment-source` 等。
+- 诊断：视频设置 → Fluorite Settings → 诊断 → 「调试视图」1–30（1–7=guide buffer；8–25=体积/水/LUT/可见性，22=云链路、23/24=水仿真、25=雾密度阶段；26/27=降雨材质与水洼，由 pass A 拥有；29=MC 天光场、30=雾实际用的开阔度）。12–16/19/25/28 已退役且编号不复用。**给用户报选项时用界面上的中文名，不要报编号**——枚举下标是代码里的东西，用户对应不上。隔离开关 `water.scatter-source`、`volumetrics.segment-source` 等。
 - 构建硬要求：slangc ≥ 2026.14（`docs/developer_guide.md`）；`-Xss16m` 必须是直接 vmArg。
 
 语言约定：代码注释英文；项目文档中文正文 + 英文符号名。设置只维护 `en_us`、`zh_cn`、`zh_tw`。
