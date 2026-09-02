@@ -232,6 +232,10 @@ public final class RtVideoOptions {
                                 outputTransform(), hdrEnabled(), acesHdrPreset(),
                                 hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
+                        bool("fluorite.options.rt.skyDirectionalField",
+                                FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD),
+                        bool("fluorite.options.rt.fogBeyondGridUsesClamp",
+                                FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",

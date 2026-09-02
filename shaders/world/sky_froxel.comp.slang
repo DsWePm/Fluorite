@@ -87,6 +87,23 @@ float sliceDepth(int z, float maxDist) {
 }
 
 /**
+ * The grid's scalar openness at a NORMALIZED in-grid coordinate, in either storage mode.
+ *
+ * <p>Under FLAG_SKY_FIELD_DIRECTIONAL (M28 S1) the grid's RGBA are four world-azimuth sector bins and
+ * the openness is their quarter-weighted sum -- the same read the ray-tracing side's volumeSkyOpenness
+ * makes, stated locally because this bake cannot import that module (a binding declared there reaches
+ * every importer, and this compute set does not contain it). Scalar mode returns R, exactly the shipped
+ * read.
+ */
+float froxelGridOpenness(WorldPush wp, float3 g) {
+    float4 s = saturate(volumeVisibility.SampleLevel(g, 0.0));
+    if ((wp.flags & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+        return dot(s, float4(0.25, 0.25, 0.25, 0.25));
+    }
+    return s.r;
+}
+
+/**
  * Openness for the DENSITY field, and it must never fall back to a ray.
  *
  * <p>froxelSkyOpenness casts one where the grid cannot answer, which is right for a per-cell lighting
@@ -104,7 +121,7 @@ float froxelStructureOpenness(WorldPush wp, float3 p) {
     if (any(g < float3(0.0, 0.0, 0.0)) || any(g > float3(1.0, 1.0, 1.0))) {
         return 1.0;
     }
-    return saturate(volumeVisibility.SampleLevel(g, 0.0).r);
+    return froxelGridOpenness(wp, g);
 }
 
 float froxelFogNoiseMultiplier(WorldPush wp, float3 p, float footprint) {
@@ -196,7 +213,7 @@ float froxelSkyOpenness(WorldPush wp, float3 p) {
     if (cell > 0.0) {
         float3 g = (p - wp.visGridOrigin.xyz) / (cell * VIS_GRID_DIMS);
         if (all(g >= float3(0.0, 0.0, 0.0)) && all(g <= float3(1.0, 1.0, 1.0))) {
-            return saturate(volumeVisibility.SampleLevel(g, 0.0).r);
+            return froxelGridOpenness(wp, g);
         }
     }
     return skyReachable(p);

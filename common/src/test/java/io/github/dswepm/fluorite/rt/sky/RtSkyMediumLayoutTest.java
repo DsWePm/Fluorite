@@ -47,7 +47,15 @@ final class RtSkyMediumLayoutTest {
         // the space is for, and the difference from M25 matters — this one is load-bearing for a feature
         // that stays. The push-constant block was checked first and had four bytes free, which is half an
         // address, so there was no cheaper home for it.
-        assertEquals(1184, WorldPushData.BYTE_SIZE);
+        //
+        // M28 S1 appends four vectors: the sky's phase-integrated radiance split into the visibility
+        // grid's four world-azimuth sectors. They are the radiance half of a two-sided contract whose
+        // visibility half lives in the grid's RGBA bins, so neither side means anything without the
+        // other; that is what makes them a real feature's ABI rather than M25-style rent. Appended at
+        // the END of the struct, so every offset below still holds.
+        assertEquals(1248, WorldPushData.BYTE_SIZE);
+        assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("skySectorRadiance")));
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

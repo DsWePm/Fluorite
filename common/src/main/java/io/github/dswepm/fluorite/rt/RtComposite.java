@@ -220,6 +220,18 @@ public final class RtComposite {
     }
 
     /**
+     * M28 S1: the CPU-authored fallback for the sector radiance split -- the isotropic one, four exact
+     * quarters of mediumSkyRadiance so their sum is precisely the scalar. Only providers with no
+     * sky_medium_reduce pass see it; an atmosphere overwrites all four lanes from the LUT every frame,
+     * and there the sum reproduces the scalar by construction instead of by quartering.
+     */
+    private static Float4 skySectorRadianceFallback(RtSkyPreset preset, RtDimensionControls controls,
+                                                    RtEnvironmentTextures.Entry environment) {
+        Float4 whole = mediumSkyRadiance(preset, controls, environment);
+        return new Float4(whole.x() * 0.25f, whole.y() * 0.25f, whole.z() * 0.25f, 0f);
+    }
+
+    /**
      * Where the volumetric visibility grid sits this frame: its minimum corner in rebased blocks, and its
      * cell size in w. A cell size of zero is the disable path — sampleVolumeVisibility reports everything
      * lit, which reproduces the unshadowed fog exactly rather than approximately.
@@ -3015,6 +3027,20 @@ public final class RtComposite {
                 // Bit 26: the source decays at the diffusion rate rather than the beam's.
                 flags |= 1 << 26;
             }
+            if (FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value()) {
+                // Bit 27 (world_common FLAG_SKY_FIELD_DIRECTIONAL): the visibility grid stores four
+                // sector bins and the marched fog weights them by their own sector radiance. The bake
+                // reads this same word for its storage layout, and recordVisibilityBake below receives
+                // the knob separately so a flip can force a history reset -- the bit alone cannot tell
+                // the CPU whether the history on disk means bins or scalar.
+                flags |= 1 << 27;
+            }
+            if (FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value()) {
+                // Bit 28 (world_common FLAG_FOG_BEYOND_GRID_CLAMP): out-of-grid fog stretches take the
+                // clamped field instead of hardwired open -- D178's attributed-away leftover, retired.
+                // WITH THIS BIT THE FLAGS WORD IS FULL; the next flag is a WorldPush layout change.
+                flags |= 1 << 28;
+            }
             if (skyPreset.cloudsEnabled() && FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
                 // Bits 2-3: how much march a ray that is not the first of its path may spend. A cost
@@ -3229,7 +3255,15 @@ public final class RtComposite {
                     // away, which reads as "RIS got worse" rather than as "the setting did nothing".
                     fe.dynamicLightCount() > 0
                             ? FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() : 0,
-                    emitterTint()
+                    emitterTint(),
+                    // M28 S1: the sector radiance split, CPU-authored as exact quarters for providers
+                    // whose sky_medium_reduce does not run; an atmosphere overwrites all four from the
+                    // LUT later in the same command buffer, exactly as it does mediumSkyRadiance above.
+                    new Float4[]{
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry)}
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -3394,7 +3428,9 @@ public final class RtComposite {
                         visibilityGridOriginCell(camX, visCell, RtSky.VIS_GRID_W),
                         visibilityGridOriginCell(camY, visCell, RtSky.VIS_GRID_H),
                         visibilityGridOriginCell(camZ, visCell, RtSky.VIS_GRID_D),
-                        visCell, graphicsUse);
+                        visCell,
+                        FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value(),
+                        graphicsUse);
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);

@@ -108,6 +108,64 @@ public static const uint SHADE_SOLID_LAYER_SSS = 1u;
  */
 public static const uint SHADE_DYNAMIC_EMITTER_RIS = 2u;
 
+/**
+ * The volumetric visibility grid holds FOUR directional sky bins instead of one scalar openness
+ * (M28 S1). RGBA of the sampled grid are then the cosine-weighted visible fractions of the four
+ * world-azimuth quarter sectors of the upper hemisphere, one EMA each, and WorldPush's
+ * skySectorRadiance carries the matching sector-restricted phase-integrated sky radiances.
+ *
+ * <p>The bit is read by the bake (one ray per sector instead of one ray for the whole hemisphere),
+ * by this grid's readers (volume_visibility.slang, sky_froxel.comp.slang), and by the marched
+ * ambient sky term in volume.slang. Cleared -- the shipped picture -- every one of those walks the
+ * scalar path exactly as it did before S1, down to the storage layout: R is the whole-hemisphere
+ * openness and G the EMA count's echo.
+ *
+ * <p>Must match RtComposite's WorldPush flags assembly (bit 27 there). Bits 0-26 and 29-31 of this
+ * word are spoken for; 27 and 28 were the last two free.
+ */
+public static const uint FLAG_SKY_FIELD_DIRECTIONAL = 1u << 27u;
+
+/**
+ * Fog stretches the visibility grid's span does not cover read the CLAMPED field instead of assuming
+ * open. The march cuts each segment into the stretch before the grid, the stretch inside it, and the
+ * stretch beyond; the two outer ones were hardwired to openness 1 -- D178's deliberate leftover, kept
+ * only so its clamp could be attributed alone, and that attribution closed the day it shipped. The
+ * symptom of the leftover is exactly #41's original report: cave fog roughly a grid radius from the
+ * camera (about 32 blocks at the default cell) glowing as if under open sky while nearby fog is dark.
+ *
+ * <p>The clamp is D178's, not a new miss policy: a sample outside the box asks the nearest measured
+ * cell. Outdoors that boundary reads open, so the open-world far field keeps its brightness; in a cave
+ * the boundary is roofed and the far fog goes dark with the near fog.
+ *
+ * <p>Must match RtComposite's WorldPush flags assembly (bit 28 there). THIS WORD IS NOW FULL -- bits
+ * 0 through 31 all spoken for; the next flag is a WorldPush layout change, not a bit pick.
+ */
+public static const uint FLAG_FOG_BEYOND_GRID_CLAMP = 1u << 28u;
+
+/**
+ * Which of the four world-azimuth quarter sectors a direction belongs to, and the ONE definition of
+ * "sector" for everything S1 touches: sky_medium_reduce splits the sky integral by it, and the
+ * visibility bake samples one cosine-weighted ray per sector with azimuth (k + u) * pi/2 in the same
+ * frame -- +X toward +Z, matching cosineHemisphereUp. If either side's azimuth convention moves, both
+ * move or a sector's visibility is weighted by a different sector's radiance, which presents as cave
+ * mouths lit from the wrong side.
+ */
+public uint skySectorIndexOf(float3 dir) {
+    float phi = atan2(dir.z, dir.x);          // (-pi, pi]
+    float turned = phi + 6.28318530718 * (phi <= 0.0 ? 1.0 : 0.0);
+    return min(uint(turned * 0.63661977236), 3u); // turned / (pi/2), clamped at the 2*pi edge
+}
+
+// A sector's representative direction for anything that must point at the sector rather than into it:
+// its centre azimuth, at the cosine-weighted hemisphere's mean elevation (sin = 2/3). Currently only
+// documentation-grade -- the marched sky term needs no direction because the phase is folded into the
+// sector's radiance -- but a future consumer must take the direction from here, not re-derive it.
+float3 skySectorDirection(uint sector) {
+    float phi = (float(sector) + 0.5) * 1.57079632679;
+    float cosE = 0.7453559925; // sqrt(1 - 4/9)
+    return float3(cosE * cos(phi), 0.6666666667, cosE * sin(phi));
+}
+
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
 // w = bindless entityAlbedoTex slot of the destroy-stage texture.
 public struct BreakEntry {
@@ -380,6 +438,21 @@ public struct WorldPush {
      * Tinting one side of that comparison and not the other would reject every stored sample.
      */
     public float4   emitterTint;
+    /**
+     * M28 S1: the sky's phase-integrated radiance split into the visibility grid's four world-azimuth
+     * quarter sectors, so the marched ambient sky term can weight each sector's VISIBILITY (the grid's
+     * bins) by that sector's own radiance instead of by the whole dome's mean. Each entry is the same
+     * integral mediumSkyRadiance is, restricted to one sector; their sum therefore reproduces
+     * mediumSkyRadiance up to summation order, which is what keeps a sector-lit cave mouth and an open
+     * field consistent at the grid's boundary.
+     *
+     * <p>Written by sky_medium_reduce.comp every frame for atmosphere providers -- the same pass that
+     * writes mediumSkyRadiance, from the same LUT, so the split cannot drift from the whole. The CPU
+     * fallback below (no reduce runs outside an atmosphere) is the isotropic split: four quarters of
+     * mediumSkyRadiance, whose sum is then EXACTLY the scalar. Consumers must not read these lanes
+     * unless FLAG_SKY_FIELD_DIRECTIONAL is set.
+     */
+    public float4   skySectorRadiance[4]; // xyz sector phase-integrated radiance, w zero
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
