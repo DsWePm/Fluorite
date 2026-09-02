@@ -39,10 +39,11 @@
 //   integral over directions — and the reason one ray had to stand in for that integral was that the
 //   bake had no memory. It has memory now.
 //
-// So the ray budget is one per cell per frame, half what it was, and it draws a new direction each frame
-// and accumulates. The grid is world-anchored and its origin snaps in whole cells, so last frame's answer
-// for this world point is a plain integer offset away — the same reprojection rain_history.comp does,
-// for the same reason.
+// So the ray budget is one per cell per frame -- four per cell when FLAG_SKY_FIELD_DIRECTIONAL is set
+// (M28 S1: one per world-azimuth quarter sector, RGBA of the grid holding one EMA each) -- and it draws
+// a new direction each frame and accumulates. The grid is world-anchored and its origin snaps in whole
+// cells, so last frame's answer for this world point is a plain integer offset away -- the same
+// reprojection rain_history.comp does, for the same reason.
 //
 // Reads the grid's placement from WorldPush rather than taking it as a push constant, for the same reason
 // the froxel does: the consumers read the same field, and two copies of a grid origin that disagree by
@@ -114,8 +115,19 @@ struct VisPush {
 [[vk::binding(0, 0)]] RWTexture3D<float4> visibilityGrid;
 // The accumulator, ping-ponged. Read is last frame's, write is this frame's; they are different images,
 // so a thread reading a REPROJECTED neighbour cannot race the thread writing that neighbour.
+//
+// TWO STORAGE LAYOUTS ON THE SAME IMAGES, switched by FLAG_SKY_FIELD_DIRECTIONAL. Scalar mode (the
+// shipped one): R is the whole-hemisphere openness EMA, G its sample count. Directional mode (M28 S1):
+// RGBA are the four world-azimuth sector bins and the count has moved to the meta images below, because
+// four bins fill every channel the float4 offers. The flag is a LIVE setting, which is why the mode flip
+// also forces a history reset on the CPU -- last frame's numbers mean different things the moment it
+// flips, and an EMA seeded with misread data would take a second to wash out visibly.
 [[vk::binding(1, 0)]] RWTexture3D<float4> historyWrite;
 [[vk::binding(2, 0)]] RWTexture3D<float4> historyRead;
+// Directional mode's shared EMA count, ping-ponged in step with the bins. Unused (and untouched) in
+// scalar mode, which keeps its count in history.g exactly as shipped.
+[[vk::binding(3, 0)]] RWTexture3D<float4> metaWrite;
+[[vk::binding(4, 0)]] RWTexture3D<float4> metaRead;
 // Set 1, its own ring, for the same reason the froxel's is: the TLAS handle changes almost every frame
 // and rewriting a set an in-flight command buffer may still read is the hazard AccelStructureSet exists
 // to guard against.
@@ -159,6 +171,11 @@ bool occluded(float3 p, float3 dir) {
  * hemisphere instead of along one line, and it agrees with the published answer in the two cases that
  * were already right — fully open reads 1, fully sealed reads 0. What changes is everything between,
  * which is where the tree was.
+ *
+ * <p><b>SECTORS</b> come out of the SAME formula, not a variant of it: the directional mode passes
+ * (sector + u2) * 0.25, so phi = 2*pi*(sector + u2)/4 is one world-azimuth quarter with the elevation
+ * drawn exactly as scalar mode draws it -- one sampler, no way to drift in how the hemisphere is
+ * weighted, and the scalar call (u1, u2) keeps producing the shipped off-state's directions bit for bit.
  */
 float3 cosineHemisphereUp(float u1, float u2) {
     float r = sqrt(u1);
@@ -170,6 +187,85 @@ float3 cosineHemisphereUp(float u1, float u2) {
 float rnd01(inout uint state) {
     state = pcg(state);
     return float(state >> 8u) * (1.0 / 16777216.0);
+}
+
+/** Scalar mode: one ray, one running mean, the shipped bake. Kept as its own function so the
+ * directional mode below cannot reorder a single line of it -- off-state is byte-for-byte this. */
+void bakeScalar(float3 p, float cell, uint3 id, WorldPush wp) {
+    int3 worldCell = int3(floor(p / max(cell, 1.0e-4)));
+    uint seed = asuint(worldCell.x) * 1973u
+            ^ asuint(worldCell.y) * 9277u
+            ^ asuint(worldCell.z) * 26699u
+            ^ wp.frameIndex * 2654435761u;
+    float u1 = rnd01(seed);
+    float u2 = rnd01(seed);
+    float sample01 = occluded(p, cosineHemisphereUp(u1, u2)) ? 0.0 : 1.0;
+
+    float open = 0.0;
+    float n = 0.0;
+    if (visPush.reset == 0u) {
+        int3 src = int3(id) + int3(visPush.shiftX, visPush.shiftY, visPush.shiftZ);
+        if (all(src >= int3(0, 0, 0))
+                && src.x < VIS_GRID_W && src.y < VIS_GRID_H && src.z < VIS_GRID_D) {
+            float4 prior = historyRead[src];
+            open = prior.r;
+            n = prior.g;
+        }
+    }
+    n = min(n + 1.0, VIS_ACCUM_MAX);
+    open = open + (sample01 - open) / n;
+
+    historyWrite[int3(id)] = float4(open, n, 0.0, 1.0);
+    visibilityGrid[int3(id)] = float4(open, n * (1.0 / 255.0), 0.0, 1.0);
+}
+
+/** Directional mode (M28 S1): one ray per world-azimuth sector, one shared EMA count.
+ *
+ * <p>The count is SHARED because every sector is sampled every frame -- a cell's four bins therefore
+ * stand on exactly the same number of draws and stay comparable, which a per-bin count would not
+ * guarantee once reprojection starts dropping cells. Convergence and forgetting keep the scalar mode's
+ * timing (the same VIS_ACCUM_MAX against one draw per frame per quantity); the ray cost is what grew,
+ * 131k -> 524k a frame, and gpu.visBake carries the measurement.
+ *
+ * <p>The bins' sum is written NOWHERE as a scalar. Consumers that want the scalar openness read the four
+ * bins and take the quarter-weighted sum (volumeSkyOpenness), which is the same cosine-weighted
+ * hemisphere fraction this function's four samples estimate jointly. Writing a fifth scalar would cost
+ * either a second texture or a fifth channel nobody has.
+ */
+void bakeDirectional(float3 p, float cell, uint3 id, WorldPush wp) {
+    int3 worldCell = int3(floor(p / max(cell, 1.0e-4)));
+    uint seed = asuint(worldCell.x) * 1973u
+            ^ asuint(worldCell.y) * 9277u
+            ^ asuint(worldCell.z) * 26699u
+            ^ wp.frameIndex * 2654435761u;
+
+    float4 sample01 = float4(0.0, 0.0, 0.0, 0.0);
+    for (uint sector = 0u; sector < 4u; ++sector) {
+        float u1 = rnd01(seed);
+        float u2 = rnd01(seed);
+        float3 dir = cosineHemisphereUp(u1, (float(sector) + u2) * 0.25);
+        sample01[sector] = occluded(p, dir) ? 0.0 : 1.0;
+    }
+
+    float4 bins = float4(0.0, 0.0, 0.0, 0.0);
+    float n = 0.0;
+    if (visPush.reset == 0u) {
+        int3 src = int3(id) + int3(visPush.shiftX, visPush.shiftY, visPush.shiftZ);
+        if (all(src >= int3(0, 0, 0))
+                && src.x < VIS_GRID_W && src.y < VIS_GRID_H && src.z < VIS_GRID_D) {
+            bins = historyRead[src];
+            n = metaRead[src].r;
+        }
+    }
+    n = min(n + 1.0, VIS_ACCUM_MAX);
+    bins += (sample01 - bins) / n;
+
+    historyWrite[int3(id)] = float4(bins.x, bins.y, bins.z, bins.w);
+    metaWrite[int3(id)] = float4(n, 0.0, 0.0, 1.0);
+    // Sampled RGBA ARE the four bins; no count echo, no constant guard lanes. A half-written record is
+    // not distinguishable here -- the scalar mode's G/B/A convention assumed one meaningful channel and
+    // that assumption is what four bins spend.
+    visibilityGrid[int3(id)] = bins;
 }
 
 [shader("compute")]
@@ -187,42 +283,9 @@ void main(uint3 id: SV_DispatchThreadID) {
     // like an indexing bug.
     float3 p = wp.visGridOrigin.xyz + (float3(id) + float3(0.5, 0.5, 0.5)) * cell;
 
-    // Hash WORLD cells rather than dispatch ids so moving the camera does not reshuffle every cell's
-    // sequence at once: a cell that survives a reprojection goes on drawing new directions instead of
-    // repeating the ones its own history already contains.
-    int3 worldCell = int3(floor(p / max(cell, 1.0e-4)));
-    uint seed = asuint(worldCell.x) * 1973u
-            ^ asuint(worldCell.y) * 9277u
-            ^ asuint(worldCell.z) * 26699u
-            ^ wp.frameIndex * 2654435761u;
-    float u1 = rnd01(seed);
-    float u2 = rnd01(seed);
-    float sample01 = occluded(p, cosineHemisphereUp(u1, u2)) ? 0.0 : 1.0;
-
-    // Last frame's answer for THIS world point, which is a whole number of cells away.
-    float open = 0.0;
-    float n = 0.0;
-    if (visPush.reset == 0u) {
-        int3 src = int3(id) + int3(visPush.shiftX, visPush.shiftY, visPush.shiftZ);
-        if (all(src >= int3(0, 0, 0))
-                && src.x < VIS_GRID_W && src.y < VIS_GRID_H && src.z < VIS_GRID_D) {
-            float4 prior = historyRead[src];
-            open = prior.r;
-            n = prior.g;
-        }
+    if ((wp.flags & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+        bakeDirectional(p, cell, id, wp);
+    } else {
+        bakeScalar(p, cell, id, wp);
     }
-    // A running mean while the cell is young, an exponential moving average once it is full. One
-    // expression covers both, because the cap is the only thing that differs between them.
-    n = min(n + 1.0, VIS_ACCUM_MAX);
-    open = open + (sample01 - open) / n;
-
-    // G carries the sample count so a reprojected cell knows how much weight its history has earned.
-    // Consumers read R alone; B and A are held at constants so a half-written record cannot be mistaken
-    // for data.
-    //
-    // TWO RECORDS, NOT ONE, because the two images have different jobs. The history is the accumulator
-    // and keeps full float precision plus the raw count. The sampled grid is UNORM8 and only ever read,
-    // so it takes the count scaled into its range and loses nothing that can come back around.
-    historyWrite[int3(id)] = float4(open, n, 0.0, 1.0);
-    visibilityGrid[int3(id)] = float4(open, n * (1.0 / 255.0), 0.0, 1.0);
 }

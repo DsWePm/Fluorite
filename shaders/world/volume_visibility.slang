@@ -1,6 +1,10 @@
-// The bound volumetric visibility grid and the one correct way to read it. R is sky openness -- the
-// accumulated fraction of the upper hemisphere that reaches this cell -- and G is the sample count its
-// running mean stands on, which only the bake reads. B and A are constants.
+// The bound volumetric visibility grid and the one correct way to read it. SCALAR MODE (the shipped
+// layout): R is sky openness -- the accumulated fraction of the upper hemisphere that reaches this cell
+// -- and G is the sample count its running mean stands on, which only the bake reads. B and A are
+// constants. DIRECTIONAL MODE (FLAG_SKY_FIELD_DIRECTIONAL, M28 S1): RGBA are four world-azimuth sector
+// bins of that same fraction, and the count lives in the bake's meta images; volumeSkyOpenness returns
+// their quarter-weighted sum, which is the same quantity, so scalar readers keep their published
+// semantics without knowing the grid changed shape.
 //
 // IT USED TO ANSWER ABOUT THE SUN TOO, in R, with the sampled celestial square coordinates in BA. That
 // half lost in game to the one stochastic shadow ray a marched segment already casts, and it is gone;
@@ -21,7 +25,8 @@ public static const int VIS_GRID_H = 32;
 public static const int VIS_GRID_D = 64;
 
 /**
- * Bound by RtPipeline.setVolumeVisibilityGrid. R is sun visibility, G is sky openness.
+ * Bound by RtPipeline.setVolumeVisibilityGrid. Scalar mode: R sky openness, G the count's echo.
+ * Directional mode: RGBA the four sector bins. See volumeSkyBins.
  *
  * <p>Sampled rather than storage, and that is the whole design: nearest fetches would draw the grid's own
  * cell boundaries into the fog as brightness steps, and a step where a gradient belongs is the failure
@@ -31,8 +36,13 @@ public static const int VIS_GRID_D = 64;
 [[vk::binding(16, 0)]] public Sampler3D volumeVisibilityGrid;
 
 /**
- * Sky openness at a point in the air: the fraction of the upper hemisphere that reaches it. Outside the
- * grid, the boundary's answer; only where no grid has been published at all does this fall back to 1.
+ * The sky-visibility field at a point in the air, in whichever representation the grid currently
+ * publishes: RGBA are four sector bins under FLAG_SKY_FIELD_DIRECTIONAL (M28 S1), or (openness, count
+ * echo, 0, 1) in the shipped scalar mode. Callers that want ONE number take volumeSkyOpenness; the
+ * marched ambient sky term takes this and weights each bin by its own sector radiance.
+ *
+ * <p>Outside the grid, the boundary's answer; only where no grid has been published at all does this
+ * fall back to all-open.
  *
  * <p>OUTSIDE THE GRID IT CLAMPS, and that replaces two decisions this file used to record — a reset to
  * "fully lit" beyond the faces, and a fade toward it over the outermost 6% to hide the seam that reset
@@ -78,17 +88,21 @@ public static const int VIS_GRID_D = 64;
  * switch light up cave water, and the fallback carried the blame for a coupling made in RtComposite. The
  * bake now follows the grid's own knob instead (#41). Which leaves this fallback saying only what it
  * always should have: no grid was asked for, so there is no measurement to report.
+ *
+ * <p>THE MISS ANSWERS ARE ALL-OPEN IN BOTH MODES, and that is not an accident: four open bins
+ * quarter-weighted sum to exactly the scalar 1.0, so every fallback below means the same number to a
+ * scalar reader and to a sector reader.
  */
-public float volumeSkyOpenness(float3 p) {
+public float4 volumeSkyBins(float3 p) {
     // D78A: some authored dimensions deliberately use a tiny unoccluded environment floor. It is an
     // explicit non-physical readability light, so roofs must not gate it. Directional/local emitters
     // still cast their own shadow rays; only the preset's isotropic floor takes this fast path.
     if ((worldPush.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u) {
-        return 1.0;
+        return float4(1.0, 1.0, 1.0, 1.0);
     }
     float cell = worldPush.visGridOrigin.w;
     if (cell <= 0.0) {
-        return 1.0;
+        return float4(1.0, 1.0, 1.0, 1.0);
     }
     float3 extent = cell * float3(float(VIS_GRID_W), float(VIS_GRID_H), float(VIS_GRID_D));
     // Cell (i,j,k) holds the answer for origin + (i+0.5)*cell, whose normalized coordinate is exactly
@@ -113,14 +127,30 @@ public float volumeSkyOpenness(float3 p) {
         // D194: the top cell is a LOWER bound here, not a measurement, so the honest answer is the
         // unoccluded one rather than a bound dressed up as a reading. Erring bright above the grid is
         // bounded; erring dark is not.
-        return 1.0;
+        return float4(1.0, 1.0, 1.0, 1.0);
     }
     // Clamped HERE rather than left to the sampler. The descriptor happens to carry CLAMP_TO_EDGE today,
     // so the fetch alone would do the right thing on the remaining axes -- but that address mode is
     // chosen in RtComposite, and a correctness property of this function must not depend on a decision
     // made in another file.
     float3 uvw = saturate(g);
-    return saturate(volumeVisibilityGrid.SampleLevel(uvw, 0.0).r);
+    return saturate(volumeVisibilityGrid.SampleLevel(uvw, 0.0));
+}
+
+/**
+ * The scalar form: the whole-hemisphere openness a reader with no use for direction wants.
+ *
+ * <p>Scalar mode (the flag clear) returns the grid's R, which IS that quantity -- the same fetch the
+ * shipped path made, one channel of it. Directional mode returns the four bins' quarter-weighted sum,
+ * which is the same cosine-weighted hemisphere fraction estimated sector by sector; the water, closed-
+ * form and froxel readers go through here and keep their published semantics without knowing the grid
+ * changed shape underneath them. Only the marched ambient sky term reads the bins themselves.
+ */
+public float volumeSkyOpenness(float3 p) {
+    if ((worldPush.flags & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+        return dot(volumeSkyBins(p), float4(0.25, 0.25, 0.25, 0.25));
+    }
+    return volumeSkyBins(p).r;
 }
 
 /**

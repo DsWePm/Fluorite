@@ -473,6 +473,25 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
 }
 
 /**
+ * The marched sky source under FLAG_SKY_FIELD_DIRECTIONAL: each sector bin weighted by its OWN sector's
+ * phase-integrated radiance, so a cave mouth to the east lights the fog near it with the east rather than
+ * with the dome's mean.
+ *
+ * <p>No phase evaluation here, deliberately. mediumSkyRadiance is a PHASE-INTEGRATED reduction -- the
+ * sky-view LUT's tables are looked up with the scattering angle against the sun baked in at reduction
+ * time -- and skySectorRadiance is that same integral split by world azimuth, so the sector radiance
+ * already carries everything directional the phase knows. Their sum reproduces mediumSkyRadiance up to
+ * summation order, which is what makes all-bins-open collapse to exactly the scalar source the two outer
+ * (outside-the-grid) regions of this integrator keep using whether the flag is set or not.
+ */
+float3 sectorSkyTerm(float4 bins) {
+    return bins.x * worldPush.skySectorRadiance[0].xyz
+         + bins.y * worldPush.skySectorRadiance[1].xyz
+         + bins.z * worldPush.skySectorRadiance[2].xyz
+         + bins.w * worldPush.skySectorRadiance[3].xyz;
+}
+
+/**
  * The sun's contribution to a marched segment, with visibility from RAYS instead of from the grid.
  *
  * <p><b>Why the grid is not enough, measured rather than argued.</b> Debug view 19 plots sun visibility
@@ -1530,8 +1549,22 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
                         // shape.
                         float3 midP = ro + rd * ((tA + tB) * 0.5);
+                        // M28 S1: under FLAG_SKY_FIELD_DIRECTIONAL the fetch returns four SECTOR bins, and
+                        // each is weighted by its own sector's phase-integrated radiance -- a cave mouth to
+                        // the east lights the fog near it with the east, not with the dome's mean. The
+                        // visibility is inside the per-bin weights, so the openness handed down is 1: the
+                        // product ambientStep forms is unchanged, only which factor carries the occlusion.
+                        // Scalar mode passes the shipped pair untouched.
+                        float3 stepSky = skySource;
+                        float stepOpen;
+                        if ((worldPush.flags & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+                            stepSky = sectorSkyTerm(volumeSkyBins(midP));
+                            stepOpen = 1.0;
+                        } else {
+                            stepOpen = volumeSkyOpenness(midP);
+                        }
                         ambientStep(acc, ro, rd, tA, tB, scatterAlbedo,
-                                    gridSunSource, skySource, volumeSkyOpenness(midP));
+                                    gridSunSource, stepSky, stepOpen);
                     }
                 }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,

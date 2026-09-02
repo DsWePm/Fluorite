@@ -1647,6 +1647,20 @@ public final class FluoriteConfig {
             public static final BooleanSetting CLOUD_SHADOWS =
                     bool("fluorite.rt.fog.cloudShadows", "volumetrics.cloud-shadows", true);
 
+            /**
+             * M28 S1: store the sky's visibility as FOUR world-azimuth sector bins per grid cell instead
+             * of one scalar openness, and let the marched fog weight each sector by its own radiance -- a
+             * cave mouth to the east lights the fog near it with the east, not with the dome's mean.
+             *
+             * <p>Live, because the whole point of shipping it beside the scalar is the comparison: the
+             * bake casts one ray per sector (131k becomes 524k rays a frame; gpu.visBake measures it) and
+             * the grid's storage layout changes meaning, so toggling forces a history reset on the CPU.
+             * Off is byte-for-byte the shipped path -- same ray, same layout, same scalar every reader
+             * has always seen.
+             */
+            public static final BooleanSetting SKY_DIRECTIONAL_FIELD =
+                    bool("fluorite.rt.fog.skyDirectionalField", "volumetrics.sky-directional-field", false);
+
             /** Two analytic optical-depth sheets far above the convective deck; no high-cloud march. */
             public static final BooleanSetting CLOUD_CIRRUS =
                     bool("fluorite.rt.fog.cloudCirrus", "volumetrics.cloud-cirrus", true);

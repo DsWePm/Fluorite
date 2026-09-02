@@ -133,6 +133,8 @@ public final class RtSky {
     private int visibilityOriginCellY;
     private int visibilityOriginCellZ;
     private float visibilityHistoryCell;
+    /** The storage mode the surviving history was baked in; a flip forces the reset above. */
+    private boolean visibilityHistoryDirectional;
     private final Bake rainExposureBake;
     private final Bake[] rainHistoryBakes;
     private final Bake cloudNoiseBake;
@@ -154,6 +156,8 @@ public final class RtSky {
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
     private RtImage[] visibilityHistory;
+    /** M28 S1: the directional mode's shared EMA count, ping-ponged in step with the bins. */
+    private RtImage[] visibilityMetaHistory;
     private RtImage rainExposureDepth;
     private RtImage[] rainWetHistory;
     private int rainWetHistoryRead;
@@ -441,9 +445,15 @@ public final class RtSky {
             // same way, for the same reason.
             Bake[] visibilityBakes = new Bake[2];
             for (int target = 0; target < 2; target++) {
+                // Five images: the sampled grid, the two history parities, and (M28 S1) the two meta
+                // parities carrying the directional mode's shared EMA count. The meta pair is bound and
+                // paid for in BOTH modes -- scalar mode never touches it, but binding count is fixed at
+                // set creation and the mode is a LIVE setting.
                 visibilityBakes[target] = createBake(ctx, stack, "volume_visibility.comp.spv",
                         "volume visibility " + target,
                         new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                 VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                 VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, VIS_PUSH_BYTES,
                         visibilityTlas.layout);
@@ -610,11 +620,23 @@ public final class RtSky {
                 sky.visibilityHistory[i] = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
                         VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "volume visibility history " + i);
             }
+            // M28 S1: where the directional mode's shared EMA count lives -- four sector bins fill the
+            // history's four channels, so the count gets its own ping-pong pair. Same feedback-loop
+            // reasoning as the bins themselves: float, because an 8-bit count stalls its own decay. Scalar
+            // mode never reads or writes this pair, but the descriptor set is built once, so it is
+            // allocated unconditionally; 2 MiB total against a grid the renderer already sizes casually.
+            sky.visibilityMetaHistory = new RtImage[2];
+            for (int i = 0; i < 2; i++) {
+                sky.visibilityMetaHistory[i] = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "volume visibility meta history " + i);
+            }
             for (int target = 0; target < 2; target++) {
                 long set = visibilityBakes[target].descriptorSet();
                 writeStorageImage(vk, stack, set, 0, sky.visibilityGrid.view);
                 writeStorageImage(vk, stack, set, 1, sky.visibilityHistory[target].view);
                 writeStorageImage(vk, stack, set, 2, sky.visibilityHistory[1 - target].view);
+                writeStorageImage(vk, stack, set, 3, sky.visibilityMetaHistory[target].view);
+                writeStorageImage(vk, stack, set, 4, sky.visibilityMetaHistory[1 - target].view);
             }
             // The froxel reads the same openness the marched segments do, with the same LINEAR +
             // CLAMP_TO_EDGE sampler. One field, one definition, both consumers -- which is what stops the
@@ -990,7 +1012,7 @@ public final class RtSky {
      */
     public void recordVisibilityBake(VkCommandBuffer cmd, long worldPushAddr, long tlas,
                                      int originCellX, int originCellY, int originCellZ, float cellSize,
-                                     RtGpuExecutor.GraphicsUse graphicsUse) {
+                                     boolean directional, RtGpuExecutor.GraphicsUse graphicsUse) {
         if (visibilityHistory == null) {
             return;
         }
@@ -999,9 +1021,12 @@ public final class RtSky {
         int shiftY = visibilityHistoryValid ? originCellY - visibilityOriginCellY : 0;
         int shiftZ = visibilityHistoryValid ? originCellZ - visibilityOriginCellZ : 0;
         // A cell-size change re-scales what every cell MEANS, so no shift can carry the history across
-        // one; a jump wider than the grid leaves no cell with a predecessor to carry.
+        // one; a jump wider than the grid leaves no cell with a predecessor to carry. A mode flip re-
+        // interprets every stored channel (scalar open/count vs four sector bins), so the same rule
+        // applies: nothing survives it.
         boolean reset = !visibilityHistoryValid
                 || visibilityHistoryCell != cellSize
+                || visibilityHistoryDirectional != directional
                 || Math.abs(shiftX) >= VIS_GRID_W
                 || Math.abs(shiftY) >= VIS_GRID_H
                 || Math.abs(shiftZ) >= VIS_GRID_D;
@@ -1021,7 +1046,10 @@ public final class RtSky {
             // 16-byte alignment and would begin at byte 16, silently reading these one slot across.
             pushData.putInt(8, shiftX).putInt(12, shiftY).putInt(16, shiftZ);
             pushData.putInt(20, reset ? 1 : 0);
-            pushData.putInt(24, 0).putInt(28, 0);
+            // Offset 24: the storage-layout flag, mirrored from WorldPush.flags bit 27. The shader reads
+            // the bit out of WorldPush for its own branch; this copy exists so the push block is the one
+            // place the bake's inputs are listed. Byte 28 stays zero padding.
+            pushData.putInt(24, directional ? 1 : 0).putInt(28, 0);
             VK10.vkCmdPushConstants(cmd, visibilityBake.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
             // One thread per CELL. Unlike the froxel there is nothing to accumulate along an axis, so no
@@ -1036,6 +1064,7 @@ public final class RtSky {
         visibilityOriginCellY = originCellY;
         visibilityOriginCellZ = originCellZ;
         visibilityHistoryCell = cellSize;
+        visibilityHistoryDirectional = directional;
     }
 
     /**
@@ -1552,6 +1581,14 @@ public final class RtSky {
             }
             visibilityHistory = null;
             visibilityHistoryValid = false;
+        }
+        if (visibilityMetaHistory != null) {
+            for (RtImage image : visibilityMetaHistory) {
+                if (image != null) {
+                    image.destroy();
+                }
+            }
+            visibilityMetaHistory = null;
         }
         if (rainExposureDepth != null) {
             rainExposureDepth.destroy();

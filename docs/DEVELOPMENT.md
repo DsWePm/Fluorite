@@ -370,7 +370,7 @@ M18 的已批准边界是“收集但不采样”：动态记录使用同一 32 
 4. 修到顺手发现的真缺陷不等于结案；只有原现象的判据链闭合才算根因。
 5. 记录失败路线。被证伪方案不能换个名字重新进入代码。
 
-高价值隔离开关：`water.scatter-source`、`volumetrics.segment-source`、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`、`volumetrics.clouds`、`cloud-sun-steps`、`cloud-secondary`、雾结构开关和粒子阴影。
+高价值隔离开关：`water.scatter-source`、`volumetrics.segment-source`、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`、`volumetrics.sky-directional-field`（M28 S1 的 A/B，Live，切换强制网格历史复位）、`volumetrics.clouds`、`cloud-sun-steps`、`cloud-secondary`、雾结构开关和粒子阴影。
 
 ### 4.2 性能测量
 
