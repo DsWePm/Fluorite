@@ -15,3 +15,7 @@ third_party/
 bin/
 # Game logs land under whichever module launched the client, not only the root.
 logs/
+
+# Research papers stay local (400+ MB of PDFs); only the survey markdown is tracked.
+Papers/*.pdf
+Papers/_txt/
