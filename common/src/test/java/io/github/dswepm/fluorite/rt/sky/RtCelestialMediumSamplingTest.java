@@ -120,13 +120,17 @@ final class RtCelestialMediumSamplingTest {
         // Asking the boundary instead costs nothing and, in a cave, the boundary is roofed.
         assertTrue(visibility.contains("float3 uvw = saturate(g);"));
 
-        // ...EXCEPT UPWARD, and that asymmetry is a property of the quantity, not a special case: sky
-        // openness only increases as you rise, so the top cell is a lower BOUND on everything above it
-        // and clamping there would assert a bound as a measurement. Concretely, the underwater sky term
-        // samples just above the water SURFACE, so past the grid's 16-block vertical half-extent that
-        // query lands above the grid -- where the top cell is still underwater and reads roofed, which
-        // made underwater scattering vanish as a step at a fixed depth.
-        assertTrue(visibility.contains("if (g.y > 1.0)"));
+        // ...AND UPWARD, SINCE THE USER RULED IT SO (2026-09-03, issue #73): the +Y face clamps too,
+        // but only behind FLAG_FOG_BEYOND_GRID_CLAMP -- with the switch clear this branch must be the
+        // verbatim shipped answer, because the off state is the published picture. The two things that
+        // made D194 leave +Y open are answered elsewhere now, and this test pins BOTH halves so neither
+        // can land alone: the deep-water consumer (waterSurfaceSkyOpenness) carries its own above-grid
+        // exception, and the clamp's dark error in a sealed cavern is the same bounded trade the other
+        // five faces already made.
+        assertTrue(visibility.contains(
+                "if (g.y > 1.0 && (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) == 0u)"));
+        assertTrue(visibility.contains(
+                "if ((gateP.y - worldPush.visGridOrigin.y) / extentY > 1.0)"));
 
         // The two things that made the miss wrong, and neither may come back on its own:
         //

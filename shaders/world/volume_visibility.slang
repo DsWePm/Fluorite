@@ -67,17 +67,12 @@ public static const int VIS_GRID_D = 64;
  * being told the sky was wide open, which is why distant cave fog glowed while nearby fog was correct.
  * Clamping asks the boundary instead, and in a cave the boundary is roofed.
  *
- * <p>WHAT IT COSTS, named rather than discovered later. Two things, both bounded:
- *
- * <ul>
- *   <li>Standing inside a cave mouth whose opening is further than the grid reaches, the boundary in
- *       that direction is roofed, so genuinely open sky beyond it is reported closed and distant outdoor
- *       fog darkens. Opposite direction to the error being removed, and far smaller.</li>
- *   <li>Above the grid nothing is clamped (see the +Y note below), so a sample more than half the grid's
- *       height overhead reads open. In a cavern taller than that, the air near its ceiling is lit. Same
- *       direction as the original defect, over a much smaller region, and it is the price of the deep
- *       water fix rather than an oversight.</li>
- * </ul>
+ * <p>WHAT IT COSTS, named rather than discovered later. Standing inside a cave mouth whose opening is
+ * further than the grid reaches, the boundary in that direction is roofed, so genuinely open sky beyond
+ * it is reported closed and distant outdoor fog darkens. Opposite direction to the error being removed,
+ * and far smaller. WITH FLAG_FOG_BEYOND_GRID_CLAMP the +Y face clamps too (see below), so the same
+ * bounded cost exists overhead: a genuinely open column more than half the grid's height overhead reads
+ * the top cell instead of 1.
  *
  * <p>The no-grid fallback below is the one case this cannot help, because there is nothing to clamp to.
  * It is now reached only when VISIBILITY_CELL_SIZE is 0 — an explicit, informed opt out of the grid,
@@ -109,24 +104,25 @@ public float4 volumeSkyBins(float3 p) {
     // (i+0.5)/W. So this division IS the texture coordinate — no half-texel correction, because the bake
     // writes centres. If that convention ever changes, both sides move together or the field shifts.
     float3 g = (p - worldPush.visGridOrigin.xyz) / extent;
-    // ABOVE THE GRID IS THE ONE DIRECTION THAT MUST NOT CLAMP, and the reason is a property of the
-    // quantity rather than a special case: sky openness is monotone non-decreasing as you rise. Going up
-    // you clear occluders; you never acquire one. So the top cell is a LOWER BOUND on everything above
-    // it, and clamping to it would assert a bound as though it were a measurement -- erring dark, with
-    // no ceiling on how wrong.
+    // ABOVE THE GRID is where the six faces used to disagree. D194 left +Y returning all-open
+    // unconditionally, on two grounds: openness is monotone non-decreasing as you rise (the top cell is
+    // a lower bound on everything above it, so clamping asserts a bound as a measurement, erring dark
+    // with no ceiling on how wrong), and the underwater sky term samples half a block above the water
+    // SURFACE -- deeper than half the grid's height, that query lands above the grid with the top cells
+    // still underwater, so a clamp read "roofed" and the scattering vanished in a step at a fixed depth.
     //
-    // That is not hypothetical. The underwater sky term samples half a block above the water SURFACE, so
-    // once the camera is deeper than the grid's vertical half-extent -- 16 blocks at the default cell --
-    // that query lands above the grid. The top cell there is still underwater, and this grid's zenith ray
-    // treats a water surface as an occluder like any other geometry, so clamping answered "roofed" and
-    // the scattering vanished. As a step, at a fixed depth, which is exactly how it was reported.
+    // Both grounds are now answered elsewhere, which is what makes the clamp affordable: the
+    // deep-water half moved to the consumer that caused it (waterSurfaceSkyOpenness carries its own
+    // above-grid exception), and the bound-as-measurement half is the same trade the sideways and
+    // downward faces already made -- the boundary is the nearest thing actually measured, and in a
+    // sealed cavern the top boundary is roofed, so erring dark there is erring CORRECT. The residual
+    // cost is the named one: a genuinely open column more than half the grid's height overhead reads
+    // the top cell. #73.
     //
-    // Sideways and downward do clamp: laterally the world plausibly continues as it does here, and below
-    // the grid the bottom cell is an UPPER bound, so clamping there errs bright but bounded.
-    if (g.y > 1.0) {
-        // D194: the top cell is a LOWER bound here, not a measurement, so the honest answer is the
-        // unoccluded one rather than a bound dressed up as a reading. Erring bright above the grid is
-        // bounded; erring dark is not.
+    // The flag gate is the off-state contract: with it clear, all six faces keep exactly the shipped
+    // answers, +Y included.
+    if (g.y > 1.0 && (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) == 0u) {
+        // D194's shipped answer, kept verbatim while the clamp switch is off.
         return float4(1.0, 1.0, 1.0, 1.0);
     }
     // Clamped HERE rather than left to the sampler. The descriptor happens to carry CLAMP_TO_EDGE today,
@@ -185,5 +181,23 @@ public static const float WATER_SKY_GATE_LIFT = 0.5;
  */
 public float waterSurfaceSkyOpenness(float3 p, float skyDepth) {
     float3 gateP = float3(p.x, p.y + skyDepth + WATER_SKY_GATE_LIFT, p.z);
+    // D194's exception, MOVED HERE from volumeSkyOpenness (M28, #73): this gate sits half a block above
+    // the water SURFACE, so a camera deeper than the grid's vertical half-extent -- 16 blocks at the
+    // default cell -- puts it ABOVE the grid while the top cells are still underwater. The grid's rays
+    // treat that surface as an occluder like any other geometry, so letting this query take the clamped
+    // top cell reads "roofed" and the deep-water scattering switches off in a step at a fixed depth,
+    // which is exactly how the regression reported when the sideways clamp first landed.
+    //
+    // Above the box, the honest answer FOR WATER is the unoccluded one. Everywhere else the clamp now
+    // applies. Note the early return is also bit-equal to the shipped path while the clamp switch is
+    // off -- volumeSkyOpenness returned 1.0 for any above-grid query either way -- so the water rule
+    // never has to know which mode it is in.
+    float cell = worldPush.visGridOrigin.w;
+    if (cell > 0.0) {
+        float extentY = cell * float(VIS_GRID_H);
+        if ((gateP.y - worldPush.visGridOrigin.y) / extentY > 1.0) {
+            return 1.0;
+        }
+    }
     return volumeSkyOpenness(gateP);
 }

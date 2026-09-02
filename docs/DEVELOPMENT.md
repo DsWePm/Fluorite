@@ -370,7 +370,7 @@ M18 的已批准边界是“收集但不采样”：动态记录使用同一 32 
 4. 修到顺手发现的真缺陷不等于结案；只有原现象的判据链闭合才算根因。
 5. 记录失败路线。被证伪方案不能换个名字重新进入代码。
 
-高价值隔离开关：`water.scatter-source`、`volumetrics.segment-source`、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`、`volumetrics.sky-directional-field`（M28 S1 的 A/B，Live，切换强制网格历史复位）、`volumetrics.fog-beyond-grid-uses-clamp`（出格雾段读钳制场，独立归因）、`volumetrics.clouds`、`cloud-sun-steps`、`cloud-secondary`、雾结构开关和粒子阴影。
+高价值隔离开关：`water.scatter-source`、`volumetrics.segment-source`、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`、`volumetrics.sky-directional-field`（M28 S1 的 A/B，Live，切换强制网格历史复位）、`volumetrics.fog-beyond-grid-uses-clamp`（出格雾段读钳制场，含 #73 的 +Y 面；UI 中文名「出格雾段遮挡」）、`volumetrics.clouds`、`cloud-sun-steps`、`cloud-secondary`、雾结构开关和粒子阴影。
 
 ### 4.2 性能测量
 
@@ -769,13 +769,13 @@ d0 的重投影已实现并实测（`projectPrevNdc` 移到 `world_core`，两�
 
 当时认为能解决它的是**体积 ReSTIR**（样本空间「射线上的一个点 × 一个光源」）。该路线已两次判死：M25 实测无显著帧时间提升而撤除，2026-09-02 用户补充理由（显示效果难调）后二次确认放弃。远场问题现由 **M28 S1 的方向性天空场**承接——不靠 reservoir 复用，而靠网格每格跨帧累积带真阴影线的天空方向样本，同样换掉三层近似的前两层。历史分档留档如下：
 
-- **不会被淘汰，已做**：可见性网格的 miss 策略（出界夹取而非重置为开阔，且 +Y 不夹）。任何缓存都需要合理的 miss 策略，换实现也换不掉这个问题。
+- **不会被淘汰，已做**：可见性网格的 miss 策略（出界夹取而非重置为开阔）。~~+Y 不夹~~——用户 2026-09-03 批准 +Y 一并夹取（#73 方案 B），D194 的深水例外移交给 `waterSurfaceSkyOpenness`；与横向/向下钳制同属 `volumetrics.fog-beyond-grid-uses-clamp` 开关。任何缓存都需要合理的 miss 策略，换实现也换不掉这个问题。
 - **~~会被淘汰，故推迟~~**：第二级联网格、扩大网格维度、近远两来源混合——继续推迟，但依据从「等体积 ReSTIR」改为「等 M28 S1 落地后按需重评」。~~提取原版天空光照作为远场来源~~——已尝试（M27）并放弃。
 - ~~可能反而更有用：原版天空光照作目标/引导函数~~——被 M28 的方向性天空场取代：天空可见性现在直接是世界空间的方向分布场，不再需要从原版数据里提取替代品。
 
 **ReSTIR 在这里新增而非消除的负担**：时空复用会让天空项带历史，洞口边界上 reservoir 必须正确作废，否则光穿过时间泄漏。这与本节已为动态光记下的纪律同构。边界问题不消失，只是从**空间边界**变成**时域验证**。
 
-**已知残留**（不得当作未发现的 bug 重新排查）：矿洞里，位于网格射线跨度之外的雾段仍被无遮挡天空照亮——`makeNoisyAmbientLayout` 按网格进出点把 march 切成三段，第 1/3 段**根本不查网格**、直接写死开阔，夹取够不着。**这条残留现已有开关**（M28 S1 配套的 `volumetrics.fog-beyond-grid-uses-clamp`，bit 28；D178 当年为归因保留的余地，归因早已闭环）：开启后出格段读 D178 的钳制场，洞内远处雾随近处一起变暗，野外远景不变。关档 = 已发布行为。水介质失去天空遮挡的后半条已由 D179 修复。
+**已知残留**（不得当作未发现的 bug 重新排查）：矿洞里，位于网格射线跨度之外的雾段仍被无遮挡天空照亮——`makeNoisyAmbientLayout` 按网格进出点把 march 切成三段，第 1/3 段**根本不查网格**、直接写死开阔，夹取够不着。**这条残留现已有开关**（M28 S1 配套的 `volumetrics.fog-beyond-grid-uses-clamp`，bit 28；D178 当年为归因保留的余地，归因早已闭环）：开启后出格段读 D178 的钳制场，洞内远处雾随近处一起变暗，野外远景不变。**#73 的 +Y 一半同属此开关**（用户 2026-09-03 批准方案 B）：网格上方出格从「返回全开」改为同读钳制场，D194 的深水例外搬家到 `waterSurfaceSkyOpenness` 自身（取样点出网格顶时返回 1.0），六面钳制与水路例外由同一测试钉住。关档 = 已发布行为（+Y 仍返回全开）。水介质失去天空遮挡的后半条已由 D179 修复。
 
 已有可复用形状：alias O(1) 选择、每顶点固定候选、幸存者一条阴影线、降维选择目标与完整幸存者求值。整合点包括动态光、exact-Le UV、`Light` 类型/区域扩展、体积发光体 NEE 和 `UNWEIGHTED_SPEC_ALPHA_FLOOR` 的移除。所有成本画像在空域复用后重新测量。
 
