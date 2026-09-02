@@ -126,6 +126,23 @@ public static const uint SHADE_DYNAMIC_EMITTER_RIS = 2u;
 public static const uint FLAG_SKY_FIELD_DIRECTIONAL = 1u << 27u;
 
 /**
+ * Fog stretches the visibility grid's span does not cover read the CLAMPED field instead of assuming
+ * open. The march cuts each segment into the stretch before the grid, the stretch inside it, and the
+ * stretch beyond; the two outer ones were hardwired to openness 1 -- D178's deliberate leftover, kept
+ * only so its clamp could be attributed alone, and that attribution closed the day it shipped. The
+ * symptom of the leftover is exactly #41's original report: cave fog roughly a grid radius from the
+ * camera (about 32 blocks at the default cell) glowing as if under open sky while nearby fog is dark.
+ *
+ * <p>The clamp is D178's, not a new miss policy: a sample outside the box asks the nearest measured
+ * cell. Outdoors that boundary reads open, so the open-world far field keeps its brightness; in a cave
+ * the boundary is roofed and the far fog goes dark with the near fog.
+ *
+ * <p>Must match RtComposite's WorldPush flags assembly (bit 28 there). THIS WORD IS NOW FULL -- bits
+ * 0 through 31 all spoken for; the next flag is a WorldPush layout change, not a bit pick.
+ */
+public static const uint FLAG_FOG_BEYOND_GRID_CLAMP = 1u << 28u;
+
+/**
  * Which of the four world-azimuth quarter sectors a direction belongs to, and the ONE definition of
  * "sector" for everything S1 touches: sky_medium_reduce splits the sky integral by it, and the
  * visibility bake samples one cosine-weighted ray per sector with azimuth (k + u) * pi/2 in the same

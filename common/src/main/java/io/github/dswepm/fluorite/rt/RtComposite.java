@@ -3035,6 +3035,12 @@ public final class RtComposite {
                 // the CPU whether the history on disk means bins or scalar.
                 flags |= 1 << 27;
             }
+            if (FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value()) {
+                // Bit 28 (world_common FLAG_FOG_BEYOND_GRID_CLAMP): out-of-grid fog stretches take the
+                // clamped field instead of hardwired open -- D178's attributed-away leftover, retired.
+                // WITH THIS BIT THE FLAGS WORD IS FULL; the next flag is a WorldPush layout change.
+                flags |= 1 << 28;
+            }
             if (skyPreset.cloudsEnabled() && FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
                 // Bits 2-3: how much march a ray that is not the first of its path may spend. A cost

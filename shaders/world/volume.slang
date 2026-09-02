@@ -764,7 +764,13 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe prob
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
         if (sourceOn) {
-            float skyOpen = gridRegion ? volumeSkyOpenness(p) : 1.0;
+            // gridRegion=false marks the stretches outside the grid's span, which D178 left hardwired
+            // open so its clamp could be attributed alone. FLAG_FOG_BEYOND_GRID_CLAMP retires that
+            // leftover: the same clamped read answers outside and inside, so the field's miss policy is
+            // one policy instead of two.
+            float skyOpen = gridRegion
+                    || (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u
+                    ? volumeSkyOpenness(p) : 1.0;
             float3 source = skySource * skyOpen;
             acc.inScatter += acc.transmittance * scatterAlbedo * source
                     * (float3(1.0, 1.0, 1.0) - stepT);
@@ -1532,8 +1538,18 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                 AmbientAccum acc;
                 acc.inScatter = float3(0.0, 0.0, 0.0);
                 acc.transmittance = float3(1.0, 1.0, 1.0);
+                // The two outer stretches: D178 left them hardwired open so its clamp could be
+                // attributed alone. Under FLAG_FOG_BEYOND_GRID_CLAMP they ask the clamped field at
+                // their MIDPOINT -- one read per stretch, matching the closed-form one-step shape, not
+                // a sub-step march -- so far cave fog stops reading as if the sky were up. The guards
+                // keep the empty-region case (a camera already inside the grid makes the first
+                // stretch zero length) from paying a fetch to be ignored.
+                float outerOpenA = 1.0;
+                if (tEnter > window.x && (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u) {
+                    outerOpenA = volumeSkyOpenness(ro + rd * ((window.x + tEnter) * 0.5));
+                }
                 ambientStep(acc, ro, rd, window.x, tEnter, scatterAlbedo,
-                            gridSunSource, skySource, 1.0);
+                            gridSunSource, skySource, outerOpenA);
                 // Guarded, not just relying on ambientStep's own zero-length early-out: the SAMPLE happens
                 // before that check, so a segment that never touches the grid would still pay six 3D
                 // texture fetches to be told six times that it is outside. Most bounce segments in an open
@@ -1567,8 +1583,12 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                                     gridSunSource, stepSky, stepOpen);
                     }
                 }
+                float outerOpenB = 1.0;
+                if (window.y > tExit && (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u) {
+                    outerOpenB = volumeSkyOpenness(ro + rd * ((tExit + window.y) * 0.5));
+                }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,
-                            gridSunSource, skySource, 1.0);
+                            gridSunSource, skySource, outerOpenB);
                 // += rather than =: the enclosed branch above may already have deposited in-scatter.
                 // Unreachable today (every enclosed medium has ambient false), but a future composite
                 // profile that deposits both enclosed and ambient source would otherwise lose the first.
