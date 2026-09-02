@@ -34,16 +34,16 @@ final class RtOptionsCoverageTest {
     /**
      * zh_tw's standing debt, as a RATCHET rather than an exemption.
      *
-     * <p>It is 259 option keys behind the other two -- the post-processing, rain-surface and cirrus
+     * <p>It was 259 option keys behind the other two -- the post-processing, rain-surface and cirrus
      * blocks were never carried across -- and that predates this test by a long way. Filling it is a
      * translation job, not a rendering one, and doing it inside an unrelated milestone would bury it.
      *
-     * <p>So the number is written down and may only fall. New options must reach all three locales,
-     * because a new key pushes the count past this ceiling and fails; the existing gap is recorded as
-     * debt instead of being quietly tolerated. Lower this line whenever the debt is paid down, and
-     * delete it when it reaches zero.
+     * <p>RAISED BY DECISION (user, 2026-09-03): the UI is maintained in en_us and zh_cn only, so every
+     * new option widens the gap on purpose and this line moves with it -- the ratchet's job is to keep
+     * that debt LOUD (a bump must be acknowledged here, never silent), not to promise it will shrink.
+     * If zh_tw coverage is ever resumed, lower it as options are carried across.
      */
-    private static final int ZH_TW_KNOWN_GAP = 123;
+    private static final int ZH_TW_KNOWN_GAP = 125;
 
     /** Keys the screen builds an option from, which the locales therefore have to carry. */
     @Test
