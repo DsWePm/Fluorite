@@ -147,6 +147,11 @@ public final class RtFrameStats {
                     "dynamicLightUploadBytes", "dynamicLightFlushes",
                     "rainExposureCpuQueries", "rainExposureUploadBytes",
                     "rainStreakInstances", "rainImpactRays", "rainImpactsSpawned",
+                    // M28 S1: the two live switch states, mirrored into the CSV as 0/1. Recorded because
+                    // D208's measurement could not tell from the file alone which side of a toggle each
+                    // frame was on -- a capture whose attribution hinges on a switch must carry the
+                    // switch, or the A/B degrades into a guess exactly when the numbers look wrong.
+                    "skyDirectionalField", "fogBeyondGridClamp",
                     "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements"},
             true);
 

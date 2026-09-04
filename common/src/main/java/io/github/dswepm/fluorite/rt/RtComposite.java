@@ -3041,6 +3041,13 @@ public final class RtComposite {
                 // WITH THIS BIT THE FLAGS WORD IS FULL; the next flag is a WorldPush layout change.
                 flags |= 1 << 28;
             }
+            // The same two states, into the CSV (D208's gap: a capture that hinges on a switch must
+            // carry the switch). Counted from the very values that set the bits above, so the column
+            // and the flag cannot disagree about what this frame was told to do.
+            RtFrameStats.FRAME.count("skyDirectionalField",
+                    FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value() ? 1 : 0);
+            RtFrameStats.FRAME.count("fogBeyondGridClamp",
+                    FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value() ? 1 : 0);
             if (skyPreset.cloudsEnabled() && FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
                 // Bits 2-3: how much march a ray that is not the first of its path may spend. A cost
