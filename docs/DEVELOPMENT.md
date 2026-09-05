@@ -372,7 +372,7 @@ M18 的已批准边界是“收集但不采样”：动态记录使用同一 32 
 4. 修到顺手发现的真缺陷不等于结案；只有原现象的判据链闭合才算根因。
 5. 记录失败路线。被证伪方案不能换个名字重新进入代码。
 
-高价值隔离开关：`water.scatter-source`、`volumetrics.segment-source`、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`、`volumetrics.sky-directional-field`（M28 S1 的 A/B，Live，切换强制网格历史复位）、`volumetrics.fog-beyond-grid-uses-clamp`（出格雾段读钳制场，含 #73 的 +Y 面；UI 中文名「出格雾段遮挡」）、`volumetrics.clouds`、`cloud-sun-steps`、`cloud-secondary`、雾结构开关和粒子阴影。
+高价值隔离开关：`water.scatter-source`、`volumetrics.segment-source`、`volumetrics.sun-shadow-rays=0`、`volumetrics.visibility-cell-size=0`、`volumetrics.sky-directional-field`（M28 S1 的 A/B，Live，切换强制网格历史复位）、`volumetrics.fog-beyond-grid-uses-clamp`（出格雾段读钳制场，含 #73 的 +Y 面；UI 中文名「出格雾段遮挡」）、`volumetrics.clouds`、`cloud-sun-steps`、`cloud-secondary`、雾结构开关和粒子阴影。**这两枚 S1 开关走 `WorldPush.volumetricSwitches` 专属字（D211：flags bit 27/28 实为 M17 SCATTER_VERTEX/VOLUME_EMITTER_NEE 所有，曾把两开关焊死 ON）；flags 字已满，新旗标一律走新 lane。两开关的状态逐帧镜像进 frame.csv（`skyDirectionalField`/`fogBeyondGridClamp` 列），捕获自带归因。**
 
 ### 4.2 性能测量
 
@@ -835,7 +835,7 @@ d0 的重投影已实现并实测（`projectPrevNdc` 移到 `world_core`，两�
 
 | 切片 | 内容 | 备注 |
 | --- | --- | --- |
-| S1 | 可见性网格 → 方向性天空场 + 出格雾段读钳制场（bit 28，独立开关） | **已落地并通过游戏内验收（2026-09-03）**，见 [M28 日志](devlog/M28-restir-backbone.md)；余 `gpu.visBake` 4× 射线代价待铁律 7 归档；**WorldPush flags 字已满（0–31），下一个旗标是布局变更** |
+| S1 | 可见性网格 → 方向性天空场 + 出格雾段读钳制场（`volumetricSwitches` 专属字，D211 起） | 落地并经游戏内验收（2026-09-03），但 **D211 揭示两开关被位碰撞焊死 ON、验收的 A 臂无效——修复后 A/C 两测试须真 A/B 重跑**；`gpu.visBake` 4× 射线代价待重测归档 |
 | S2 | 统一路径 reservoir：初始采样（M26 池 + alias/RIS 出候选）+ temporal | 默认关；与 M24 并行期盯显存峰值 |
 | S3 | spatial 复用 + 决策 6 四项技术 | 判据替换先于 M24 老判据退役 |
 | S4 | 表面 DI 迁入统一链，M24 reservoir 退役 | 铁律 8 逐开关成立 |

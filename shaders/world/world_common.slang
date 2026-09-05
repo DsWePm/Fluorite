@@ -109,21 +109,17 @@ public static const uint SHADE_SOLID_LAYER_SSS = 1u;
 public static const uint SHADE_DYNAMIC_EMITTER_RIS = 2u;
 
 /**
- * The volumetric visibility grid holds FOUR directional sky bins instead of one scalar openness
- * (M28 S1). RGBA of the sampled grid are then the cosine-weighted visible fractions of the four
- * world-azimuth quarter sectors of the upper hemisphere, one EMA each, and WorldPush's
- * skySectorRadiance carries the matching sector-restricted phase-integrated sky radiances.
- *
- * <p>The bit is read by the bake (one ray per sector instead of one ray for the whole hemisphere),
- * by this grid's readers (volume_visibility.slang, sky_froxel.comp.slang), and by the marched
- * ambient sky term in volume.slang. Cleared -- the shipped picture -- every one of those walks the
- * scalar path exactly as it did before S1, down to the storage layout: R is the whole-hemisphere
- * openness and G the EMA count's echo.
- *
- * <p>Must match RtComposite's WorldPush flags assembly (bit 27 there). Bits 0-26 and 29-31 of this
- * word are spoken for; 27 and 28 were the last two free.
+ * The two live volumetric switches, carried in WorldPush.volumetricSwitches -- NOT in WorldPush.flags,
+ * and the reason is a landed bug worth remembering (D211): both switches first shipped as bits 27/28 of
+ * the flags word after a bit audit that grepped only the SLANG readers and declared the bits free. The
+ * Java assembly had owned them all along -- bit 27 is M17's SCATTER_VERTEX, bit 28 its nested
+ * VOLUME_EMITTER_NEE -- so from the day S1 landed until this field existed, the bake ran directional
+ * and the clamp applied whenever those (default-on) features set their bits, the switches did nothing,
+ * and the off state was not the shipped picture. THE RULE: a bit is free only after enumerating every
+ * writer of the word on every side of the language boundary; when in doubt, a word this cheap to append
+ * is cheaper than a second silent collision.
  */
-public static const uint FLAG_SKY_FIELD_DIRECTIONAL = 1u << 27u;
+public static const uint FLAG_SKY_FIELD_DIRECTIONAL = 1u << 0u;
 
 /**
  * Fog stretches the visibility grid's span does not cover read the CLAMPED field instead of assuming
@@ -136,11 +132,8 @@ public static const uint FLAG_SKY_FIELD_DIRECTIONAL = 1u << 27u;
  * <p>The clamp is D178's, not a new miss policy: a sample outside the box asks the nearest measured
  * cell. Outdoors that boundary reads open, so the open-world far field keeps its brightness; in a cave
  * the boundary is roofed and the far fog goes dark with the near fog.
- *
- * <p>Must match RtComposite's WorldPush flags assembly (bit 28 there). THIS WORD IS NOW FULL -- bits
- * 0 through 31 all spoken for; the next flag is a WorldPush layout change, not a bit pick.
  */
-public static const uint FLAG_FOG_BEYOND_GRID_CLAMP = 1u << 28u;
+public static const uint FLAG_FOG_BEYOND_GRID_CLAMP = 1u << 1u;
 
 /**
  * Which of the four world-azimuth quarter sectors a direction belongs to, and the ONE definition of
@@ -453,6 +446,13 @@ public struct WorldPush {
      * unless FLAG_SKY_FIELD_DIRECTIONAL is set.
      */
     public float4   skySectorRadiance[4]; // xyz sector phase-integrated radiance, w zero
+    /**
+     * Live volumetric switches, in their own word -- see the FLAG_SKY_FIELD_DIRECTIONAL banner for why
+     * these are not bits of WorldPush.flags. Bit 0 = directional sky field, bit 1 = beyond-grid fog
+     * clamp. Written by RtComposite from the same config values it counts into the frame CSV, so the
+     * word and the capture columns cannot disagree about what a frame was told to do.
+     */
+    public uint     volumetricSwitches;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

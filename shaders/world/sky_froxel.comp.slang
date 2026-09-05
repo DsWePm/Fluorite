@@ -97,7 +97,7 @@ float sliceDepth(int z, float maxDist) {
  */
 float froxelGridOpenness(WorldPush wp, float3 g) {
     float4 s = saturate(volumeVisibility.SampleLevel(g, 0.0));
-    if ((wp.flags & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+    if ((wp.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
         return dot(s, float4(0.25, 0.25, 0.25, 0.25));
     }
     return s.r;

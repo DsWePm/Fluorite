@@ -53,9 +53,18 @@ final class RtSkyMediumLayoutTest {
         // visibility half lives in the grid's RGBA bins, so neither side means anything without the
         // other; that is what makes them a real feature's ABI rather than M25-style rent. Appended at
         // the END of the struct, so every offset below still holds.
-        assertEquals(1248, WorldPushData.BYTE_SIZE);
+        //
+        // D211 then appends ONE word: volumetricSwitches, the two live fog switches' own lane. They
+        // first shipped as flags bits 27/28, which M17's SCATTER_VERTEX and VOLUME_EMITTER_NEE had owned
+        // all along -- a bit audit that grepped only the Slang readers declared the bits free -- so the
+        // collision wired both switches permanently on until the capture columns caught it. The flags
+        // word is FULL; a new switch takes a lane here, not a bit there.
+        assertEquals(1264, WorldPushData.BYTE_SIZE);
+        assertEquals(1248, WorldPushData.VOLUMETRIC_SWITCHES_OFFSET);
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
                 .anyMatch(component -> component.getName().equals("skySectorRadiance")));
+        assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("volumetricSwitches")));
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

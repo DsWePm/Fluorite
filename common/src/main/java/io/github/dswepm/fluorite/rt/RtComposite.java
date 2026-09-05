@@ -3027,23 +3027,10 @@ public final class RtComposite {
                 // Bit 26: the source decays at the diffusion rate rather than the beam's.
                 flags |= 1 << 26;
             }
-            if (FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value()) {
-                // Bit 27 (world_common FLAG_SKY_FIELD_DIRECTIONAL): the visibility grid stores four
-                // sector bins and the marched fog weights them by their own sector radiance. The bake
-                // reads this same word for its storage layout, and recordVisibilityBake below receives
-                // the knob separately so a flip can force a history reset -- the bit alone cannot tell
-                // the CPU whether the history on disk means bins or scalar.
-                flags |= 1 << 27;
-            }
-            if (FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value()) {
-                // Bit 28 (world_common FLAG_FOG_BEYOND_GRID_CLAMP): out-of-grid fog stretches take the
-                // clamped field instead of hardwired open -- D178's attributed-away leftover, retired.
-                // WITH THIS BIT THE FLAGS WORD IS FULL; the next flag is a WorldPush layout change.
-                flags |= 1 << 28;
-            }
-            // The same two states, into the CSV (D208's gap: a capture that hinges on a switch must
-            // carry the switch). Counted from the very values that set the bits above, so the column
-            // and the flag cannot disagree about what this frame was told to do.
+            // The two live volumetric switches are NOT bits of this word -- bits 27/28 turned out to be
+            // M17's SCATTER_VERTEX and VOLUME_EMITTER_NEE (D211), so they travel in WorldPush's own
+            // volumetricSwitches lane, assembled at the call site below. The CSV columns are counted
+            // from the very values that feed that lane, so the capture cannot disagree with the frame.
             RtFrameStats.FRAME.count("skyDirectionalField",
                     FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value() ? 1 : 0);
             RtFrameStats.FRAME.count("fogBeyondGridClamp",
@@ -3270,7 +3257,13 @@ public final class RtComposite {
                             skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
                             skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
                             skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
-                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry)}
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry)},
+                    // The two live volumetric switches in their own word (D211: they first shipped as
+                    // flags bits 27/28, which M17's SCATTER_VERTEX and VOLUME_EMITTER_NEE had owned all
+                    // along -- the collision wired both switches permanently on). Bit 0 directional,
+                    // bit 1 beyond-grid clamp; the Slang constants in world_common define the same.
+                    (FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value() ? 1 : 0)
+                            | (FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value() ? 2 : 0)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

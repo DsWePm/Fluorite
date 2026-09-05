@@ -121,7 +121,7 @@ public float4 volumeSkyBins(float3 p) {
     //
     // The flag gate is the off-state contract: with it clear, all six faces keep exactly the shipped
     // answers, +Y included.
-    if (g.y > 1.0 && (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) == 0u) {
+    if (g.y > 1.0 && (worldPush.volumetricSwitches & FLAG_FOG_BEYOND_GRID_CLAMP) == 0u) {
         // D194's shipped answer, kept verbatim while the clamp switch is off.
         return float4(1.0, 1.0, 1.0, 1.0);
     }
@@ -143,7 +143,7 @@ public float4 volumeSkyBins(float3 p) {
  * changed shape underneath them. Only the marched ambient sky term reads the bins themselves.
  */
 public float volumeSkyOpenness(float3 p) {
-    if ((worldPush.flags & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+    if ((worldPush.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
         return dot(volumeSkyBins(p), float4(0.25, 0.25, 0.25, 0.25));
     }
     return volumeSkyBins(p).r;

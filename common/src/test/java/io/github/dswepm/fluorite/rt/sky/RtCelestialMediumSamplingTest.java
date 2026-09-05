@@ -128,7 +128,7 @@ final class RtCelestialMediumSamplingTest {
         // exception, and the clamp's dark error in a sealed cavern is the same bounded trade the other
         // five faces already made.
         assertTrue(visibility.contains(
-                "if (g.y > 1.0 && (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) == 0u)"));
+                "if (g.y > 1.0 && (worldPush.volumetricSwitches & FLAG_FOG_BEYOND_GRID_CLAMP) == 0u)"));
         assertTrue(visibility.contains(
                 "if ((gateP.y - worldPush.visGridOrigin.y) / extentY > 1.0)"));
 

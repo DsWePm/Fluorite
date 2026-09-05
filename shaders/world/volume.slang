@@ -769,7 +769,7 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe prob
             // leftover: the same clamped read answers outside and inside, so the field's miss policy is
             // one policy instead of two.
             float skyOpen = gridRegion
-                    || (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u
+                    || (worldPush.volumetricSwitches & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u
                     ? volumeSkyOpenness(p) : 1.0;
             float3 source = skySource * skyOpen;
             acc.inScatter += acc.transmittance * scatterAlbedo * source
@@ -1545,7 +1545,7 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                 // keep the empty-region case (a camera already inside the grid makes the first
                 // stretch zero length) from paying a fetch to be ignored.
                 float outerOpenA = 1.0;
-                if (tEnter > window.x && (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u) {
+                if (tEnter > window.x && (worldPush.volumetricSwitches & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u) {
                     outerOpenA = volumeSkyOpenness(ro + rd * ((window.x + tEnter) * 0.5));
                 }
                 ambientStep(acc, ro, rd, window.x, tEnter, scatterAlbedo,
@@ -1573,7 +1573,7 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // Scalar mode passes the shipped pair untouched.
                         float3 stepSky = skySource;
                         float stepOpen;
-                        if ((worldPush.flags & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+                        if ((worldPush.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
                             stepSky = sectorSkyTerm(volumeSkyBins(midP));
                             stepOpen = 1.0;
                         } else {
@@ -1584,7 +1584,7 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                     }
                 }
                 float outerOpenB = 1.0;
-                if (window.y > tExit && (worldPush.flags & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u) {
+                if (window.y > tExit && (worldPush.volumetricSwitches & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u) {
                     outerOpenB = volumeSkyOpenness(ro + rd * ((tExit + window.y) * 0.5));
                 }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,

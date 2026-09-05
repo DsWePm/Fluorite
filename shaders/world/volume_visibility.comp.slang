@@ -283,7 +283,7 @@ void main(uint3 id: SV_DispatchThreadID) {
     // like an indexing bug.
     float3 p = wp.visGridOrigin.xyz + (float3(id) + float3(0.5, 0.5, 0.5)) * cell;
 
-    if ((wp.flags & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+    if ((wp.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
         bakeDirectional(p, cell, id, wp);
     } else {
         bakeScalar(p, cell, id, wp);
