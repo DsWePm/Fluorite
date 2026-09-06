@@ -59,12 +59,16 @@ final class RtSkyMediumLayoutTest {
         // all along -- a bit audit that grepped only the Slang readers declared the bits free -- so the
         // collision wired both switches permanently on until the capture columns caught it. The flags
         // word is FULL; a new switch takes a lane here, not a bit there.
-        assertEquals(1264, WorldPushData.BYTE_SIZE);
+        // S1.5 adds the far grid's placement vector after the switches word: 1280.
+        assertEquals(1280, WorldPushData.BYTE_SIZE);
         assertEquals(1248, WorldPushData.VOLUMETRIC_SWITCHES_OFFSET);
+        assertEquals(1264, WorldPushData.VIS_FAR_GRID_ORIGIN_OFFSET);
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
                 .anyMatch(component -> component.getName().equals("skySectorRadiance")));
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
                 .anyMatch(component -> component.getName().equals("volumetricSwitches")));
+        assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("visFarGridOrigin")));
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

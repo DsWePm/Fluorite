@@ -452,6 +452,8 @@
   "fluorite.options.rt.cloudSecondary.full": "Full",
   "fluorite.options.rt.skyDirectionalField": "Directional Sky Field",
   "fluorite.options.rt.skyDirectionalField.tooltip": "Stores the sky's visibility as four world-azimuth sector bins per grid cell instead of one scalar openness, and lights the marched fog with each sector's own radiance -- a cave mouth to the east lights the fog near it from the east. Live; toggling resets the grid's history (about one second to re-converge). The visibility bake casts four shadow rays per cell per frame instead of one.",
+  "fluorite.options.rt.farVisibilityField": "Far Visibility Field",
+  "fluorite.options.rt.farVisibilityField.tooltip": "A second visibility grid at eight blocks per cell, reaching about 256 blocks out, so fog beyond the fine grid reads real measurements instead of the clamped boundary -- open sky past a mountain flank no longer reads the flank's partial shade. World-anchored and refreshed a slice at a time; starts from the fine grid's answer and converges within about half a minute. Requires Beyond-Grid Fog Occlusion's grid.",
   "fluorite.options.rt.fogBeyondGridUsesClamp": "Beyond-Grid Fog Occlusion",
   "fluorite.options.rt.fogBeyondGridUsesClamp.tooltip": "Fog beyond the visibility grid's reach (about 32 blocks horizontally, 16 up at the default cell size) asks the clamped field instead of assuming open sky. In a cave the far fog goes dark with the near fog; outdoors the clamped boundary reads open and nothing changes. Independent of Directional Sky Field.",
   "fluorite.options.rt.waterMediumTrace": "Water Medium Runtime Log",

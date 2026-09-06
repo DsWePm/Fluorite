@@ -236,6 +236,8 @@ public final class RtVideoOptions {
                                 FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD),
                         bool("fluorite.options.rt.fogBeyondGridUsesClamp",
                                 FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP),
+                        bool("fluorite.options.rt.farVisibilityField",
+                                FluoriteConfig.Rt.Volumetrics.FAR_VISIBILITY_FIELD),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",

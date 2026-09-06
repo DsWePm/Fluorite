@@ -118,8 +118,16 @@ public static const uint SHADE_DYNAMIC_EMITTER_RIS = 2u;
  * and the off state was not the shipped picture. THE RULE: a bit is free only after enumerating every
  * writer of the word on every side of the language boundary; when in doubt, a word this cheap to append
  * is cheaper than a second silent collision.
+ *
+ * <p>Bit 2 (FLAG_FAR_VISIBILITY_FIELD) gates the second-level grid: when set and
+ * visFarGridOrigin.w > 0, the marched fog's beyond-grid stretches read the far field's trilinear
+ * bins instead of the fine grid's clamped boundary -- the far grid IS the data the clamp guesses
+ * with. Bit 1 (the clamp) stays the master gate for what happens when the far field is absent.
  */
 public static const uint FLAG_SKY_FIELD_DIRECTIONAL = 1u << 0u;
+
+/** Read the far visibility grid in the marched fog's beyond-grid regions (M28 S1.5, D214). */
+public static const uint FLAG_FAR_VISIBILITY_FIELD = 1u << 2u;
 
 /**
  * Fog stretches the visibility grid's span does not cover read the CLAMPED field instead of assuming
@@ -453,6 +461,15 @@ public struct WorldPush {
      * word and the capture columns cannot disagree about what a frame was told to do.
      */
     public uint     volumetricSwitches;
+    /**
+     * The second-level visibility grid's placement (M28 S1.5): xyz snapped minimum corner in rebased
+     * blocks, w the far cell size in blocks -- 0 when the feature is off or no grid was asked for,
+     * which is the consumers' skip signal. World-anchored and recentred with hysteresis by the CPU,
+     * for the same reason visGridOrigin snaps: a far field that slid with the camera would need
+     * reprojection at eight times the cell size, and the far field's whole point is to be the stable
+     * answer the fine grid's boundary cannot give.
+     */
+    public float4   visFarGridOrigin;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

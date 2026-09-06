@@ -36,6 +36,28 @@ public static const int VIS_GRID_D = 64;
 [[vk::binding(16, 0)]] public Sampler3D volumeVisibilityGrid;
 
 /**
+ * The SECOND-LEVEL grid (M28 S1.5, D214): the same 64x32x64 lattice at eight blocks per cell --
+ * about 256 blocks of horizontal reach instead of 32 -- world-anchored, refreshed round-robin by its
+ * own bake, bootstrapped from THIS grid's clamped answer so it starts as the published behaviour and
+ * refines toward real measurements. The marched fog's beyond-grid stretches read it under
+ * FLAG_FAR_VISIBILITY_FIELD; see farSkyBins. Declared beside the fine grid because the two are one
+ * system at two resolutions, and the binding lands on every importer of this module either way.
+ *
+ * <p>The bake seeds from this module's binding-16 texture, so the two levels share one definition of
+ * openness by construction; nothing here re-derives it.
+ */
+[[vk::binding(30, 0)]] public Sampler3D volumeVisibilityFarGrid;
+
+/**
+ * The far grid's lattice, restated like everywhere else. Must match volume_visibility_far.comp.slang
+ * (FAR_GRID_*) and RtSky's far-grid allocations.
+ */
+public static const int FAR_GRID_W = 64;
+public static const int FAR_GRID_H = 32;
+public static const int FAR_GRID_D = 64;
+public static const float FAR_CELL = 8.0;
+
+/**
  * The sky-visibility field at a point in the air, in whichever representation the grid currently
  * publishes: RGBA are four sector bins under FLAG_SKY_FIELD_DIRECTIONAL (M28 S1), or (openness, count
  * echo, 0, 1) in the shipped scalar mode. Callers that want ONE number take volumeSkyOpenness; the
@@ -147,6 +169,24 @@ public float volumeSkyOpenness(float3 p) {
         return dot(volumeSkyBins(p), float4(0.25, 0.25, 0.25, 0.25));
     }
     return volumeSkyBins(p).r;
+}
+
+/**
+ * The far grid's sector bins at a point, when it is published. Miss policy mirrors the fine grid's:
+ * saturate-clamp to the boundary, because a point past 256 blocks asking the edge is a far better
+ * guess than anything the fine grid's 32-block face could offer. All-open when unpublished -- the
+ * caller normally checks FLAG_FAR_VISIBILITY_FIELD and visFarGridOrigin.w first and falls back to
+ * the clamp path; this fallback is the same number to scalar and sector readers, as everywhere else
+ * in this file.
+ */
+public float4 farSkyBins(float3 p) {
+    float cell = worldPush.visFarGridOrigin.w;
+    if (cell <= 0.0) {
+        return float4(1.0, 1.0, 1.0, 1.0);
+    }
+    float3 extent = cell * float3(float(FAR_GRID_W), float(FAR_GRID_H), float(FAR_GRID_D));
+    float3 uvw = saturate((p - worldPush.visFarGridOrigin.xyz) / extent);
+    return saturate(volumeVisibilityFarGrid.SampleLevel(uvw, 0.0));
 }
 
 /**

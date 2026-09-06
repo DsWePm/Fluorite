@@ -452,6 +452,8 @@
   "fluorite.options.rt.cloudSecondary.full": "完整",
   "fluorite.options.rt.skyDirectionalField": "方向性天空场",
   "fluorite.options.rt.skyDirectionalField.tooltip": "把天空可见度存成每格四个世界方位扇区，而不是一个标量开阔度；行进的雾按各扇区自己的天空辐亮度加权——洞口在东边，附近的雾就被东边照亮。实时生效；切换会重置网格历史（约 1 秒重新收敛）。可见性烘焙每格每帧投 4 条阴影线（原来 1 条）。",
+  "fluorite.options.rt.farVisibilityField": "远场可见性网格",
+  "fluorite.options.rt.farVisibilityField.tooltip": "第二级可见性网格：每格 8 方块、覆盖约 256 方格，让网格之外的雾读真实测量而不是钳制边界——山体侧坡后的露天远雾不再被坡的遮挡压暗。世界锚定、每帧刷新一片；从细网格的答案出发，约半分钟收敛到实测。需要细网格处于开启状态。",
   "fluorite.options.rt.fogBeyondGridUsesClamp": "出格雾段遮挡",
   "fluorite.options.rt.fogBeyondGridUsesClamp.tooltip": "可见性网格够不着的雾（默认格尺寸下水平约 32 格、头顶约 16 格之外）改问钳制后的边界值，而不是假设露天。洞里远处雾随近处一起变暗；野外边界读到的就是开阔，画面不变。与「方向性天空场」相互独立。",
   "fluorite.options.rt.waterMediumTrace": "水体介质运行日志",

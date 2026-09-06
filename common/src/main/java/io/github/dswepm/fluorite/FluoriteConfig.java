@@ -1676,6 +1676,19 @@ public final class FluoriteConfig {
             public static final BooleanSetting FOG_BEYOND_GRID_USES_CLAMP =
                     bool("fluorite.rt.fog.fogBeyondGridUsesClamp", "volumetrics.fog-beyond-grid-uses-clamp", false);
 
+            /**
+             * M28 S1.5 (D214): the second-level visibility grid -- the same lattice at eight blocks per
+             * cell, world-anchored, refreshed round-robin, bootstrapped from the fine grid's clamped
+             * answer. The marched fog's beyond-grid stretches read it instead of the fine boundary, so
+             * open sky past a mountain flank stops reading the flank's partial roof.
+             *
+             * <p>Off -- the shipped picture -- leaves the clamp as the only beyond-grid answer. On
+             * requires the fine grid (it is the seed), and the far field starts AT the clamp's answer
+             * and converges from there, so the worst case during convergence is the off state.
+             */
+            public static final BooleanSetting FAR_VISIBILITY_FIELD =
+                    bool("fluorite.rt.fog.farVisibilityField", "volumetrics.far-visibility-field", false);
+
             /** Two analytic optical-depth sheets far above the convective deck; no high-cloud march. */
             public static final BooleanSetting CLOUD_CIRRUS =
                     bool("fluorite.rt.fog.cloudCirrus", "volumetrics.cloud-cirrus", true);

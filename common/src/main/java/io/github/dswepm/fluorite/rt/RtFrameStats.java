@@ -91,6 +91,7 @@ public final class RtFrameStats {
                     // hands the frame back to vanilla — which is how this one announced itself.
                     "gpu.skyBake",
                     "gpu.visBake",
+                    "gpu.visFarBake",
                     "gpu.froxelBake",
                     // D176's cloud shadow map. Its own column because 8.10 costed it at about 1% of the
                     // primary trace on paper and nothing has weighed it; resolution and step count are
