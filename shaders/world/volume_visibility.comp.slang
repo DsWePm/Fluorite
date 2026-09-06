@@ -189,6 +189,70 @@ float rnd01(inout uint state) {
     return float(state >> 8u) * (1.0 / 16777216.0);
 }
 
+/** Per-axis sign of the whole-cell window shift: which way the interior lies, from a fresh cell. */
+int3 shiftSign() {
+    return int3(visPush.shiftX > 0 ? 1 : visPush.shiftX < 0 ? -1 : 0,
+                visPush.shiftY > 0 ? 1 : visPush.shiftY < 0 ? -1 : 0,
+                visPush.shiftZ > 0 ? 1 : visPush.shiftZ < 0 ? -1 : 0);
+}
+
+/** Whether nb is a cell of this grid at all. */
+bool inGrid(int3 nb) {
+    return all(nb >= int3(0, 0, 0)) && nb.x < VIS_GRID_W && nb.y < VIS_GRID_H && nb.z < VIS_GRID_D;
+}
+
+/**
+ * A fresh cell's starting point, taken from the interior neighbour one step back along the window
+ * shift.
+ *
+ * <p>WHY THIS EXISTS, measured in game (D213): while the camera moves, the cells entering the window at
+ * the leading edge have no reprojection source -- last frame they were outside it. Their value is one
+ * or two raw coin flips, which for a partially-open cell is maximum variance, and the beyond-grid fog
+ * clamp (and the trilinear reads generally) amplify exactly those cells into the far field: the fog
+ * ahead of a moving camera blinked and blotched until the edge converged, then settled the moment the
+ * camera stopped. Seeding from the neighbour behind -- which reprojected fine, being one step further
+ * from the edge -- replaces the coin flip with a smooth continuation; the cell still converges to its
+ * OWN answer because the seed's confidence is capped at SEED_CONFIDENCE draws.
+ *
+ * <p>Only the no-history branch reads this: any cell with a reprojection source keeps the shipped path
+ * byte for byte, so a standing world is unaffected and the change needs no switch of its own.
+ */
+static const float SEED_CONFIDENCE = 4.0;
+
+/** The seed itself: the neighbour's record, or nothing when reset (no cell's history means anything).
+ * Scalar layout: open in R, count in G. */
+bool scalarSeed(uint3 id, out float open, out float n) {
+    open = 0.0;
+    n = 0.0;
+    if (visPush.reset != 0u) {
+        return false;
+    }
+    int3 nb = int3(id) - shiftSign();
+    if (!inGrid(nb)) {
+        return false;
+    }
+    float4 seed = historyRead[nb];
+    open = seed.r;
+    n = min(seed.g, SEED_CONFIDENCE);
+    return true;
+}
+
+/** Directional layout: four bins in RGBA, the shared count in the meta image. */
+bool directionalSeed(uint3 id, out float4 bins, out float n) {
+    bins = float4(0.0, 0.0, 0.0, 0.0);
+    n = 0.0;
+    if (visPush.reset != 0u) {
+        return false;
+    }
+    int3 nb = int3(id) - shiftSign();
+    if (!inGrid(nb)) {
+        return false;
+    }
+    bins = historyRead[nb];
+    n = min(metaRead[nb].r, SEED_CONFIDENCE);
+    return true;
+}
+
 /** Scalar mode: one ray, one running mean, the shipped bake. Kept as its own function so the
  * directional mode below cannot reorder a single line of it -- off-state is byte-for-byte this. */
 void bakeScalar(float3 p, float cell, uint3 id, WorldPush wp) {
@@ -210,6 +274,10 @@ void bakeScalar(float3 p, float cell, uint3 id, WorldPush wp) {
             float4 prior = historyRead[src];
             open = prior.r;
             n = prior.g;
+        } else {
+            // No source: a leading-edge fresh cell. Seed from the interior instead of starting the
+            // EMA at a raw coin flip -- see scalarSeed's banner.
+            scalarSeed(id, open, n);
         }
     }
     n = min(n + 1.0, VIS_ACCUM_MAX);
@@ -255,6 +323,9 @@ void bakeDirectional(float3 p, float cell, uint3 id, WorldPush wp) {
                 && src.x < VIS_GRID_W && src.y < VIS_GRID_H && src.z < VIS_GRID_D) {
             bins = historyRead[src];
             n = metaRead[src].r;
+        } else {
+            // Leading-edge fresh cell: same neighbour seed as the scalar mode, all four bins at once.
+            directionalSeed(id, bins, n);
         }
     }
     n = min(n + 1.0, VIS_ACCUM_MAX);
