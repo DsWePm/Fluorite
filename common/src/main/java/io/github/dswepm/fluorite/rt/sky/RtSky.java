@@ -1165,6 +1165,11 @@ public final class RtSky {
         farCenterCellZ = centerCellZ;
     }
 
+    /** The far grid's sampled view, for the ray-tracing atlas. Null until resources exist. */
+    public long visibilityFarGridView() {
+        return visibilityFarGrid != null ? visibilityFarGrid.view : 0L;
+    }
+
     /** The far grid's current centre cells, for the caller's hysteresis comparison. */
     public boolean farCenterValid() {
         return farCenterValid;

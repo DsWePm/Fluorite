@@ -2293,6 +2293,9 @@ public final class RtComposite {
                     skyLuts.skyViewMultiView(), lutSampler(ctx));
             worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
             worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
+            if (skyLuts.visibilityFarGridView() != 0L) {
+                worldPipeline.setVolumeVisibilityFarGrid(skyLuts.visibilityFarGridView(), lutSampler(ctx));
+            }
             // NOT the LUT sampler. Every table above is a parameterisation over [0,1] and must clamp;
             // cloud and fog noise are sampled at WORLD COORDINATES divided by a feature size, which
             // leaves that range immediately and has to wrap. See tilingSampler.
@@ -3498,10 +3501,15 @@ public final class RtComposite {
             // The far grid's amortised refresh. Gated on the fine grid's own conditions because the
             // fine grid is its seed and its TLAS partner; a recentre (the helper above sets the flag)
             // takes a one-frame reset and re-bootstraps from the fine clamp.
+            // NOTE THE GATE: this class's farCenterValid, set by visFarGridOrigin() during the WorldPush
+            // build above. RtSky's same-named field only turns true inside the bake's own bookkeeping,
+            // so gating on it was a deadlock -- the dispatch was the only thing that could set it, and
+            // it was the only thing waiting on it. The first capture's all-zero visFarBake column was
+            // this deadlock reporting itself.
             if (FluoriteConfig.Rt.Volumetrics.FAR_VISIBILITY_FIELD.value()
                     && FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
                     && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED
-                    && skyLuts.farCenterValid()) {
+                    && farCenterValid) {
                 if (gpuTimers != null) {
                     gpuTimers.begin(cmd, pushSlot, GPU_ZONE_VIS_FAR_BAKE);
                 }
