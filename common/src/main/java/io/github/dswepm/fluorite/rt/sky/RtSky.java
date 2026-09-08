@@ -134,11 +134,9 @@ public final class RtSky {
     private final Bake froxelBake;
     private final Bake[] visibilityBakes;
     private final Bake[] farVisibilityBakes;
-    /** The far grid's centre cell and whether it has ever been baked; recentring hysteresis lives here. */
-    private int farCenterCellX;
-    private int farCenterCellY;
-    private int farCenterCellZ;
-    private boolean farCenterValid;
+    /** Whether the far grid's history has a window at all. Hysteresis and shift accounting live in
+     * RtComposite; this only records that a first dispatch no longer owes a reset. */
+    private boolean farWindowValid;
     /** Parity written LAST frame, so this frame reads it and writes the other. */
     private int visibilityHistoryRead;
     /** Grid origin in whole cells at the frame the history was written; absent means nothing to reuse. */
@@ -1133,8 +1131,8 @@ public final class RtSky {
      * rather than reprojects.
      */
     public void recordVisibilityFarBake(VkCommandBuffer cmd, long worldPushAddr, long tlas,
-                                        int centerCellX, int centerCellY, int centerCellZ,
-                                        boolean reset, RtGpuExecutor.GraphicsUse graphicsUse) {
+                                        int shiftX, int shiftY, int shiftZ, boolean reset,
+                                        RtGpuExecutor.GraphicsUse graphicsUse) {
         if (visibilityFarHistory == null) {
             return;
         }
@@ -1149,7 +1147,7 @@ public final class RtSky {
                     stack.longs(farBake.descriptorSet(), tlasSet), null);
             ByteBuffer pushData = stack.malloc(FAR_VIS_PUSH_BYTES);
             pushData.putLong(0, worldPushAddr);
-            pushData.putInt(8, 0).putInt(12, 0).putInt(16, 0);
+            pushData.putInt(8, shiftX).putInt(12, shiftY).putInt(16, shiftZ);
             pushData.putInt(20, reset ? 1 : 0);
             pushData.putInt(24, 0).putInt(28, 0);
             VK10.vkCmdPushConstants(cmd, farBake.pipelineLayout(),
@@ -1159,32 +1157,12 @@ public final class RtSky {
                     (VIS_FAR_GRID_D + VIS_GROUP - 1) / VIS_GROUP);
         }
         farHistoryRead = write;
-        farCenterValid = true;
-        farCenterCellX = centerCellX;
-        farCenterCellY = centerCellY;
-        farCenterCellZ = centerCellZ;
+        farWindowValid = true;
     }
 
     /** The far grid's sampled view, for the ray-tracing atlas. Null until resources exist. */
     public long visibilityFarGridView() {
         return visibilityFarGrid != null ? visibilityFarGrid.view : 0L;
-    }
-
-    /** The far grid's current centre cells, for the caller's hysteresis comparison. */
-    public boolean farCenterValid() {
-        return farCenterValid;
-    }
-
-    public int farCenterCellX() {
-        return farCenterCellX;
-    }
-
-    public int farCenterCellY() {
-        return farCenterCellY;
-    }
-
-    public int farCenterCellZ() {
-        return farCenterCellZ;
     }
 
     /**
@@ -1730,7 +1708,7 @@ public final class RtSky {
             }
             visibilityFarMetaHistory = null;
         }
-        farCenterValid = false;
+        farWindowValid = false;
         if (rainExposureDepth != null) {
             rainExposureDepth.destroy();
             rainExposureDepth = null;

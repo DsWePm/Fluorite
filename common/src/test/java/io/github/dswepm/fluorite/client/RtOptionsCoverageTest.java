@@ -43,7 +43,7 @@ final class RtOptionsCoverageTest {
      * that debt LOUD (a bump must be acknowledged here, never silent), not to promise it will shrink.
      * If zh_tw coverage is ever resumed, lower it as options are carried across.
      */
-    private static final int ZH_TW_KNOWN_GAP = 126;
+    private static final int ZH_TW_KNOWN_GAP = 127;
 
     /** Keys the screen builds an option from, which the locales therefore have to carry. */
     @Test

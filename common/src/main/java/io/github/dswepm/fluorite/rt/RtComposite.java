@@ -267,6 +267,13 @@ public final class RtComposite {
     private int farCenterCellZ;
     private boolean farCenterValid;
     private boolean farRecentredThisFrame;
+    /** The centre the far BAKE last saw, so the dispatch can hand it an integer reprojection shift.
+     * Distinct from the fields above: the helper's centre moves with hysteresis; the bake's shift is
+     * measured against whatever window the GPU actually holds. */
+    private int farDispatchedCellX;
+    private int farDispatchedCellY;
+    private int farDispatchedCellZ;
+    private boolean farDispatchedValid;
 
     /**
      * The far grid's placement this frame: xyz the snapped minimum corner in rebased blocks, w the
@@ -3513,9 +3520,33 @@ public final class RtComposite {
                 if (gpuTimers != null) {
                     gpuTimers.begin(cmd, pushSlot, GPU_ZONE_VIS_FAR_BAKE);
                 }
+                // A recentre slides the world-anchored lattice by WHOLE far cells, so the GPU
+                // reprojections instead of re-converging: shift is this frame's centre minus the
+                // window the GPU already holds, and only a lattice-wider jump (or the feature being
+                // newly on) spends the one-frame reset.
+                int shiftX = 0;
+                int shiftY = 0;
+                int shiftZ = 0;
+                boolean reset = !farDispatchedValid;
+                if (farDispatchedValid) {
+                    shiftX = farCenterCellX - farDispatchedCellX;
+                    shiftY = farCenterCellY - farDispatchedCellY;
+                    shiftZ = farCenterCellZ - farDispatchedCellZ;
+                    reset = Math.abs(shiftX) >= RtSky.VIS_FAR_GRID_W
+                            || Math.abs(shiftY) >= RtSky.VIS_FAR_GRID_H
+                            || Math.abs(shiftZ) >= RtSky.VIS_FAR_GRID_D;
+                    if (reset) {
+                        shiftX = 0;
+                        shiftY = 0;
+                        shiftZ = 0;
+                    }
+                }
                 skyLuts.recordVisibilityFarBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle,
-                        farCenterCellX, farCenterCellY, farCenterCellZ,
-                        farRecentredThisFrame, graphicsUse);
+                        shiftX, shiftY, shiftZ, reset, graphicsUse);
+                farDispatchedCellX = farCenterCellX;
+                farDispatchedCellY = farCenterCellY;
+                farDispatchedCellZ = farCenterCellZ;
+                farDispatchedValid = true;
                 if (gpuTimers != null) {
                     gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_FAR_BAKE);
                 }

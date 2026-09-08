@@ -58,13 +58,16 @@ static const float FAR_ACCUM_MAX = 16.0;
 
 struct FarVisPush {
     uint64_t worldPushAddr;
-    // Whole far CELLS the origin moved since the history was written; nonzero only on the recentre
-    // frame, where it is irrelevant anyway because reset fires with it. Kept next to reset for the
-    // same layout reason the fine bake's VisPush spells out: scalars, no int3.
+    // Whole far CELLS the grid's centre moved since the last dispatch. The grid is world-anchored, so
+    // a recentre slides the lattice over the world and cell (i,j,k) of the new window sits where cell
+    // (i,j,k) + shift of the old one sat -- the SAME world point, therefore the same answer, therefore
+    // a plain integer reprojection rather than a re-convergence. Only a shift wider than the lattice
+    // (teleport, or the feature having been off) resets. Scalars, not an int3: the fine bake's VisPush
+    // banner owns that story.
     int shiftX;
     int shiftY;
     int shiftZ;
-    // 1 discards history: first frame, a recentre, or the feature having been off.
+    // 1 discards history: first frame, or a shift wider than the lattice.
     uint reset;
 };
 [[vk::push_constant]] FarVisPush farVisPush;
@@ -158,16 +161,18 @@ void main(uint3 id: SV_DispatchThreadID) {
         nSample = 1.0;
     }
 
-    // Prior: this cell's own accumulator when it has one, otherwise the fine grid's clamped answer --
-    // the published behaviour, which is what the far grid refines FROM.
-    float4 prior;
-    float n;
+    // Prior: this cell's reprojected accumulator when one exists, otherwise the fine grid's clamped
+    // answer -- the published behaviour, which is what the far grid refines FROM. A recentred cell
+    // reads its old-window self at the same world point, so sliding the grid costs nothing.
+    float4 prior = float4(0.0, 0.0, 0.0, 0.0);
+    float n = 0.0;
     if (farVisPush.reset == 0u) {
-        prior = farHistoryRead[int3(id)];
-        n = farMetaRead[int3(id)].r;
-    } else {
-        prior = float4(0.0, 0.0, 0.0, 0.0);
-        n = 0.0;
+        int3 src = int3(id) + int3(farVisPush.shiftX, farVisPush.shiftY, farVisPush.shiftZ);
+        if (all(src >= int3(0, 0, 0))
+                && src.x < FAR_GRID_W && src.y < FAR_GRID_H && src.z < FAR_GRID_D) {
+            prior = farHistoryRead[src];
+            n = farMetaRead[src].r;
+        }
     }
     if (n <= 0.0) {
         prior = saturate(fineGrid.SampleLevel((p - wp.visGridOrigin.xyz)
