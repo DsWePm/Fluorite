@@ -907,6 +907,17 @@ public final class FluoriteConfig {
              */
             public static final IntSetting RESTIR_REUSE_DEPTH =
                     clampedInt("fluorite.rt.restirReuseDepth", "composite.restir-reuse-depth", 0, 0, 8);
+            /**
+             * M28 S2: the per-pixel PATH reservoir for ReSTIR PT's temporal reuse -- the indirect
+             * suffix beyond the reconnection vertex, merged against last frame's at the primary hit.
+             *
+             * <p>Off (default) allocates nothing and leaves every code path untouched: the reservoir
+             * buffer is created under this switch, so the off state costs neither VRAM nor a branch in
+             * the hot loop. On allocates about 200 MB at 1080p (48 B x pixels x 2 parities) and turns
+             * on the hybrid shift with random replay at the primary hit.
+             */
+            public static final BooleanSetting PATH_RESERVOIR =
+                    bool("fluorite.rt.composite.pathReservoir", "composite.path-reservoir", false);
 
             /**
              * How many screen-space neighbours each reused vertex borrows a reservoir from.
