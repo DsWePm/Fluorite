@@ -55,7 +55,7 @@ public static const int VIS_GRID_D = 64;
 public static const int FAR_GRID_W = 64;
 public static const int FAR_GRID_H = 32;
 public static const int FAR_GRID_D = 64;
-public static const float FAR_CELL = 8.0;
+public static const float FAR_CELL = 4.0;
 
 /**
  * The sky-visibility field at a point in the air, in whichever representation the grid currently

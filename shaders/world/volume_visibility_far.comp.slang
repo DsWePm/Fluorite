@@ -33,9 +33,13 @@ public static const int FAR_GRID_W = 64;
 public static const int FAR_GRID_H = 32;
 public static const int FAR_GRID_D = 64;
 
-/** Blocks per far cell. 8 is what makes the same lattice reach eight times as far; the coarseness is
- * invisible at the distances the far field answers for, and the near field never reads it. */
-public static const float FAR_CELL = 8.0;
+/** Blocks per far cell. Started at 8 (the same lattice reaching eight times as far); in-game the
+ * openness debug view showed open-air cells beside a mountain flank reading heavily sealed -- an
+ * 8-block trilinear neighbourhood is mostly terrain when the sample sits near a slope -- and the user's
+ * residual dark region tracked exactly that. 4 halves the smearing at identical lattice and ray cost;
+ * the price is reach, about 128 blocks horizontally instead of 256, which is still past where the far
+ * field's answer matters at authored fog densities. */
+public static const float FAR_CELL = 4.0;
 
 // The fine grid's lattice, restated for the bootstrap seed's coordinate math. Must match
 // volume_visibility{,.comp}.slang and RtSky.VIS_GRID_W/H/D, like every other restatement of these.

@@ -76,12 +76,13 @@ public final class RtSky {
     public static final int VIS_GRID_H = 32;
     public static final int VIS_GRID_D = 64;
 
-    /** M28 S1.5's second-level grid: same lattice, eight blocks per cell. Must match
-     * volume_visibility_far.comp.slang and the FAR_* constants in volume_visibility.slang. */
+    /** M28 S1.5's second-level grid: same lattice, four blocks per cell (8 was halved in game after
+     * the openness debug view showed slope-adjacent open air reading sealed at the coarser size).
+     * Must match volume_visibility_far.comp.slang and the FAR_* constants in volume_visibility.slang. */
     public static final int VIS_FAR_GRID_W = 64;
     public static final int VIS_FAR_GRID_H = 32;
     public static final int VIS_FAR_GRID_D = 64;
-    public static final float VIS_FAR_CELL = 8.0f;
+    public static final float VIS_FAR_CELL = 4.0f;
     private static final int FAR_VIS_PUSH_BYTES = 32;
     private static final int VIS_GROUP = 4; // matches [numthreads(4, 4, 4)]
     // WorldPush address, the integer cell shift since the frame the history was written, and a reset
