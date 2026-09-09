@@ -96,7 +96,7 @@ public final class RtVideoOptions {
                 // menu.
                 case TRACING -> List.of(
                         Section.of(spp(), maxBounces(), restirReuseDepth(),
-                                restirSpatialNeighbours(), dynamicRisCandidates(),
+                                restirSpatialNeighbours(), pathReservoir(), dynamicRisCandidates(),
                                 emitterBrightness(), emitterTemperature(),
                                 sunSize(), entities(), particles(),
                                 particleShadows()),
@@ -882,6 +882,20 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> waterWaves() {
         return bool("fluorite.options.rt.waterWaves", FluoriteConfig.Rt.Composite.WATER_WAVES);
+    }
+
+    /**
+     * M28 S2: the per-pixel PATH reservoir and its temporal merge. Off (default) allocates nothing and
+     * is the shipped picture bit for bit; on allocates about 200 MB at 1080p and starts reusing last
+     * frame's indirect suffixes at the primary hit.
+     *
+     * <p>Beside the M24 reuse dials because it is the same feature family one store over -- and
+     * deliberately NOT wired to them: this is the S2 acceptance switch, and its A/B wants to move
+     * alone, live, in one session (iron law 7). The allocation follows the toggle through
+     * ensureOutput's reallocation condition the same frame.
+     */
+    private static OptionInstance<Boolean> pathReservoir() {
+        return bool("fluorite.options.rt.pathReservoir", FluoriteConfig.Rt.Composite.PATH_RESERVOIR);
     }
 
     /**
