@@ -908,17 +908,17 @@ static const float CAUSTIC_DEVIATION_GAIN = 20.0;
 // Expected at the far slice: a faint wash that follows the fog's height profile, brighter toward the sun,
 // with the transmittance darkest where the sightline is longest and lowest. Expected at the NEAR slices:
 // almost nothing, which is the point of distributing the depth axis exponentially (see froxelSliceDepth).
-static const uint DEBUG_VIEW_FROXEL = 17u;
+static const uint DEBUG_VIEW_FROXEL = 12u;
 static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
 
 // The volumetric visibility grid, at this pixel's own camera segment. See volumeVisibilityDebug.
-static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 18u;
+static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 13u;
 
 // The second-level grid (M28 S1.5), sampled at a FIXED 96 blocks along this pixel's view ray -- fixed,
 // not the camera segment's midpoint, because the midpoint usually sits inside the fine grid where the
 // far field has nothing to say. 96 is past the fine grid's 32-block face and well inside the far
 // grid's 256: exactly the stretch whose answer changed when the far field landed. See farVisibilityDebug.
-static const uint DEBUG_VIEW_FAR_VISIBILITY = 31u;
+static const uint DEBUG_VIEW_FAR_VISIBILITY = 19u;
 static const float FAR_DEBUG_DISTANCE = 96.0;
 
 
@@ -926,19 +926,19 @@ static const float FAR_DEBUG_DISTANCE = 96.0;
 // exposure or tonemap. Unlike debug 8, this is the camera-to-first-interface segment rather than the
 // queued first leaf. It exists to distinguish "the water estimator is alive somewhere in the path" from
 // "the water term the normal image actually adds is alive".
-static const uint DEBUG_VIEW_CAMERA_PREFIX = 20u;
+static const uint DEBUG_VIEW_CAMERA_PREFIX = 14u;
 
 // Full raw compositor with and without the camera prefix in alternating equal-screen bands. This runs
 // the normal leaf loop but bypasses RR, so it answers whether the prefix survives the actual HDR sum.
 // The lower quarter paints its luminance fraction (R = 8x, G = 2x, B = 1x) instead of scene colour.
-static const uint DEBUG_VIEW_COMPOSITE_PREFIX_AB = 21u;
+static const uint DEBUG_VIEW_COMPOSITE_PREFIX_AB = 15u;
 // M11: which stage of the cloud chain is empty. See cloud.slang cloudDebugProbe for the colour key.
-static const uint DEBUG_VIEW_CLOUD_PROBE = 22u;
+static const uint DEBUG_VIEW_CLOUD_PROBE = 16u;
 // M12: the water simulation's height field, and whether its domain is live at all.
-static const uint DEBUG_VIEW_WATER_SIM = 23u;
+static const uint DEBUG_VIEW_WATER_SIM = 17u;
 // 24: the same field, but sampled the way the SHADING samples it. 23 proves the field has content; this
 // proves the content reaches the surface. They fail independently, which is the whole reason for two.
-static const uint DEBUG_VIEW_WATER_SIM_REACH = 24u;
+static const uint DEBUG_VIEW_WATER_SIM_REACH = 18u;
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
     // view that resampled it through anything else would be testing the resampling.

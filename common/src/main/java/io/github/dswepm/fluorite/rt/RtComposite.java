@@ -654,10 +654,12 @@ public final class RtComposite {
         if (level == null || waterDomain.z() <= 0f) {
             return;
         }
-        // Debug view 23 drives a test impulse at the domain centre. It is what makes the view able to
-        // distinguish "nothing disturbs the field" from "the field cannot propagate" -- two states that
-        // look identical on a flat pond and have completely different causes.
-        if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() == 23) {
+        // Debug view 17 (the water height field) drives a test impulse at the domain centre. It is what
+        // makes the view able to distinguish "nothing disturbs the field" from "the field cannot
+        // propagate" -- two states that look identical on a flat pond and have completely different
+        // causes. The number is a literal because the view's constant lives in the shader; the
+        // contiguous-numbering pass (2026-09-09) moved it from 23.
+        if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() == 17) {
             waterImpulses[0] = RtSky.WATER_SIM_DIM * 0.5f;
             waterImpulses[1] = RtSky.WATER_SIM_DIM * 0.5f;
             waterImpulses[2] = 3f;

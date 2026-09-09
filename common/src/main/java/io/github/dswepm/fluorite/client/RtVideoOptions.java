@@ -2330,8 +2330,11 @@ public final class RtVideoOptions {
             // three files, and the fourth one nobody remembered was the one that gated reachability.
             // A slider over the full numeric range cannot forget a view; the retired numbers it sweeps
             // through cost one glance, not a lost feature. (D211's wider lesson, UI edition.)
-            new OptionInstance.IntRange(0, 64),
-            Math.clamp(setting.value(), 0, 64),
+            // The range is exactly the live views, 0..21, and stays contiguous by convention: a new
+            // view takes the next number, a retired view's number is REUSED by the next one. The old
+            // gap-preserving rule is what hid view 31 from its own button (D211/D215).
+            new OptionInstance.IntRange(0, 21),
+            Math.clamp(setting.value(), 0, 21),
             setting::set);
     }
 
