@@ -128,11 +128,15 @@ final class RtRainSurfaceContractTest {
         assertTrue(primary.contains("pc.debugView == DEBUG_VIEW_RAIN_PUDDLE"));
         assertTrue(primary.contains("rainPuddleDebug"));
         // 25 retired with the fog noise view and 28 with M25's cell view; 26/27 keep their numbers
-        // rather than sliding down. What this guards is that 26 and 27 stay where they are, NOT that the
-        // list stops growing or shrinking at the top — the ceiling moved to 28 and back to 27 as that
-        // view arrived and was retired. Reoccupying 25 or 28 is what is forbidden.
-        assertTrue(options.contains("24, 26, 27"));
-        assertTrue(options.contains("Math.clamp(setting.value(), 0, 27)"));
+        // rather than sliding down. The UI was a cycle over an explicit List whose tail was
+        // "24, 26, 27" -- and that list was exactly how view 31 got lost: the shader and the locales
+        // knew it, the button's list did not, and the cycle never reached it (D211's lesson, UI
+        // edition). The option is a slider over the full numeric range now, so reachability is no
+        // longer a fourth copy of the view registry; what remains to pin here is that the slider
+        // exists and spans past 27, which keeps 26/27 where they are by construction.
+        // The slider's range is exactly the live views (contiguous since the 2026-09-09 renumbering).
+        assertTrue(options.contains("new OptionInstance.IntRange(0, 21)"));
+        assertTrue(options.contains("Math.clamp(setting.value(), 0, 21)"));
     }
 
     @Test
@@ -422,13 +426,15 @@ final class RtRainSurfaceContractTest {
     /**
      * Both raygen stages must agree about who draws the two rain debug views.
      *
-     * <p>Pass A draws 26 and 27; pass B has to recognise both and bail. It used to bail on 26 only, and
-     * because pass B's dispatch opens with {@code >= DEBUG_VIEW_SKY_TRANSMITTANCE} and no arm claims 27,
-     * view 27 fell through to the froxel default — so pass B painted the froxel over pass A's puddle
-     * image every frame. It had been wrong since the view existed, and it went unnoticed because a froxel
-     * is a perfectly plausible-looking picture; nothing about it says "this is the wrong diagnostic".
+     * <p>Pass A draws the rain pair (20 and 21 since the 2026-09-09 contiguous renumbering; 26 and 27
+     * before that); pass B has to recognise both and bail. It used to bail on one only, and because
+     * pass B's dispatch opened with {@code >= DEBUG_VIEW_SKY_TRANSMITTANCE} and no arm claimed the
+     * second view, that view fell through to the froxel default — so pass B painted the froxel over
+     * pass A's puddle image every frame. It had been wrong since the views existed, and it went
+     * unnoticed because a froxel is a perfectly plausible-looking picture; nothing about it says "this
+     * is the wrong diagnostic".
      *
-     * <p>The numbers now live in rain_surface.slang, which is the one module both stages import — entry
+     * <p>The numbers live in rain_surface.slang, which is the one module both stages import — entry
      * files cannot import each other, which is why these two spent their life as bare literals in two
      * places with nothing tying them together.
      */
@@ -438,8 +444,8 @@ final class RtRainSurfaceContractTest {
         String primary = source("shaders/world/world_primary.rgen.slang");
         String world = source("shaders/world/world.rgen.slang");
 
-        assertTrue(rainSurface.contains("DEBUG_VIEW_RAIN_SURFACE = 26u"));
-        assertTrue(rainSurface.contains("DEBUG_VIEW_RAIN_PUDDLE = 27u"));
+        assertTrue(rainSurface.contains("DEBUG_VIEW_RAIN_SURFACE = 20u"));
+        assertTrue(rainSurface.contains("DEBUG_VIEW_RAIN_PUDDLE = 21u"));
 
         // Pass A draws them.
         assertTrue(primary.contains("pc.debugView == DEBUG_VIEW_RAIN_SURFACE"));
@@ -450,10 +456,10 @@ final class RtRainSurfaceContractTest {
                 && world.contains("pc.debugView == DEBUG_VIEW_RAIN_PUDDLE"));
 
         // And neither stage may go back to bare literals, which is what hid the asymmetry.
-        assertFalse(primary.contains("debugView == 26u"));
-        assertFalse(primary.contains("debugView == 27u"));
-        assertFalse(world.contains("debugView == 26u"));
-        assertFalse(world.contains("debugView == 27u"));
+        assertFalse(primary.contains("debugView == 20u"));
+        assertFalse(primary.contains("debugView == 21u"));
+        assertFalse(world.contains("debugView == 20u"));
+        assertFalse(world.contains("debugView == 21u"));
     }
 
     private static String source(String relativePath) throws IOException {

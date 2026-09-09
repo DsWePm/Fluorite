@@ -908,30 +908,37 @@ static const float CAUSTIC_DEVIATION_GAIN = 20.0;
 // Expected at the far slice: a faint wash that follows the fog's height profile, brighter toward the sun,
 // with the transmittance darkest where the sightline is longest and lowest. Expected at the NEAR slices:
 // almost nothing, which is the point of distributing the depth axis exponentially (see froxelSliceDepth).
-static const uint DEBUG_VIEW_FROXEL = 17u;
+static const uint DEBUG_VIEW_FROXEL = 12u;
 static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
 
 // The volumetric visibility grid, at this pixel's own camera segment. See volumeVisibilityDebug.
-static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 18u;
+static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 13u;
+
+// The second-level grid (M28 S1.5), sampled at a FIXED 96 blocks along this pixel's view ray -- fixed,
+// not the camera segment's midpoint, because the midpoint usually sits inside the fine grid where the
+// far field has nothing to say. 96 is past the fine grid's 32-block face and well inside the far
+// grid's 256: exactly the stretch whose answer changed when the far field landed. See farVisibilityDebug.
+static const uint DEBUG_VIEW_FAR_VISIBILITY = 19u;
+static const float FAR_DEBUG_DISTANCE = 96.0;
 
 
 // The exact camera-prefix in-scatter consumed by the normal compositor, before any leaf radiance, RR,
 // exposure or tonemap. Unlike debug 8, this is the camera-to-first-interface segment rather than the
 // queued first leaf. It exists to distinguish "the water estimator is alive somewhere in the path" from
 // "the water term the normal image actually adds is alive".
-static const uint DEBUG_VIEW_CAMERA_PREFIX = 20u;
+static const uint DEBUG_VIEW_CAMERA_PREFIX = 14u;
 
 // Full raw compositor with and without the camera prefix in alternating equal-screen bands. This runs
 // the normal leaf loop but bypasses RR, so it answers whether the prefix survives the actual HDR sum.
 // The lower quarter paints its luminance fraction (R = 8x, G = 2x, B = 1x) instead of scene colour.
-static const uint DEBUG_VIEW_COMPOSITE_PREFIX_AB = 21u;
+static const uint DEBUG_VIEW_COMPOSITE_PREFIX_AB = 15u;
 // M11: which stage of the cloud chain is empty. See cloud.slang cloudDebugProbe for the colour key.
-static const uint DEBUG_VIEW_CLOUD_PROBE = 22u;
+static const uint DEBUG_VIEW_CLOUD_PROBE = 16u;
 // M12: the water simulation's height field, and whether its domain is live at all.
-static const uint DEBUG_VIEW_WATER_SIM = 23u;
+static const uint DEBUG_VIEW_WATER_SIM = 17u;
 // 24: the same field, but sampled the way the SHADING samples it. 23 proves the field has content; this
 // proves the content reaches the surface. They fail independently, which is the whole reason for two.
-static const uint DEBUG_VIEW_WATER_SIM_REACH = 24u;
+static const uint DEBUG_VIEW_WATER_SIM_REACH = 18u;
 float3 froxelDebug(float2 uv) {
     // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
     // view that resampled it through anything else would be testing the resampling.
@@ -980,6 +987,35 @@ float3 froxelDebug(float2 uv) {
 // This is the grid ITSELF, with no fog arithmetic anywhere in it. If the room reads black here and its fog
 // is still lit, the grid is right and the consumer is wrong; if it reads yellow here, the grid is wrong and
 // nothing downstream can fix it.
+/**
+ * The far grid's openness at a fixed 96-block sample down this pixel's ray, in the fine grid's debug
+ * bands. Grey means the far grid is not published (feature off, or the fine grid it bootstraps from
+ * is off) -- a distinct answer from navy's "published and sealed".
+ */
+float3 farVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
+    if (worldPush.visFarGridOrigin.w <= 0.0) {
+        return float3(0.15, 0.15, 0.15);
+    }
+    CameraRay cam = cameraRay(dispatchIndex, dimensions);
+    float3 p = cam.origin + normalize(hitPos - cam.origin) * FAR_DEBUG_DISTANCE;
+    float4 bins = farSkyBins(p);
+    float open = (worldPush.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) != 0u
+            ? dot(bins, float4(0.25, 0.25, 0.25, 0.25))
+            : bins.r;
+    if (open < 1.5 / 255.0) {
+        return float3(0.0, 0.0, 0.35);   // navy   : sealed, and the consumers see exactly zero
+    }
+    if (open < 0.05) {
+        return float3(0.0, 0.85, 0.95);  // cyan   : a floor -- small, nonzero, and lighting the fog
+    }
+    int band = clamp(int((open - 0.05) * (5.0 / 0.95)), 0, 4);
+    return band == 0 ? float3(0.1, 0.25, 1.0)
+         : band == 1 ? float3(0.0, 0.7, 0.2)
+         : band == 2 ? float3(0.9, 0.9, 0.0)
+         : band == 3 ? float3(1.0, 0.45, 0.0)
+                     : float3(0.9, 0.0, 0.0);
+}
+
 float3 volumeVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
     CameraRay cam = cameraRay(dispatchIndex, dimensions);
     float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
@@ -1242,6 +1278,8 @@ void main() {
                     // camera segment's far end. Taken from the queue rather than re-traced: a debug view
                     // that traces its own ray is testing its own ray.
                     ? volumeVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
+                    : pc.debugView == DEBUG_VIEW_FAR_VISIBILITY
+                    ? farVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM
                     ? waterSimDebug(screenUv)
                     : pc.debugView == DEBUG_VIEW_WATER_SIM_REACH

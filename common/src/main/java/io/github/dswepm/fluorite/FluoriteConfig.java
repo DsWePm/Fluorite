@@ -907,6 +907,17 @@ public final class FluoriteConfig {
              */
             public static final IntSetting RESTIR_REUSE_DEPTH =
                     clampedInt("fluorite.rt.restirReuseDepth", "composite.restir-reuse-depth", 0, 0, 8);
+            /**
+             * M28 S2: the per-pixel PATH reservoir for ReSTIR PT's temporal reuse -- the indirect
+             * suffix beyond the reconnection vertex, merged against last frame's at the primary hit.
+             *
+             * <p>Off (default) allocates nothing and leaves every code path untouched: the reservoir
+             * buffer is created under this switch, so the off state costs neither VRAM nor a branch in
+             * the hot loop. On allocates about 200 MB at 1080p (48 B x pixels x 2 parities) and turns
+             * on the hybrid shift with random replay at the primary hit.
+             */
+            public static final BooleanSetting PATH_RESERVOIR =
+                    bool("fluorite.rt.composite.pathReservoir", "composite.path-reservoir", false);
 
             /**
              * How many screen-space neighbours each reused vertex borrows a reservoir from.
@@ -1646,6 +1657,48 @@ public final class FluoriteConfig {
              */
             public static final BooleanSetting CLOUD_SHADOWS =
                     bool("fluorite.rt.fog.cloudShadows", "volumetrics.cloud-shadows", true);
+
+            /**
+             * M28 S1: store the sky's visibility as FOUR world-azimuth sector bins per grid cell instead
+             * of one scalar openness, and let the marched fog weight each sector by its own radiance -- a
+             * cave mouth to the east lights the fog near it with the east, not with the dome's mean.
+             *
+             * <p>Live, because the whole point of shipping it beside the scalar is the comparison: the
+             * bake casts one ray per sector (131k becomes 524k rays a frame; gpu.visBake measures it) and
+             * the grid's storage layout changes meaning, so toggling forces a history reset on the CPU.
+             * Off is byte-for-byte the shipped path -- same ray, same layout, same scalar every reader
+             * has always seen.
+             */
+            public static final BooleanSetting SKY_DIRECTIONAL_FIELD =
+                    bool("fluorite.rt.fog.skyDirectionalField", "volumetrics.sky-directional-field", false);
+
+            /**
+             * M28 S1 companion: fog stretches the visibility grid's span does not cover read the CLAMPED
+             * field instead of assuming open. This is D178's explicit leftover -- kept only so its clamp
+             * could be attributed alone, and that attribution closed the day it shipped -- and retiring
+             * it is what turns cave fog roughly a grid radius from the camera (about 32 blocks at the
+             * default cell) dark with the near fog. Outdoors the clamped boundary reads open, so the
+             * open-world far field keeps its published brightness.
+             *
+             * <p>Live and independent of {@link #SKY_DIRECTIONAL_FIELD}: it changes which answer the
+             * out-of-grid stretches take, not which representation the grid stores, so each can be
+             * attributed without the other. Off is byte-for-byte the shipped picture.
+             */
+            public static final BooleanSetting FOG_BEYOND_GRID_USES_CLAMP =
+                    bool("fluorite.rt.fog.fogBeyondGridUsesClamp", "volumetrics.fog-beyond-grid-uses-clamp", false);
+
+            /**
+             * M28 S1.5 (D214): the second-level visibility grid -- the same lattice at eight blocks per
+             * cell, world-anchored, refreshed round-robin, bootstrapped from the fine grid's clamped
+             * answer. The marched fog's beyond-grid stretches read it instead of the fine boundary, so
+             * open sky past a mountain flank stops reading the flank's partial roof.
+             *
+             * <p>Off -- the shipped picture -- leaves the clamp as the only beyond-grid answer. On
+             * requires the fine grid (it is the seed), and the far field starts AT the clamp's answer
+             * and converges from there, so the worst case during convergence is the off state.
+             */
+            public static final BooleanSetting FAR_VISIBILITY_FIELD =
+                    bool("fluorite.rt.fog.farVisibilityField", "volumetrics.far-visibility-field", false);
 
             /** Two analytic optical-depth sheets far above the convective deck; no high-cloud march. */
             public static final BooleanSetting CLOUD_CIRRUS =

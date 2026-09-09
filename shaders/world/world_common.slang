@@ -108,6 +108,65 @@ public static const uint SHADE_SOLID_LAYER_SSS = 1u;
  */
 public static const uint SHADE_DYNAMIC_EMITTER_RIS = 2u;
 
+/**
+ * The two live volumetric switches, carried in WorldPush.volumetricSwitches -- NOT in WorldPush.flags,
+ * and the reason is a landed bug worth remembering (D211): both switches first shipped as bits 27/28 of
+ * the flags word after a bit audit that grepped only the SLANG readers and declared the bits free. The
+ * Java assembly had owned them all along -- bit 27 is M17's SCATTER_VERTEX, bit 28 its nested
+ * VOLUME_EMITTER_NEE -- so from the day S1 landed until this field existed, the bake ran directional
+ * and the clamp applied whenever those (default-on) features set their bits, the switches did nothing,
+ * and the off state was not the shipped picture. THE RULE: a bit is free only after enumerating every
+ * writer of the word on every side of the language boundary; when in doubt, a word this cheap to append
+ * is cheaper than a second silent collision.
+ *
+ * <p>Bit 2 (FLAG_FAR_VISIBILITY_FIELD) gates the second-level grid: when set and
+ * visFarGridOrigin.w > 0, the marched fog's beyond-grid stretches read the far field's trilinear
+ * bins instead of the fine grid's clamped boundary -- the far grid IS the data the clamp guesses
+ * with. Bit 1 (the clamp) stays the master gate for what happens when the far field is absent.
+ */
+public static const uint FLAG_SKY_FIELD_DIRECTIONAL = 1u << 0u;
+
+/** Read the far visibility grid in the marched fog's beyond-grid regions (M28 S1.5, D214). */
+public static const uint FLAG_FAR_VISIBILITY_FIELD = 1u << 2u;
+
+/**
+ * Fog stretches the visibility grid's span does not cover read the CLAMPED field instead of assuming
+ * open. The march cuts each segment into the stretch before the grid, the stretch inside it, and the
+ * stretch beyond; the two outer ones were hardwired to openness 1 -- D178's deliberate leftover, kept
+ * only so its clamp could be attributed alone, and that attribution closed the day it shipped. The
+ * symptom of the leftover is exactly #41's original report: cave fog roughly a grid radius from the
+ * camera (about 32 blocks at the default cell) glowing as if under open sky while nearby fog is dark.
+ *
+ * <p>The clamp is D178's, not a new miss policy: a sample outside the box asks the nearest measured
+ * cell. Outdoors that boundary reads open, so the open-world far field keeps its brightness; in a cave
+ * the boundary is roofed and the far fog goes dark with the near fog.
+ */
+public static const uint FLAG_FOG_BEYOND_GRID_CLAMP = 1u << 1u;
+
+/**
+ * Which of the four world-azimuth quarter sectors a direction belongs to, and the ONE definition of
+ * "sector" for everything S1 touches: sky_medium_reduce splits the sky integral by it, and the
+ * visibility bake samples one cosine-weighted ray per sector with azimuth (k + u) * pi/2 in the same
+ * frame -- +X toward +Z, matching cosineHemisphereUp. If either side's azimuth convention moves, both
+ * move or a sector's visibility is weighted by a different sector's radiance, which presents as cave
+ * mouths lit from the wrong side.
+ */
+public uint skySectorIndexOf(float3 dir) {
+    float phi = atan2(dir.z, dir.x);          // (-pi, pi]
+    float turned = phi + 6.28318530718 * (phi <= 0.0 ? 1.0 : 0.0);
+    return min(uint(turned * 0.63661977236), 3u); // turned / (pi/2), clamped at the 2*pi edge
+}
+
+// A sector's representative direction for anything that must point at the sector rather than into it:
+// its centre azimuth, at the cosine-weighted hemisphere's mean elevation (sin = 2/3). Currently only
+// documentation-grade -- the marched sky term needs no direction because the phase is folded into the
+// sector's radiance -- but a future consumer must take the direction from here, not re-derive it.
+float3 skySectorDirection(uint sector) {
+    float phi = (float(sector) + 0.5) * 1.57079632679;
+    float cosE = 0.7453559925; // sqrt(1 - 4/9)
+    return float3(cosE * cos(phi), 0.6666666667, cosE * sin(phi));
+}
+
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
 // w = bindless entityAlbedoTex slot of the destroy-stage texture.
 public struct BreakEntry {
@@ -380,6 +439,37 @@ public struct WorldPush {
      * Tinting one side of that comparison and not the other would reject every stored sample.
      */
     public float4   emitterTint;
+    /**
+     * M28 S1: the sky's phase-integrated radiance split into the visibility grid's four world-azimuth
+     * quarter sectors, so the marched ambient sky term can weight each sector's VISIBILITY (the grid's
+     * bins) by that sector's own radiance instead of by the whole dome's mean. Each entry is the same
+     * integral mediumSkyRadiance is, restricted to one sector; their sum therefore reproduces
+     * mediumSkyRadiance up to summation order, which is what keeps a sector-lit cave mouth and an open
+     * field consistent at the grid's boundary.
+     *
+     * <p>Written by sky_medium_reduce.comp every frame for atmosphere providers -- the same pass that
+     * writes mediumSkyRadiance, from the same LUT, so the split cannot drift from the whole. The CPU
+     * fallback below (no reduce runs outside an atmosphere) is the isotropic split: four quarters of
+     * mediumSkyRadiance, whose sum is then EXACTLY the scalar. Consumers must not read these lanes
+     * unless FLAG_SKY_FIELD_DIRECTIONAL is set.
+     */
+    public float4   skySectorRadiance[4]; // xyz sector phase-integrated radiance, w zero
+    /**
+     * Live volumetric switches, in their own word -- see the FLAG_SKY_FIELD_DIRECTIONAL banner for why
+     * these are not bits of WorldPush.flags. Bit 0 = directional sky field, bit 1 = beyond-grid fog
+     * clamp. Written by RtComposite from the same config values it counts into the frame CSV, so the
+     * word and the capture columns cannot disagree about what a frame was told to do.
+     */
+    public uint     volumetricSwitches;
+    /**
+     * The second-level visibility grid's placement (M28 S1.5): xyz snapped minimum corner in rebased
+     * blocks, w the far cell size in blocks -- 0 when the feature is off or no grid was asked for,
+     * which is the consumers' skip signal. World-anchored and recentred with hysteresis by the CPU,
+     * for the same reason visGridOrigin snaps: a far field that slid with the camera would need
+     * reprojection at eight times the cell size, and the far field's whole point is to be the stable
+     * answer the fine grid's boundary cannot give.
+     */
+    public float4   visFarGridOrigin;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

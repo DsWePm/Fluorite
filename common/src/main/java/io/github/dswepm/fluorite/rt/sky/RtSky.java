@@ -75,6 +75,15 @@ public final class RtSky {
     public static final int VIS_GRID_W = 64;
     public static final int VIS_GRID_H = 32;
     public static final int VIS_GRID_D = 64;
+
+    /** M28 S1.5's second-level grid: same lattice, four blocks per cell (8 was halved in game after
+     * the openness debug view showed slope-adjacent open air reading sealed at the coarser size).
+     * Must match volume_visibility_far.comp.slang and the FAR_* constants in volume_visibility.slang. */
+    public static final int VIS_FAR_GRID_W = 64;
+    public static final int VIS_FAR_GRID_H = 32;
+    public static final int VIS_FAR_GRID_D = 64;
+    public static final float VIS_FAR_CELL = 4.0f;
+    private static final int FAR_VIS_PUSH_BYTES = 32;
     private static final int VIS_GROUP = 4; // matches [numthreads(4, 4, 4)]
     // WorldPush address, the integer cell shift since the frame the history was written, and a reset
     // flag. The grid's PLACEMENT stays a WorldPush field because consumers read the same one; only the
@@ -125,6 +134,10 @@ public final class RtSky {
     private final Bake mediumSkyReduceBake;
     private final Bake froxelBake;
     private final Bake[] visibilityBakes;
+    private final Bake[] farVisibilityBakes;
+    /** Whether the far grid's history has a window at all. Hysteresis and shift accounting live in
+     * RtComposite; this only records that a first dispatch no longer owes a reset. */
+    private boolean farWindowValid;
     /** Parity written LAST frame, so this frame reads it and writes the other. */
     private int visibilityHistoryRead;
     /** Grid origin in whole cells at the frame the history was written; absent means nothing to reuse. */
@@ -133,6 +146,8 @@ public final class RtSky {
     private int visibilityOriginCellY;
     private int visibilityOriginCellZ;
     private float visibilityHistoryCell;
+    /** The storage mode the surviving history was baked in; a flip forces the reset above. */
+    private boolean visibilityHistoryDirectional;
     private final Bake rainExposureBake;
     private final Bake[] rainHistoryBakes;
     private final Bake cloudNoiseBake;
@@ -154,6 +169,13 @@ public final class RtSky {
     private RtImage aerialPerspective;
     private RtImage visibilityGrid;
     private RtImage[] visibilityHistory;
+    /** M28 S1: the directional mode's shared EMA count, ping-ponged in step with the bins. */
+    private RtImage[] visibilityMetaHistory;
+    /** M28 S1.5: the far grid and its accumulator parities. Consumers read only the first. */
+    private RtImage visibilityFarGrid;
+    private RtImage[] visibilityFarHistory;
+    private RtImage[] visibilityFarMetaHistory;
+    private int farHistoryRead;
     private RtImage rainExposureDepth;
     private RtImage[] rainWetHistory;
     private int rainWetHistoryRead;
@@ -266,7 +288,7 @@ public final class RtSky {
     private RtSky(RtContext ctx, Bake transmittanceBake, Bake multiScatterBake, Bake skyViewBake,
                   Bake mediumSkyReduceBake, Bake froxelBake,
                   RtOverlayPipelines.AccelStructureSet froxelTlas,
-                  Bake[] visibilityBakes, RtOverlayPipelines.AccelStructureSet visibilityTlas,
+                  Bake[] visibilityBakes, Bake[] farVisibilityBakes, RtOverlayPipelines.AccelStructureSet visibilityTlas,
                   Bake rainExposureBake, Bake[] rainHistoryBakes,
                   RtOverlayPipelines.AccelStructureSet rainExposureTlas,
                   Bake cloudNoiseBake, Bake fogNoiseBake, Bake cloudWeatherBake, Bake cloudWarpBake,
@@ -280,6 +302,7 @@ public final class RtSky {
         this.froxelBake = froxelBake;
         this.froxelTlas = froxelTlas;
         this.visibilityBakes = visibilityBakes;
+        this.farVisibilityBakes = farVisibilityBakes;
         this.rainExposureBake = rainExposureBake;
         this.rainHistoryBakes = rainHistoryBakes;
         this.cloudNoiseBake = cloudNoiseBake;
@@ -441,11 +464,32 @@ public final class RtSky {
             // same way, for the same reason.
             Bake[] visibilityBakes = new Bake[2];
             for (int target = 0; target < 2; target++) {
+                // Five images: the sampled grid, the two history parities, and (M28 S1) the two meta
+                // parities carrying the directional mode's shared EMA count. The meta pair is bound and
+                // paid for in BOTH modes -- scalar mode never touches it, but binding count is fixed at
+                // set creation and the mode is a LIVE setting.
                 visibilityBakes[target] = createBake(ctx, stack, "volume_visibility.comp.spv",
                         "volume visibility " + target,
                         new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                 VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                 VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE}, VIS_PUSH_BYTES,
+                        visibilityTlas.layout);
+            }
+            // The far grid's two parities. Six bindings: its own five images plus the FINE grid's
+            // sampled texture -- the bootstrap seed that makes the far field start as the published
+            // behaviour instead of as noise.
+            Bake[] farVisibilityBakes = new Bake[2];
+            for (int target = 0; target < 2; target++) {
+                farVisibilityBakes[target] = createBake(ctx, stack, "volume_visibility_far.comp.spv",
+                        "far visibility " + target,
+                        new int[]{VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}, FAR_VIS_PUSH_BYTES,
                         visibilityTlas.layout);
             }
             RtOverlayPipelines.AccelStructureSet rainExposureTlas = RtOverlayPipelines.accelStructureSet(
@@ -464,7 +508,7 @@ public final class RtSky {
 
             RtSky sky = new RtSky(ctx, transmittanceBake, multiScatterBake, skyViewBake,
                     mediumSkyReduceBake, froxelBake, froxelTlas,
-                    visibilityBakes, visibilityTlas, rainExposureBake, rainHistoryBakes, rainExposureTlas,
+                    visibilityBakes, farVisibilityBakes, visibilityTlas, rainExposureBake, rainHistoryBakes, rainExposureTlas,
                     cloudNoiseBake, fogNoiseBake, cloudWeatherBake, cloudWarpBake, cloudShadowBake,
                     sampler, noiseSampler, rainHistorySampler);
             sky.waterSimBakes = waterSimBakes;
@@ -610,11 +654,45 @@ public final class RtSky {
                 sky.visibilityHistory[i] = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
                         VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "volume visibility history " + i);
             }
+            // M28 S1: where the directional mode's shared EMA count lives -- four sector bins fill the
+            // history's four channels, so the count gets its own ping-pong pair. Same feedback-loop
+            // reasoning as the bins themselves: float, because an 8-bit count stalls its own decay. Scalar
+            // mode never reads or writes this pair, but the descriptor set is built once, so it is
+            // allocated unconditionally; 2 MiB total against a grid the renderer already sizes casually.
+            sky.visibilityMetaHistory = new RtImage[2];
+            for (int i = 0; i < 2; i++) {
+                sky.visibilityMetaHistory[i] = ctx.createStorageImage3D(VIS_GRID_W, VIS_GRID_H, VIS_GRID_D,
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "volume visibility meta history " + i);
+            }
             for (int target = 0; target < 2; target++) {
                 long set = visibilityBakes[target].descriptorSet();
                 writeStorageImage(vk, stack, set, 0, sky.visibilityGrid.view);
                 writeStorageImage(vk, stack, set, 1, sky.visibilityHistory[target].view);
                 writeStorageImage(vk, stack, set, 2, sky.visibilityHistory[1 - target].view);
+                writeStorageImage(vk, stack, set, 3, sky.visibilityMetaHistory[target].view);
+                writeStorageImage(vk, stack, set, 4, sky.visibilityMetaHistory[1 - target].view);
+            }
+            // The far grid's own five images, plus the fine grid's sampled texture as its seed source.
+            // Float accumulators for the same feedback-loop reason as the fine grid's; the sampled far
+            // image is UNORM8 one-way like the fine one. About 4 MiB all told.
+            sky.visibilityFarGrid = ctx.createStorageImage3D(VIS_FAR_GRID_W, VIS_FAR_GRID_H, VIS_FAR_GRID_D,
+                    VK10.VK_FORMAT_R8G8B8A8_UNORM, "far visibility grid");
+            sky.visibilityFarHistory = new RtImage[2];
+            sky.visibilityFarMetaHistory = new RtImage[2];
+            for (int i = 0; i < 2; i++) {
+                sky.visibilityFarHistory[i] = ctx.createStorageImage3D(VIS_FAR_GRID_W, VIS_FAR_GRID_H, VIS_FAR_GRID_D,
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "far visibility history " + i);
+                sky.visibilityFarMetaHistory[i] = ctx.createStorageImage3D(VIS_FAR_GRID_W, VIS_FAR_GRID_H, VIS_FAR_GRID_D,
+                        VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "far visibility meta history " + i);
+            }
+            for (int target = 0; target < 2; target++) {
+                long set = farVisibilityBakes[target].descriptorSet();
+                writeStorageImage(vk, stack, set, 0, sky.visibilityFarGrid.view);
+                writeStorageImage(vk, stack, set, 1, sky.visibilityFarHistory[target].view);
+                writeStorageImage(vk, stack, set, 2, sky.visibilityFarHistory[1 - target].view);
+                writeStorageImage(vk, stack, set, 3, sky.visibilityFarMetaHistory[target].view);
+                writeStorageImage(vk, stack, set, 4, sky.visibilityFarMetaHistory[1 - target].view);
+                writeSampledImage(vk, stack, set, 5, sky.visibilityGrid.view, sampler);
             }
             // The froxel reads the same openness the marched segments do, with the same LINEAR +
             // CLAMP_TO_EDGE sampler. One field, one definition, both consumers -- which is what stops the
@@ -990,7 +1068,7 @@ public final class RtSky {
      */
     public void recordVisibilityBake(VkCommandBuffer cmd, long worldPushAddr, long tlas,
                                      int originCellX, int originCellY, int originCellZ, float cellSize,
-                                     RtGpuExecutor.GraphicsUse graphicsUse) {
+                                     boolean directional, RtGpuExecutor.GraphicsUse graphicsUse) {
         if (visibilityHistory == null) {
             return;
         }
@@ -999,9 +1077,12 @@ public final class RtSky {
         int shiftY = visibilityHistoryValid ? originCellY - visibilityOriginCellY : 0;
         int shiftZ = visibilityHistoryValid ? originCellZ - visibilityOriginCellZ : 0;
         // A cell-size change re-scales what every cell MEANS, so no shift can carry the history across
-        // one; a jump wider than the grid leaves no cell with a predecessor to carry.
+        // one; a jump wider than the grid leaves no cell with a predecessor to carry. A mode flip re-
+        // interprets every stored channel (scalar open/count vs four sector bins), so the same rule
+        // applies: nothing survives it.
         boolean reset = !visibilityHistoryValid
                 || visibilityHistoryCell != cellSize
+                || visibilityHistoryDirectional != directional
                 || Math.abs(shiftX) >= VIS_GRID_W
                 || Math.abs(shiftY) >= VIS_GRID_H
                 || Math.abs(shiftZ) >= VIS_GRID_D;
@@ -1021,7 +1102,10 @@ public final class RtSky {
             // 16-byte alignment and would begin at byte 16, silently reading these one slot across.
             pushData.putInt(8, shiftX).putInt(12, shiftY).putInt(16, shiftZ);
             pushData.putInt(20, reset ? 1 : 0);
-            pushData.putInt(24, 0).putInt(28, 0);
+            // Offset 24: the storage-layout flag, mirrored from WorldPush.flags bit 27. The shader reads
+            // the bit out of WorldPush for its own branch; this copy exists so the push block is the one
+            // place the bake's inputs are listed. Byte 28 stays zero padding.
+            pushData.putInt(24, directional ? 1 : 0).putInt(28, 0);
             VK10.vkCmdPushConstants(cmd, visibilityBake.pipelineLayout(),
                     VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
             // One thread per CELL. Unlike the froxel there is nothing to accumulate along an axis, so no
@@ -1036,6 +1120,50 @@ public final class RtSky {
         visibilityOriginCellY = originCellY;
         visibilityOriginCellZ = originCellZ;
         visibilityHistoryCell = cellSize;
+        visibilityHistoryDirectional = directional;
+    }
+
+    /**
+     * Record the far grid's refresh dispatch (M28 S1.5). The GPU does the round-robin off
+     * WorldPush.frameIndex, so per frame this is one small dispatch plus bookkeeping; the CPU's only
+     * real decision is the RECENTRE, taken by the caller, which hands in the desired centre cell and
+     * whether the grid must start over. The push block mirrors the fine bake's VisPush shape (scalars
+     * only -- see that struct's banner); the shift lanes stay zero because a recentred far grid resets
+     * rather than reprojects.
+     */
+    public void recordVisibilityFarBake(VkCommandBuffer cmd, long worldPushAddr, long tlas,
+                                        int shiftX, int shiftY, int shiftZ, boolean reset,
+                                        RtGpuExecutor.GraphicsUse graphicsUse) {
+        if (visibilityFarHistory == null) {
+            return;
+        }
+        int write = 1 - farHistoryRead;
+        Bake farBake = farVisibilityBakes[write];
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "far visibility bake")) {
+            VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, farBake.pipeline());
+            long tlasSet = visibilityTlas.bind(ctx, tlas, graphicsUse);
+            VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE,
+                    farBake.pipelineLayout(), 0,
+                    stack.longs(farBake.descriptorSet(), tlasSet), null);
+            ByteBuffer pushData = stack.malloc(FAR_VIS_PUSH_BYTES);
+            pushData.putLong(0, worldPushAddr);
+            pushData.putInt(8, shiftX).putInt(12, shiftY).putInt(16, shiftZ);
+            pushData.putInt(20, reset ? 1 : 0);
+            pushData.putInt(24, 0).putInt(28, 0);
+            VK10.vkCmdPushConstants(cmd, farBake.pipelineLayout(),
+                    VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, pushData);
+            VK10.vkCmdDispatch(cmd, (VIS_FAR_GRID_W + VIS_GROUP - 1) / VIS_GROUP,
+                    (VIS_FAR_GRID_H + VIS_GROUP - 1) / VIS_GROUP,
+                    (VIS_FAR_GRID_D + VIS_GROUP - 1) / VIS_GROUP);
+        }
+        farHistoryRead = write;
+        farWindowValid = true;
+    }
+
+    /** The far grid's sampled view, for the ray-tracing atlas. Null until resources exist. */
+    public long visibilityFarGridView() {
+        return visibilityFarGrid != null ? visibilityFarGrid.view : 0L;
     }
 
     /**
@@ -1553,6 +1681,35 @@ public final class RtSky {
             visibilityHistory = null;
             visibilityHistoryValid = false;
         }
+        if (visibilityMetaHistory != null) {
+            for (RtImage image : visibilityMetaHistory) {
+                if (image != null) {
+                    image.destroy();
+                }
+            }
+            visibilityMetaHistory = null;
+        }
+        if (visibilityFarGrid != null) {
+            visibilityFarGrid.destroy();
+            visibilityFarGrid = null;
+        }
+        if (visibilityFarHistory != null) {
+            for (RtImage image : visibilityFarHistory) {
+                if (image != null) {
+                    image.destroy();
+                }
+            }
+            visibilityFarHistory = null;
+        }
+        if (visibilityFarMetaHistory != null) {
+            for (RtImage image : visibilityFarMetaHistory) {
+                if (image != null) {
+                    image.destroy();
+                }
+            }
+            visibilityFarMetaHistory = null;
+        }
+        farWindowValid = false;
         if (rainExposureDepth != null) {
             rainExposureDepth.destroy();
             rainExposureDepth = null;
@@ -1635,6 +1792,9 @@ public final class RtSky {
         }
         for (Bake visibility : visibilityBakes) {
             visibility.destroy(vk);
+        }
+        for (Bake farVisibility : farVisibilityBakes) {
+            farVisibility.destroy(vk);
         }
         rainExposureBake.destroy(vk);
         for (Bake history : rainHistoryBakes) {

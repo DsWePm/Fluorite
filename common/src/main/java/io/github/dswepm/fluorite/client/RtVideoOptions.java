@@ -232,6 +232,12 @@ public final class RtVideoOptions {
                                 outputTransform(), hdrEnabled(), acesHdrPreset(),
                                 hdrPaperWhite(), hdrPeak()));
                 case DIAGNOSTICS -> List.of(Section.of(debugView(), fogSegmentSource(),
+                        bool("fluorite.options.rt.skyDirectionalField",
+                                FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD),
+                        bool("fluorite.options.rt.fogBeyondGridUsesClamp",
+                                FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP),
+                        bool("fluorite.options.rt.farVisibilityField",
+                                FluoriteConfig.Rt.Volumetrics.FAR_VISIBILITY_FIELD),
                         bool("fluorite.options.rt.waterMediumTrace",
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",
@@ -2298,9 +2304,16 @@ public final class RtVideoOptions {
         return new OptionInstance<>(
             "fluorite.options.rt.debugView",
             OptionInstance.cachedConstantTooltip(Component.translatable("fluorite.options.rt.debugView.tooltip")),
-            // CycleButton (used for Enum values) already prepends "caption: " itself (DisplayState.
-            // NAME_AND_VALUE), so this must return only the value's text, not caption + value again.
-            (caption, value) -> Component.translatable("fluorite.options.rt.debugView." + value),
+            // A slider sweeps EVERY integer in the range, including the retired numbers below, and a
+            // translatable with no entry renders as its own key -- a leaked implementation string in
+            // the label. So named views get their name and unnamed ones get an honest number.
+            (caption, value) -> {
+                String key = "fluorite.options.rt.debugView." + value;
+                Component named = Component.translatable(key);
+                return named.getString().equals(key)
+                        ? Component.literal("视图 " + value + "（已退役）")
+                        : named;
+            },
             // 0-7 are pass A's guide buffers; 8-11 are pass B's volume views, which describe the segments
             // between hits rather than the hits themselves. See world.rgen's volumeDebug.
             //
@@ -2311,11 +2324,17 @@ public final class RtVideoOptions {
             // described. Every note that names a view by number stays true this way, and the shader
             // paints magenta for a number no arm claims rather than falling through to a plausible
             // picture.
-            new OptionInstance.Enum<>(
-                    List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 18, 20, 21, 22, 23,
-                            24, 26, 27),
-                    Codec.INT),
-            Math.clamp(setting.value(), 0, 27),
+            //
+            // THIS WAS A CYCLE BUTTON over an explicit List until 31 exposed the trap: the shader had
+            // grown view 31, the language files named it, and the button still cycled the stale list --
+            // three files, and the fourth one nobody remembered was the one that gated reachability.
+            // A slider over the full numeric range cannot forget a view; the retired numbers it sweeps
+            // through cost one glance, not a lost feature. (D211's wider lesson, UI edition.)
+            // The range is exactly the live views, 0..21, and stays contiguous by convention: a new
+            // view takes the next number, a retired view's number is REUSED by the next one. The old
+            // gap-preserving rule is what hid view 31 from its own button (D211/D215).
+            new OptionInstance.IntRange(0, 21),
+            Math.clamp(setting.value(), 0, 21),
             setting::set);
     }
 

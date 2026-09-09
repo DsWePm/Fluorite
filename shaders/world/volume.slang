@@ -473,6 +473,25 @@ void ambientStep(inout AmbientAccum acc, float3 ro, float3 rd, float tA, float t
 }
 
 /**
+ * The marched sky source under FLAG_SKY_FIELD_DIRECTIONAL: each sector bin weighted by its OWN sector's
+ * phase-integrated radiance, so a cave mouth to the east lights the fog near it with the east rather than
+ * with the dome's mean.
+ *
+ * <p>No phase evaluation here, deliberately. mediumSkyRadiance is a PHASE-INTEGRATED reduction -- the
+ * sky-view LUT's tables are looked up with the scattering angle against the sun baked in at reduction
+ * time -- and skySectorRadiance is that same integral split by world azimuth, so the sector radiance
+ * already carries everything directional the phase knows. Their sum reproduces mediumSkyRadiance up to
+ * summation order, which is what makes all-bins-open collapse to exactly the scalar source the two outer
+ * (outside-the-grid) regions of this integrator keep using whether the flag is set or not.
+ */
+float3 sectorSkyTerm(float4 bins) {
+    return bins.x * worldPush.skySectorRadiance[0].xyz
+         + bins.y * worldPush.skySectorRadiance[1].xyz
+         + bins.z * worldPush.skySectorRadiance[2].xyz
+         + bins.w * worldPush.skySectorRadiance[3].xyz;
+}
+
+/**
  * The sun's contribution to a marched segment, with visibility from RAYS instead of from the grid.
  *
  * <p><b>Why the grid is not enough, measured rather than argued.</b> Debug view 19 plots sun visibility
@@ -713,6 +732,35 @@ ScatterProbe noScatterProbe() {
     return probe;
 }
 
+/**
+ * The sky source and openness for a marched stretch OUTSIDE the fine grid's span, in the shape the
+ * ambient integrators consume: returns the source and writes the visibility that multiplies it.
+ *
+ * <p>Three policies behind one seam. FLAG_FAR_VISIBILITY_FIELD with a published far grid: the far
+ * field's trilinear bins, sector-weighted in directional mode (visibility lives inside the weights,
+ * so openness hands down as 1 -- same shape as the in-grid directional branch). FLAG_FOG_BEYOND_GRID_CLAMP
+ * alone: the fine grid's clamped boundary at the sample point, the answer this seam used before the
+ * far grid existed. Neither: fully open, the shipped pre-clamp behaviour.
+ */
+float3 beyondGridSky(float3 p, float3 skySource, out float open) {
+    if ((worldPush.volumetricSwitches & FLAG_FAR_VISIBILITY_FIELD) != 0u
+            && worldPush.visFarGridOrigin.w > 0.0) {
+        float4 bins = farSkyBins(p);
+        if ((worldPush.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+            open = 1.0;
+            return sectorSkyTerm(bins);
+        }
+        open = bins.r;
+        return skySource;
+    }
+    if ((worldPush.volumetricSwitches & FLAG_FOG_BEYOND_GRID_CLAMP) != 0u) {
+        open = volumeSkyOpenness(p);
+        return skySource;
+    }
+    open = 1.0;
+    return skySource;
+}
+
 /** One region of the canonical view march; gridRegion changes visibility, never density sampling. */
 void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe probe,
                                  float3 ro, float3 rd,
@@ -745,8 +793,12 @@ void integrateNoisyAmbientRegion(inout AmbientAccum acc, inout ScatterProbe prob
         }
         float3 stepT = exp(-worldPush.fogExtinction.xyz * tau);
         if (sourceOn) {
-            float skyOpen = gridRegion ? volumeSkyOpenness(p) : 1.0;
-            float3 source = skySource * skyOpen;
+            // gridRegion=false marks the stretches outside the grid's span: the beyondGridSky seam
+            // answers them (far field when published, else the clamp, else shipped-open).
+            float skyOpen;
+            float3 beyondSky = gridRegion ? skySource
+                    : beyondGridSky(p, skySource, skyOpen);
+            float3 source = beyondSky * (gridRegion ? volumeSkyOpenness(p) : skyOpen);
             acc.inScatter += acc.transmittance * scatterAlbedo * source
                     * (float3(1.0, 1.0, 1.0) - stepT);
         }
@@ -1295,16 +1347,20 @@ float3 enclosedSingleScatter(float3 mediumExtinction, uint mediumFlags, float3 a
         float3 skySigmaSource = multiScatterOn()
                 ? volumeDiffuseAttenuation(sigmaT, albedo, mediumPhaseGFlags(mediumFlags))
                 : sigmaT;
-        // ONE RAY STRAIGHT UP, and it answers both questions the sky term has.
+        // ONE RAY STRAIGHT UP, and it answers exactly ONE of the sky term's two questions.
         //
         // How deep is this point: waterHitT is the distance to where the column of water above it ends,
         // measured rather than derived, so a second pool at another height and the camera's own body no
-        // longer share one number.
+        // longer share one number. That is the whole of what this ray contributes; only waterHitT is
+        // read below.
         //
-        // Is there sky up there at all: the same ray's transmittance. Water tints it and passes it
-        // through; rock stops it. So a flooded cave under an overhang goes dark because the ray says so,
-        // which is what settles the question the CPU's upward surface scan could not answer -- that scan
-        // only finds where the water stops, not whether anything is above it.
+        // WHETHER THERE IS SKY UP THERE IS NOT THIS RAY'S ANSWER, and this comment used to claim it was.
+        // Using the ray's transmittance for openness was a real earlier implementation and it was
+        // replaced, for the reason the next paragraph gives: a ray is binary, so one block of rock
+        // overhead dropped the sky term from full to nothing. A flooded cave under an overhang goes dark
+        // because the GRID says so. The claim survived the code that justified it, which is the way a
+        // comment becomes worse than no comment -- the next reader looks for a transmittance that
+        // nothing multiplies.
         //
         // This replaced M9's CPU sky-light grid factor (removed in M15.0), whose grid carried a second
         // depth falloff of its own: vanilla
@@ -1509,8 +1565,20 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                 AmbientAccum acc;
                 acc.inScatter = float3(0.0, 0.0, 0.0);
                 acc.transmittance = float3(1.0, 1.0, 1.0);
+                // The two outer stretches: D178 left them hardwired open so its clamp could be
+                // attributed alone. Under FLAG_FOG_BEYOND_GRID_CLAMP they ask the clamped field at
+                // their MIDPOINT -- one read per stretch, matching the closed-form one-step shape, not
+                // a sub-step march -- so far cave fog stops reading as if the sky were up. The guards
+                // keep the empty-region case (a camera already inside the grid makes the first
+                // stretch zero length) from paying a fetch to be ignored.
+                float outerOpenA = 1.0;
+                float3 outerSkyA = skySource;
+                if (tEnter > window.x) {
+                    outerSkyA = beyondGridSky(ro + rd * ((window.x + tEnter) * 0.5),
+                            skySource, outerOpenA);
+                }
                 ambientStep(acc, ro, rd, window.x, tEnter, scatterAlbedo,
-                            gridSunSource, skySource, 1.0);
+                            gridSunSource, outerSkyA, outerOpenA);
                 // Guarded, not just relying on ambientStep's own zero-length early-out: the SAMPLE happens
                 // before that check, so a segment that never touches the grid would still pay six 3D
                 // texture fetches to be told six times that it is outside. Most bounce segments in an open
@@ -1526,12 +1594,32 @@ public SegmentIntegral integrateSegment(float3 currentExtinction, uint currentFl
                         // one-coin-flip failure this grid exists to avoid — at a smaller scale, but the same
                         // shape.
                         float3 midP = ro + rd * ((tA + tB) * 0.5);
+                        // M28 S1: under FLAG_SKY_FIELD_DIRECTIONAL the fetch returns four SECTOR bins, and
+                        // each is weighted by its own sector's phase-integrated radiance -- a cave mouth to
+                        // the east lights the fog near it with the east, not with the dome's mean. The
+                        // visibility is inside the per-bin weights, so the openness handed down is 1: the
+                        // product ambientStep forms is unchanged, only which factor carries the occlusion.
+                        // Scalar mode passes the shipped pair untouched.
+                        float3 stepSky = skySource;
+                        float stepOpen;
+                        if ((worldPush.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) != 0u) {
+                            stepSky = sectorSkyTerm(volumeSkyBins(midP));
+                            stepOpen = 1.0;
+                        } else {
+                            stepOpen = volumeSkyOpenness(midP);
+                        }
                         ambientStep(acc, ro, rd, tA, tB, scatterAlbedo,
-                                    gridSunSource, skySource, volumeSkyOpenness(midP));
+                                    gridSunSource, stepSky, stepOpen);
                     }
                 }
+                float outerOpenB = 1.0;
+                float3 outerSkyB = skySource;
+                if (window.y > tExit) {
+                    outerSkyB = beyondGridSky(ro + rd * ((tExit + window.y) * 0.5),
+                            skySource, outerOpenB);
+                }
                 ambientStep(acc, ro, rd, tExit, window.y, scatterAlbedo,
-                            gridSunSource, skySource, 1.0);
+                            gridSunSource, outerSkyB, outerOpenB);
                 // += rather than =: the enclosed branch above may already have deposited in-scatter.
                 // Unreachable today (every enclosed medium has ambient false), but a future composite
                 // profile that deposits both enclosed and ambient source would otherwise lose the first.

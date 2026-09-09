@@ -220,6 +220,18 @@ public final class RtComposite {
     }
 
     /**
+     * M28 S1: the CPU-authored fallback for the sector radiance split -- the isotropic one, four exact
+     * quarters of mediumSkyRadiance so their sum is precisely the scalar. Only providers with no
+     * sky_medium_reduce pass see it; an atmosphere overwrites all four lanes from the LUT every frame,
+     * and there the sum reproduces the scalar by construction instead of by quartering.
+     */
+    private static Float4 skySectorRadianceFallback(RtSkyPreset preset, RtDimensionControls controls,
+                                                    RtEnvironmentTextures.Entry environment) {
+        Float4 whole = mediumSkyRadiance(preset, controls, environment);
+        return new Float4(whole.x() * 0.25f, whole.y() * 0.25f, whole.z() * 0.25f, 0f);
+    }
+
+    /**
      * Where the volumetric visibility grid sits this frame: its minimum corner in rebased blocks, and its
      * cell size in w. A cell size of zero is the disable path — sampleVolumeVisibility reports everything
      * lit, which reproduces the unshadowed fog exactly rather than approximately.
@@ -249,6 +261,60 @@ public final class RtComposite {
      * read as the grid having moved. Two frames either side of one would otherwise produce a shift of a
      * few hundred cells and throw away a history that had not actually gone anywhere.
      */
+    /** The far grid's centre cell (M28 S1.5) and whether the last helper call recentred it. */
+    private int farCenterCellX;
+    private int farCenterCellY;
+    private int farCenterCellZ;
+    private boolean farCenterValid;
+    private boolean farRecentredThisFrame;
+    /** The centre the far BAKE last saw, so the dispatch can hand it an integer reprojection shift.
+     * Distinct from the fields above: the helper's centre moves with hysteresis; the bake's shift is
+     * measured against whatever window the GPU actually holds. */
+    private int farDispatchedCellX;
+    private int farDispatchedCellY;
+    private int farDispatchedCellZ;
+    private boolean farDispatchedValid;
+
+    /**
+     * The far grid's placement this frame: xyz the snapped minimum corner in rebased blocks, w the
+     * far cell size -- 0 whenever the feature is off or the fine grid it bootstraps from is absent.
+     *
+     * <p>RECENTRED WITH HYSTERESIS, unlike the fine grid's every-cell follow: a far field that slid
+     * one eight-block cell with the camera would either reproject at eight times the cell size or
+     * re-converge constantly. Instead the centre stays put until the camera leaves the central eighth
+     * of the grid (64 blocks), then jumps and takes a one-frame reset -- the rain-exposure pattern.
+     * The side effect is deliberate: the caller reads {@code farRecentredThisFrame} to decide the
+     * bake's reset, so placement and reset can never disagree.
+     */
+    private Float4 visFarGridOrigin(double camX, double camY, double camZ, RtTerrain terrain,
+                                    boolean fineActive) {
+        farRecentredThisFrame = false;
+        if (!FluoriteConfig.Rt.Volumetrics.FAR_VISIBILITY_FIELD.value() || !fineActive) {
+            farCenterValid = false;
+            return new Float4(0f, 0f, 0f, 0f);
+        }
+        float cell = RtSky.VIS_FAR_CELL;
+        int dcx = (int) Math.floor(camX / cell);
+        int dcy = (int) Math.floor(camY / cell);
+        int dcz = (int) Math.floor(camZ / cell);
+        if (!farCenterValid
+                || Math.abs(dcx - farCenterCellX) > 8
+                || Math.abs(dcy - farCenterCellY) > 8
+                || Math.abs(dcz - farCenterCellZ) > 8) {
+            farCenterCellX = dcx;
+            farCenterCellY = dcy;
+            farCenterCellZ = dcz;
+            farCenterValid = true;
+            farRecentredThisFrame = true;
+        }
+        double halfX = RtSky.VIS_FAR_GRID_W * 0.5 * cell;
+        double halfY = RtSky.VIS_FAR_GRID_H * 0.5 * cell;
+        double halfZ = RtSky.VIS_FAR_GRID_D * 0.5 * cell;
+        return new Float4((float) (farCenterCellX * cell - halfX - terrain.blockX),
+                (float) (farCenterCellY * cell - halfY - terrain.blockY),
+                (float) (farCenterCellZ * cell - halfZ - terrain.blockZ), cell);
+    }
+
     static int visibilityGridOriginCell(double cam, float cell, int cells) {
         if (cell <= 0f) {
             return 0;
@@ -588,10 +654,12 @@ public final class RtComposite {
         if (level == null || waterDomain.z() <= 0f) {
             return;
         }
-        // Debug view 23 drives a test impulse at the domain centre. It is what makes the view able to
-        // distinguish "nothing disturbs the field" from "the field cannot propagate" -- two states that
-        // look identical on a flat pond and have completely different causes.
-        if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() == 23) {
+        // Debug view 17 (the water height field) drives a test impulse at the domain centre. It is what
+        // makes the view able to distinguish "nothing disturbs the field" from "the field cannot
+        // propagate" -- two states that look identical on a flat pond and have completely different
+        // causes. The number is a literal because the view's constant lives in the shader; the
+        // contiguous-numbering pass (2026-09-09) moved it from 23.
+        if (FluoriteConfig.Rt.Composite.DEBUG_VIEW.value() == 17) {
             waterImpulses[0] = RtSky.WATER_SIM_DIM * 0.5f;
             waterImpulses[1] = RtSky.WATER_SIM_DIM * 0.5f;
             waterImpulses[2] = 3f;
@@ -1523,6 +1591,10 @@ public final class RtComposite {
     // froxel's own growth to 64x36x64 with two rays a cell -- two changes that landed without a reading
     // between them. Deciding whether to spend more rays here needs the two numbers apart.
     private static final int GPU_ZONE_VIS_BAKE = 3;
+    // The far grid (M28 S1.5), timed apart from the fine bake for the same reason that one was split
+    // from the froxel: the far dispatch is amortised round-robin (a fraction of its lattice per frame)
+    // and its cost must be attributable without re-running the fine grid's A/B.
+    private static final int GPU_ZONE_VIS_FAR_BAKE = 16;
     // The froxel, split out of GPU_ZONE_SKY_BAKE. That zone held the three sky tables AND the froxel, and
     // the combined 1.34 ms could not say which of them to spend effort on -- the froxel runs one thread
     // per COLUMN (2304 of them) while the visibility grid runs one per cell (131k) for a comparable ray
@@ -2149,7 +2221,7 @@ public final class RtComposite {
                         "gpu.waterSim", "gpu.waterDeform",
                         "gpu.entityBlas", "gpu.tlasBuild", "gpu.rainExposure", "gpu.rainStreak",
                         "gpu.lensSpatial", "gpu.displayMap", "gpu.bloomFlare", "gpu.cloudShadow",
-                        "gpu.lightPool");
+                        "gpu.lightPool", "gpu.visFarBake");
             }
             if (output != null) {
                 worldPipeline.setStorageImage(output.view);
@@ -2230,6 +2302,9 @@ public final class RtComposite {
                     skyLuts.skyViewMultiView(), lutSampler(ctx));
             worldPipeline.setAerialPerspectiveLut(skyLuts.aerialPerspectiveView(), lutSampler(ctx));
             worldPipeline.setVolumeVisibilityGrid(skyLuts.visibilityGridView(), lutSampler(ctx));
+            if (skyLuts.visibilityFarGridView() != 0L) {
+                worldPipeline.setVolumeVisibilityFarGrid(skyLuts.visibilityFarGridView(), lutSampler(ctx));
+            }
             // NOT the LUT sampler. Every table above is a parameterisation over [0,1] and must clamp;
             // cloud and fog noise are sampled at WORLD COORDINATES divided by a feature size, which
             // leaves that range immediately and has to wrap. See tilingSampler.
@@ -3015,6 +3090,14 @@ public final class RtComposite {
                 // Bit 26: the source decays at the diffusion rate rather than the beam's.
                 flags |= 1 << 26;
             }
+            // The two live volumetric switches are NOT bits of this word -- bits 27/28 turned out to be
+            // M17's SCATTER_VERTEX and VOLUME_EMITTER_NEE (D211), so they travel in WorldPush's own
+            // volumetricSwitches lane, assembled at the call site below. The CSV columns are counted
+            // from the very values that feed that lane, so the capture cannot disagree with the frame.
+            RtFrameStats.FRAME.count("skyDirectionalField",
+                    FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value() ? 1 : 0);
+            RtFrameStats.FRAME.count("fogBeyondGridClamp",
+                    FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value() ? 1 : 0);
             if (skyPreset.cloudsEnabled() && FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
                 // Bits 2-3: how much march a ray that is not the first of its path may spend. A cost
@@ -3229,7 +3312,30 @@ public final class RtComposite {
                     // away, which reads as "RIS got worse" rather than as "the setting did nothing".
                     fe.dynamicLightCount() > 0
                             ? FluoriteConfig.Rt.Composite.DYNAMIC_RIS_CANDIDATES.value() : 0,
-                    emitterTint()
+                    emitterTint(),
+                    // M28 S1: the sector radiance split, CPU-authored as exact quarters for providers
+                    // whose sky_medium_reduce does not run; an atmosphere overwrites all four from the
+                    // LUT later in the same command buffer, exactly as it does mediumSkyRadiance above.
+                    new Float4[]{
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry),
+                            skySectorRadianceFallback(skyPreset, dimensionControls, environmentEntry)},
+                    // The two live volumetric switches in their own word (D211: they first shipped as
+                    // flags bits 27/28, which M17's SCATTER_VERTEX and VOLUME_EMITTER_NEE had owned all
+                    // along -- the collision wired both switches permanently on). Bit 0 directional,
+                    // bit 1 beyond-grid clamp; the Slang constants in world_common define the same.
+                    (FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value() ? 1 : 0)
+                            | (FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value() ? 2 : 0)
+                            | (FluoriteConfig.Rt.Volumetrics.FAR_VISIBILITY_FIELD.value() ? 4 : 0),
+                    // M28 S1.5's far grid placement (struct tail, after the switches word). The
+                    // helper's recentre side effect is read by the bake dispatch below, so the lane
+                    // and the bake can never disagree about a jump. fineActive mirrors the dispatch's
+                    // gate -- an unpublished far grid must not have a placement lane, or consumers
+                    // would sample a texture nothing bakes.
+                    visFarGridOrigin(camX, camY, camZ, terrain,
+                            FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
+                                    && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -3394,10 +3500,60 @@ public final class RtComposite {
                         visibilityGridOriginCell(camX, visCell, RtSky.VIS_GRID_W),
                         visibilityGridOriginCell(camY, visCell, RtSky.VIS_GRID_H),
                         visibilityGridOriginCell(camZ, visCell, RtSky.VIS_GRID_D),
-                        visCell, graphicsUse);
+                        visCell,
+                        FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value(),
+                        graphicsUse);
             }
             if (gpuTimers != null) {
                 gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_BAKE);
+            }
+            // The far grid's amortised refresh. Gated on the fine grid's own conditions because the
+            // fine grid is its seed and its TLAS partner; a recentre (the helper above sets the flag)
+            // takes a one-frame reset and re-bootstraps from the fine clamp.
+            // NOTE THE GATE: this class's farCenterValid, set by visFarGridOrigin() during the WorldPush
+            // build above. RtSky's same-named field only turns true inside the bake's own bookkeeping,
+            // so gating on it was a deadlock -- the dispatch was the only thing that could set it, and
+            // it was the only thing waiting on it. The first capture's all-zero visFarBake column was
+            // this deadlock reporting itself.
+            if (FluoriteConfig.Rt.Volumetrics.FAR_VISIBILITY_FIELD.value()
+                    && FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
+                    && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED
+                    && farCenterValid) {
+                if (gpuTimers != null) {
+                    gpuTimers.begin(cmd, pushSlot, GPU_ZONE_VIS_FAR_BAKE);
+                }
+                // A recentre slides the world-anchored lattice by WHOLE far cells, so the GPU
+                // reprojections instead of re-converging: shift is this frame's centre minus the
+                // window the GPU already holds, and only a lattice-wider jump (or the feature being
+                // newly on) spends the one-frame reset.
+                int shiftX = 0;
+                int shiftY = 0;
+                int shiftZ = 0;
+                boolean reset = !farDispatchedValid;
+                if (farDispatchedValid) {
+                    shiftX = farCenterCellX - farDispatchedCellX;
+                    shiftY = farCenterCellY - farDispatchedCellY;
+                    shiftZ = farCenterCellZ - farDispatchedCellZ;
+                    reset = Math.abs(shiftX) >= RtSky.VIS_FAR_GRID_W
+                            || Math.abs(shiftY) >= RtSky.VIS_FAR_GRID_H
+                            || Math.abs(shiftZ) >= RtSky.VIS_FAR_GRID_D;
+                    if (reset) {
+                        shiftX = 0;
+                        shiftY = 0;
+                        shiftZ = 0;
+                    }
+                }
+                skyLuts.recordVisibilityFarBake(cmd, pushBuf.deviceAddress, frameTlas.accel.handle,
+                        shiftX, shiftY, shiftZ, reset, graphicsUse);
+                farDispatchedCellX = farCenterCellX;
+                farDispatchedCellY = farCenterCellY;
+                farDispatchedCellZ = farCenterCellZ;
+                farDispatchedValid = true;
+                if (gpuTimers != null) {
+                    gpuTimers.end(cmd, pushSlot, GPU_ZONE_VIS_FAR_BAKE);
+                }
+            }
+            if (gpuTimers != null) {
                 gpuTimers.begin(cmd, pushSlot, GPU_ZONE_LIGHT_POOL);
             }
             // M26. Recorded among the bakes so the barrier below -- "bakes visible to the trace's
