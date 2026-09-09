@@ -481,6 +481,12 @@ public struct WorldPush {
      * an address. At the struct tail, so every offset the layout test pins below it stays put.
      */
     public uint64_t pathReservoirAddr;
+    /**
+     * The path reservoir's temporal-reuse counters (RtPathReservoirStats): records read, records that
+     * passed validation, merges applied. 0 when diagnostics.restir-stats is off or the reservoir is --
+     * the shader's skip signal, exactly like restirStatsAddr for the M24 store.
+     */
+    public uint64_t pathReservoirStatsAddr;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

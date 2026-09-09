@@ -65,10 +65,13 @@ final class RtSkyMediumLayoutTest {
         // restirStatsAddr it travels in WorldPush for the reason that banner records. It is the struct's
         // second address lane and the off state publishes 0, which is the switch's whole shader-side
         // presence: no flag to disagree with.
+        // D217's acceptance counters follow at 1288 -- the lane the first address's padding was holding,
+        // so the struct does not move until a third address shows up.
         assertEquals(1296, WorldPushData.BYTE_SIZE);
         assertEquals(1248, WorldPushData.VOLUMETRIC_SWITCHES_OFFSET);
         assertEquals(1264, WorldPushData.VIS_FAR_GRID_ORIGIN_OFFSET);
         assertEquals(1280, WorldPushData.PATH_RESERVOIR_ADDR_OFFSET);
+        assertEquals(1288, WorldPushData.PATH_RESERVOIR_STATS_ADDR_OFFSET);
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
                 .anyMatch(component -> component.getName().equals("skySectorRadiance")));
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())

@@ -188,3 +188,7 @@ S2 设计定稿（用户裁决 B）与 scaffolding 之后的第一个集成片�
   1. **静态场景噪声减半、无亮度偏移**:站定看一处间接光可见区域(墙角/屋檐下),开关 `composite.path-reservoir` A/B——开档噪声应变细,亮度不应整体偏移。**整体偏亮/偏暗 = 雅可比错**(设计已知风险③的预定表现);噪声不减 = 合并未生效(查 `pathReservoir` CSV 列与显存日志)。
   2. **移动不复用但不出鬼影**:走动时开档 ≈ 关档(重投影/漂移界拒绝历史),不应有亮度拖尾。
   3. **性能归档**:frame.csv `gpu.*` 同会话 A/B(A→B→A),本片新增成本 = 每像素一次 48B 读 + 一次 BSDF 重评 + 写;寄存器压力(R6 台阶)顺带观察 frame.csv 的 traceIndirect 底值变化。
+
+### D217 补充:验收归因仪表(同日)
+
+镜像 `RtRestirStats` 新增 `RtPathReservoirStats`(同一 `diagnostics.restir-stats` 开关下,一个 ReSTIR 统计开关管两套 store):三 lane——**read**(找到并读了历史)/ **usable**(通过校验)/ **applied**(合并值到达像素),1/16 像素采样、环形回读、每秒限频日志。shader 侧在时域块内直接三次 `InterlockedAdd`(每像素每帧至多一次尝试,采样后成本与 DI 统计同量级)。诊断读法:**read 高 usable 低** = 漂移/深度校验在拒(移动场景正常,静止场景偏高 = 校验过紧);**usable 高 applied 低** = pdf 门吞掉(方向落在混合体支集外,罕见);**read 本身 ≈ 0** = 重投影失效或开关/缓冲没接上。WorldPush 尾部追加 `pathReservoirStatsAddr`(偏移 1288)——恰好落在第一地址的 padding 里,BYTE_SIZE 仍是 1296,第二个地址零上传成本。

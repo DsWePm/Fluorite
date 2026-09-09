@@ -936,6 +936,15 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             if (reconDepth == 0u) {
                 haveHistory = restirPreviousPixel(hitPos, renderSize, readPixel);
             }
+            // Acceptance attribution (the D211 rule): one pixel in sixteen reports its outcome, so
+            // "the switch did nothing" can never mean "the merge silently never fired". One attempt
+            // per pixel per frame -- the sampled cost is three atomics, the same order the DI stats
+            // already accepted.
+            bool sampled = worldPush.pathReservoirStatsAddr != 0u
+                    && ((pixelIndex ^ worldPush.frameIndex) & 15u) == 0u;
+            if (sampled && haveHistory) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u);
+            }
             if (haveHistory) {
                 uint readSlot = pathReservoirSlot(readPixel, renderSize.x * renderSize.y,
                                                   (worldPush.frameIndex & 1u) ^ 1u);
@@ -958,6 +967,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                         // half-vector below into normalize(0) -- one quantized direction away from a
                         // screen-full of NaN, so it is rejected rather than survived.
                         && dot(storedWi, v) < 0.9999;
+                if (sampled && usable) {
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u);
+                }
                 if (usable) {
                     // The continuation weight this vertex would have given the stored direction, and
                     // the density that weights it: f(wi)*cos/pdf, spelled exactly as the lobe mixture
@@ -989,6 +1001,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                         temporalCount = min(stored.m, PATH_RESERVOIR_M_CAP);
                         temporalSum = temporalCount * meanTarget;
                         temporalReadPixel = readPixel;
+                        if (sampled) {
+                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[2], 1u);
+                        }
                     }
                 }
             }

@@ -1480,6 +1480,18 @@ public final class RtComposite {
         restirStats.prepare(ctx, PUSH_RING, reservoirStore != null ? reservoirDepth : 0);
         return restirStats.address();
     }
+
+    /**
+     * Settle whether the path reservoir's counters exist, then hand out their address.
+     *
+     * <p>The same call-shape and the same reason as {@link #restirStatsAddress}: the address published
+     * here is read by a trace recorded later in the same command buffer, so the release decision (and
+     * its idle wait) happens on this side of the write.
+     */
+    private long pathReservoirStatsAddress(RtContext ctx) {
+        pathStats.prepare(ctx, PUSH_RING, pathReservoirStore != null);
+        return pathStats.address();
+    }
     /** Smallest patch an entity disturbs, in BLOCKS — so the size of a splash does not follow the grid. */
     private static final double WATER_IMPULSE_MIN_RADIUS = 0.5;
     /** How far from the feet still counts as touching water, in blocks. Contact is by definition close. */
@@ -1738,6 +1750,8 @@ public final class RtComposite {
     private long lightPoolPeakBytes;
     private RtLightPoolPipeline lightPoolPipeline;
     private final RtRestirStats restirStats = new RtRestirStats(PUSH_RING);
+    /** The path reservoir's own acceptance counters -- the D211 rule applied to S2's acceptance run. */
+    private final RtPathReservoirStats pathStats = new RtPathReservoirStats(PUSH_RING);
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
     // enabled. When the PQ swapchain is active, the combined UI overlay is composited over this image, then
@@ -2988,6 +3002,7 @@ public final class RtComposite {
             graphicsUseWaiter.await(selectedPushSlot.graphicsUse);
             logWaterMediumProbe(selectedPushSlot);
             restirStats.reportRecycledSlot(pushSlot);
+            pathStats.reportRecycledSlot(pushSlot);
             if (gpuTimers != null) {
                 // The await above is what makes this safe: this slot's timestamps are from PUSH_RING frames
                 // ago and the GPU has finished with them, so reading costs nothing and resetting cannot
@@ -3383,7 +3398,10 @@ public final class RtComposite {
                                     && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED),
                     // M28 S2's path reservoir address, at the struct tail. The shader reads 0 as "the
                     // switch is off" and never touches the store; there is no separate flag to agree with.
-                    pathReservoirStore != null ? pathReservoirStore.deviceAddress : 0L
+                    pathReservoirStore != null ? pathReservoirStore.deviceAddress : 0L,
+                    // And its acceptance counters, under the same diagnostics.restir-stats checkbox as
+                    // the M24 store's -- one "ReSTIR stats" switch, two stores measured.
+                    pathReservoirStatsAddress(ctx)
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -3700,6 +3718,7 @@ public final class RtComposite {
                 pathReservoirStoreNeedsClear = false;
             }
             restirStats.recordReset(cmd, pushSlot, reservoirStore != null ? reservoirDepth : 0);
+            pathStats.recordReset(cmd, pushSlot, pathReservoirStore != null);
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
 
             // Push the BDA ring slot's address plus the small hot subset used directly by the shaders.
@@ -3748,6 +3767,7 @@ public final class RtComposite {
             // After that barrier, not before it: the counters are among the trace's writes, and the copy
             // is a reader of them like every other consumer this barrier exists for.
             restirStats.recordCopy(cmd, stack, pushSlot);
+            pathStats.recordCopy(cmd, stack, pushSlot);
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -4213,6 +4233,7 @@ public final class RtComposite {
             lightPoolPipeline = null;
         }
         restirStats.destroy();
+        pathStats.destroy();
         destroyGuideImages();
         exposure.destroy();
         if (displayPipeline != null) {
