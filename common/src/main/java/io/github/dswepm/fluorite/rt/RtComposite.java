@@ -120,6 +120,11 @@ public final class RtComposite {
     /** Must match RESERVOIR_BYTES in restir.slang; the allocation and the shader layout move together. */
     private static final long RESERVOIR_BYTES = 64L;
     /**
+     * Must match PATH_RESERVOIR_BYTES in restir_pt.slang — M28 S2's per-pixel path record, sized to the
+     * same 48-byte cache line the continuation queue uses, for the same no-straddled-access reason.
+     */
+    private static final long PATH_RESERVOIR_BYTES = 48L;
+    /**
      * Records pass A queues per render pixel: the base continuation plus the optional transmission split.
      *
      * <p>Must match MAX_PATH_SEGMENTS in world_core.slang. It sizes the continuation queue, and now the
@@ -1688,6 +1693,18 @@ public final class RtComposite {
      */
     private boolean reservoirStoreNeedsClear;
     /**
+     * M28 S2's path reservoir: one 48-byte record per render pixel per frame half, the reusable indirect
+     * suffix a temporal shift reconnects. Null whenever composite.path-reservoir is off, so the off state
+     * costs no VRAM and the WorldPush address reads 0 — the shading checks the address, not a flag, which
+     * is the same absent-buffer spelling of "off" the M24 store and the M26 pool use.
+     *
+     * <p>Roughly 200 MB at 1080p. It lives alongside the M24 store while that one is still published
+     * (S4 retires it), which is exactly the two-large-buffers-at-once window the M28 plan names as the
+     * 8 GB card's real risk — the peak is why this allocates only under its own switch.
+     */
+    private RtBuffer pathReservoirStore;
+    private boolean pathReservoirStoreNeedsClear;
+    /**
      * M26's presampled emitter pool. Null whenever the switch sits at its published position, so the off
      * state costs no VRAM either.
      *
@@ -2540,12 +2557,18 @@ public final class RtComposite {
         // store would be freed and reallocated every single frame, quietly, at gigabyte scale.
         int fittingDepth = reservoirDepthThatFits(wantReservoirDepth, wantReservoirPaths,
                 (long) renderW * (long) renderH);
+        // The path-reservoir switch belongs in this condition for the reason the reuse depth does: a
+        // toggle that only reallocates on the next resize would sit there doing nothing, and the A/B
+        // it exists for would compare a tree against itself.
+        boolean wantPathReservoir = FluoriteConfig.Rt.Composite.PATH_RESERVOIR.value();
+        boolean havePathReservoir = pathReservoirStore != null;
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality
                 && reservoirDepth == fittingDepth
-                && reservoirPaths == (fittingDepth > 0 ? wantReservoirPaths : 0)) {
+                && reservoirPaths == (fittingDepth > 0 ? wantReservoirPaths : 0)
+                && havePathReservoir == wantPathReservoir) {
             return;
         }
         ctx.waitIdle(); // resize is rare; no in-flight frame may use the old image/descriptor
@@ -2568,6 +2591,10 @@ public final class RtComposite {
             reservoirStore = null;
             reservoirDepth = 0;
             reservoirPaths = 0;
+        }
+        if (pathReservoirStore != null) {
+            pathReservoirStore.destroy();
+            pathReservoirStore = null;
         }
         destroyGuideImages();
 
@@ -2623,6 +2650,19 @@ public final class RtComposite {
                             + "using depth {} ({} MiB) instead",
                     wantReservoirDepth, renderW, renderH, wantReservoirPaths, reservoirDepth,
                     RESERVOIR_STORE_MAX_BYTES / (1024L * 1024L));
+        }
+        // M28 S2's path reservoir, only under its switch: one record per pixel per parity, 48 B each.
+        // Unlike the M24 store there is no depth or path plane — temporal path reuse keys on the pixel
+        // alone — so the size is linear in the pixels and nothing else.
+        if (wantPathReservoir) {
+            long pathReservoirBytes = Math.multiplyExact(pixelRecords, 2L * PATH_RESERVOIR_BYTES);
+            pathReservoirStore = ctx.createBuffer(pathReservoirBytes,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    false, "ReSTIR path reservoirs " + renderW + "x" + renderH + "x2");
+            pathReservoirStoreNeedsClear = true;
+            FluoriteMod.LOGGER.info(
+                    "RT ReSTIR path reservoir store: {}x{} x 2 halves = {} MiB ({} B each)",
+                    renderW, renderH, pathReservoirBytes / (1024L * 1024L), PATH_RESERVOIR_BYTES);
         }
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
@@ -3098,6 +3138,11 @@ public final class RtComposite {
                     FluoriteConfig.Rt.Volumetrics.SKY_DIRECTIONAL_FIELD.value() ? 1 : 0);
             RtFrameStats.FRAME.count("fogBeyondGridClamp",
                     FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value() ? 1 : 0);
+            // M28 S2: the path reservoir's own attribution column, same rule as the two above -- the
+            // capture reads the very value that gates the allocation, so an A/B never argues about
+            // what a frame was told to do.
+            RtFrameStats.FRAME.count("pathReservoir",
+                    FluoriteConfig.Rt.Composite.PATH_RESERVOIR.value() ? 1 : 0);
             if (skyPreset.cloudsEnabled() && FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
                 // Bits 2-3: how much march a ray that is not the first of its path may spend. A cost
@@ -3335,7 +3380,10 @@ public final class RtComposite {
                     // would sample a texture nothing bakes.
                     visFarGridOrigin(camX, camY, camZ, terrain,
                             FluoriteConfig.Rt.Volumetrics.VISIBILITY_CELL_SIZE.value() > 0f
-                                    && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED)
+                                    && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED),
+                    // M28 S2's path reservoir address, at the struct tail. The shader reads 0 as "the
+                    // switch is off" and never touches the store; there is no separate flag to agree with.
+                    pathReservoirStore != null ? pathReservoirStore.deviceAddress : 0L
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.
@@ -3642,6 +3690,14 @@ public final class RtComposite {
                     VK10.vkCmdFillBuffer(cmd, reservoirStore.handle, 0L, reservoirStore.size, 0);
                 }
                 reservoirStoreNeedsClear = false;
+            }
+            if (pathReservoirStore != null && pathReservoirStoreNeedsClear) {
+                // Same reasoning, smaller buffer: `m` is the emptiness test, and a garbage record with a
+                // plausible nonzero m would seed a temporal merge with a suffix that never existed.
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "path reservoir clear")) {
+                    VK10.vkCmdFillBuffer(cmd, pathReservoirStore.handle, 0L, pathReservoirStore.size, 0);
+                }
+                pathReservoirStoreNeedsClear = false;
             }
             restirStats.recordReset(cmd, pushSlot, reservoirStore != null ? reservoirDepth : 0);
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
@@ -4140,6 +4196,10 @@ public final class RtComposite {
             reservoirStore = null;
             reservoirDepth = 0;
             reservoirPaths = 0;
+        }
+        if (pathReservoirStore != null) {
+            pathReservoirStore.destroy();
+            pathReservoirStore = null;
         }
         if (lightPool != null) {
             lightPool.destroy();

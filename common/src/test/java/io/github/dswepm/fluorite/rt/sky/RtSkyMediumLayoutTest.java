@@ -60,9 +60,15 @@ final class RtSkyMediumLayoutTest {
         // collision wired both switches permanently on until the capture columns caught it. The flags
         // word is FULL; a new switch takes a lane here, not a bit there.
         // S1.5 adds the far grid's placement vector after the switches word: 1280.
-        assertEquals(1280, WorldPushData.BYTE_SIZE);
+        // M28 S2 adds the path reservoir's device address at the tail: 1296. The push-constant block
+        // has four bytes left -- half an address -- and this buffer keys a ~200 MB allocation, so like
+        // restirStatsAddr it travels in WorldPush for the reason that banner records. It is the struct's
+        // second address lane and the off state publishes 0, which is the switch's whole shader-side
+        // presence: no flag to disagree with.
+        assertEquals(1296, WorldPushData.BYTE_SIZE);
         assertEquals(1248, WorldPushData.VOLUMETRIC_SWITCHES_OFFSET);
         assertEquals(1264, WorldPushData.VIS_FAR_GRID_ORIGIN_OFFSET);
+        assertEquals(1280, WorldPushData.PATH_RESERVOIR_ADDR_OFFSET);
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
                 .anyMatch(component -> component.getName().equals("skySectorRadiance")));
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())

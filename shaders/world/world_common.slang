@@ -470,6 +470,17 @@ public struct WorldPush {
      * answer the fine grid's boundary cannot give.
      */
     public float4   visFarGridOrigin;
+    /**
+     * M28 S2's path reservoir store (restir_pt.slang): one 48-byte record per pixel per parity, the
+     * reusable INDIRECT suffix a temporal shift reconnects. 0 whenever composite.path-reservoir is
+     * off, and that is the whole off state -- the shading checks the address, not a flag, so a frame
+     * without the buffer cannot spend a branch or a register on it.
+     *
+     * <p>HERE rather than in the push-constant block, for the reason restirStatsAddr's banner gives:
+     * that block filled at Vulkan's guaranteed 128-byte floor and has four bytes left, which is half
+     * an address. At the struct tail, so every offset the layout test pins below it stays put.
+     */
+    public uint64_t pathReservoirAddr;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

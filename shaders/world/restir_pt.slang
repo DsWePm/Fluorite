@@ -26,6 +26,7 @@
 
 import world_common;
 import math;
+import segment; // octEncode / packUnorm16x2 / packRgb9e5: the same packing idioms the queue record uses
 
 public static const uint PATH_RESERVOIR_BYTES = 48u;
 
@@ -42,7 +43,39 @@ public struct PackedPathReservoir {
 }
 
 /** Slot address: one reservoir per pixel per parity. S2 is temporal-only, so no depth or path planes --
- * the pixel is the whole key. */
+ * the pixel is the whole key. With spp > 1 the samples of a pixel share the slot and the last write
+ * wins; the published SPP is 1, and per-path planes would quadruple a buffer the switch already has to
+ * justify. Revisit only if an spp A/B ever shows the sharing mattering. */
 public uint pathReservoirSlot(uint pixelIndex, uint pixelCount, uint parity) {
     return pixelIndex + parity * pixelCount;
+}
+
+/** An unwritten or unusable record. `m` counts the candidates a reservoir merged; the initial write
+ * stores 1, and cleared/stale memory reads as 0 -- the same emptiness test restir.slang uses. */
+public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }
+
+/**
+ * The one form the bounce loop's write takes. Everything is packed here, next to the struct it
+ * translates, so a packing change cannot drift from the record layout it feeds.
+ *
+ * <p>`li` is the suffix's OWN estimate of incident radiance at the reconnection vertex -- the
+ * throughput that carried it is deliberately NOT folded in, because whoever merges this record
+ * re-weights it with their own prefix. `targetSum` is the candidate's contribution at its own vertex
+ * (the luminance of the suffix as this frame's path actually carried it), which is the target function
+ * value a GRIS merge needs from the producing domain.
+ */
+public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, float3 reconNrm,
+                                             float2 wiOct, float3 li, float m, float targetSum,
+                                             uint reconIndex) {
+    PackedPathReservoir r;
+    r.pathSeed = pathSeed;
+    r.reconPos = reconPos;
+    r.reconNrm = packUnorm16x2(octEncode(reconNrm));
+    r.li = packRgb9e5(li);
+    r.wi = packUnorm16x2(wiOct);
+    r.m = m;
+    r.targetSum = targetSum;
+    r.reconIndex = reconIndex;
+    r.spare = 0u;
+    return r;
 }

@@ -54,6 +54,18 @@ final class RtPathReplayContractTest {
     }
 
     @Test
+    void theBounceLoopSnapshotsTheStreamBaseTheReservoirStores() throws IOException {
+        String world = source("shaders/world/world.rgen.slang");
+        // The recorded pathSeed must be the stream's BASE, snapshotted before the first draw mutates
+        // the working seed -- storing a mid-stream state would replay only the tail of the path.
+        assertTrue(world.contains("uint pathSeedBase = seed;"));
+        // The write is gated on the store's address, not a separate flag: no buffer means no record
+        // and no branch left behind (the switch's whole shader-side off state).
+        assertTrue(world.contains("worldPush.pathReservoirAddr != 0"));
+        assertTrue(world.contains("packPathReservoir("));
+    }
+
+    @Test
     void thePathReservoirSwitchExistsAndDefaultsToOff() throws IOException {
         String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
         assertTrue(config.contains("PATH_RESERVOIR ="));

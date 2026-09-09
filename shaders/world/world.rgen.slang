@@ -37,6 +37,7 @@ import trace_ser;
 import subsurface;
 import lighting;
 import restir; // temporal reservoir reuse at both RIS vertices
+import restir_pt; // M28 S2: the per-pixel path reservoir this loop records its own path into
 // The transmittance table. Raygen already has binding 10 in its stage flags — the NEE consumers below
 // are next in line for it — and debugView 12 reads it here.
 import atmosphere;
@@ -89,6 +90,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     // produces independent lighting/BSDF paths from the shared terminal continuation.
     uint seed = seg.seed ^ sampleIndex * 2246822519u;
     seed = pcg(seed);
+    // M28 S2: this state is what the path reservoir stores -- the whole bounce loop's decision stream
+    // derives from it deterministically (see the REPLAY CONTRACT in segment.slang), so a replay starts
+    // from here. Snapshotted before the first draw mutates `seed`.
+    uint pathSeedBase = seed;
     float rayConeWidth = seg.rayConeWidth;
     float rayConeSpread = max(seg.rayConeSpread, RAY_CONE_MIN_SPREAD);
     int maxBounces = int(worldPush.maxBounces);
@@ -154,6 +159,21 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     // remains active with its full configured candidate count at every hit. Pass A's primary/interface
     // prefix is outside this SSS quality budget.
     int indirectDepth = 0;
+    // M28 S2 initial candidate: this pixel's own path, recorded so next frame's temporal shift can
+    // replay it at a shifted primary hit. The reconnection vertex is the FIRST opaque vertex whose
+    // continuation has a finite density -- dielectric chains and exact mirrors stay prefix, because a
+    // replayed decision has no density to reconnect on there. The suffix beyond it is recovered after
+    // the loop by snapshot subtraction, so the radiance accumulation sites stay untouched and the
+    // switch-off state (no buffer published) dead-codes every line this block adds.
+    bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;
+    bool reconFound = false;
+    bool reconQualifies = false;
+    float3 reconPos = float3(0.0, 0.0, 0.0);
+    float3 reconNrm = float3(0.0, 0.0, 1.0);
+    float2 reconWi = float2(0.5, 0.5);
+    uint reconDepth = 0u;
+    float3 reconLpre = float3(0.0, 0.0, 0.0);
+    float3 reconTpost = float3(0.0, 0.0, 0.0);
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
@@ -502,6 +522,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // reflection sharp instead of accumulating it as a glossy lobe.
         bool exactSpecular = isDeltaAlpha(rough);
         rough = exactSpecular ? 0.0 : rough;
+        // This vertex reconnects if it survives to trace a continuation: a delta lobe has no sampling
+        // density for a shift's Jacobian to weigh, so only finite lobes qualify.
+        reconQualifies = recordPath && !reconFound && !exactSpecular;
         float3 diffAlb = albedo * (1.0 - metal);
         float3 F0 = payload.f0;
         // Probability of continuing along the specular lobe rather than the diffuse one. Hoisted above
@@ -829,6 +852,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // walk enters, scatters and leaves before the path continues — so nothing here reaches the
             // continuation record or the pass boundary.
             //
+            reconQualifies = false; // the walk's exit direction has no analytic density to reconnect on
             float lobeProb = (1.0 - pf) * (1.0 - ps) * walkSss;
             WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, sssRadius, ext.specular.w,
                                                    sssMaxEvents, seed);
@@ -864,6 +888,20 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
         }
 
+        // The continuation committed: this is the reconnection vertex. Snapshot what the suffix needs
+        // -- everything L holds NOW is prefix, everything added AFTER this point is the suffix; the
+        // post-selection throughput is what divides that tail into an incident-radiance estimate.
+        if (reconQualifies) {
+            reconFound = true;
+            reconQualifies = false;
+            reconPos = hitPos;
+            reconNrm = n;
+            reconWi = octEncode(rd);
+            reconDepth = uint(hitDepth);
+            reconLpre = L;
+            reconTpost = throughput;
+        }
+
         // Russian roulette on deeper bounces: survive with prob = max channel, rescale survivors.
         if (bounce >= rrStart) {
             float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
@@ -872,6 +910,21 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             }
             throughput /= q;
         }
+    }
+    // The path reservoir write (M28 S2): the suffix is this path's tail past the reconnection vertex,
+    // recovered exactly by subtraction -- the adds into L never changed, so the ON state differs from
+    // OFF only by this block. Dividing the absolute tail by the throughput that carried it yields the
+    // incident-radiance estimate the record stores; the tail's own luminance is the candidate's target
+    // at its home vertex, which is what a GRIS merge asks of the producing domain. One record per
+    // pixel: only sample 0 records, matching the slot's no-path-plane layout.
+    if (recordPath && reconFound) {
+        float3 suffix = max(L - reconLpre, float3(0.0, 0.0, 0.0));
+        float3 tRel = max(reconTpost, float3(1.0e-6, 1.0e-6, 1.0e-6));
+        uint pixelIndex = pix.y * renderSize.x + pix.x;
+        DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr)[
+                pathReservoirSlot(pixelIndex, renderSize.x * renderSize.y, worldPush.frameIndex & 1u)] =
+                packPathReservoir(pathSeedBase, reconPos, reconNrm, reconWi, suffix / tRel,
+                                  1.0, luminance(suffix), reconDepth);
     }
     return L;
 }
