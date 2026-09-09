@@ -66,6 +66,23 @@ final class RtPathReplayContractTest {
     }
 
     @Test
+    void theTemporalMergeReprojectsAndCarriesAMergeWeight() throws IOException {
+        String world = source("shaders/world/world.rgen.slang");
+        // The temporal read goes through M24's d0 reprojection at the primary hit -- without it a
+        // moving camera reads a history that was never this point's.
+        assertTrue(world.contains("restirPreviousPixel(hitPos, renderSize, readPixel)"));
+        // The merged pixel value and the survivor write are the estimator; losing either silently
+        // turns the switch into "record and never reuse" or "reuse and never re-record".
+        assertTrue(world.contains("temporalValue"));
+        assertTrue(world.contains("historyWins"));
+        String restirPt = source("shaders/world/restir_pt.slang");
+        // W * target(y) is the unbiased-estimate invariant; the m cap bounds how long the past
+        // outvotes the present.
+        assertTrue(restirPt.contains("PATH_RESERVOIR_M_CAP"));
+        assertTrue(restirPt.contains("public uint    W;"));
+    }
+
+    @Test
     void thePathReservoirSwitchExistsAndDefaultsToOff() throws IOException {
         String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
         assertTrue(config.contains("PATH_RESERVOIR ="));

@@ -18,9 +18,12 @@
 //   wi         -- its direction, oct16x2.
 //   m          -- effective sample count for GRIS weights.
 //   targetSum  -- accumulated target-function sum the merge produced.
+//   W          -- the merge weight the record carries forward: W * target(y) is an unbiased estimate
+//                 of the suffix integral at any vertex that passes the reuse tests, so a consumer
+//                 re-weighting the stored sample multiplies by W exactly once. A fresh single-sample
+//                 record stores 1; zero means "no usable history" and fails validation.
 //   reconIndex -- which path vertex x_s was (replay depth).
-//   spare      -- one lane; the reservoir is 48 bytes because that is the queue record's cache line and
-//                 a straddled access on a per-frame read/write buffer buys nothing.
+//   (the record stays 48 bytes; W took the spare lane, which nothing else had claimed)
 //
 // Double-buffered by parity like restir.slang: read is last frame's, write is this frame's.
 
@@ -39,8 +42,28 @@ public struct PackedPathReservoir {
     public float   m;
     public float   targetSum;
     public uint    reconIndex;
-    public uint    spare;         // held 0; a nonzero value means a half-written record
+    public uint    W;             // bitcast float: the merge weight, see the header
 }
+
+// ---- Temporal-merge constants (S2). Named twins of restir.slang's receiver tests, kept separate
+// because the two stores reject different things: a DI reservoir must describe the same SURFACE, a
+// path reservoir must describe the same SUFFIX -- and a suffix's home vertex is allowed to sit deeper
+// in the path than the receiver a DI reservoir anchors.
+
+/** How far the stored reconnection vertex may sit from this frame's, before the suffix is not ours. */
+public static const float PATH_REUSE_MAX_DRIFT = 0.05; // blocks, same scale M24 measured with
+/** And how much its normal may have turned (cos). */
+public static const float PATH_REUSE_MIN_NORMAL_AGREEMENT = 0.9; // cos, about 26 degrees
+
+/**
+ * How much history one path reservoir may accumulate, as an effective sample count.
+ *
+ * <p>The same "the past must not outvote the present forever" bound REUSE_M_CAP buys the DI store: m
+ * only sets how loudly the history argues in the survivor choice, and capping it bounds how long a
+ * changed scene keeps being blended against. Sixteen starts where the DI cap's reasoning points; the
+ * fixed-pose convergence check is what says whether the temporal chain stays honest as m saturates.
+ */
+public static const float PATH_RESERVOIR_M_CAP = 16.0;
 
 /** Slot address: one reservoir per pixel per parity. S2 is temporal-only, so no depth or path planes --
  * the pixel is the whole key. With spp > 1 the samples of a pixel share the slot and the last write
@@ -60,13 +83,14 @@ public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }
  *
  * <p>`li` is the suffix's OWN estimate of incident radiance at the reconnection vertex -- the
  * throughput that carried it is deliberately NOT folded in, because whoever merges this record
- * re-weights it with their own prefix. `targetSum` is the candidate's contribution at its own vertex
- * (the luminance of the suffix as this frame's path actually carried it), which is the target function
- * value a GRIS merge needs from the producing domain.
+ * re-weights it with their own prefix. `targetSum` is the accumulated target sum (each represented
+ * sample's home-vertex contribution luminance); `w` is the merge weight, W = targetSum / (m * t_chosen)
+ * by the merge below, which is what keeps W * target(y) an unbiased estimate of the suffix integral
+ * wherever the record is re-evaluated.
  */
 public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, float3 reconNrm,
                                              float2 wiOct, float3 li, float m, float targetSum,
-                                             uint reconIndex) {
+                                             float w, uint reconIndex) {
     PackedPathReservoir r;
     r.pathSeed = pathSeed;
     r.reconPos = reconPos;
@@ -76,6 +100,6 @@ public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, flo
     r.m = m;
     r.targetSum = targetSum;
     r.reconIndex = reconIndex;
-    r.spare = 0u;
+    r.W = asuint(w);
     return r;
 }

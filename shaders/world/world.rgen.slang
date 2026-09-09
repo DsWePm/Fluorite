@@ -173,7 +173,16 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     float2 reconWi = float2(0.5, 0.5);
     uint reconDepth = 0u;
     float3 reconLpre = float3(0.0, 0.0, 0.0);
+    float3 reconTpre = float3(0.0, 0.0, 0.0);
     float3 reconTpost = float3(0.0, 0.0, 0.0);
+    // The temporal candidate (S2), evaluated at the reconnection vertex and carried out for the
+    // post-loop merge: the re-weighted history sample, its target sum (m_n * mean home target), its
+    // count, and where its record was read from -- the write re-reads that slot if the history wins
+    // the survivor draw, rather than keeping twelve lanes of its identity live through the loop.
+    float3 temporalValue = float3(0.0, 0.0, 0.0);
+    float temporalSum = 0.0;
+    float temporalCount = 0.0;
+    uint temporalReadPixel = 0u;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
@@ -523,8 +532,12 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         bool exactSpecular = isDeltaAlpha(rough);
         rough = exactSpecular ? 0.0 : rough;
         // This vertex reconnects if it survives to trace a continuation: a delta lobe has no sampling
-        // density for a shift's Jacobian to weigh, so only finite lobes qualify.
+        // density for a shift's Jacobian to weigh, so only finite lobes qualify. Nothing between here
+        // and the lobe selection below touches throughput, so the pre-selection value snapshots here.
         reconQualifies = recordPath && !reconFound && !exactSpecular;
+        if (reconQualifies) {
+            reconTpre = throughput;
+        }
         float3 diffAlb = albedo * (1.0 - metal);
         float3 F0 = payload.f0;
         // Probability of continuing along the specular lobe rather than the diffuse one. Hoisted above
@@ -902,6 +915,85 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             reconTpost = throughput;
         }
 
+        // ---- M28 S2 temporal candidate: last frame's record at this point, re-weighted by THIS
+        // vertex. Read once, validated, folded into one carry-out value; the merge (average) and the
+        // survivor write happen after the loop, where the own suffix finally exists.
+        //
+        // The read is reprojected exactly like M24's d0 -- but only where that is meaningful: the
+        // reprojection answers "where was THIS point on screen", which is the primary hit's question.
+        // A deeper reconnection vertex is off the camera ray, so it reads its own pixel, which is the
+        // arrangement M24's bounce vertices already live under.
+        //
+        // VALIDATION IS THE v1 SHIFT. The pinned design's random-replay sub-loop has no estimator role
+        // in a suffix-level temporal merge -- the stored suffix is re-used in place, never re-traced --
+        // so what stands in for it here is the correspondence test (same replay depth, same surface
+        // within M24's drift/normal bounds, sane weight). Its real consumer is S3's spatial reuse,
+        // where the neighbour's prefix genuinely has to be re-derived; that sub-loop lands there.
+        if (recordPath && reconFound) {
+            uint pixelIndex = pix.y * renderSize.x + pix.x;
+            uint readPixel = pixelIndex;
+            bool haveHistory = true;
+            if (reconDepth == 0u) {
+                haveHistory = restirPreviousPixel(hitPos, renderSize, readPixel);
+            }
+            if (haveHistory) {
+                uint readSlot = pathReservoirSlot(readPixel, renderSize.x * renderSize.y,
+                                                  (worldPush.frameIndex & 1u) ^ 1u);
+                PackedPathReservoir stored =
+                        DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr)[readSlot];
+                float3 storedNrm = octDecode(unpackUnorm16x2(stored.reconNrm));
+                float3 storedWi = octDecode(unpackUnorm16x2(stored.wi));
+                float storedW = asfloat(stored.W);
+                float meanTarget = stored.m > 0.0 ? stored.targetSum / stored.m : 0.0;
+                float3 drift = stored.reconPos - hitPos;
+                float cosStored = dot(storedWi, storedNrm);
+                float cosHere = dot(storedWi, n);
+                bool usable = !pathReservoirEmpty(stored)
+                        && storedW > 0.0 && meanTarget > 0.0
+                        && stored.reconIndex == reconDepth
+                        && dot(drift, drift) <= PATH_REUSE_MAX_DRIFT * PATH_REUSE_MAX_DRIFT
+                        && dot(storedNrm, n) >= PATH_REUSE_MIN_NORMAL_AGREEMENT
+                        && cosStored > 1.0e-4 && cosHere > 0.0
+                        // A stored continuation pointing straight back along the view degenerates the
+                        // half-vector below into normalize(0) -- one quantized direction away from a
+                        // screen-full of NaN, so it is rejected rather than survived.
+                        && dot(storedWi, v) < 0.9999;
+                if (usable) {
+                    // The continuation weight this vertex would have given the stored direction, and
+                    // the density that weights it: f(wi)*cos/pdf, spelled exactly as the lobe mixture
+                    // below samples it. This is deliberately NOT evalSampleContrib -- that helper is
+                    // an AREA-light target (emitter tint inside, SSS back-lobe branch, film floor tied
+                    // to emitter MIS), none of which describes a suffix sample.
+                    float ndlStored = cosHere;
+                    float3 hStored = normalize(storedWi + v);
+                    float ndh = max(0.0, dot(n, hStored));
+                    float vdh = max(0.0, dot(v, hStored));
+                    float D = ggxDAniso(dot(hStored, bc.t), dot(hStored, bc.b), ndh,
+                                        bc.alphaX, bc.alphaY);
+                    float G = bc.g1v * ggxG1Aniso(dot(storedWi, bc.t), dot(storedWi, bc.b),
+                                                  ndlStored, bc.alphaX, bc.alphaY);
+                    float3 F = fresnelSchlick(vdh, F0);
+                    float3 brdf = diffAlb * INV_PI + (D * G) * F / (4.0 * bc.ndv * ndlStored);
+                    brdf = brdf * rainBaseTransmission(bc, storedWi) + rainFilmBrdf(bc, storedWi, false);
+                    float pdf = bsdfContinuationPdf(bc, storedWi, pf, ps, walkSssShare);
+                    if (pdf > 0.0) {
+                        // Changed-measure correction: the neighbour sampled this direction against ITS
+                        // reconnection normal; this vertex weighs it against its own. The material is
+                        // taken to be this vertex's (M24's retarget approximation), which leaves the
+                        // cosine ratio as the whole Jacobian -- and cosStored == cosHere on any static
+                        // scene, which is exactly what the fixed-pose convergence check exercises.
+                        float jacobian = cosHere / cosStored;
+                        temporalValue = max(storedW * reconTpre * (brdf * ndlStored / pdf)
+                                                    * jacobian * unpackRgb9e5(stored.li),
+                                            float3(0.0, 0.0, 0.0));
+                        temporalCount = min(stored.m, PATH_RESERVOIR_M_CAP);
+                        temporalSum = temporalCount * meanTarget;
+                        temporalReadPixel = readPixel;
+                    }
+                }
+            }
+        }
+
         // Russian roulette on deeper bounces: survive with prob = max channel, rescale survivors.
         if (bounce >= rrStart) {
             float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
@@ -911,20 +1003,54 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             throughput /= q;
         }
     }
-    // The path reservoir write (M28 S2): the suffix is this path's tail past the reconnection vertex,
-    // recovered exactly by subtraction -- the adds into L never changed, so the ON state differs from
-    // OFF only by this block. Dividing the absolute tail by the throughput that carried it yields the
-    // incident-radiance estimate the record stores; the tail's own luminance is the candidate's target
-    // at its home vertex, which is what a GRIS merge asks of the producing domain. One record per
-    // pixel: only sample 0 records, matching the slot's no-path-plane layout.
+    // The path reservoir post-loop (M28 S2): the suffix is this path's tail past the reconnection
+    // vertex, recovered exactly by subtraction -- the adds into L never changed. Then the temporal
+    // merge: the pixel's suffix becomes the two-domain GRIS average (this frame's own sample and the
+    // re-weighted history), and the surviving candidate is written for next frame.
+    //
+    // SURVIVOR, NOT SUM, goes to storage: a path suffix cannot be averaged (two directions are not one
+    // direction), so the reservoir keeps one representative drawn target-proportionally, with
+    // W = targetSum / (m * t_chosen). That W is what keeps W * target(y') unbiased wherever the record
+    // is re-evaluated -- the standard RIS identity, and the reason the count m can grow while the
+    // weight stays O(1).
     if (recordPath && reconFound) {
-        float3 suffix = max(L - reconLpre, float3(0.0, 0.0, 0.0));
+        float3 ownSuffix = max(L - reconLpre, float3(0.0, 0.0, 0.0));
         float3 tRel = max(reconTpost, float3(1.0e-6, 1.0e-6, 1.0e-6));
-        uint pixelIndex = pix.y * renderSize.x + pix.x;
-        DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr)[
-                pathReservoirSlot(pixelIndex, renderSize.x * renderSize.y, worldPush.frameIndex & 1u)] =
-                packPathReservoir(pathSeedBase, reconPos, reconNrm, reconWi, suffix / tRel,
-                                  1.0, luminance(suffix), reconDepth);
+        float ownTarget = luminance(ownSuffix);
+        bool merged = temporalCount > 0.0;
+        if (merged) {
+            // The pixel sees the AVERAGE of the two unbiased estimates (unbiased, variance ~halved);
+            // the reservoir sees the survivor. Own luminance stays the pre-merge sample's target.
+            float3 applied = (ownSuffix + temporalValue) * 0.5;
+            L = reconLpre + applied;
+        }
+        float totalTarget = ownTarget + temporalSum;
+        float totalCount = 1.0 + temporalCount;
+        bool historyWins = merged && temporalSum > 0.0
+                && rndf(seed) * totalTarget < temporalSum;
+        DevicePtr<PackedPathReservoir> store =
+                DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
+        uint writeSlot = pathReservoirSlot(pix.y * renderSize.x + pix.x,
+                                           renderSize.x * renderSize.y, worldPush.frameIndex & 1u);
+        if (historyWins) {
+            // The history's representative survives: re-read its identity from the slot it was read
+            // from (read-only this frame, so the value is the one that was merged) and re-emit it with
+            // the merged bookkeeping.
+            PackedPathReservoir prev = store[pathReservoirSlot(temporalReadPixel,
+                    renderSize.x * renderSize.y, (worldPush.frameIndex & 1u) ^ 1u)];
+            float chosenTarget = temporalSum / temporalCount;
+            store[writeSlot] = packPathReservoir(prev.pathSeed, prev.reconPos,
+                    octDecode(unpackUnorm16x2(prev.reconNrm)),
+                    unpackUnorm16x2(prev.wi), unpackRgb9e5(prev.li),
+                    totalCount, totalTarget,
+                    chosenTarget > 0.0 ? totalTarget / (totalCount * chosenTarget) : 0.0,
+                    prev.reconIndex);
+        } else {
+            store[writeSlot] = packPathReservoir(pathSeedBase, reconPos, reconNrm, reconWi,
+                    ownSuffix / tRel, totalCount, totalTarget,
+                    ownTarget > 0.0 ? totalTarget / (totalCount * ownTarget) : 0.0,
+                    reconDepth);
+        }
     }
     return L;
 }
