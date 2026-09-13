@@ -256,30 +256,84 @@ commit 顺序固定，每项独立可回退：**A-②a（钉现状）→ A-①a�
 
 **禁止**：不动 M24（`restir.slang`、`RtRestirStats`、M24 reservoir 的退役是 S4）；不动 `PackedPathSegment`/`PackedPathReservoir` 布局与 `WorldPush` 既有偏移（§3.2 冻结令 + 尾部追加豁免除外）；不动 `segment.slang` 的 seed 推进（重放的确定性命脉，改它 = 全部存储种子静默作废）；不改任何既有开关的默认档。
 
-## 5. 工作流 B：Issue #77 远场暗区真值探针（S1.5 挂起案重启第一步）
+## 5. 工作流 B：M29 第一人称手部 RT 光照（前端与光影同步）
 
-**目标**：把 D215 挂起的「山体旁暗区」从「远场读数低」推进到「物理真 vs 烘焙错」的**有证据裁决**，交给用户选择后续路线。
+**目标**：第一人称的手（手臂 + 手持物）不再吃 vanilla lightmap 的平光，而是接受 RT 场景的**正确光照**（太阳/天空/发光体，含阴影）与 **PBR 材质**（资源包 LabPBR 的法线/高光，手持方块与物品各自生效）。
 
-**背景（D214/D215 已钉死的事实，全部经过隔离验证）**：暗区仅「出格雾段遮挡」开时存在、位置锁定、室外头顶无遮挡；移动闪烁已由 D213 邻居播种消除；`FAR_CELL` 8→4 无改善，「粗格把坡遮挡糊进邻格」假设已被否——那些格子本身就收敛在低值（或烘焙有系统性错误）。
+**现状事实链**（2026-09-14 核验，全部有代码锚点）：
 
-**必读**（全体的之外）：`devlog/M28-restir-backbone.md` D213–D215；`devlog/M25-volumetric-restir.md` 的可见性网格部分（EMA/重投影机制的来源）；`shaders/world/volume_visibility.slang` 与 `volume_visibility_far.comp.slang` 现状（横幅注释）；`DEVELOPMENT.md` §5.3 debug views。
+- 手目前是 **vanilla 光栅**：`GameRendererMixin.fluorite$redirectHandToOverlay` 把 `renderItemInHand` 的输出重定向进 UI overlay（`RtUiOverlay`），原生分辨率、RR 之后、GUI 之前合成（DLSS-FG 的 hudless/pUI 形状因此成立）。它的光照就是 vanilla lightmap——与 RT 世界不一致，这正是本任务要修的。
+- 第一人称**身体**已在 TLAS（`RtEntities` 以 `MASK_SELF` 捕获，参与反射/阴影/GI、不挡主射线）——本任务不动它；手部**渲染**与身体**追踪**是两条链。
+- overlay 光栅管线**已能在 frag 里对 TLAS 发 ray query**（`RtBlockOutlineFeature` 的内联 `rayQueryEXT`，`RtOverlayPipelines.AccelStructureSet` 管 TLAS 绑定环）。
+- **受光雨丝**（`rain_streak_light.comp.slang`）就是「overlay 内解析 RT 光照」的完整先例：push 带 `worldPushAddr` + 五个光源地址（`LightBufferAddresses`），TLAS 内联阴影线，`atmosphere`/`light_sampling`/`world_common` 直接 import。
+- 采集侧：`RtEntityCollectorBase implements SubmitNodeCollector`，每 quad 拿到 sprite/tint/lightCoords，atlas sprite 经 `RtMaterialRegistry.resolveEntitySprite` 解析出**含 LabPBR 的材质**；实体纹理槽按 image view 键控（玩家皮肤走整图路径）。M18 已在真实 submitItem 路径观察过手持物姿态/sprite/tint。
+- 方向性天空场的 4 个扇区辐亮度 `skySectorRadiance[4]` 就在 WorldPush（`world_common.slang:456`）；消费函数 `volumeSkyOpenness(p)` 双模（标量/方向）。**表面**的天空环境项消费者还不存在（S1 只接了 marched 雾）——B 线补上它，恰好是 M28 决策 3（「雾与表面天空环境项读同一格同一分布」）的首个表面消费者。
 
-**所有权**：见 §3.1 B 行。**禁改**：`volume.slang`（march 消费端本轮只读）、水路/froxel 消费者、远场开关默认档。
+**方案裁决记档**（目标由用户 2026-09-14 指令；路线按铁律 1 的精神在分派层记档，实施中若发现事实不符再回来请示）：选**自绘 display-res 光栅 pass + 解析 RT 光照**（雨丝同构），不选「手部全光追」。理由：① 手部走独立 viewmodel 投影（`setProjectionMatrix` ordinal=1 的手部窗口），塞进主 pass 意味着第二套 primary/guides/RR 链，工程与显存双倍；② 1spp 在 display-res 近距高光上的噪声过不了 RR（手不在 RR 域内）；③ 解析光照（真阴影线 + 网格天空场 + 光源 NEE）与雨丝同构、噪声为零、成本一个 overlay pass。物理缺口（记档）：**GI 缺失**——手部只收直接太阳/天空/发光体，间接反弹（洞里火把照亮的手臂）v1 没有来源，缓解项 = 天空项的网格开阔度；真正的 GI 接入（路径 reservoir 采样或辐照 probe）列 §8。
 
-### 实施
+**必读**（全体的之外）：`devlog/M19-M20-entities-particles.md`（实体捕获链）；`devlog/M18-dynamic-light-data.md`（submitItem 观察）；`rain_streak_light.comp.slang` + `rt/overlay/RtRainStreaks.java`（push/绑定/地址模式，全任务的模板）；`rt/overlay/RtBlockOutlineFeature.java` + `RtOverlayPipelines.java`（TLAS 光栅管线与 `AccelStructureSet`）；`mixin/GameRendererMixin.java`（手部重定向与投影捕获点）；`devlog/M28-restir-backbone.md` D209–D213（方向性天空场语义）；`volume_visibility.slang`（网格消费与扇区权重）；`DEVELOPMENT.md` §3.7（粒子 raw albedo 不烘 lightmap 的先例——手部同规）。
 
-1. **真值探针（新 debug view，取 22 号——现行编号连续，19 号 = 远场网格）**：在暗区位置的雾采样点，从同一点投 64 条半球射线（余弦加权，与烘焙同遮挡口径：仅地形、不含云 τ）直接算开阔度，与远场/钳制读数**并排显示**（左真值右读数，或双色叠加）。这是 D215 写明的重启第一步，照做，不要换设计。
-2. 探针只读不改：烘焙链路、EMA、钳制策略一字不动；新视图默认不影响任何发布路径（debug view 0 = 关闭，即发布行为）。
-3. **判读决策树**（D215 原文）：
-   - 真值 ≈ 0.2 → 远场是对的，暗是物理（该点真的看不到多少天空）→ 转美术/密度权衡，**停下请示用户**（选项 + 观感截图）；
-   - 真值 ≈ 0.8 → 远场烘焙有系统性错误 → 在所有权内逐项排查：格心入几何、坐标空间（世界锚定/迟滞重定位）、EMA 链路（自举种子污染？轮询 1/32 的收敛 vs 遗忘？）、射线遮挡口径不一致。找到根因 → 修（属已批 S1.5 设计内的 bug 修复）→ 关档逐位等价 + 修复档 A/B 截图交用户。
-4. 若探针显示两种位置（暗区/正常区）读数都「半对不上」，把并排截图 + 数字报给用户，不要猜第三种机制。
+**所有权**：见 §3.1 B 列。**禁改**：实体主捕获链（`captureEntities` 一字不动，手部走独立采集器）；身体 `MASK_SELF` 语义；`volume_visibility.slang` 的既有函数（只增不改）；雨丝 pass（C 线地盘）；WorldPush 布局（本任务**零** ABI 改动——`worldPushAddr` 只读）。**开关**：`composite.hand-rt-lighting`（默认关；关档 = vanilla 手部经既有 overlay 重定向逐位不变，铁律 8）。
 
-### 验收
+### B-0：手部采集与投影基线（无画面变化，独立 commit）
 
-- 构建 + 测试门照 §3.4。
-- 交给用户：站位清单（D215 的暗区复现位）、debug view 22 的开启方式（视频设置 → Fluorite Settings → 诊断）、三种判读各自的预期画面、需要的截图。
-- devlog：探针设计、用户回执的数字、判读结论与后续路线（D234 号段起）。
+1. **新采集器** `rt/entity/RtHandCapture.java`（单例，帧态）：
+   - `public void begin(RtEntityCollectorBase collector)` / `public RtHandFrame end()`——帧数据 `RtHandFrame`：视空间 quad 顶点（沿用 `RtEntityCapture` 的顶点布局与 sprite/材质槽）、`handModelView`（`Matrix4f`）及其逆、手部投影 `Matrix4f`。
+   - `RtHandCollector extends RtEntityCollectorBase`：覆写动态光记录为 no-op（第一人称手持光已由身体捕获链的 D18 路径记录，采集两遍会双计——覆写点就是所有权行里说的「hand no-op 钩子」）。
+2. **捕获挂点**：扩展 `GameRendererMixin.fluorite$redirectHandToOverlay`——`beginOutputRedirect` 后、`original.call` 前后包 `RtHandCapture.INSTANCE.begin/end`。**本片唯一实现期发现点**：手部网格的 vanilla submit 点（`renderItemInHand` 内部的 PlayerAvatarRenderer/ItemInHand 链，MC 26.2 类名以反编译为准）需要一个小 mixin 把 quad 流转入 `RtHandCollector`（复用 `SubmitNodeCollector` 接口的数据面：sprite、tint、uv remap、材质解析全部白拿）；**备选**：若 submit 点不便包裹，改自驱动 extract+submit（`captureEntities` 的 `dispatcher.extractEntity/submit(state, …, collector)` 同款），姿态差异以截图对照裁决。Fabric/NeoForge 双端都要跑（§4.5）。
+3. **手部投影捕获**：`GameRendererMixin` 新增 `@ModifyArg`（`setProjectionMatrix` ordinal=1 的 `Matrix4f` 参，即手部/3D-HUD 投影）→ `RtHandCapture.captureHandProjection(Matrix4f)`。modelView 从 WrapOperation 的既有参数直接拿。
+4. **计数**：`FRAME.count("handQuads", n)`、`FRAME.count("handTextures", n)`——名字先进注册表（D218 规则）。**本片验收**：帧统计出现且数量随手持物切换变化；画面零变化。
+
+### B-1：自绘 pass 与 vanilla 平替（姿态对齐里程碑，独立 commit）
+
+1. **push 结构** `shaders/world/hand_lit_common.slang`（放 world/，照 `rain_streak_common.slang` 先例）：
+   ```slang
+   public struct HandLitPush {
+       public uint64_t worldPushAddr;      // WorldPush 只读 BDA（skySectorRadiance/mediumSkyRadiance/lightDir）
+       public uint64_t lightBufAddr;       // LightBufferAddresses 五件套，照 RainStreakPush
+       public uint64_t lightAliasAddr;
+       public uint64_t lightLocalAliasAddr;
+       public uint64_t lightGridCellAddr;
+       public uint64_t lightGridSpanAddr;
+       public uint64_t materialAddr;       // MaterialHeader/Extension 缓冲（实体材质解析的产物）
+       public float4x4 handProjection;     // B-0 捕获
+       public float4x4 handModelViewInv;   // 视空间 -> 世界空间（光照要用世界方向）
+       public uint     quadCount;
+   };
+   ```
+2. **管线**：`RtOverlayPipelines.VertexFormat` 新增条目（pos + normal + uv + materialIndex + RGBA8 color，步长与 `RtEntityCapture` 顶点布局对齐）；新光栅管线绑定：顶点缓冲、实体纹理槽采样器（皮肤整图 + blocks/item atlas）、材质纹理（LabPBR normal/specular）、`AccelStructureSet`（TLAS，ray query 用）。`rt/overlay/RtHandFeature.java`：
+   - `public static boolean suppressesVanillaHand()`——配置开**且**上一帧捕获成功（失败不抑制，vanilla 手兜底，日志一行）。
+   - `public void draw(VkCommandBuffer, RtUiOverlay.ImageHandle, RtHandFrame, RtGpuExecutor.GraphicsUse)`——录制手部绘制。
+3. **抑制 vanilla**：`fluorite$redirectHandToOverlay` 中 `if (!RtHandFeature.suppressesVanillaHand()) original.call(...)`（关档路径逐字节旧分支）。
+4. **绘制接缝**：与 `RtWorldOverlay.compositeIntoUiOverlay` 同一 `endWorldScaleBeforeHand` 接缝，画进 UI overlay 图（vanilla GUI 在其后、照旧盖在手之上——层级与现状一致；被抑制的 vanilla 手部窗口不再写入）。
+5. **shaders**：`shaders/overlay/hand_lit.vert.slang`（`handProjection × viewPos`，输出世界 pos/TBN/uv/materialIdx）与 `hand_lit.frag.slang` 骨架——本片 frag = albedo × `worldPush.mediumSkyRadiance`（只求**看得见**，光照正确性全在 B-2）。
+6. **GPU zone** `gpu.handLit` + stage 注册同 commit。**本片验收**：开关 A/B 同位姿截图，开的姿态/大小/摇摆与 vanilla 手**逐像素对齐**（对不齐 = 投影或 pose 捕获错，禁止进 B-2）。
+
+### B-2：RT 光照 + PBR（核心，两个 commit：B-2a 太阳+天空，B-2b 发光体+PBR）
+
+frag 的三个光照项与一个求值，全部预先定名（`hand_lit.frag.slang` 文件域）：
+
+1. **`float3 handSunTerm(float3 p, float3 n, float3 v, MaterialCtx m, inout uint seed)`**：有限面积天体采样照抄世界的 idiom（`sampleSquare`/`squareLightPdf`/`sampleProviderCelestialIrradiance`，`worldPush.lightRadiance` 是 E 口径——直接光 = `E · f(ω)·max(cos,0)`，**不引入 4π**）；阴影 = 一条抖动阴影线（M25 结论的表面版）：内联 `RayQuery`（`RAY_FLAG_FORCE_OPAQUE | ACCEPT_FIRST_HIT_AND_END_SEARCH`，cull mask `CULL_SECONDARY_NO_SELF`——雨丝同款；手部阴影不碰第一人称身体，与 vanilla 语义一致）；云影 = D176 光空间透射率图的既有读取函数（实现时从 `world.rchit`/`cloud_shadow.comp.slang` 定位函数名并 import，**不得复制拼写**）。
+2. **`float3 handSkyTerm(float3 p, float3 n)`**：新消费 helper **`volumeSkySurfaceIrradiance(float3 p, float3 n)`**（加在 `volume_visibility.slang`，只增）：
+   - 方向场模式：`Σ_k W_k · skySectorRadiance[k].xyz · bin_k(p) · max(dot(n, ω̂_k), 0)`（ω̂_k = 扇区中心方向，W_k = 扇区立体角权重——与 marched 雾的 S1 公式同一格同一分布，决策 3 的表面消费者）；
+   - 标量模式（方向场开关关）：`mediumSkyRadiance.xyz · volumeSkyOpenness(p)` 的既有语义折算半 Lambert（`·(1+dot(n,up))/2` 钳制），关档连续性优先于方向正确性（雾可调性教训 [[feedback-fog-tunability]] 的同款约束）。
+3. **`float3 handEmitterTerm(float3 p, float3 n, float3 v, MaterialCtx m, inout uint seed)`**：1–2 个 RIS 候选（`light_sampling` 的 grid/alias 路径，`LightBufferAddresses` 从 push 填充——雨丝同款）；每个候选一条 `RayQuery` 阴影线；求值 `Le·f·cos/d²`。**两处拼写的风险**： emitter NEE 的求值式与 `world.rchit` 是第二份拼写——frag 横幅必须写明并互指（froxel NEE 已有此先例），若实现时发现 rchit 的求值可提取为共享模块，提取优先（记档不强制）。
+4. **`float3 handLitBrdf(...)`**：`bsdf.slang` 的 Disney 求值（与世界的表面着色同一实现，不是简化 BRDF）；LabPBR 法线贴图（quad TBN 切线空间，`MaterialHeader/Extension` 按 materialIdx 取——方块物品拿满 PBR，普通物品拿资源包给了什么用什么，皮肤走实体默认材质 + JSON override 通道）。
+5. **合成**：`Lo = handLitBrdf · (handSunTerm + handSkyTerm项的辐照度折算 + handEmitterTerm)`；不消费 `lightCoords`（粒子 raw albedo 先例）；前缀介质忽略（手距相机 <1 m，量级记档）；输出 HDR 直进 UI overlay 图（曝光/显示映射是 overlay 合成的既有职责）。
+6. **验收前自检**：`composite.hand-rt-lighting` 关 = vanilla 手逐位；方向场/出格钳制两开关对手部天空项生效（读同一格）；无光源/夜间的手部不该全黑（天空项 + 保底）。
+
+### B-3：验收与归档（交用户）
+
+观察点清单（同 [[feedback-in-game-test-protocol]] 格式）：
+- **姿态**：开档 vs 关档（vanilla 手）同位姿截图逐像素对齐（B-1 的复验延续到 B-2 之后——光照变了但轮廓/摇摆不得变）。
+- **太阳同步**：头顶放方块 → 手部按世界阴影同步变暗；转动视角，手持方块的高光随太阳方位移动；日出/正午/夜晚色温与世界一致。
+- **发光体**：手持火把贴近墙 → 手臂被自己的火把照亮（D18 的手持光本就照亮世界，现在也照亮手）；身旁放熔岩/萤石同验。
+- **天空项**：洞内 vs 野外，手臂的环境亮度随开阔度变化；方向场开关 A/B 时洞口朝向的一侧手臂更亮。
+- **PBR**：LabPBR 资源包下手持方块的法线细节与高光；金属方块（金锭等）的镜面响应。
+- **回归**：3D 准星、屏幕效果（火/水下叠加）、F5 第三人称、望远镜均不受影响；Fabric 与 NeoForge 双端。
+- **性能**：`gpu.handLit` zone 归档（预期一个 overlay pass + 每像素 ~2–3 条 ray query，手部约占屏 10–20%）；frame.csv 同会话 A/B。
+
+devlog：新文件 `docs/devlog/M29-first-person-hand.md`（D234 号段起；README 索引随首条更新）；`DEVELOPMENT.md` §8 增 M29 小节、§3.7 增手部条目（「手部光照读 RT 场景缓存，不烘 vanilla lightmap」）。
 
 ## 6. 工作流 C：Issue #20 跨骑判据 + Issue #40 近相机雨丝硬剔除
 
@@ -318,5 +372,7 @@ commit 顺序固定，每项独立可回退：**A-②a（钉现状）→ A-①a�
 - **S4 表面 DI 迁入统一链、M24 reservoir 退役**：触发条件 = S3 用户验收 GO + A 线归档完成。显存风险（过渡期两套大缓冲并存）在 S4 设计期先算账。
 - **S5 太阳/天体入池**：水下 Snell、云影规则、`E·phase` 口径逐项过契约测试；依赖 S4。
 - **S6 雾照明接统一链 + D210 水拆段**：雾观感可调性是验收重点（M25 教训）；D210 拆段自备开关。届时与 C 线的水体语义改动合并排期。
-- **S1.5 暗区的最终处置**（美术权衡 or 烘焙修复）视 B 线判读结果。
+- **Issue #77 远场暗区真值探针**：原 B 线任务，2026-09-14 让位给 M29；重启时照 D215 的探针设计做（真值 ≈0.2 → 物理/美术权衡，≈0.8 → 烘焙系统错误排查），**S1.5 暗区的最终处置**以它的判读结果为准。
+- **M29 手部光照的 GI 缺口**：v1 手部只收直接太阳/天空/发光体；间接反弹（洞中火把照亮的手臂）的接入选项——读路径 reservoir 的时域候选（依赖 A 线 S3 成型）、辐照 probe、或接受现状——留 M29 验收后按观感裁决。
+- **M29 手部全光追**（若解析光照的观感不够）：独立 viewmodel 追踪 pass（手部专用 primary/光照，主链 RR 不动），成本/噪声代价先按铁律 1 请示。
 - 其余未结（M13 验收债务、M11 云成本结算、M14 末地动态 HDRI、云影精确后端）：依赖用户输入或主线切片，见 `DEVELOPMENT.md` §1.4/§8。

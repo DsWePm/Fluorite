@@ -183,6 +183,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     float temporalSum = 0.0;
     float temporalCount = 0.0;
     uint temporalReadPixel = 0u;
+    // A-01a: the roughness of the previous opaque shading vertex, for the reconnection gate.
+    // 1.0 means the camera prefix is treated as unconditionally rough -- reconIndex == 0 has no
+    // x_{k-1} surface (the paper's diffuse-case footnote), so the gate only ever bites a specular
+    // chain.
+    float prevVertexRough = 1.0;
     // The spatial candidates (S3a): accumulated values/counts/targets across accepted neighbours,
     // plus the streaming survivor's slot and home target for the post-loop write.
     float3 spatialValue = float3(0.0, 0.0, 0.0);
@@ -541,10 +546,16 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // This vertex reconnects if it survives to trace a continuation: a delta lobe has no sampling
         // density for a shift's Jacobian to weigh, so only finite lobes qualify. Nothing between here
         // and the lobe selection below touches throughput, so the pre-selection value snapshots here.
-        reconQualifies = recordPath && !reconFound && !exactSpecular;
+        // A-01a: the gate looks at x_{k-1}'s roughness (below), never this vertex's -- a rough
+        // continuation is exactly what makes this vertex reconnectable; it is a mirror BEHIND the
+        // reconnection that the suffix transfer cannot survive.
+        reconQualifies = recordPath && !reconFound && !exactSpecular
+                && prevVertexRough >= PATH_RECONNECT_MIN_ALPHA;
         if (reconQualifies) {
             reconTpre = throughput;
         }
+        // This vertex is x_{k-1} for the next one.
+        prevVertexRough = rough;
         float3 diffAlb = albedo * (1.0 - metal);
         float3 F0 = payload.f0;
         // Probability of continuing along the specular lobe rather than the diffuse one. Hoisted above
@@ -978,6 +989,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                     temporalReadPixel = readPixel;
                     if (sampled) {
                         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u);
+                        // A-01a's plate: how many accepted candidates sit behind a specular chain.
+                        // Decides whether the replay sub-loop has an estimator role here at all.
+                        if (reconDepth > 0u) {
+                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[5], 1u);
+                        }
                     }
                 }
             }
@@ -1012,6 +1028,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 }
                 if (sampled) {
                     InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[3], 1u);
+                    if (reconDepth > 0u) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[5], 1u);
+                    }
                 }
                 float candWeight = candCount * candMeanTarget;
                 spatialValue += candCount * candValue;

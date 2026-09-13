@@ -33,8 +33,8 @@ import java.util.Locale;
  * ({@code PUSH_RING} frames later, no fence of its own -- the RtRestirStats arrangement verbatim).
  */
 public final class RtPathReservoirStats {
-    /** Temporal read/usable, spatial attempted/usable, applied. Matches world.rgen's lane indices. */
-    public static final int LANES = 5;
+    /** Temporal read/usable, spatial attempted/usable, applied, deep-recon. Matches world.rgen. */
+    public static final int LANES = 6;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -131,6 +131,7 @@ public final class RtPathReservoirStats {
         long sAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 8L));
         long sUsable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 12L));
         long applied = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 16L));
+        long deepRecon = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 20L));
         if (tRead == 0L && sAttempt == 0L) {
             return; // nothing attempted: a sky view or a menu carries no information either way
         }
@@ -142,9 +143,13 @@ public final class RtPathReservoirStats {
         // Attempts travel with the rates (RtRestirStats's reasoning); the two rates are reported
         // apart because the shifts answer different questions. Applied is the D221 gate's counter --
         // zero while no history carries enough independent candidates, which is the honest reading.
+        // deep-recon is A-01a's plate: accepted candidates sitting behind a specular chain
+        // (reconIndex > 0). If this share is negligible across sessions, the replay sub-loop has no
+        // estimator role here and is not built; if it is material, the share bounds replay's
+        // potential reach. Read it against applied, not alone.
         FluoriteMod.LOGGER.info(
-                "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}",
-                tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied);
+                "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, deep-recon {}",
+                tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon);
     }
 
     private static String rate(long part, long total) {

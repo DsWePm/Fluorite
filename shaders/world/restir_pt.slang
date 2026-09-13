@@ -29,6 +29,15 @@ public static const float PATH_REUSE_MIN_NORMAL_AGREEMENT = 0.9; // cos, about 2
 /** The cosine floor both shift directions insist on (tangent directions have no honest Jacobian). */
 public static const float PATH_REUSE_MIN_SURFACE_COS = 0.1;
 
+// Enhanced §4.2's single-vertex roughness gate, applied to the reconnection vertex's PREDECESSOR
+// x_{k-1}: a suffix reconnected behind a near-mirror bounce is a sample the receiving pixel could
+// never have drawn, and f(wi)'s directional sensitivity amplifies the retarget error exactly where
+// the lobe is sharpest. The paper's rho_min = 0.2 is Falcor's perceptual-roughness semantics; this
+// repository stores GGX alpha directly (iron law 2), so the value arrives as 0.2^2 = 0.04 -- a
+// one-time unit conversion of the paper's constant, not a square of any stored value. Starting
+// point only: calibrate against the deep-recon acceptance share (stats lane 5).
+public static const float PATH_RECONNECT_MIN_ALPHA = 0.04;
+
 // ---- Spatial-shift predicate (S3a): a neighbouring pixel was never the same point, so "did this
 // point move" is meaningless there and the question becomes "is this the same surface". The two
 // bounds below are name-twins of restir.slang's spatial test for the same reason that test exists.

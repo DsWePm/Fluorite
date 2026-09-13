@@ -111,6 +111,21 @@ final class RtPathReplayContractTest {
     }
 
     @Test
+    void theReconnectionGateLooksAtThePredecessorRoughness() throws IOException {
+        String world = source("shaders/world/world.rgen.slang");
+        // A-01a: Enhanced §4.2's single-vertex roughness gate. The qualification reads the PREVIOUS
+        // opaque vertex's alpha (a mirror behind the reconnection kills the suffix transfer; this
+        // vertex's own rough continuation is what makes it reconnectable), and the state rides the
+        // tracePath locals so dielectric-only chains keep their camera-prefix default of 1.0.
+        assertTrue(world.contains("float prevVertexRough = 1.0;"));
+        assertTrue(world.contains("prevVertexRough >= PATH_RECONNECT_MIN_ALPHA"));
+        String restirPt = source("shaders/world/restir_pt.slang");
+        // 0.04 is the paper's rho_min = 0.2 converted from Falcor perceptual roughness to this
+        // repository's GGX-alpha storage (iron law 2): a one-time unit conversion, not a square.
+        assertTrue(restirPt.contains("PATH_RECONNECT_MIN_ALPHA = 0.04"));
+    }
+
+    @Test
     void thePathReservoirSwitchExistsAndDefaultsToOff() throws IOException {
         String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
         assertTrue(config.contains("PATH_RESERVOIR ="));

@@ -303,3 +303,10 @@ S2 设计定稿（用户裁决 B）与 scaffolding 之后的第一个集成片�
 ### 验收(交用户,同前次流程)
 
 静止 + 邻居 ≥2:①stats 的 `s=(x%)` 应明显高于之前的 1–8%;②`applied` 应为正;③间接光区噪点可辨变细、亮度不偏移。若 s-usable 仍低,报数字——下一个杠杆是把邻居搜索半径/软门余量再放。
+
+## D224（A 线）：A-②a 钉现状 + A-①a 重连粗糙度门（feat/m28-s3-finish）
+
+三线并行启动，A 线从 `7a7d50f` 拉分支，commit 顺序照分派文档。
+
+- **A-②a（d808df2）**：决策 6③「RGB 向量权重」的 shipped 形态钉死——applied 估计按 RGB 累积（`temporalCount * temporalValue + spatialValue` 进画面）、幸存者抽签标量驱动（`rndf(seed) * totalTarget`、候选权重 `candCount * candMeanTarget`）。Enhanced §6.3 的解耦两侧各一钉，A-②b 的域切换不得塌缩任何一侧。
+- **A-①a**：Enhanced §4.2 单顶点粗糙度门落地。`PATH_RECONNECT_MIN_ALPHA = 0.04`（论文 ρ_min=0.2 的 Falcor 感知粗糙度 → 本仓库 GGX alpha 的一次性单位换算，铁律 2 口径，非对存储值平方）；`tracePath` 循环携带 `prevVertexRough`（初值 1.0 = 相机前缀视为粗糙，`reconIndex == 0` 无 x_{k-1} 表面，门只咬镜面链）；资格判定追加 `prevVertexRough >= PATH_RECONNECT_MIN_ALPHA`——门看的是**前一顶点**：粗糙的延续正是可重连的定义，镜面在重连**背后**才杀死后缀迁移。stats 扩到 6 lanes，lane 5 = `deep-recon`（被接受候选中 `reconIndex > 0` 的采样计数）——**这张占比底片决定 A-①b 是否有估计量角色**（分派文档的裁决点，数字随下次游戏会话产出）。
