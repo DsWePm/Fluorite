@@ -195,7 +195,9 @@ final class RtRainSurfaceContractTest {
         assertTrue(surface.contains("1.0 - (1.0 - filmFlatten) * (1.0 - puddleFlatten)"));
         assertTrue(surface.contains("topReceiver ? float3(0.0, n.y >= 0.0 ? 1.0 : -1.0, 0.0)"));
         assertFalse(surface.contains("applyRainPuddleLayer"));
-        assertFalse(surface.toLowerCase().contains("parallax"));
+        // M30 superseded M21's "puddles never use parallax" boundary: the dispatch explicitly
+        // directs the puddle-relief linkage to read the height field. The word is expected now.
+        // assertFalse(surface.toLowerCase().contains("parallax")); -- REMOVED, see D244+.
         assertTrue(config.contains("WET_DARKENING_GAIN"));
         assertTrue(config.contains("WET_COAT_GAIN"));
         assertTrue(config.contains("PUDDLE_LAYER_GAIN"));
