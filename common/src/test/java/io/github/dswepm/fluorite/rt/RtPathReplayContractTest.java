@@ -97,6 +97,20 @@ final class RtPathReplayContractTest {
     }
 
     @Test
+    void theAppliedEstimateAccumulatesInRgbAndSelectsByScalar() throws IOException {
+        String world = source("shaders/world/world.rgen.slang");
+        // Decision 6's RGB vector weights, pinned in its shipped form (A-②a): the APPLIED estimate
+        // accumulates candidates as RGB (vector weights reach the picture -- chroma noise averages),
+        // while the survivor SELECTION is driven by the scalar luminance target. Decoupling those two
+        // is the whole of Enhanced §6.3; either half regressing to the other's domain is what this
+        // pin catches.
+        assertTrue(world.contains("temporalCount * temporalValue + spatialValue"));
+        assertTrue(world.contains("rndf(seed) * totalTarget"));
+        // The per-candidate selection weight is a scalar (count * home-domain luminance target).
+        assertTrue(world.contains("candCount * candMeanTarget"));
+    }
+
+    @Test
     void thePathReservoirSwitchExistsAndDefaultsToOff() throws IOException {
         String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
         assertTrue(config.contains("PATH_RESERVOIR ="));
