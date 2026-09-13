@@ -985,7 +985,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                                             seed, stored, candValue, candCount, candMeanTarget)) {
                     temporalValue = candValue;
                     temporalCount = candCount;
-                    temporalSum = candCount * candMeanTarget;
+                    // A-02b: selection weights live in the RECEIVER domain (this vertex's
+                    // re-evaluated luminance), matching Enhanced §6.3's survivor-representativeness.
+                    // Unbiasedness needs draw/sums/t_chosen in ONE domain -- all three switched
+                    // together below; the record's home-domain targetSum/m stays a next-frame hint.
+                    temporalSum = candCount * luminance(candValue);
                     temporalReadPixel = readPixel;
                     if (sampled) {
                         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u);
@@ -1032,13 +1036,14 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[5], 1u);
                     }
                 }
-                float candWeight = candCount * candMeanTarget;
+                // A-02b: same receiver-domain switch as the temporal candidate above -- one spelling.
+                float candWeight = candCount * luminance(candValue);
                 spatialValue += candCount * candValue;
                 spatialCount += candCount;
                 spatialTargetSum += candWeight;
                 if (rndf(seed) * spatialTargetSum < candWeight) {
                     spatialWinSlot = neighbourSlot;
-                    spatialWinTarget = candMeanTarget;
+                    spatialWinTarget = luminance(candValue);
                 }
             }
         }

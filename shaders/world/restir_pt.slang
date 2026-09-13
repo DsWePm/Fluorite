@@ -150,8 +150,11 @@ public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, flo
  * <p>`value` is the per-sample candidate value at this vertex: W (the record's accumulated merge
  * weight) times the reconnection weight -- f(wi)*cos/pdf over THIS vertex's continuation mixture,
  * times the clamped cosine-ratio Jacobian, times the stored suffix radiance. `count` is the record's
- * effective sample count (capped); `meanTarget` its per-sample home target. Both shifts' callers
- * multiply value by count when accumulating the pixel's merged estimate.
+ * effective sample count (capped); `meanTarget` its per-sample home target -- reported but, since
+ * A-02b, NOT the selection weight: callers select by the RECEIVER-domain luminance(value), which
+ * needs no unbiasedness argument (a GRIS selection target may be any positive function) as long as
+ * the draw, the sums and t_chosen all stay in one domain. Both shifts' callers multiply value by
+ * count when accumulating the pixel's merged estimate.
  */
 public bool evalPathSuffixCandidate(BsdfContext bc, float3 diffAlb, float3 F0,
                                     float pf, float ps, float walkSssShare, float3 v,

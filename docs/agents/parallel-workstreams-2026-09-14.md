@@ -33,11 +33,12 @@
 ### 主线之外的独立欠账与新增任务（与 ReSTIR 主干文件不相交）
 
 - **Issue #77**：远场可见性暗区，机制未明，下一步探针已在 D215 设计好。**本轮不分派**——2026-09-14 用户指令把 B 线改派给第一人称手部 RT 光照（M29）；重启 #77 时第一件事仍是 D215 的真值对照探针，设计原样有效。
-- **[Issue #20](https://github.com/DsWePm/Fluorite/issues/20)**：水面消失/水下曝光闪烁，机制已定位（F29：两个水面把相机夹进 2/9 格歧义带），检测器判据错误导致沉默 → 工作流 C。
-- **[Issue #40](https://github.com/DsWePm/Fluorite/issues/40)**：近相机降水粒子拉出斜线，机制已知（守卫只收缩长度不弃实例）→ 工作流 C。
+- **[Issue #20](https://github.com/DsWePm/Fluorite/issues/20)**：水面消失/水下曝光闪烁，机制已定位（F29：两个水面把相机夹进 2/9 格歧义带），检测器判据错误导致沉默。**本轮不分派**——2026-09-14 用户指令把 C 线改派给材质视差（M30）；重启时照 F29 的「跨骑判据 + 拿到 fault 行就停」原样做。
+- **[Issue #40](https://github.com/DsWePm/Fluorite/issues/40)**：近相机降水粒子拉出斜线，机制已知（守卫只收缩长度不弃实例）。**本轮不分派**，同上；修复方向仍按 §8.1 记档的「最小距离硬弃实例」。
 - **M29 第一人称手部 RT 光照（2026-09-14 用户指令）**：vanilla 光栅的手（手臂 + 手持物）改为接受 RT 场景的正确光照与 PBR 材质 → 工作流 B。
+- **M30 材质视差 + 雨水坑联动（2026-09-14 用户指令）**：LabPBR 高度通道驱动的视差，且雨水坑吃视差高度——低凹处先淹、水位随雨情涨落，仿佛雨水淹没了视差里的低洼 → 工作流 C。
 
-三条工作流按**子系统**切分：A = ReSTIR 主干（restir/reservoir/rgen），B = 前端合成与手部（mixin 重定向、overlay 光栅、实体捕获、天空场消费），C = 水体 + 降水粒子。文件交集只剩 `RtComposite.java`，用 §3.1 的分区规则处理。
+三条工作流按**子系统**切分：A = ReSTIR 主干（restir/reservoir/rgen 的 restir 段），B = 前端合成与手部（mixin 重定向、overlay 光栅、实体捕获、天空场消费），C = 材质视差与雨天表面（rchit 材质取用、rain_surface、material 管线）。`world.rgen.slang` A/C 各占一段（restir 段 / rain 求值段），其余文件交集只剩 `RtComposite.java` 的分区规则与 `FluoriteConfig.java` 的键前缀。
 
 ## 2. 全体必读（按序）
 
@@ -62,38 +63,45 @@
 
 ### 3.1 文件所有权矩阵
 
-| 文件/区域 | A（ReSTIR 主干） | B（前端合成/手部） | C（水体+降水） |
+| 文件/区域 | A（ReSTIR 主干） | B（前端合成/手部） | C（材质视差/雨天表面） |
 | --- | --- | --- | --- |
 | `shaders/world/restir_pt.slang` | **写** | — | — |
 | `shaders/world/restir_duplication.comp.slang`（新文件，A-③） | **写** | — | — |
 | `shaders/world/world.rgen.slang`（restir/合并/重放段） | **写** | — | — |
+| `shaders/world/world.rgen.slang`（rain 求值段：`evaluateRainSurface` 调用点一带，与 A 的 restir 段不相邻） | — | — | **写**（rebase 无重叠，预期自动合并） |
 | `shaders/world/world_common.slang`（`PackedPathReservoir`，布局冻结） | 只读 | 只读 | — |
 | `shaders/world/volume_visibility.slang`（**只增** `volumeSkySurfaceIrradiance`；烘焙/既有消费主链不动） | — | **写** | — |
 | `volume_visibility.comp.slang` / `volume_visibility_far.comp.slang` | — | 只读（本轮无主） | — |
 | `mixin/GameRendererMixin.java`（手部 WrapOperation + 手部投影捕获） | — | **写** | — |
 | `rt/entity/RtHandCapture.java`（新）、`RtEntityCollectorBase.java`（仅 hand no-op 钩子）、手部 submit 捕获 mixin（新） | — | **写**（实体主捕获链不动） | — |
 | `rt/RtUiOverlay.java`（手部绘制接缝） | — | **写** | — |
-| `rt/overlay/RtOverlayPipelines.java`、`rt/overlay/RtHandFeature.java`（新） | — | **写**（C 的 `RtRainStreaks.java` 不在此列） | — |
+| `rt/overlay/RtOverlayPipelines.java`、`rt/overlay/RtHandFeature.java`（新） | — | **写** | — |
 | `shaders/world/hand_lit_common.slang`（新）、`shaders/overlay/hand_lit.vert.slang` / `hand_lit.frag.slang`（新） | — | **写** | — |
-| `shaders/overlay/rain_streak*.slang`、`rt/overlay/RtRainStreaks.java` | — | — | **写** |
-| `shaders/world/water*.slang`、`medium.slang` | — | — | 只读（本轮禁改） |
-| `rt/RtComposite.java` | 分区①：path reservoir 分配/统计 + duplication 派发（A-③） | 分区②：无改动预期（手部走 UI overlay，不经 RtComposite） | 分区③：水体 probe/诊断 |
+| `shaders/world/relief.slang`（新，无绑定模块） | — | — | **写** |
+| `shaders/world/rain_surface.slang`（**只增** relief 感知重载与水位折算；`evaluateRainSurface`/`rainPuddleMaskAt` 既有拼写一字不动） | — | — | **写** |
+| `shaders/world/world.rchit.slang`（材质纹理取用 + TBN/relief 求值段） | — | — | **写** |
+| `shaders/world/world_primary.rgen.slang`（rain 求值段 + debug view 22） | — | — | **写** |
+| `shaders/world/trace.slang`（Radiance Payload 增 relief lane；**阴影 payload 冻结**，铁律 4） | — | — | **写** |
+| `rt/material/`（_n alpha 通道上传核验/修复 + 新契约测试） | — | — | **写** |
+| `shaders/world/water*.slang`、`medium.slang`、`shaders/overlay/rain_streak*`、`rt/overlay/RtRainStreaks.java` | — | — | 无主，默认只读 |
+| `rt/RtComposite.java` | 分区①：path reservoir 分配/统计 + duplication 派发（A-③） | 分区②：无改动预期（手部走 UI overlay，不经 RtComposite） | 分区③：无改动预期（无新 WorldPush lane、无新 pass） |
 | `rt/RtPathReservoirStats.java`、`FluoriteConfig.java`（`composite.path-*` 键） | **写** | — | — |
 | `FluoriteConfig.java`（`composite.hand-*` 键）+ 对应 lang 三语 | — | **写** | — |
-| devlog | `M28-restir-backbone.md`，**D224–D233** | `M29-first-person-hand.md`（新），**D234–D243** | `M12-water-simulation.md`（F30+）与 `M21-rain.md`，**D244–D253** |
-| `DEVELOPMENT.md` | §8.13 S3 行 | §8 新增 M29 小节 + §3.7 手部条目 | §8.1 Issue #20/#40 |
+| `FluoriteConfig.java`（`material.parallax*` / `weather.puddle-parallax` 键）+ 对应 lang 三语 | — | — | **写** |
+| devlog | `M28-restir-backbone.md`，**D224–D233** | `M29-first-person-hand.md`（新），**D234–D243** | `M30-material-parallax.md`（新），**D244–D253** |
+| `DEVELOPMENT.md` | §8.13 S3 行 | §8 新增 M29 小节 + §3.7 手部条目 | §8 新增 M30 小节 + §8.5 M21 段补注（「水坑不用视差」边界由 M30 supersede）+ `MATERIAL_FORMAT.md` 视差条目 |
 
 无主文件（`math.slang`、`bsdf.slang` 等）默认只读；确实要动就在自己号段记档理由，并在合并时第一个声明。
 
 ### 3.2 冻结令
 
-- 共享 ABI 冻结：`WorldPush`（1296 B）、`PackedPathSegment`（48 B）、`PackedPathReservoir`（48 B）、push-constant 块（120 B）。任何 agent 的设计若「需要动布局」，说明设计错了——S2 已验证重放子循环在 raygen 内联完成、不需要新段类型。**唯一豁免（2026-09-14 增，仅 A 线）**：A-① 与 A-③ 的两个 WorldPush **尾部**追加（`pathReplayEnabled`、`pathDuplicationAddr`）——尾部追加是位置性的、不改任何既有偏移，且 A 线第一个合并、B/C 只 rebase 一次。硬性要求：codegen（`generateShaderRecords`）+ `RtSkyMediumLayoutTest` 钉子与字段同一 commit；结构中部与既有偏移仍然全冻。
+- 共享 ABI 冻结：`WorldPush`（1296 B）、`PackedPathSegment`（48 B）、`PackedPathReservoir`（48 B）、push-constant 块（120 B）。任何 agent 的设计若「需要动布局」，说明设计错了——S2 已验证重放子循环在 raygen 内联完成、不需要新段类型。**冻结豁免（2026-09-14 增，封闭清单共三条）**：A-① 与 A-③ 的两个 WorldPush **尾部**追加（`pathReplayEnabled`、`pathDuplicationAddr`），以及 C 线的一条 `reliefParams`（uint `reliefSwitches` + float `parallaxDepth`）——尾部追加是位置性的、不改任何既有偏移；A 第一个合并、C 最后一个合并，rebase 成本各只发生一次。硬性要求：codegen（`generateShaderRecords`）+ `RtSkyMediumLayoutTest` 钉子与字段同一 commit；结构中部与既有偏移仍然全冻；**除此之外不再接受任何豁免申请**。
 - 默认值冻结：任何开关的默认档保持现状（铁律 8）。新开关一律默认关、关档 = 逐位发布行为（A 线两个新旋钮的「发布行为」= 各自落地前的 on-switch 行为，主开关 `composite.path-reservoir` 默认关已经护住发布帧）。
 - 退役令冻结：本轮**不退役任何现有开关/视图/统计列**（那是 S4 的事）。
 
 ### 3.3 分支与合并
 
-- 各自从 `7a7d50f` 拉分支：A = `feat/m28-s3-finish`，B = `feat/m29-first-person-hand-lighting`，C = `feat/issue20-straddle-issue40-rain`。
+- 各自 `7a7d50f` 拉分支：A = `feat/m28-s3-finish`，B = `feat/m29-first-person-hand-lighting`，C = `feat/m30-parallax-puddle-link`。
 - 合并回 `feat/m28-restir-backbone` 的顺序固定 **A → B → C**；后合并者 rebase 后自行解冲突。`RtComposite.java` 只在各自分区内改，正常情况下 git 可自动合并。
 - 每个逻辑片一个 commit（参考既有风格：一句话标题说清「做了什么+为什么」），S3 剩余项之间也分开 commit（归因要求）。
 
@@ -335,33 +343,82 @@ frag 的三个光照项与一个求值，全部预先定名（`hand_lit.frag.sla
 
 devlog：新文件 `docs/devlog/M29-first-person-hand.md`（D234 号段起；README 索引随首条更新）；`DEVELOPMENT.md` §8 增 M29 小节、§3.7 增手部条目（「手部光照读 RT 场景缓存，不烘 vanilla lightmap」）。
 
-## 6. 工作流 C：Issue #20 跨骑判据 + Issue #40 近相机雨丝硬剔除
+## 6. 工作流 C：M30 材质视差 + 雨水坑联动（低凹先淹、水位随雨情涨落）
 
-**目标**：两个机制已定位的 Issue，一个换对检测器判据拿到证据（#20），一个落已知的防御修复（#40）。
+**目标**：带 LabPBR 高度图的材质获得**视差**（视向相关的表面起伏，位移纹理取用坐标）；雨天系统里的水坑**吃视差高度**——坑内水位与视差高度场比较，纹理低洼处先淹没、高处在水位上涨后才没顶，微观海岸线随蓄水/干燥爬移，观感如「雨水淹没了视差里的低处」。
 
-**必读**（全体的之外）：`devlog/M12-water-simulation.md` F29 全文（机制定位 + 检测器为何沉默）；`devlog/M21-rain.md` 雨丝 pass 部分；`DEVELOPMENT.md` §8.1 两个 Issue 的现状段；`rt/RtComposite.java` 的水体 probe 区与 `shaders/overlay/rain_streak.vert.slang` 的 `nearCamera` 注释。
+**现状事实链**（2026-09-14 核验，全部有代码锚点）：
 
-**所有权**：见 §3.1 C 行。**禁改**：`water_sim.comp`/`water.slang`/`medium.slang`/`water_wave.slang`（本轮只读——#20 的「哪个水面说了算」裁决出来之前不许动水语义）；雨丝 pass 的能量/亮度口径。
+- **高度通道已在 GPU、只是没人用**：`world.rchit.slang` 的 `perturbNormal(..., float4 ntex, out float ao)` 拿到的 `_n` 是四通道——R/G = 切线法线 XY、B = AO（以 `NORMAL_AO_STRENGTH = 0.5` 压 albedo）、**A = LabPBR 高度，当前被丢弃**。C-0 的第一件事是核验 Java 侧上传没把 alpha 丢掉（若丢，改格式并钉契约）。
+- **逐命中 TBN 现成**：`uvTangent(n, p0, p1, p2, t0, t1, t2, out handedness)`（VK_KHR_ray_tracing_position_fetch 的顶点 + UV 构造，含 Gram-Schmidt 与 handedness）——视差行进的切线空间就是它，无需新几何。
+- **取用 LOD 有 ray-cone 体系**：`rayConeTextureLod(...)` 已按足迹算纹理 LOD——视差行进读高度用低 LOD，最终位移后的取用沿用现有 LOD 路径。
+- **水坑是纯位置函数、刻意无视差**（M21 记档的边界，本任务**有意打破并在 devlog supersede 该条**）：`rain_surface.slang` 的 `evaluateRainSurface(p, ext, filmReceiver, topReceiver, plantReceiver)`——`r.puddle = clamp(rainPuddle.y × retainedPuddle × affinity × rainPuddleMaskAt(p))`，掩码是世界锚定 FBM（`rainSmoothFbmPeriodic`），与纹理无关。**水位是连续标量**（`worldPush.rainPuddle.y` + history 的 retainedPuddle），这正是「涨落爬移」的驱动量。
+- **水膜已能量分层进 BSDF**：`BsdfContext.rain`（film/filmAlpha），`rainFilmBrdf`/`rainBaseTransmission` 在所有表面求值处生效——联动的输出侧（水覆盖处的 BRDF）已有落点，缺的只是「何处有水、水多深」的纹理感知。
+- **调用点三处**：`world.rgen.slang`（pass B 弹射顶点）、`world_primary.rgen.slang` 两处（pass A，含 debug view 20/21）。视差高度在 rchit 才知道（纹理在那取），需经 Radiance Payload 传给求值方。
+- 雨滴冲击涟漪已由「原生水面与水坑共享的无状态世界锚定事件」提供——联动只改水的**范围与深度**，不动事件系统。
 
-### 任务 C-①：Issue #20 检测器换跨骑判据（先取证，后修）
+**必读**（全体的之外）：`devlog/M21-rain.md`（水坑/水膜/涟漪的完整设计与「不用视差」边界原文）；`rain_surface.slang` 全文；`world.rchit.slang` 的 `_n` 解码与 TBN 段（`perturbNormal`/`uvTangent`/`rayConeTextureLod`）；`docs/MATERIAL_FORMAT.md`（format-3 `weather` 块与「未改 LabPBR 包逐位不变」承诺——视差开关默认关正是保它）；`DEVELOPMENT.md` §2.8 偏差账（视差是新的已具名偏差，结案时入账）。
 
-1. 把水体 probe 第五项从**差值判据**（`|waterPlaneRebasedY - surfaceY| > 1.5`，永不触发）改为**跨骑判据**：相机高度落在 `min(surfaceY, simPlane)` 与 `max(...)` 之间即为 fault。**无阈值常数**（F29 明示）。
-2. probe 保持纯诊断：不改任何渲染语义，fault 行记录 `camY / surfaceY / simPlane` + 帧、天气、区块状态，落日志（沿用 M12 probe 的既有输出通道）。
-3. **拿到 fault 行就停**：1.7778（介质参考水面）与 2.0000（仿真平面）哪个该说了算，是方向性裁决——整理证据（哪侧的曝光/合成是对的、歧义带内两侧各自的答案）列选项**请示用户**。获批后才进入修复片（修复片另立 commit，届时再申请改水语义文件的授权）。
-4. 交给用户的复现脚本：F29 的触发姿势（水下朝曝光方向停 3 秒 → 朝缺失水面停 3 秒），加上日志开关说明。
+**所有权**：见 §3.1 C 列。**禁改**：`evaluateRainSurface`/`rainPuddleMaskAt` 的既有拼写一字不动（关档分支必须是旧式原样）；阴影 Payload（铁律 4）；`MaterialHeader`/`MaterialExtension` 的 64/80 B 布局（**v1 不加任何材质 ABI 字段**——视差深度用全局常量/开关，不进 per-material JSON）；涟漪事件系统。
 
-### 任务 C-②：Issue #40 雨丝最小距离硬剔除
+**开关**（全部默认关；关档 = 逐位现状）：
+- `material.parallax`（UI「材质视差」）：视差位移本体。
+- `material.parallax-depth`（UI「视差深度（格）」，0–0.25，默认 0.0625）。
+- `weather.puddle-parallax`（UI「水坑贴合材质凹凸」）：水坑联动；**独立于视差开关**——联动只读高度纹理（可用未位移的基础 UV），视差关着也能只开「低凹先淹」。
 
-1. 机制已知：`rain_streak.vert.slang` 的 `nearCamera` 守卫只收缩长度不收缩宽度，且是 smoothstep 渐隐不是硬剔除——0.35 格内仍投出退化四边形横贯整屏；侧向轴 `cross(rainDirection, toCamera)` 近距退化放大之。
-2. 修复方向（文档已写明）：在既有 exposure/lit 剔除同一处**按最小距离直接弃掉实例**，不是把长度渐隐到零。阈值做成常量并记档取值依据；关档（雨关闭）行为不变。
-3. 未确认项交给用户观察：雨/雪是否都出现、是否与快速转视角相关（修复后两种天气 + 转视角各看一轮）。
-4. 顺带记录：`cross` 回退轴是否仍需加固——若最小距离剔除后不再可达，记档即可，不扩大改动面。
+WorldPush 冻结令豁免（§3.2 已列）：C 线**尾部追加一条** `reliefParams`（打包：uint `reliefSwitches` bit0=parallax bit1=puddle-link + float parallaxDepth，8 B 尾部、codegen + layout 测试同 commit）——开关与深度必须到 shader，这是唯一的 ABI 改动。
 
-### 验收
+### C-0：高度通道核验与契约（独立 commit，无画面变化）
 
-- 构建 + 测试门照 §3.4；probe 输出格式若有新 CSV/日志列，走注册表规则。
-- 交给用户：#20 复现姿势 + fault 日志的取回方式；#40 的雨天/雪天/转视角观察点矩阵。
-- devlog：`M12-water-simulation.md` F30（跨骑判据 + fault 行证据）与 `M21-rain.md`（剔除修复），用 D244+ 号段。
+1. 核验 `_n` 纹理上传保留 alpha（`rt/material/` 的上传格式；若被压成 RG8 → 改 RGBA8，路径与 mip 链一并核验）。
+2. 新契约测试 `RtReliefContractTest`（源级钉，仓库惯例）：`_n` 上传格式含 alpha；`perturbNormal` 的 `ntex.w` 在 rchit 中被读取（证明高度可达着色端）。
+3. **本片验收**：测试绿；画面零变化。
+
+### C-1：视差本体（POM，独立 commit）
+
+1. **新模块 `shaders/world/relief.slang`**（无绑定模块，纹理作参数传入——`precipitation.slang` 先例），两个公开函数（签名固定）：
+   ```slang
+   /** Parallax-occlusion march: step the view ray through the height field in tangent space.
+    *  Returns the offset UV and the relief height at the exit point (0..1, 1 = no map/off). */
+   public float2 parallaxUv(float2 baseUv, float2 texelSize, Sampler2D ntex, float lod,
+                            float3 tangentViewDir, float depthBlocks, uint switches,
+                            out float reliefHeight)
+   public float puddleReliefDepth(float waterLevel, float reliefHeight)
+   // = waterLevel - reliefHeight; > 0 = submerged. 单一拼写，C-2 全走它。
+   ```
+   行进参数为常量（`PARALLAX_STEPS = 16` 线性 + 一次线性插值精化；`RAY_CONE_MIN_*` 同族的最小足迹钳制）；`tangentViewDir` 由调用方用 `uvTangent` 的 TBN 变换。**关档契约**：`switches` bit0 = 0 时函数原样返回 `baseUv`、`reliefHeight = 1.0`——不进循环。
+2. **rchit 插桩**：`perturbNormal` 调用点之前，取 `_n`（现有 fetch 旁，不新增采样点数量级）、调 `parallaxUv`，得到的位移 UV 交给**所有**后续纹理取用（albedo/_n/_s，同一偏移——三处取用必须同一 UV，契约钉）；`reliefHeight` 写入 Radiance Payload 新 lane（`payload.reliefHeight`，unorm16 打包，1.0 = 无图/关档；`trace.slang` 的 Payload 打包契约测试同 commit 更新）。
+3. **关档逐位**：bit0=0 → UV 偏移恒 0、`reliefHeight` 恒 1.0，取用路径与现行拼写一致（源级钉：偏移应用在守卫内）。
+4. **记档偏差**（入 §2.8 账）：虚拟位移不改命中几何——剪影/自遮蔽不真实（POM 自阴影与几何偏移列为 §8 升级项）；ray-cone LOD 与行进的交互（远距离行进步长退化到 mip 平坦高度——脚注写清「远距离视差自然退化为法线贴图」是有意的连续性行为）。
+5. **本片验收**：开关 A/B，开档石砖/圆石从掠射角可见起伏，albedo/高光随视角滑动；关档逐位；`gpu.traceIndirect` 同会话 A/B 归档（rchit 每命中 +16 步行进的代价——超预算时降 `PARALLAX_STEPS` 并记档，或按铁律 1 请示「仅主命中启用」的选项）。
+
+### C-2：水坑联动（两个 commit：C-2a 机制，C-2b 诊断视图）
+
+1. **rain_surface.slang 只增不改**：新函数（既有 `evaluateRainSurface` 原样保留）：
+   ```slang
+   public RainSurface evaluateRainSurfaceRelief(float3 p, MaterialExtension ext,
+                                                 bool filmReceiver, bool topReceiver, bool plantReceiver,
+                                                 float reliefHeight)
+   ```
+   - `reliefHeight >= 1.0`（无图/视差关/联动关）→ **字面复用旧公式的分支**（逐位，钉契约）；否则：
+   - 坑内水位 `waterLevel = r.puddle`（旧公式的全部因子——FBM 掩码、retained history、affinity、`rainPuddle.y`——原样决定「这一带有多少水」，**水位语义不变**）；
+   - 淹没判定走 `puddleReliefDepth(waterLevel, reliefHeight)`，微观海岸线 = `smoothstep(0, PUDDLE_SHORELINE_EPS, depth)`（常量 ~0.05，连续性优先——[[feedback-fog-tunability]]：爬移的海岸线必须平滑，不许像素抖动）；
+   - 深度驱动的三件事（全部在既有能量框架内，不新增能量规则）：`r.puddle ← 淹没系数`（水膜/分层 Fresnel 随之——现有 `rainFilmBrdf` 管道零改动）；`puddleExtraDarkening` 在既有 ≤0.25 帽内按深度插值（深水更暗）；**折射弯折**（可选常量 `PUDDLE_REFRACTION_BEND`，衬底 UV 沿切向视线偏移 `depth × bend`，非 Snell 精确——记档为艺术近似）。
+2. **调用点接线**（三处，全部传 payload 的 `reliefHeight`；`weather.puddle-parallax` 关 → 传 1.0 即回旧行为）：`world.rgen.slang` 的 rain 求值段（C 所有权行）、`world_primary.rgen.slang` 两处。涟漪事件不动——水面的冲击法线扰动作用在淹没系数 > 0 的区域，C-2b 验收确认涟漪仍落在坑内。
+3. **debug view 22**（编号连续，pass A 拥有，与 20/21 同族）：R = reliefHeight、G = waterLevel、B = 淹没深度——微观海岸线与涨落的归因仪表（D211 规则：捕获自带归因）。
+4. **M21 边界 supersede**：devlog M21 的「水坑不使用真实几何或视差」条目由 M30 记档取代——**仍然不做**的是毫米级自由表面位移（水面仍是高度阈值层，非位移几何），现在**做**的是范围/深度吃视差场。
+5. **本片验收**：LabPBR 高度包 + 石砖：下雨后灰浆凹缝先出现镜面水线、随 `rainPuddle.y` 涨落扩大/收缩；停雨后高处先干、凹缝最后干；涟漪仍打在坑内；联动关档 = 现行平滑 FBM 水坑逐位。
+
+### C-3：验收与归档（交用户）
+
+观察点清单（[[feedback-in-game-test-protocol]] 格式）：
+- **视差**：`material.parallax` A/B——掠射角起伏、关档逐位；`material.parallax-depth` 0.03/0.0625/0.125 三档观感（过高 = 突起的「浮空」感，过低 = 仅法线感）。
+- **联动**：雨中石砖低凹先淹、水位爬移、停雨高先干；「水坑贴合材质凹凸」独立开关下（视差关）仍有效；debug view 22 的 G/B 通道随雨情变化。
+- **连续性**：海岸线无像素抖动（水位静止时完全静止）；反射/弹射路径里的坑也贴合（rchit 对每次命中生效，反射里看到的坑与主视图一致）。
+- **回归**：无高度图的材质逐位不变（`reliefHeight=1.0` 路径）；雪天坑不冒水（M21 D-雪坑事故的回归位）；原生水面/玻璃不受联动影响。
+- **性能**：`gpu.traceIndirect` 同会话 A/B（视差开/关 × 联动开/关四格）；POM 行进成本归档。
+
+devlog：新文件 `docs/devlog/M30-material-parallax.md`（D244 号段起；README 索引随首条更新）；`DEVELOPMENT.md` §8 增 M30 小节、§8.5 M21 段补注、§2.8 偏差账加「视差虚拟位移」条目；`MATERIAL_FORMAT.md` 增「`_n` alpha = 高度，驱动视差与水坑联动」一节。
 
 ## 7. 待协调清单（跨线请求落这里）
 
@@ -373,6 +430,9 @@ devlog：新文件 `docs/devlog/M29-first-person-hand.md`（D234 号段起；REA
 - **S5 太阳/天体入池**：水下 Snell、云影规则、`E·phase` 口径逐项过契约测试；依赖 S4。
 - **S6 雾照明接统一链 + D210 水拆段**：雾观感可调性是验收重点（M25 教训）；D210 拆段自备开关。届时与 C 线的水体语义改动合并排期。
 - **Issue #77 远场暗区真值探针**：原 B 线任务，2026-09-14 让位给 M29；重启时照 D215 的探针设计做（真值 ≈0.2 → 物理/美术权衡，≈0.8 → 烘焙系统错误排查），**S1.5 暗区的最终处置**以它的判读结果为准。
+- **Issue #20 跨骑判据取证**：原 C 线任务，2026-09-14 让位给 M30；重启时照 F29 原样做（差值判据 → 跨骑判据、拿到 fault 行就停、哪个水面说了算交用户裁决）。
+- **Issue #40 近相机雨丝硬剔除**：原 C 线任务，同上；修复方向已记档（exposure/lit 剔除同点按最小距离直接弃实例）。
+- **M30 视差升级项**（观感裁决后按需请示）：POM 自阴影与几何偏移（真实剪影）；per-material 视差深度（材质 JSON `parallax` 块——等 MaterialExtension 的 ABI 窗口）；`PARALLAX_STEPS` 超预算时「仅主命中启用视差」的分级。
 - **M29 手部光照的 GI 缺口**：v1 手部只收直接太阳/天空/发光体；间接反弹（洞中火把照亮的手臂）的接入选项——读路径 reservoir 的时域候选（依赖 A 线 S3 成型）、辐照 probe、或接受现状——留 M29 验收后按观感裁决。
 - **M29 手部全光追**（若解析光照的观感不够）：独立 viewmodel 追踪 pass（手部专用 primary/光照，主链 RR 不动），成本/噪声代价先按铁律 1 请示。
 - 其余未结（M13 验收债务、M11 云成本结算、M14 末地动态 HDRI、云影精确后端）：依赖用户输入或主线切片，见 `DEVELOPMENT.md` §1.4/§8。

@@ -106,8 +106,22 @@ final class RtPathReplayContractTest {
         // pin catches.
         assertTrue(world.contains("temporalCount * temporalValue + spatialValue"));
         assertTrue(world.contains("rndf(seed) * totalTarget"));
-        // The per-candidate selection weight is a scalar (count * home-domain luminance target).
-        assertTrue(world.contains("candCount * candMeanTarget"));
+        // The per-candidate selection weight stays a scalar multiplication (A-02b moved it to the
+        // receiver domain; scalar-vs-vector is the invariant this test guards, not the domain).
+        assertTrue(world.contains("candCount * luminance(candValue)"));
+    }
+
+    @Test
+    void theSelectionTargetStaysInOneDomain() throws IOException {
+        String world = source("shaders/world/world.rgen.slang");
+        // A-02b: selection moved to the RECEIVER domain (Enhanced §6.3 survivor representativeness).
+        // Unbiasedness does not care which positive function selects, but it DOES care that the
+        // draw, the sums and t_chosen stay in one domain -- so all three spellings are pinned.
+        assertTrue(world.contains("candCount * luminance(candValue)"));
+        assertTrue(world.contains("spatialWinTarget = luminance(candValue)"));
+        assertTrue(world.contains("temporalSum = candCount * luminance(candValue)"));
+        // The applied estimate stays RGB accumulation, untouched by the domain switch.
+        assertTrue(world.contains("temporalCount * temporalValue + spatialValue"));
     }
 
     @Test
