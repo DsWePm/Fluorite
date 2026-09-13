@@ -698,5 +698,13 @@
   "fluorite.options.rt.cloudEvolutionSpeed": "Cloud Evolution",
   "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "How fast a cloud's shape changes, separately from how fast it drifts. Clouds are reshaped by convection rather than by wind -- a cumulus on a still afternoon billows and dissolves without going anywhere -- so this does not follow the wind speed, and setting the wind to zero no longer freezes the sky. Higher makes lobes grow and dissolve faster; too high and the cloud boils instead of growing.",
   "fluorite.options.rt.section.weatherPrecipitationParticles": "Precipitation Particles (Rain and Snow)",
-  "fluorite.options.rt.section.weatherSnow": "Snow Only"
+  "fluorite.options.rt.section.weatherSnow": "Snow Only",
+  "fluorite.options.rt.parallaxEnabled": "Material Parallax",
+  "fluorite.options.rt.parallaxEnabled.tooltip": "Parallax occlusion mapping on LabPBR _n textures that carry a height value in their alpha. The march displaces the texture coordinates along the tangent-space view ray, so the surface reads as bumpy rather than flat-bumpy. Off skips the march entirely: the displaced UV path is guarded and the relief height defaults to 1.0 (flat surface), making the off state bit-for-bit the shipped picture.",
+  "fluorite.options.rt.parallaxDepth": "Parallax Depth",
+  "fluorite.options.rt.parallaxDepth.tooltip": "Tangent-space march depth in blocks. Higher = deeper recesses. 0.0625 (1/16 block) reads well on stone-brick-scale textures without the floating artifact of deeper settings.",
+  "fluorite.options.rt.section.parallax": "Parallax",
+  "fluorite.options.rt.puddleParallax": "Puddle-Relief Linkage",
+  "fluorite.options.rt.puddleParallax.tooltip": "Puddles read the parallax height field, so low-lying texels flood before high ones and the shoreline crawls as the rain level rises and falls. Independent of Material Parallax: the linkage reads the raw height texture even with displacement off. Off restores the position-only FBM puddle mask bit for bit.",
+  "fluorite.options.rt.section.puddleRelief": "Puddle-Relief"
 }

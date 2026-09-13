@@ -3411,7 +3411,12 @@ public final class RtComposite {
                     pathReservoirStatsAddress(ctx),
                     // A-01b: the reconnected shift's isolation switch, published as a word for the
                     // same reason the store address is -- the shader reads it where its candidates do.
-                    FluoriteConfig.Rt.Composite.PATH_REPLAY.value() ? 1 : 0
+                    FluoriteConfig.Rt.Composite.PATH_REPLAY.value() ? 1 : 0,
+                    // M30 C-line: the relief params land in the struct's tail padding after
+                    // pathReplayEnabled (1300 + 4). codegen + layout test same commit.
+                    (FluoriteConfig.Rt.MaterialParallax.ENABLED.value() ? 1 : 0)
+                            | (FluoriteConfig.Rt.PUDDLE_PARALLAX.value() ? 2 : 0),
+                    FluoriteConfig.Rt.MaterialParallax.DEPTH.value()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

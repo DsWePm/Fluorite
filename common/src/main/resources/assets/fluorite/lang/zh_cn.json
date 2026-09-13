@@ -698,5 +698,10 @@
   "fluorite.options.rt.cloudEvolutionSpeed": "云的演变",
   "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "云的**形状**变化有多快，与它飘得多快是两回事。云是被**对流**重塑的而不是被风——无风的午后积云照样鼓起又消散、并不去往任何地方——所以这一项**不跟随风速**，把风速调到 0 也不会让天空冻住。数值越大瓣状结构生长与消散越快；过高则云会「沸腾」而不是生长。",
   "fluorite.options.rt.section.weatherPrecipitationParticles": "降水粒子（雨与雪共用）",
-  "fluorite.options.rt.section.weatherSnow": "仅雪"
+  "fluorite.options.rt.section.weatherSnow": "仅雪",
+  "fluorite.options.rt.parallaxEnabled": "材质视差",
+  "fluorite.options.rt.parallaxDepth": "视差深度（格）",
+  "fluorite.options.rt.puddleParallax": "水坑贴合材质凹凸",
+  "fluorite.options.rt.section.parallax": "视差",
+  "fluorite.options.rt.section.puddleRelief": "水坑贴合"
 }

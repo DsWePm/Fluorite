@@ -494,6 +494,19 @@ public struct WorldPush {
      * Tail-appended under the parallel freeze order's sole exemption; offsets above are untouched.
      */
     public uint pathReplayEnabled;
+    /**
+     * M30 (workstream C): material parallax and puddle-relief linkage switches, tail-appended under
+     * the parallel freeze order's exemption (the only C-line ABI change).
+     *
+     * <p>reliefSwitches bit0 = material.parallax (POM displacement on), bit1 = weather.puddle-parallax
+     * (puddles read the relief height field). parallaxDepth scales the tangent-space march in blocks;
+     * 0 in either the depth or the switch bits dead-codes the march entirely, which is the off state.
+     *
+     * <p>Fills the struct's existing tail padding: pathReplayEnabled ends at 1300, these two land at
+     * 1300 and 1304, and the struct's 16-byte round-up stays at 1312 -- no allocation change.
+     */
+    public uint     reliefSwitches; // bit0 parallax, bit1 puddle-parallax
+    public float    parallaxDepth;  // tangent-space march depth in blocks
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section

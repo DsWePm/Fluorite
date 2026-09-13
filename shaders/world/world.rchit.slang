@@ -8,6 +8,7 @@
 // load we actually want. The cold WorldPush struct is dereferenced only for the breaking overlay.
 import world_common;
 import math;
+import relief;
 
 [[vk::push_constant]] WorldPushConstants pc;
 
@@ -190,6 +191,35 @@ Surface evaluateMaterial(MaterialHeader header, float2 atlasUv, float lod, float
     float maxMaterialLod = float((header.features >> MATERIAL_MAX_LOD_SHIFT) & MATERIAL_MAX_LOD_MASK);
     float materialLod = min(lod, maxMaterialLod);
     uint page = header.texturePage;
+    // M30 C-1: parallax march along the tangent-space view ray. One march, one displaced UV, every
+    // fetch below uses it (albedo / _n / _s must agree about where the surface is). reliefHeight goes
+    // to the rain system (C-2) via the Surface struct. The march runs only when the material has a
+    // normal map (no _n = no height field) and the switch is on.
+    float reliefHeight = 1.0;
+    bool hasNormalMap = (header.features & MATERIAL_FEATURE_NORMAL) != 0u;
+    // M30 C-1: one per-hit BDA load for the relief params. The rchit deliberately avoids per-sample
+    // WorldPush loads (the hot path never touches it), but the relief switches and depth are once per
+    // HIT, not per march step, and the march itself is the more expensive half of this block.
+    uint reliefSwitches = 0u;
+    float parallaxDepth = 0.0;
+    if (hasNormalMap) {
+        WorldPush wp = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+        reliefSwitches = wp.reliefSwitches;
+        parallaxDepth = wp.parallaxDepth;
+    }
+    if (hasNormalMap && (reliefSwitches & 0x1u) != 0u) {
+        float handedness;
+        float3 tangentDir = uvTangent(geometricNormal, p0, p1, p2, uv0, uv1, uv2, handedness);
+        if (dot(tangentDir, tangentDir) > 0.0) {
+            float3 bitangentDir = cross(geometricNormal, tangentDir) * handedness;
+            float3 viewTS = float3(dot(vdir, tangentDir), dot(vdir, bitangentDir),
+                                   dot(vdir, geometricNormal));
+            pageUv = parallaxUv(pageUv, float2(1.0, 1.0),
+                                materialNormalAoTex[NonUniformResourceIndex(page)],
+                                materialLod, viewTS, parallaxDepth,
+                                reliefSwitches, reliefHeight);
+        }
+    }
     if ((header.features & (MATERIAL_FEATURE_SPEC | MATERIAL_FEATURE_HEURISTIC_EMISSION)) != 0u) {
         float4 surface0 = samplePageSurface0(page, pageUv, materialLod);
         if ((header.features & MATERIAL_FEATURE_SPEC) != 0u) {

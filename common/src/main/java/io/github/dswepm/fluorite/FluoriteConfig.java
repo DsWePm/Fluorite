@@ -2192,7 +2192,27 @@ public final class FluoriteConfig {
          * Rain and thunder remain independent vanilla axes and are resolved once per frame by
          * {@code RtEnvironmentForcing}; the shader receives only the final physical parameters.
          */
-        public static final class Weather {
+        /**
+     * M30 (workstream C): material parallax on LabPBR _n height maps.
+     * See the shader-side banner in relief.slang for the march contract.
+     */
+    public static final class MaterialParallax {
+        public static final BooleanSetting ENABLED =
+                bool("fluorite.rt.material.parallax", "material.parallax", false);
+        public static final FloatSetting DEPTH =
+                clampedFloat("fluorite.rt.material.parallaxDepth",
+                        "material.parallax-depth", 0.0625f, 0.0f, 0.25f);
+    }
+
+    /**
+     * M30 (workstream C): puddles read the relief height field, so low texels flood before high ones
+     * and the shoreline crawls as rain level rises and falls. Works independently of the parallax
+     * march (reads the raw height texture). Off restores the position-only FBM mask bit for bit.
+     */
+    public static final BooleanSetting PUDDLE_PARALLAX =
+            bool("fluorite.rt.weather.puddleParallax", "weather.puddle-parallax", false);
+
+    public static final class Weather {
             /** Master switch for D105-D108 rain exposure, wet film and puddles. */
             public static final BooleanSetting RAIN_SURFACES_ENABLED =
                     bool("fluorite.rt.weather.rainSurfacesEnabled",

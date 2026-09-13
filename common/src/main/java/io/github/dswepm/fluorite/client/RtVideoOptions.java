@@ -104,6 +104,8 @@ public final class RtVideoOptions {
                                 volumeMultiScatter(), volumeScatterVertex(), volumeEmitterNee()));
                 case MATERIAL -> List.of(
                         Section.of(sunMis(), emitterMis(), anisotropy()),
+                        Section.titled("fluorite.options.rt.section.parallax",
+                                parallaxEnabled(), parallaxDepth()),
                         Section.titled("fluorite.options.rt.section.subsurface",
                                 subsurfaceMode(), subsurfaceThickness(), subsurfaceMaxEvents()));
                 // Clouds are sky, not fog. They share a config namespace with the fog for historical
@@ -137,7 +139,8 @@ public final class RtVideoOptions {
                         Section.titled("fluorite.options.rt.section.weatherRainExposure",
                                 rainSurfacesEnabled(), rainExposureQuality(), rainSlantDegrees(),
                                 wetFillSeconds(), wetDrySeconds(), puddleFillSeconds(),
-                                puddleDrySeconds(), daylightDrying()),
+                                puddleDrySeconds(), daylightDrying(),
+                                puddleParallaxToggle()),
                         Section.titled("fluorite.options.rt.section.weatherWetSurface",
                                 wetFilmStrength(), wetFilmRoughness(), puddlesEnabled(),
                                 puddleCoverage(), puddleScale(), puddleRippleStrength(), rainRippleSize(),
@@ -2350,6 +2353,21 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(0, 21),
             Math.clamp(setting.value(), 0, 21),
             setting::set);
+    }
+
+    private static OptionInstance<Boolean> parallaxEnabled() {
+        return bool("fluorite.options.rt.parallaxEnabled",
+                FluoriteConfig.Rt.MaterialParallax.ENABLED);
+    }
+
+    private static OptionInstance<Integer> parallaxDepth() {
+        return scaleSlider("fluorite.options.rt.parallaxDepth",
+                FluoriteConfig.Rt.MaterialParallax.DEPTH, 4.0f);
+    }
+
+    private static OptionInstance<Boolean> puddleParallaxToggle() {
+        return bool("fluorite.options.rt.puddleParallax",
+                FluoriteConfig.Rt.PUDDLE_PARALLAX);
     }
 
     private static OptionInstance<Boolean> bool(String captionKey, BooleanSetting setting) {

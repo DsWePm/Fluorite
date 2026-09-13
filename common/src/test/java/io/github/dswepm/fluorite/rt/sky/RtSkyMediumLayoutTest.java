@@ -75,6 +75,15 @@ final class RtSkyMediumLayoutTest {
         assertEquals(1280, WorldPushData.PATH_RESERVOIR_ADDR_OFFSET);
         assertEquals(1288, WorldPushData.PATH_RESERVOIR_STATS_ADDR_OFFSET);
         assertEquals(1296, WorldPushData.PATH_REPLAY_ENABLED_OFFSET);
+        // M30 C-line tail-appends reliefSwitches + parallaxDepth into the struct's existing tail
+        // padding: BYTE_SIZE stays 1312 (pathReplayEnabled ends at 1300, these fill 1300-1308,
+        // and the 16-byte round-up was already there).
+        assertEquals(1300, WorldPushData.RELIEF_SWITCHES_OFFSET);
+        assertEquals(1304, WorldPushData.PARALLAX_DEPTH_OFFSET);
+        assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("reliefSwitches")));
+        assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("parallaxDepth")));
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
                 .anyMatch(component -> component.getName().equals("skySectorRadiance")));
         assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
