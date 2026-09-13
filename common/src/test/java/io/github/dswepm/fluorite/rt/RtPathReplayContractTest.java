@@ -81,9 +81,12 @@ final class RtPathReplayContractTest {
         // moving camera reads a history that was never this point's.
         assertTrue(world.contains("restirPreviousPixel(hitPos, renderSize, readPixel)"));
         // The merged pixel value and the survivor write are the estimator; losing either silently
-        // turns the switch into "record and never reuse" or "reuse and never re-record".
+        // turns the switch into "record and never reuse" or "reuse and never re-record". S3a: the
+        // survivor is a three-way draw (own / temporal representative / spatial representative).
         assertTrue(world.contains("temporalValue"));
-        assertTrue(world.contains("historyWins"));
+        assertTrue(world.contains("temporalWins"));
+        assertTrue(world.contains("spatialWins"));
+        assertTrue(world.contains("evalPathSuffixCandidate("));
         String restirPt = source("shaders/world/restir_pt.slang");
         // W * target(y) is the unbiased-estimate invariant; the m cap bounds how long the past
         // outvotes the present.

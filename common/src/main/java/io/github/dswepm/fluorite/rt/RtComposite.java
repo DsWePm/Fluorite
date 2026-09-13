@@ -3358,7 +3358,10 @@ public final class RtComposite {
                     reservoirStore != null ? reservoirPaths : 0,
                     // Not read back out of an allocation, because it allocates nothing: a neighbour is a
                     // read of a slot that already exists, so this one can follow the knob directly.
-                    reservoirStore != null
+                    // S3a: the path reservoir's spatial shift shares the knob -- M24's own reuse checks
+                    // its store's address first and returns before reading this, so a live path store
+                    // publishing the count cannot reach it.
+                    reservoirStore != null || pathReservoirStore != null
                             ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0,
                     // M26's presampled pool. Read back out of the ALLOCATION rather than from the
                     // knob, like the reservoir shape above: the shader indexes it by a cell's rank, so a

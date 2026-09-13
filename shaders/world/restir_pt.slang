@@ -14,6 +14,10 @@
 import world_common;
 import math;
 import segment; // octEncode / packUnorm16x2 / packRgb9e5: the same packing idioms the queue record uses
+import bsdf;    // the continuation-mixture evaluation a stored direction is re-weighted by
+// Safe now only because the layout probe no longer imports this module (it reads the record through
+// world_common): world_core carries INV_PI and its set-0 bindings would otherwise collide there.
+import world_core;
 
 // ---- Temporal-merge constants (S2). Named twins of restir.slang's receiver tests, kept separate
 // because the two stores reject different things: a DI reservoir must describe the same SURFACE, a
@@ -24,6 +28,18 @@ import segment; // octEncode / packUnorm16x2 / packRgb9e5: the same packing idio
 public static const float PATH_REUSE_MAX_DRIFT = 0.05; // blocks, same scale M24 measured with
 /** And how much its normal may have turned (cos). */
 public static const float PATH_REUSE_MIN_NORMAL_AGREEMENT = 0.9; // cos, about 26 degrees
+/** The cosine floor both shift directions insist on (tangent directions have no honest Jacobian). */
+public static const float PATH_REUSE_MIN_SURFACE_COS = 0.1;
+
+// ---- Spatial-shift predicate (S3a): a neighbouring pixel was never the same point, so "did this
+// point move" is meaningless there and the question becomes "is this the same surface". The two
+// bounds below are name-twins of restir.slang's spatial test for the same reason that test exists.
+
+/** How far off this vertex's tangent plane a neighbour's reconnection vertex may sit. */
+public static const float PATH_REUSE_MAX_PLANE_OFFSET = 0.05; // blocks
+/** How far sideways, in pixel footprints at this vertex -- the ray-cone width over the incidence
+ * cosine, which is the surface area one pixel covers there. */
+public static const float PATH_REUSE_LATERAL_FOOTPRINTS = 24.0; // uncalibrated, like its twin
 
 /**
  * How much history one path reservoir may accumulate, as an effective sample count.
@@ -79,4 +95,97 @@ public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, flo
     r.reconIndex = reconIndex;
     r.W = asuint(w);
     return r;
+}
+
+/**
+ * Validate a stored record against THIS reconnection vertex and, if it passes, evaluate the stored
+ * direction's candidate value here. ONE spelling for both shifts -- temporal and spatial differ only
+ * in the surface predicate, and two spellings of a validation that must agree is exactly how a reuse
+ * rate quietly stops meaning anything (the M24 note that wrote itself after the pairwise-MIS merge).
+ *
+ * <p>`spatialPredicate` selects the question: false = "is this the same point last frame was at"
+ * (absolute drift -- the temporal/d0 arrangement); true = "is this the same surface a neighbour is
+ * on" (plane offset + lateral bound in pixel footprints -- M24's spatial arrangement). Everything
+ * else is shared: replay-depth match, normal agreement, the cosine floors, the antiparallel guard,
+ * the weight/target sanity, and the empty test.
+ *
+ * <p>`value` is the per-sample candidate value at this vertex: W (the record's accumulated merge
+ * weight) times the reconnection weight -- f(wi)*cos/pdf over THIS vertex's continuation mixture,
+ * times the clamped cosine-ratio Jacobian, times the stored suffix radiance. `count` is the record's
+ * effective sample count (capped); `meanTarget` its per-sample home target. Both shifts' callers
+ * multiply value by count when accumulating the pixel's merged estimate.
+ */
+public bool evalPathSuffixCandidate(BsdfContext bc, float3 diffAlb, float3 F0,
+                                    float pf, float ps, float walkSssShare, float3 v,
+                                    float3 reconPos, float3 reconNrm, float3 reconTpre,
+                                    float footprint, uint reconDepth, bool spatialPredicate,
+                                    PackedPathReservoir stored,
+                                    out float3 value, out float count, out float meanTarget) {
+    value = float3(0.0, 0.0, 0.0);
+    count = 0.0;
+    meanTarget = 0.0;
+
+    float storedW = asfloat(stored.W);
+    meanTarget = stored.m > 0.0 ? stored.targetSum / stored.m : 0.0;
+    float3 storedNrm = octDecode(unpackUnorm16x2(stored.reconNrm));
+    float3 storedWi = octDecode(unpackUnorm16x2(stored.wi));
+    float cosStored = dot(storedWi, storedNrm);
+    float cosHere = dot(storedWi, reconNrm);
+    float3 drift = stored.reconPos - reconPos;
+
+    bool usable = !pathReservoirEmpty(stored)
+            && storedW > 0.0 && meanTarget > 0.0
+            && stored.reconIndex == reconDepth
+            && dot(storedNrm, reconNrm) >= PATH_REUSE_MIN_NORMAL_AGREEMENT
+            && cosStored > PATH_REUSE_MIN_SURFACE_COS && cosHere > PATH_REUSE_MIN_SURFACE_COS
+            // A stored continuation pointing straight back along the view degenerates the half-vector
+            // below into normalize(0) -- rejected rather than survived.
+            && dot(storedWi, v) < 0.9999;
+    if (usable) {
+        if (spatialPredicate) {
+            // Same surface, not same point: off-plane first (it is what rejects a different surface
+            // behind or in front of this one), then the lateral bound in pixel footprints.
+            usable = abs(dot(drift, reconNrm)) <= PATH_REUSE_MAX_PLANE_OFFSET
+                    && dot(drift, drift) <= PATH_REUSE_LATERAL_FOOTPRINTS
+                                           * PATH_REUSE_LATERAL_FOOTPRINTS
+                                           * max(footprint * footprint, 1.0e-8);
+        } else {
+            usable = dot(drift, drift) <= PATH_REUSE_MAX_DRIFT * PATH_REUSE_MAX_DRIFT;
+        }
+    }
+    if (!usable) {
+        return false;
+    }
+
+    // The continuation weight this vertex would have given the stored direction, and the density
+    // that weights it: f(wi)*cos/pdf, spelled exactly as the lobe mixture samples. Deliberately NOT
+    // evalSampleContrib -- that helper is an AREA-light target (emitter tint inside, SSS back-lobe
+    // branch, film floor tied to emitter MIS), none of which describes a suffix sample.
+    float ndlStored = cosHere;
+    float3 hStored = normalize(storedWi + v);
+    float ndh = max(0.0, dot(reconNrm, hStored));
+    float vdh = max(0.0, dot(v, hStored));
+    float D = ggxDAniso(dot(hStored, bc.t), dot(hStored, bc.b), ndh, bc.alphaX, bc.alphaY);
+    float G = bc.g1v * ggxG1Aniso(dot(storedWi, bc.t), dot(storedWi, bc.b),
+                                  ndlStored, bc.alphaX, bc.alphaY);
+    float3 F = fresnelSchlick(vdh, F0);
+    float3 brdf = diffAlb * INV_PI + (D * G) * F / (4.0 * bc.ndv * ndlStored);
+    brdf = brdf * rainBaseTransmission(bc, storedWi) + rainFilmBrdf(bc, storedWi, false);
+    float pdf = bsdfContinuationPdf(bc, storedWi, pf, ps, walkSssShare);
+    if (!(pdf > 0.0)) {
+        return false;
+    }
+    // Changed-measure correction: the producing vertex sampled this direction against ITS
+    // reconnection normal; this vertex weighs it against its own. The material is taken to be this
+    // vertex's (M24's retarget approximation), which leaves the cosine ratio as the whole Jacobian --
+    // and cosStored == cosHere on any static scene, which is what the fixed-pose convergence check
+    // exercises. Clamped: the normals already agree within 26 degrees, so a ratio outside this band
+    // means the direction ran tangent to one of them, and the honest answer is a damped weight
+    // rather than a firefly.
+    float jacobian = clamp(cosHere / cosStored, 1.0 / 3.0, 3.0);
+    value = max(storedW * reconTpre * (brdf * ndlStored / pdf) * jacobian
+                        * unpackRgb9e5(stored.li),
+                float3(0.0, 0.0, 0.0));
+    count = min(stored.m, PATH_RESERVOIR_M_CAP);
+    return true;
 }

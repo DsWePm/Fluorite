@@ -21,18 +21,20 @@ import java.util.Locale;
  * indistinguishable from a broken merge without this counter. The D211 lesson, applied before the
  * acceptance run rather than after it: a capture must carry its own attribution.
  *
- * <p>Three lanes, one per frame (temporal only, no depth axis): records READ (a history was found and
- * loaded), records USABLE (it passed validation), merges APPLIED (its value reached the pixel). The
- * shader samples one pixel in sixteen, so the rates are ratios over a sampled population -- the same
- * convention as RtRestirStats, and invisible in a rate by design.
+ * <p>Five lanes, one per frame: temporal records READ and USABLE, spatial records ATTEMPTED and
+ * USABLE, merges APPLIED. The shift rates answer the two different questions M24's split already
+ * named -- "was this the same point" against "is this the same surface" -- and the applied lane is
+ * the D221 gate: how many pixels actually took a merged value (zero until a history carries
+ * PATH_RESERVOIR_APPLY_MIN_M independent candidates). The shader samples one pixel in sixteen, so
+ * the rates are ratios over a sampled population -- the same convention as RtRestirStats.
  *
  * <p>The counters live in device-local memory and are copied into a per-ring-slot host-visible buffer
  * at the end of the frame that wrote them; reading happens once the slot comes back around
  * ({@code PUSH_RING} frames later, no fence of its own -- the RtRestirStats arrangement verbatim).
  */
 public final class RtPathReservoirStats {
-    /** Read, usable, applied. Matches the three InterlockedAdd lanes in world.rgen.slang. */
-    public static final int LANES = 3;
+    /** Temporal read/usable, spatial attempted/usable, applied. Matches world.rgen's lane indices. */
+    public static final int LANES = 5;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -124,10 +126,12 @@ public final class RtPathReservoirStats {
     private void report(int slot) {
         RtBuffer src = readback[slot];
         src.invalidate(0L, BYTE_SIZE);
-        long reads = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped));
-        long usable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 4L));
-        long applied = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 8L));
-        if (reads == 0L) {
+        long tRead = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped));
+        long tUsable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 4L));
+        long sAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 8L));
+        long sUsable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 12L));
+        long applied = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 16L));
+        if (tRead == 0L && sAttempt == 0L) {
             return; // nothing attempted: a sky view or a menu carries no information either way
         }
         long now = System.nanoTime();
@@ -135,14 +139,16 @@ public final class RtPathReservoirStats {
             return;
         }
         loggedAt = now;
-        // Attempts travel with the rates (RtRestirStats's reasoning); the usable->applied drop is the
-        // pdf gate, and a wide gap between reads and usable is the drift/depth validation rejecting.
+        // Attempts travel with the rates (RtRestirStats's reasoning); the two rates are reported
+        // apart because the shifts answer different questions. Applied is the D221 gate's counter --
+        // zero while no history carries enough independent candidates, which is the honest reading.
         FluoriteMod.LOGGER.info(
-                "RT path reservoir temporal reuse (1/16 pixel sample): read {} ({}), usable {}, applied {}",
-                reads,
-                String.format(Locale.ROOT, "%.1f%%", 100.0 * usable / reads),
-                usable,
-                applied);
+                "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}",
+                tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied);
+    }
+
+    private static String rate(long part, long total) {
+        return total == 0L ? "--" : String.format(Locale.ROOT, "%.1f%%", 100.0 * part / total);
     }
 
     public void destroy() {
