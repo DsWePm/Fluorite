@@ -24,8 +24,6 @@ import world_core;
 // path reservoir must describe the same SUFFIX -- and a suffix's home vertex is allowed to sit deeper
 // in the path than the receiver a DI reservoir anchors.
 
-/** How far the stored reconnection vertex may sit from this frame's, before the suffix is not ours. */
-public static const float PATH_REUSE_MAX_DRIFT = 0.05; // blocks, same scale M24 measured with
 /** And how much its normal may have turned (cos). */
 public static const float PATH_REUSE_MIN_NORMAL_AGREEMENT = 0.9; // cos, about 26 degrees
 /** The cosine floor both shift directions insist on (tangent directions have no honest Jacobian). */
@@ -34,12 +32,43 @@ public static const float PATH_REUSE_MIN_SURFACE_COS = 0.1;
 // ---- Spatial-shift predicate (S3a): a neighbouring pixel was never the same point, so "did this
 // point move" is meaningless there and the question becomes "is this the same surface". The two
 // bounds below are name-twins of restir.slang's spatial test for the same reason that test exists.
+//
+// D223: THE BOUNDS ARE FOOTPRINT-SCALED, not world blocks. The first acceptance run measured the
+// consequence of world-block bounds: spatial acceptance collapsed to 0.8-8% (a 0.05-block plane
+// tolerance is a fraction of a pixel's footprint past a few metres, and sub-pixel under DLSS-RR's
+// downscale), so the application gate crossed on ~nothing and the acceptance run saw no effect. A
+// footprint is the surface area one pixel covers at the vertex -- thresholds in footprints are
+// distance- and resolution-independent by construction, which is the whole of the Enhanced paper's
+// reconnection-criterion argument.
 
-/** How far off this vertex's tangent plane a neighbour's reconnection vertex may sit. */
-public static const float PATH_REUSE_MAX_PLANE_OFFSET = 0.05; // blocks
+/** How far off this vertex's tangent plane a neighbour's reconnection vertex may sit, in footprints. */
+public static const float PATH_REUSE_MAX_PLANE_FOOTPRINTS = 2.0;
 /** How far sideways, in pixel footprints at this vertex -- the ray-cone width over the incidence
  * cosine, which is the surface area one pixel covers there. */
 public static const float PATH_REUSE_LATERAL_FOOTPRINTS = 24.0; // uncalibrated, like its twin
+/** And how far the temporal shift's own point may have drifted, in footprints (D223: was 0.05
+ * blocks, over-strict at distance by the same argument). */
+public static const float PATH_REUSE_MAX_DRIFT_FOOTPRINTS = 3.0;
+
+/**
+ * The compatibility score of a neighbour whose soft bounds failed -- the graded acceptance that
+ * replaces a binary kill for borderline candidates (compatibility-guided selection, Enhanced-era).
+ * Position similarity folds in through the soft bounds themselves (a candidate this far away only
+ * reaches the soft gate when its plane/lateral excess is marginal); the normal term is the survey's
+ * max(cos,0)^8, which lets a 60-degree neighbour through occasionally while a 120-degree one never.
+ * The caller accepts with this probability: thinning the candidate set is unbiased for the values --
+ * every accepted candidate still carries its exact reconnection weight -- and it concentrates the
+ * accepted set on the neighbours most likely to share the suffix radiance.
+ */
+public float pathCompatibilityScore(float3 storedNrm, float3 n, float3 drift, float lateralBound) {
+    float normalAgreement = max(dot(storedNrm, n), 0.0);
+    float score = normalAgreement * normalAgreement * normalAgreement * normalAgreement
+                * normalAgreement * normalAgreement * normalAgreement * normalAgreement;
+    // And the position half of the survey's score: a Gaussian in the excess over the lateral bound,
+    // so a candidate just outside gets exp(-~1) while a far one reaches zero without a hard kill.
+    float excess2 = dot(drift, drift) / max(lateralBound * lateralBound, 1.0e-8);
+    return score * exp(-excess2);
+}
 
 /**
  * How much history one path reservoir may accumulate, as an effective sample count.
@@ -119,7 +148,7 @@ public bool evalPathSuffixCandidate(BsdfContext bc, float3 diffAlb, float3 F0,
                                     float pf, float ps, float walkSssShare, float3 v,
                                     float3 reconPos, float3 reconNrm, float3 reconTpre,
                                     float footprint, uint reconDepth, bool spatialPredicate,
-                                    PackedPathReservoir stored,
+                                    inout uint seed, PackedPathReservoir stored,
                                     out float3 value, out float count, out float meanTarget) {
     value = float3(0.0, 0.0, 0.0);
     count = 0.0;
@@ -144,13 +173,24 @@ public bool evalPathSuffixCandidate(BsdfContext bc, float3 diffAlb, float3 F0,
     if (usable) {
         if (spatialPredicate) {
             // Same surface, not same point: off-plane first (it is what rejects a different surface
-            // behind or in front of this one), then the lateral bound in pixel footprints.
-            usable = abs(dot(drift, reconNrm)) <= PATH_REUSE_MAX_PLANE_OFFSET
-                    && dot(drift, drift) <= PATH_REUSE_LATERAL_FOOTPRINTS
-                                           * PATH_REUSE_LATERAL_FOOTPRINTS
-                                           * max(footprint * footprint, 1.0e-8);
+            // behind or in front of this one), then the lateral bound -- both in footprints, so the
+            // bounds are distance- and resolution-independent (D223).
+            float planeBound = PATH_REUSE_MAX_PLANE_FOOTPRINTS * max(footprint, 1.0e-4);
+            float lateralBound = PATH_REUSE_LATERAL_FOOTPRINTS * max(footprint, 1.0e-4);
+            bool hardPass = abs(dot(drift, reconNrm)) <= planeBound
+                    && dot(drift, drift) <= lateralBound * lateralBound
+                    && dot(storedNrm, reconNrm) >= PATH_REUSE_MIN_NORMAL_AGREEMENT;
+            if (!hardPass) {
+                // D223 graded acceptance: a borderline neighbour is thinned by compatibility instead
+                // of killed outright -- the first acceptance run measured the binary form collapsing
+                // spatial acceptance to under ten percent and starving the application gate.
+                usable = rndf(seed) < pathCompatibilityScore(storedNrm, reconNrm,
+                                                              drift, lateralBound);
+            }
         } else {
-            usable = dot(drift, drift) <= PATH_REUSE_MAX_DRIFT * PATH_REUSE_MAX_DRIFT;
+            usable = dot(drift, drift) <= PATH_REUSE_MAX_DRIFT_FOOTPRINTS
+                                           * PATH_REUSE_MAX_DRIFT_FOOTPRINTS
+                                           * max(footprint * footprint, 1.0e-8);
         }
     }
     if (!usable) {

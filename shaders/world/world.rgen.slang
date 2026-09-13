@@ -970,8 +970,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 float candCount;
                 float candMeanTarget;
                 if (evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
-                                            hitPos, n, reconTpre, 0.0, reconDepth, false,
-                                            stored, candValue, candCount, candMeanTarget)) {
+                                            hitPos, n, reconTpre, footprint, reconDepth, false,
+                                            seed, stored, candValue, candCount, candMeanTarget)) {
                     temporalValue = candValue;
                     temporalCount = candCount;
                     temporalSum = candCount * candMeanTarget;
@@ -1007,7 +1007,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 float candMeanTarget;
                 if (!evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
                                              hitPos, n, reconTpre, footprint, reconDepth, true,
-                                             candidate, candValue, candCount, candMeanTarget)) {
+                                             seed, candidate, candValue, candCount, candMeanTarget)) {
                     continue;
                 }
                 if (sampled) {
@@ -1053,6 +1053,13 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         float ownTarget = luminance(ownSuffix);
         float extraCount = temporalCount + spatialCount;
         bool merged = extraCount >= PATH_RESERVOIR_APPLY_MIN_M;
+        // The applied lane lives here, not in the candidate loop: the gate is what it counts. D223
+        // note -- S3a's restructure dropped this increment and the acceptance log then read applied
+        // zero while the merge was quietly crossing the gate on a few percent of pixels.
+        if (merged && worldPush.pathReservoirStatsAddr != 0u
+                && (((pix.y * renderSize.x + pix.x) ^ worldPush.frameIndex) & 15u) == 0u) {
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[4], 1u);
+        }
         if (merged) {
             // The pixel sees the candidate-weighted average (each candidate standing for its count);
             // own luminance above stays the fresh sample's own target, unbias either way.
