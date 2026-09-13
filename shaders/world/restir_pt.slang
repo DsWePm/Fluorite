@@ -37,6 +37,22 @@ public static const float PATH_REUSE_MIN_NORMAL_AGREEMENT = 0.9; // cos, about 2
 public static const float PATH_RESERVOIR_M_CAP = 16.0;
 
 /**
+ * The effective sample count a history needs before its value is ALLOWED to reach the pixel.
+ *
+ * <p>D221's acceptance finding, and the reason the S2 switch is visually inert until S3: at 1 spp
+ * under DLSS-RR, a ONE-sample history merged at weight 1/2 is strictly worse than no merge. The raw
+ * frame's variance halves, but the history's contribution is TEMPORALLY CORRELATED (a <=2-frame-old
+ * sample, re-broadcast), and RR averages independent noise across its ~16-frame window while
+ * preserving correlated structure -- so the denoised variance goes from Var/N (off) to roughly
+ * (1/4)(1/2 + 1/N) (on): ~2.3x WORSE at N=16. The merge only wins when the history carries several
+ * INDEPENDENT candidates -- m >= 2, which means S3's spatial domains; a single re-broadcast sample is
+ * never worth more than what RR already does with fresh ones. The merge is inert while moving for
+ * the same reason M24's temporal reuse measured 0-30% acceptance there: the reprojection/drift
+ * machinery rejects, and RR loses its history too, so there is also no moving-frame regime to win.
+ */
+public static const float PATH_RESERVOIR_APPLY_MIN_M = 2.0;
+
+/**
  * The one form the bounce loop's write takes. Everything is packed here, next to the estimator that
  * produces the values, so a packing change cannot drift from the record layout it feeds.
  *

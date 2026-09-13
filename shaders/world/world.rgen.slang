@@ -1039,7 +1039,12 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         float3 ownSuffix = max(L - reconLpre, float3(0.0, 0.0, 0.0));
         float3 tRel = max(reconTpost, float3(1.0e-6, 1.0e-6, 1.0e-6));
         float ownTarget = luminance(ownSuffix);
-        bool merged = temporalCount > 0.0;
+        // D221: the pixel only takes histories carrying PATH_RESERVOIR_APPLY_MIN_M independent
+        // candidates. Every record written today is a fresh single sample (D219), so the merge is
+        // inert and the switch's on state is the off state plus a write -- until S3's spatial
+        // domains make multi-sample histories real. The stats still count usable, so the machinery
+        // stays measurable while it is visually dormant.
+        bool merged = temporalCount >= PATH_RESERVOIR_APPLY_MIN_M;
         if (merged) {
             // The pixel sees the AVERAGE of the two unbiased estimates (unbiased, variance ~halved);
             // the reservoir sees the survivor. Own luminance stays the pre-merge sample's target.
