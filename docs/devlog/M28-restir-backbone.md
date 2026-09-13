@@ -192,3 +192,17 @@ S2 设计定稿（用户裁决 B）与 scaffolding 之后的第一个集成片�
 ### D217 补充:验收归因仪表(同日)
 
 镜像 `RtRestirStats` 新增 `RtPathReservoirStats`(同一 `diagnostics.restir-stats` 开关下,一个 ReSTIR 统计开关管两套 store):三 lane——**read**(找到并读了历史)/ **usable**(通过校验)/ **applied**(合并值到达像素),1/16 像素采样、环形回读、每秒限频日志。shader 侧在时域块内直接三次 `InterlockedAdd`(每像素每帧至多一次尝试,采样后成本与 DI 统计同量级)。诊断读法:**read 高 usable 低** = 漂移/深度校验在拒(移动场景正常,静止场景偏高 = 校验过紧);**usable 高 applied 低** = pdf 门吞掉(方向落在混合体支集外,罕见);**read 本身 ≈ 0** = 重投影失效或开关/缓冲没接上。WorldPush 尾部追加 `pathReservoirStatsAddr`(偏移 1288)——恰好落在第一地址的 padding 里,BYTE_SIZE 仍是 1296,第二个地址零上传成本。
+
+## D218：S2 开关首拨即崩 —— 未注册的 CSV 列名把 composite 打回原版（2026-09-13）
+
+### 经过与根因
+
+用户首次拨 `path-reservoir` 开关，当帧 `recordFrame → FRAME.count("pathReservoir", …)` 抛 `Unknown RtFrameStats name`，composite 失败闩置位，渲染回退原版。日志三行钉死因果：14 MiB path reservoir 分配成功（分配本身无错）→ 下一帧 count() 抛 → 「RT composite failed; reverting to vanilla path」。
+
+`RtFrameStats` 的 stage/counter 名字必须先登记进各自数组，未登记的调用点会在**运行时**（统计开着的第一帧）抛——D208 时代的 gpu.* 注释和类 banner 都记档过这个陷阱，D217 的我仍然踩了：只加了 `count()` 调用没登记列名。它逃过所有构建期检查的原因正是 banner 写的：**只在统计开关开启时抛**，而自动化测试从不开启统计。
+
+### 修复与回归缝
+
+- `pathReservoir` 登记进 `FRAME_COUNTER_NAMES`（D211 的 CSV 归因规则不变）。
+- 两个名字数组提为公开常量 `FRAME_STAGE_NAMES`/`FRAME_COUNTER_NAMES`，新增 `RtFrameStatsNameRegistryTest` 源级扫描：main 树下所有 `FRAME.count("` / `FRAME.stage("` / `"gpu.*"` 字面量必须已在注册表——失配在 `gradlew test` 红而不是用户游戏里炸。测试先红后绿验证（红在 pathReservoir，stage/gpu-zone 两网无其他缺口）。
+- 教训归类：**「名字注册表 + 惰性抛错」必须配源级注册表测试**——抛点在运行时冷路径上，任何不扫调用点的测试都看不见它。这与 D215 的「视图注册表只允许一份」同族：注册表和调用点的任何第二份清单都会腐烂。
