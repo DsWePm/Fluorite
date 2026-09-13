@@ -962,7 +962,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                         && stored.reconIndex == reconDepth
                         && dot(drift, drift) <= PATH_REUSE_MAX_DRIFT * PATH_REUSE_MAX_DRIFT
                         && dot(storedNrm, n) >= PATH_REUSE_MIN_NORMAL_AGREEMENT
-                        && cosStored > 1.0e-4 && cosHere > 0.0
+                        // Both cosines floored: the Jacobian is their ratio, and a suffix direction
+                        // tangent to the stored normal (cos ~ 0) would amplify the whole history by
+                        // 1/cos -- the 1e-4 guard first shipped here allowed ratios in the thousands,
+                        // which reads as bright noise concentrated on grazing surfaces.
+                        && cosStored > 0.1 && cosHere > 0.1
                         // A stored continuation pointing straight back along the view degenerates the
                         // half-vector below into normalize(0) -- one quantized direction away from a
                         // screen-full of NaN, so it is rejected rather than survived.
@@ -994,7 +998,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                         // taken to be this vertex's (M24's retarget approximation), which leaves the
                         // cosine ratio as the whole Jacobian -- and cosStored == cosHere on any static
                         // scene, which is exactly what the fixed-pose convergence check exercises.
-                        float jacobian = cosHere / cosStored;
+                        // Clamped: the normals already agree within 26 degrees, so a ratio outside
+                        // this band means the direction ran tangent to one of them, and the honest
+                        // answer is a damped weight rather than a firefly.
+                        float jacobian = clamp(cosHere / cosStored, 1.0 / 3.0, 3.0);
                         temporalValue = max(storedW * reconTpre * (brdf * ndlStored / pdf)
                                                     * jacobian * unpackRgb9e5(stored.li),
                                             float3(0.0, 0.0, 0.0));
@@ -1040,31 +1047,33 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             L = reconLpre + applied;
         }
         float totalTarget = ownTarget + temporalSum;
-        float totalCount = 1.0 + temporalCount;
         bool historyWins = merged && temporalSum > 0.0
                 && rndf(seed) * totalTarget < temporalSum;
         DevicePtr<PackedPathReservoir> store =
                 DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
         uint writeSlot = pathReservoirSlot(pix.y * renderSize.x + pix.x,
                                            renderSize.x * renderSize.y, worldPush.frameIndex & 1u);
+        // D219: the write is ALWAYS a fresh single-sample record (m = 1, W = 1). Letting m accumulate
+        // let one survivor stick for ~m frames -- 17 at the cap -- and every one of those frames
+        // re-broadcasts that single sample's deviation as a STATIC per-pixel offset. Temporal reuse is
+        // supposed to correlate frames, but correlating them around one path's value puts the noise
+        // exactly where the denoiser's accumulation window stops working: RR averages independent
+        // noise away and keeps the static pattern, which is the "far noisier with the switch on" the
+        // first in-game run reported. m = 1 keeps any history alive at most two frames -- the variance
+        // still halves (two independent estimates), and nothing static survives to fight RR. The m/W
+        // machinery stays because S3's spatial domains are where accumulation has a real estimator
+        // role: many INDEPENDENT candidates, not the same one re-broadcast.
         if (historyWins) {
-            // The history's representative survives: re-read its identity from the slot it was read
-            // from (read-only this frame, so the value is the one that was merged) and re-emit it with
-            // the merged bookkeeping.
             PackedPathReservoir prev = store[pathReservoirSlot(temporalReadPixel,
                     renderSize.x * renderSize.y, (worldPush.frameIndex & 1u) ^ 1u)];
-            float chosenTarget = temporalSum / temporalCount;
             store[writeSlot] = packPathReservoir(prev.pathSeed, prev.reconPos,
                     octDecode(unpackUnorm16x2(prev.reconNrm)),
                     unpackUnorm16x2(prev.wi), unpackRgb9e5(prev.li),
-                    totalCount, totalTarget,
-                    chosenTarget > 0.0 ? totalTarget / (totalCount * chosenTarget) : 0.0,
+                    1.0, temporalSum / temporalCount, 1.0,
                     prev.reconIndex);
         } else {
             store[writeSlot] = packPathReservoir(pathSeedBase, reconPos, reconNrm, reconWi,
-                    ownSuffix / tRel, totalCount, totalTarget,
-                    ownTarget > 0.0 ? totalTarget / (totalCount * ownTarget) : 0.0,
-                    reconDepth);
+                    ownSuffix / tRel, 1.0, ownTarget, 1.0, reconDepth);
         }
     }
     return L;

@@ -83,10 +83,12 @@ public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }
  *
  * <p>`li` is the suffix's OWN estimate of incident radiance at the reconnection vertex -- the
  * throughput that carried it is deliberately NOT folded in, because whoever merges this record
- * re-weights it with their own prefix. `targetSum` is the accumulated target sum (each represented
- * sample's home-vertex contribution luminance); `w` is the merge weight, W = targetSum / (m * t_chosen)
- * by the merge below, which is what keeps W * target(y) an unbiased estimate of the suffix integral
- * wherever the record is re-evaluated.
+ * re-weights it with their own prefix. `targetSum` is this record's home-vertex contribution
+ * luminance. `w` is the merge weight, W = targetSum / (m * t_chosen) in the general form -- the
+ * identity that keeps W * target(y) an unbiased estimate wherever the record is re-evaluated. Since
+ * D219 the temporal write is always a FRESH single-sample record (m = 1, W = 1: one unbiased draw,
+ * kept at most two frames so no static sample outlives the denoiser's accumulation window); the
+ * general form returns with S3, where spatial domains contribute many independent candidates.
  */
 public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, float3 reconNrm,
                                              float2 wiOct, float3 li, float m, float targetSum,
