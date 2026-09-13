@@ -918,6 +918,16 @@ public final class FluoriteConfig {
              */
             public static final BooleanSetting PATH_RESERVOIR =
                     bool("fluorite.rt.composite.pathReservoir", "composite.path-reservoir", false);
+            /**
+             * M28 A-01b: the reconnected shift for path-reservoir candidates whose reconnection sits
+             * behind a specular chain (reconIndex > 0). Off (default) keeps those candidates on the
+             * in-place retarget evaluation -- the measurement A/B arm, and the fallback if replay's
+             * cost blows the budget. ReconIndex == 0 candidates never engage this; the mainstream
+             * diffuse pixel is an exact shift with or without it.
+             */
+            public static final BooleanSetting PATH_REPLAY =
+                    bool("fluorite.rt.composite.pathReplay", "composite.path-replay", false);
+
 
             /**
              * How many screen-space neighbours each reused vertex borrows a reservoir from.

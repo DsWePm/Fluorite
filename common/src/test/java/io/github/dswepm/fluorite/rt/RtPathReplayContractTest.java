@@ -112,6 +112,30 @@ final class RtPathReplayContractTest {
     }
 
     @Test
+    void theReconnectedShiftIsScopedAndShared() throws IOException {
+        String world = source("shaders/world/world.rgen.slang");
+        // A-01b scope: the reconnected shift's anchor is the caller's own primary hit, so it
+        // requires reconDepth == 0 and supports reconIndex == 1 only -- deeper chains cross opaque
+        // shading vertices whose recorded draw counts are not reproducible post-hoc (M24 reuse
+        // acceptance); the deep-recon lane is what says whether that regime matters.
+        assertTrue(world.contains("reconDepth == 0u && candidate.reconIndex == 1u"));
+        // Connectivity (the shift's invertibility check) and the shared evaluation entry point.
+        assertTrue(world.contains("visibilityMasked(CULL_SHADOW_NO_SELF"));
+        assertTrue(world.contains("evalReconnectedSuffixCandidate("));
+        String restirPt = source("shaders/world/restir_pt.slang");
+        // ONE weight spelling across both evaluation paths -- the file banner's warning, enforced.
+        assertTrue(restirPt.contains("continuationReconnectWeight"));
+        assertTrue(restirPt.contains("reconIndex >= 2"));
+    }
+
+    @Test
+    void thePathReplaySwitchExistsAndDefaultsToOff() throws IOException {
+        String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
+        assertTrue(config.contains("PATH_REPLAY ="));
+        assertTrue(config.contains("\"composite.path-replay\", false"));
+    }
+
+    @Test
     void theSelectionTargetStaysInOneDomain() throws IOException {
         String world = source("shaders/world/world.rgen.slang");
         // A-02b: selection moved to the RECEIVER domain (Enhanced §6.3 survivor representativeness).

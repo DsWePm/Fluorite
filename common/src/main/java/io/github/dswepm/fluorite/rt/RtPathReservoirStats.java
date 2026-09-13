@@ -33,8 +33,8 @@ import java.util.Locale;
  * ({@code PUSH_RING} frames later, no fence of its own -- the RtRestirStats arrangement verbatim).
  */
 public final class RtPathReservoirStats {
-    /** Temporal read/usable, spatial attempted/usable, applied, deep-recon. Matches world.rgen. */
-    public static final int LANES = 6;
+    /** Temporal read/usable, spatial attempted/usable, applied, deep-recon, replay attempted/valid. */
+    public static final int LANES = 8;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -132,7 +132,9 @@ public final class RtPathReservoirStats {
         long sUsable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 12L));
         long applied = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 16L));
         long deepRecon = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 20L));
-        if (tRead == 0L && sAttempt == 0L) {
+        long replayAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 24L));
+        long replayValid = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 28L));
+        if (tRead == 0L && sAttempt == 0L && replayAttempt == 0L) {
             return; // nothing attempted: a sky view or a menu carries no information either way
         }
         long now = System.nanoTime();
@@ -148,8 +150,10 @@ public final class RtPathReservoirStats {
         // estimator role here and is not built; if it is material, the share bounds replay's
         // potential reach. Read it against applied, not alone.
         FluoriteMod.LOGGER.info(
-                "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, deep-recon {}",
-                tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon);
+                "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, "
+                        + "deep-recon {}, replay {} ({})",
+                tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon,
+                replayAttempt, rate(replayValid, replayAttempt));
     }
 
     private static String rate(long part, long total) {

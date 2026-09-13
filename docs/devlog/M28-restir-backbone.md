@@ -318,3 +318,19 @@ S2 设计定稿（用户裁决 B）与 scaffolding 之后的第一个集成片�
 ## D226（A 线）：A-①b 前置重构 —— `continuationReconnectWeight` 一拼写
 
 `evalPathSuffixCandidate` 内的 f(wi)·cos/pdf 块抽为 restir_pt 文件域 helper，in-place 与重连两条求值路径共用（分派文档 A-①b 第 4 条：文件横幅警告「两种拼写 = 复用率失效」，这条重构就是防它）。表达式逐项保序，无行为变化；「刻意不用 evalSampleContrib」的理由注释随行。
+
+## D227（A 线）：A-①b 重连移位落地 —— 范围经证据收敛到 reconIndex == 1（composite.path-replay，默认关）
+
+### 范围裁决(实现前对论文与流结构的核对,记档供复核)
+
+分派文档的 sketch 让 `replayPrefixToReconnect` 把存储种子重驱到深度 reconIndex−1。实现前对 `Papers/_txt/lin2026restirptenhanced.txt` 与本仓库 tracePath 的流结构逐项核对,发现**流保真在 reconIndex ≥ 2 时不可达**:tracePath 在每个不透明着色顶点消耗 M24 复用的抽取,而其消耗次数随接受结果变化——重放无法停在记录流的同一位置。Enhanced §6.2.3/§6.2.4 靠**改造 tracer**(把 NEE 光采样与 RR 从 replay 路径移除)绕开,我们的已记录流无法追溯适用。文档 sketch 的重放种子初始化 `pcg(replaySeed)` 亦与记录侧推导不符(记录值已是 pcg 后状态,再 pcg = 静默换流),一并修正记档。
+
+**收敛后的 v1 范围**:reconIndex == 1 的前缀锚 y_{k-1} 恰是**调用者自己的主命中**——零种子消耗、无可重放项,移位退化为「从该锚到存储重连顶点的连接」,用锚点的**真实材料**(重放解码,非 retarget)求值。reconIndex ≥ 2 一律拒绝(带证据注释);deep-recon lane(A-①a)正是裁决这一范围够不够的底片。这也顺带消除了 sketch 里的雅可比问题:重连方向由几何给出(非重采样),连接几何项 `cos_y·cos_x/dist²` 显式入值(两锚点是世界中不同点,远距候选按物理衰减;in-place 路径无此项恰因两锚点重合)。
+
+### 落地
+
+- `restir_pt.slang`:`ReplayedPrefix` 结构 + `evalReconnectedSuffixCandidate`(连接几何项 + 双侧切向门 + 共享 `continuationReconnectWeight`);范围证据写在模块注释。
+- `world.rgen`:空间循环路由——`reconIndex > 0 && path-replay 开`走重连分支(锚点状态门 `reconDepth == 0 && reconIndex == 1`),连通性经 `visibilityMasked(CULL_SHADOW_NO_SELF, offsetSurfaceOrigin(...))` 零透射即拒;`reconIndex == 0` 与关闭档走原 in-place 路径(retarget 近似保留 = 测量 A/B 隔离臂)。
+- 开关 `composite.path-replay`(默认关,关档 = 本片前行为);WorldPush 尾部 `pathReplayEnabled`(§3.2 豁免,偏移 1296/1312,codegen + layout 钉同 commit);stats 6→8 lanes(replay attempted/valid,attempted 高 valid 低 = 移位在死:切向/遮挡/深度不合)。
+- 契约钉:范围门、连通性检查、共享权重拼写、`reconIndex ≥ 2` 拒绝、开关默认关。
+- devlog D227 即 A-①c 归档的占位:固定机位收敛对照与 `frame.csv` A→B→A(`composite.path-replay` 翻转)由下次游戏会话产出后补记。

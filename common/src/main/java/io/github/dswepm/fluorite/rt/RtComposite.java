@@ -3408,7 +3408,10 @@ public final class RtComposite {
                     pathReservoirStore != null ? pathReservoirStore.deviceAddress : 0L,
                     // And its acceptance counters, under the same diagnostics.restir-stats checkbox as
                     // the M24 store's -- one "ReSTIR stats" switch, two stores measured.
-                    pathReservoirStatsAddress(ctx)
+                    pathReservoirStatsAddress(ctx),
+                    // A-01b: the reconnected shift's isolation switch, published as a word for the
+                    // same reason the store address is -- the shader reads it where its candidates do.
+                    FluoriteConfig.Rt.Composite.PATH_REPLAY.value() ? 1 : 0
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

@@ -1025,9 +1025,63 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 float3 candValue;
                 float candCount;
                 float candMeanTarget;
-                if (!evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
-                                             hitPos, n, reconTpre, footprint, reconDepth, true,
-                                             seed, candidate, candValue, candCount, candMeanTarget)) {
+                bool accepted;
+                if (candidate.reconIndex > 0u && worldPush.pathReplayEnabled != 0u) {
+                    // ---- A-01b reconnected shift. Scope (restir_pt's note carries the evidence):
+                    // the anchor is THIS pixel's own primary hit, whose decoded state is in scope
+                    // only when reconDepth == 0, and only reconIndex == 1 prefixes are supported --
+                    // deeper chains cross opaque shading vertices whose recorded draw counts are not
+                    // reproducible post-hoc (M24's reuse consumes an acceptance-dependent number of
+                    // draws; Enhanced removes those from its replay tracer at the tracer level).
+                    accepted = false;
+                    if (sampled) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[6], 1u);
+                    }
+                    if (reconDepth == 0u && candidate.reconIndex == 1u) {
+                        float3 toRecon = candidate.reconPos - hitPos;
+                        float dist = max(sqrt(dot(toRecon, toRecon)), 1.0e-6);
+                        ReplayedPrefix rp;
+                        rp.valid = true;
+                        rp.throughput = reconTpre;
+                        rp.origin = hitPos;
+                        rp.normal = n;
+                        rp.wi = toRecon / dist;
+                        rp.dist = dist;
+                        rp.bc = bc;
+                        rp.diffAlb = diffAlb;
+                        rp.F0 = F0;
+                        rp.pf = pf;
+                        rp.ps = ps;
+                        rp.walkSssShare = walkSssShare;
+                        // Connectivity: the connection ray must actually reach the stored anchor --
+                        // the shift's invertibility check in its cheapest form.
+                        float3 vis = visibilityMasked(CULL_SHADOW_NO_SELF,
+                                offsetSurfaceOrigin(rp.origin, rp.normal, rp.wi, SURF_BIAS),
+                                rp.wi, rp.dist).transmittance;
+                        if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
+                            float3 rpValue;
+                            float rpCount;
+                            float rpTarget;
+                            if (evalReconnectedSuffixCandidate(rp,
+                                    octDecode(unpackUnorm16x2(candidate.reconNrm)),
+                                    candidate, rpValue, rpCount, rpTarget)) {
+                                candValue = rpValue;
+                                candCount = rpCount;
+                                candMeanTarget = rpTarget;
+                                accepted = true;
+                                if (sampled) {
+                                    InterlockedAdd(
+                                            DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[7], 1u);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    accepted = evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
+                            hitPos, n, reconTpre, footprint, reconDepth, true,
+                            seed, candidate, candValue, candCount, candMeanTarget);
+                }
+                if (!accepted) {
                     continue;
                 }
                 if (sampled) {

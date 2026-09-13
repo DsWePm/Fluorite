@@ -487,6 +487,13 @@ public struct WorldPush {
      * the shader's skip signal, exactly like restirStatsAddr for the M24 store.
      */
     public uint64_t pathReservoirStatsAddr;
+    /**
+     * A-01b: composite.path-replay as a 0/1 word. The reconnected shift only engages for records
+     * whose reconIndex > 0, and off means those candidates keep the in-place retarget evaluation --
+     * the measurement A/B arm and the fallback if replay's cost blows the budget on the 2080 Mobile.
+     * Tail-appended under the parallel freeze order's sole exemption; offsets above are untouched.
+     */
+    public uint pathReplayEnabled;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
