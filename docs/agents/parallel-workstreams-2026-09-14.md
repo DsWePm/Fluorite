@@ -428,7 +428,7 @@ devlog：新文件 `docs/devlog/M30-material-parallax.md`（D244 号段起；REA
 
 ## 7. 待协调清单（跨线请求落这里）
 
-（空——出现跨线需求时，由提出方在自己号段记档后追加到此，等用户裁决。）
+1. **共享工作树检出冲突（2026-09-14，A 线记录）**：A 线在 `feat/m28-s3-finish` 提交 A-①b 时，工作树已被切到 `feat/m30-parallax-puddle-link`（C 线/M30），该提交（86d16f7）落在了 C 线分支上。处置：A 线未动 C 线检出，改在 `.claude/worktrees/line-a` 建 A 线 worktree，将提交 cherry-pick 回 `feat/m28-s3-finish`（e1730e6）；C 线分支上的 86d16f7 与 A 线 e1730e6 同补丁，合并时 git 按补丁等价处理。**协议建议**：并行期各 agent 用独立 worktree，共享树切分支前先 `git log --oneline -1` 确认无人正在提交。等用户裁决是否立为铁律。
 
 ## 8. 三条线之后（本轮不分派，防遗忘）
 

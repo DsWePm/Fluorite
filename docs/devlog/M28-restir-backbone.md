@@ -334,3 +334,10 @@ S2 设计定稿（用户裁决 B）与 scaffolding 之后的第一个集成片�
 - 开关 `composite.path-replay`(默认关,关档 = 本片前行为);WorldPush 尾部 `pathReplayEnabled`(§3.2 豁免,偏移 1296/1312,codegen + layout 钉同 commit);stats 6→8 lanes(replay attempted/valid,attempted 高 valid 低 = 移位在死:切向/遮挡/深度不合)。
 - 契约钉:范围门、连通性检查、共享权重拼写、`reconIndex ≥ 2` 拒绝、开关默认关。
 - devlog D227 即 A-①c 归档的占位:固定机位收敛对照与 `frame.csv` A→B→A(`composite.path-replay` 翻转)由下次游戏会话产出后补记。
+
+## D228（A 线）：A 线收尾状态 + 协作事故记录
+
+- **A 线五个 commit 全部落地**于 `feat/m28-s3-finish`：A-②a（d808df2）→ A-①a（ce35c94）→ A-②b（0e6e4cf）→ A-①b-prep（4de1270）→ A-①b（e1730e6，自 C 线分支 cherry-pick 回）。构建门在 `.claude/worktrees/line-a` 全绿（slangc + spirv-val 含 SER、全部测试；worktree 缺原生资产目录属环境问题，已拷贝主树产物验证）。
+- **共享检出冲突**：A-①b 首次提交时工作树已被 C 线切至 `feat/m30-parallax-puddle-link`，提交落在对方分支；未动对方检出，以 worktree + cherry-pick 解决（e1730e6 与 86d16f7 同补丁）。已记入分派文档 §7,建议并行期强制独立 worktree。
+- **A-①c（归档 commit）**：固定机位收敛对照 + `composite.path-replay` 同会话 A→B→A,等用户验收会话产出数据后补记。
+- **A-③（duplication map）**：按分派文档铁律 1 前置要求,**未开工**,设计与「偏差换相关」取舍已呈请用户裁决（见交接）。
