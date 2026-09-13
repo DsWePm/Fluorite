@@ -314,3 +314,7 @@ S2 设计定稿（用户裁决 B）与 scaffolding 之后的第一个集成片�
 ## D225（A 线）：A-②b 选择目标切到接收域（Enhanced §6.3 对齐）
 
 幸存者代表性：候选选择权重从「home 域 target（`stored.targetSum/m`，候选在老家的亮度）」切到「**接收域**值（`luminance(candValue)`，本顶点重评后的贡献亮度）」——时域/空间一处拼写同改，`spatialWinTarget` 赋值点同域；own 侧 `ownTarget` 本就是接收域。**无偏性**：GRIS 的选择目标可为任意正函数，无偏性只要求 W 恒等式的 draw/sums/t_chosen 三者同域——三处一起切、契约钉逐处钉死（`candCount * luminance(candValue)` / `temporalSum = candCount * luminance(candValue)` / `spatialWinTarget = luminance(candValue)`）；applied 估计的 RGB 累积不受域切换影响（A-②a 的钉子把「标量选择 vs 向量着色」的不变式保住了）。记录里的 home 域 targetSum/m 下帧只作正数选择提示，域可不同。预期：幸存者更贴接收域，下帧时域候选更准（静止 A/B 不劣化）。
+
+## D226（A 线）：A-①b 前置重构 —— `continuationReconnectWeight` 一拼写
+
+`evalPathSuffixCandidate` 内的 f(wi)·cos/pdf 块抽为 restir_pt 文件域 helper，in-place 与重连两条求值路径共用（分派文档 A-①b 第 4 条：文件横幅警告「两种拼写 = 复用率失效」，这条重构就是防它）。表达式逐项保序，无行为变化；「刻意不用 evalSampleContrib」的理由注释随行。

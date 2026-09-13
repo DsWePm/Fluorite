@@ -136,6 +136,36 @@ public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, flo
 }
 
 /**
+ * The continuation weight THIS vertex would give direction `wi`, with the mixture density that
+ * weights it: f(wi)*cos/pdf, spelled exactly as the lobe mixture samples. ONE spelling for both
+ * shift evaluation paths -- in-place and reconnected (A-01b); two spellings of a density that must
+ * agree is how a reuse rate quietly stops meaning anything, which is the file banner's warning
+ * made flesh. Returns false when the density is zero (direction outside the mixture's support).
+ */
+public bool continuationReconnectWeight(BsdfContext bc, float3 diffAlb, float3 F0,
+                                        float pf, float ps, float walkSssShare,
+                                        float3 n, float3 v, float3 wi,
+                                        out float3 weight, out float pdf) {
+    weight = float3(0.0, 0.0, 0.0);
+    pdf = 0.0;
+    float ndl = max(dot(n, wi), 0.0);
+    float3 h = normalize(wi + v);
+    float ndh = max(0.0, dot(n, h));
+    float vdh = max(0.0, dot(v, h));
+    float D = ggxDAniso(dot(h, bc.t), dot(h, bc.b), ndh, bc.alphaX, bc.alphaY);
+    float G = bc.g1v * ggxG1Aniso(dot(wi, bc.t), dot(wi, bc.b), ndl, bc.alphaX, bc.alphaY);
+    float3 F = fresnelSchlick(vdh, F0);
+    float3 brdf = diffAlb * INV_PI + (D * G) * F / (4.0 * bc.ndv * ndl);
+    brdf = brdf * rainBaseTransmission(bc, wi) + rainFilmBrdf(bc, wi, false);
+    pdf = bsdfContinuationPdf(bc, wi, pf, ps, walkSssShare);
+    if (!(pdf > 0.0)) {
+        return false;
+    }
+    weight = brdf * ndl;
+    return true;
+}
+
+/**
  * Validate a stored record against THIS reconnection vertex and, if it passes, evaluate the stored
  * direction's candidate value here. ONE spelling for both shifts -- temporal and spatial differ only
  * in the surface predicate, and two spellings of a validation that must agree is exactly how a reuse
@@ -209,22 +239,14 @@ public bool evalPathSuffixCandidate(BsdfContext bc, float3 diffAlb, float3 F0,
         return false;
     }
 
-    // The continuation weight this vertex would have given the stored direction, and the density
-    // that weights it: f(wi)*cos/pdf, spelled exactly as the lobe mixture samples. Deliberately NOT
-    // evalSampleContrib -- that helper is an AREA-light target (emitter tint inside, SSS back-lobe
-    // branch, film floor tied to emitter MIS), none of which describes a suffix sample.
-    float ndlStored = cosHere;
-    float3 hStored = normalize(storedWi + v);
-    float ndh = max(0.0, dot(reconNrm, hStored));
-    float vdh = max(0.0, dot(v, hStored));
-    float D = ggxDAniso(dot(hStored, bc.t), dot(hStored, bc.b), ndh, bc.alphaX, bc.alphaY);
-    float G = bc.g1v * ggxG1Aniso(dot(storedWi, bc.t), dot(storedWi, bc.b),
-                                  ndlStored, bc.alphaX, bc.alphaY);
-    float3 F = fresnelSchlick(vdh, F0);
-    float3 brdf = diffAlb * INV_PI + (D * G) * F / (4.0 * bc.ndv * ndlStored);
-    brdf = brdf * rainBaseTransmission(bc, storedWi) + rainFilmBrdf(bc, storedWi, false);
-    float pdf = bsdfContinuationPdf(bc, storedWi, pf, ps, walkSssShare);
-    if (!(pdf > 0.0)) {
+    // The continuation weight and its density: one spelling with the reconnected path (A-01b).
+    // Deliberately NOT evalSampleContrib -- that helper is an AREA-light target (emitter tint
+    // inside, SSS back-lobe branch, film floor tied to emitter MIS), none of which describes a
+    // suffix sample.
+    float3 reconnectWeight;
+    float pdf;
+    if (!continuationReconnectWeight(bc, diffAlb, F0, pf, ps, walkSssShare,
+                                     reconNrm, v, storedWi, reconnectWeight, pdf)) {
         return false;
     }
     // Changed-measure correction: the producing vertex sampled this direction against ITS
@@ -235,7 +257,7 @@ public bool evalPathSuffixCandidate(BsdfContext bc, float3 diffAlb, float3 F0,
     // means the direction ran tangent to one of them, and the honest answer is a damped weight
     // rather than a firefly.
     float jacobian = clamp(cosHere / cosStored, 1.0 / 3.0, 3.0);
-    value = max(storedW * reconTpre * (brdf * ndlStored / pdf) * jacobian
+    value = max(storedW * reconTpre * (reconnectWeight / pdf) * jacobian
                         * unpackRgb9e5(stored.li),
                 float3(0.0, 0.0, 0.0));
     count = min(stored.m, PATH_RESERVOIR_M_CAP);

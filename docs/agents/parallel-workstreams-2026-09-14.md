@@ -294,19 +294,22 @@ commit 顺序固定，每项独立可回退：**A-②a（钉现状）→ A-①a�
 
 ### B-1：自绘 pass 与 vanilla 平替（姿态对齐里程碑，独立 commit）
 
-1. **push 结构** `shaders/world/hand_lit_common.slang`（放 world/，照 `rain_streak_common.slang` 先例）：
+1. **数据布局**（push 恒 < 128 B，矩阵走 BDA——两个 mat4 加地址就超 Vulkan push 常量保证，雨丝的「地址进 push、数据走 BDA」同款）。`shaders/world/hand_lit_common.slang`（放 world/，照 `rain_streak_common.slang` 先例）：
    ```slang
-   public struct HandLitPush {
-       public uint64_t worldPushAddr;      // WorldPush 只读 BDA（skySectorRadiance/mediumSkyRadiance/lightDir）
-       public uint64_t lightBufAddr;       // LightBufferAddresses 五件套，照 RainStreakPush
+   public struct HandLitPush {                 // 72 B，push constant
+       public uint64_t worldPushAddr;          // WorldPush 只读 BDA（含 dynamicLightAddr/Count，B-2 用）
+       public uint64_t lightBufAddr;           // LightBufferAddresses 五件套，照 RainStreakPush
        public uint64_t lightAliasAddr;
        public uint64_t lightLocalAliasAddr;
        public uint64_t lightGridCellAddr;
        public uint64_t lightGridSpanAddr;
-       public uint64_t materialAddr;       // MaterialHeader/Extension 缓冲（实体材质解析的产物）
-       public float4x4 handProjection;     // B-0 捕获
-       public float4x4 handModelViewInv;   // 视空间 -> 世界空间（光照要用世界方向）
-       public uint     quadCount;
+       public uint64_t materialAddr;           // MaterialHeader/Extension 缓冲（实体材质解析的产物）
+       public uint64_t frameDataAddr;          // HandFrameData，每帧 host-visible 写入
+       public uint    quadCount;
+   };
+   public struct HandFrameData {               // BDA，与 RtHandFrame 一一对应
+       public float4x4 handProjection;         // B-0 捕获的手部投影
+       public float4x4 handModelViewInv;       // 视空间 -> 世界空间（光照用世界方向）
    };
    ```
 2. **管线**：`RtOverlayPipelines.VertexFormat` 新增条目（pos + normal + uv + materialIndex + RGBA8 color，步长与 `RtEntityCapture` 顶点布局对齐）；新光栅管线绑定：顶点缓冲、实体纹理槽采样器（皮肤整图 + blocks/item atlas）、材质纹理（LabPBR normal/specular）、`AccelStructureSet`（TLAS，ray query 用）。`rt/overlay/RtHandFeature.java`：
@@ -325,7 +328,10 @@ frag 的三个光照项与一个求值，全部预先定名（`hand_lit.frag.sla
 2. **`float3 handSkyTerm(float3 p, float3 n)`**：新消费 helper **`volumeSkySurfaceIrradiance(float3 p, float3 n)`**（加在 `volume_visibility.slang`，只增）：
    - 方向场模式：`Σ_k W_k · skySectorRadiance[k].xyz · bin_k(p) · max(dot(n, ω̂_k), 0)`（ω̂_k = 扇区中心方向，W_k = 扇区立体角权重——与 marched 雾的 S1 公式同一格同一分布，决策 3 的表面消费者）；
    - 标量模式（方向场开关关）：`mediumSkyRadiance.xyz · volumeSkyOpenness(p)` 的既有语义折算半 Lambert（`·(1+dot(n,up))/2` 钳制），关档连续性优先于方向正确性（雾可调性教训 [[feedback-fog-tunability]] 的同款约束）。
-3. **`float3 handEmitterTerm(float3 p, float3 n, float3 v, MaterialCtx m, inout uint seed)`**：1–2 个 RIS 候选（`light_sampling` 的 grid/alias 路径，`LightBufferAddresses` 从 push 填充——雨丝同款）；每个候选一条 `RayQuery` 阴影线；求值 `Le·f·cos/d²`。**两处拼写的风险**： emitter NEE 的求值式与 `world.rchit` 是第二份拼写——frag 横幅必须写明并互指（froxel NEE 已有此先例），若实现时发现 rchit 的求值可提取为共享模块，提取优先（记档不强制）。
+3. **`float3 handEmitterTerm(float3 p, float3 n, float3 v, MaterialCtx m, inout uint seed)`**——两个来源，缺一不可：
+   - **静态发光体**：1–2 个 RIS 候选（`light_sampling` 的 grid/alias 路径，`LightBufferAddresses` 从 push 填充——雨丝同款），每个候选一条 `RayQuery` 阴影线，求值 `Le·f·cos/d²`；
+   - **动态光（含手持火把——2026-09-14 补，原稿漏了）**：静态 grid 里**没有**动态光（M18 数据层独立成 buffer，M24 S3 只把它接进了 DI 候选），手持火把经此路径照不到手。补法：直接读 `worldPush.dynamicLightAddr` 的 `Light` 记录（restir.slang:285 的同款读法），**上限评估 32 条**（`ConstPtr<Light>` 循环，`dynamicLightCount` 截断），按未遮挡贡献 `Le·f·cos/d²` 排序取**前 3 条**打阴影线，其余按可见近似计入。手持火把几乎恒在前 3（最近）。偏差记档：top-3 截断 + 未打线者的可见近似。
+   - **两处拼写的风险**： emitter NEE 的求值式与 `world.rchit` 是第二份拼写——frag 横幅必须写明并互指（froxel NEE 已有此先例），若实现时发现 rchit 的求值可提取为共享模块，提取优先（记档不强制）。
 4. **`float3 handLitBrdf(...)`**：`bsdf.slang` 的 Disney 求值（与世界的表面着色同一实现，不是简化 BRDF）；LabPBR 法线贴图（quad TBN 切线空间，`MaterialHeader/Extension` 按 materialIdx 取——方块物品拿满 PBR，普通物品拿资源包给了什么用什么，皮肤走实体默认材质 + JSON override 通道）。
 5. **合成**：`Lo = handLitBrdf · (handSunTerm + handSkyTerm项的辐照度折算 + handEmitterTerm)`；不消费 `lightCoords`（粒子 raw albedo 先例）；前缀介质忽略（手距相机 <1 m，量级记档）；输出 HDR 直进 UI overlay 图（曝光/显示映射是 overlay 合成的既有职责）。
 6. **验收前自检**：`composite.hand-rt-lighting` 关 = vanilla 手逐位；方向场/出格钳制两开关对手部天空项生效（读同一格）；无光源/夜间的手部不该全黑（天空项 + 保底）。
@@ -335,7 +341,7 @@ frag 的三个光照项与一个求值，全部预先定名（`hand_lit.frag.sla
 观察点清单（同 [[feedback-in-game-test-protocol]] 格式）：
 - **姿态**：开档 vs 关档（vanilla 手）同位姿截图逐像素对齐（B-1 的复验延续到 B-2 之后——光照变了但轮廓/摇摆不得变）。
 - **太阳同步**：头顶放方块 → 手部按世界阴影同步变暗；转动视角，手持方块的高光随太阳方位移动；日出/正午/夜晚色温与世界一致。
-- **发光体**：手持火把贴近墙 → 手臂被自己的火把照亮（D18 的手持光本就照亮世界，现在也照亮手）；身旁放熔岩/萤石同验。
+- **发光体**：手持火把 → 手臂和手持物被自己的火把照亮（动态光直接评估路径，见 B-2 item 3）；身旁放熔岩/萤石同验（静态 grid 路径）；远处火把隔墙不照亮手（阴影线）。
 - **天空项**：洞内 vs 野外，手臂的环境亮度随开阔度变化；方向场开关 A/B 时洞口朝向的一侧手臂更亮。
 - **PBR**：LabPBR 资源包下手持方块的法线细节与高光；金属方块（金锭等）的镜面响应。
 - **回归**：3D 准星、屏幕效果（火/水下叠加）、F5 第三人称、望远镜均不受影响；Fabric 与 NeoForge 双端。
