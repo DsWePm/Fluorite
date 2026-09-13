@@ -1,49 +1,19 @@
-// The S2 path reservoir: where a pixel's reusable INDIRECT suffix lives between frames, for ReSTIR PT's
-// hybrid shift. Companion to restir.slang, which holds M24's DIRECT-lighting reservoirs -- this module is
-// about the PATH estimate, and keeping the two apart is deliberate: their lifetimes, their consumers and
-// their failure modes are different, and M24's store predates this one by three milestones.
+// The S2 path reservoir's ESTIMATOR side: the packer the bounce loop's write takes, and the
+// temporal-merge constants. Companion to restir.slang, which holds M24's DIRECT-lighting store --
+// keeping the two apart is deliberate: their lifetimes, their consumers and their failure modes are
+// different, and M24's store predates this one by three milestones.
 //
-// WHAT ONE RECORD HOLDS. The reservoir stands for a path SUFFIX: everything beyond the reconnection
-// vertex x_s. Concretely:
-//
-//   pathSeed   -- the RNG state the path was traced with. Replay copies this stream onto the shifted
-//                 primary hit: the first K draws regenerate the base path's decisions and are applied to
-//                 the shifted geometry. SEEDED REPLAY IS A CONTRACT: the seed advances deterministically
-//                 (rndf/pcg chains only), so any edit to segment.slang's or world.rgen's draw ORDER
-//                 silently changes which decision each replayed random number drives. The contract test
-//                 pins the idiom; edit the derivation and update that test in the same commit.
-//   reconPos   -- x_s, where the shift reconnects: the first rough vertex pair of the stored path.
-//   reconNrm   -- x_s's shading normal, for the connection G term.
-//   li         -- incident radiance arriving at x_s from beyond it (Rgb9e5, HDR).
-//   wi         -- its direction, oct16x2.
-//   m          -- effective sample count for GRIS weights.
-//   targetSum  -- accumulated target-function sum the merge produced.
-//   W          -- the merge weight the record carries forward: W * target(y) is an unbiased estimate
-//                 of the suffix integral at any vertex that passes the reuse tests, so a consumer
-//                 re-weighting the stored sample multiplies by W exactly once. A fresh single-sample
-//                 record stores 1; zero means "no usable history" and fails validation.
-//   reconIndex -- which path vertex x_s was (replay depth).
-//   (the record stays 48 bytes; W took the spare lane, which nothing else had claimed)
-//
-// Double-buffered by parity like restir.slang: read is last frame's, write is this frame's.
+// THE RECORD ITSELF (PackedPathReservoir) lives in world_common.slang, beside PackedPathSegment and
+// for the same reason: its true std430 stride must be reflected into the generated Java record the
+// allocation is sized from, and this module's import chain reaches world_core, whose set-0 bindings
+// collide with the layout probe's. D220 is the proof this matters -- a uint declared before the
+// record's float3 padded the real stride to 64 against a 48-byte allocation, and the first full-
+// resolution session faulted the GPU. The struct banner carries the field semantics; the REPLAY
+// CONTRACT on pathSeed is pinned in segment.slang and RtPathReplayContractTest.
 
 import world_common;
 import math;
 import segment; // octEncode / packUnorm16x2 / packRgb9e5: the same packing idioms the queue record uses
-
-public static const uint PATH_RESERVOIR_BYTES = 48u;
-
-public struct PackedPathReservoir {
-    public uint    pathSeed;
-    public float3  reconPos;
-    public uint    reconNrm;      // oct16x2 packed
-    public uint    li;            // Rgb9e5
-    public uint    wi;            // oct16x2 packed
-    public float   m;
-    public float   targetSum;
-    public uint    reconIndex;
-    public uint    W;             // bitcast float: the merge weight, see the header
-}
 
 // ---- Temporal-merge constants (S2). Named twins of restir.slang's receiver tests, kept separate
 // because the two stores reject different things: a DI reservoir must describe the same SURFACE, a
@@ -60,26 +30,15 @@ public static const float PATH_REUSE_MIN_NORMAL_AGREEMENT = 0.9; // cos, about 2
  *
  * <p>The same "the past must not outvote the present forever" bound REUSE_M_CAP buys the DI store: m
  * only sets how loudly the history argues in the survivor choice, and capping it bounds how long a
- * changed scene keeps being blended against. Sixteen starts where the DI cap's reasoning points; the
- * fixed-pose convergence check is what says whether the temporal chain stays honest as m saturates.
+ * changed scene keeps being blended against. Unused by the temporal write since D219 -- records are
+ * always fresh single samples -- and kept for S3, where spatial domains contribute many independent
+ * candidates and accumulation has a real estimator role.
  */
 public static const float PATH_RESERVOIR_M_CAP = 16.0;
 
-/** Slot address: one reservoir per pixel per parity. S2 is temporal-only, so no depth or path planes --
- * the pixel is the whole key. With spp > 1 the samples of a pixel share the slot and the last write
- * wins; the published SPP is 1, and per-path planes would quadruple a buffer the switch already has to
- * justify. Revisit only if an spp A/B ever shows the sharing mattering. */
-public uint pathReservoirSlot(uint pixelIndex, uint pixelCount, uint parity) {
-    return pixelIndex + parity * pixelCount;
-}
-
-/** An unwritten or unusable record. `m` counts the candidates a reservoir merged; the initial write
- * stores 1, and cleared/stale memory reads as 0 -- the same emptiness test restir.slang uses. */
-public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }
-
 /**
- * The one form the bounce loop's write takes. Everything is packed here, next to the struct it
- * translates, so a packing change cannot drift from the record layout it feeds.
+ * The one form the bounce loop's write takes. Everything is packed here, next to the estimator that
+ * produces the values, so a packing change cannot drift from the record layout it feeds.
  *
  * <p>`li` is the suffix's OWN estimate of incident radiance at the reconnection vertex -- the
  * throughput that carried it is deliberately NOT folded in, because whoever merges this record
@@ -88,14 +47,14 @@ public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }
  * identity that keeps W * target(y) an unbiased estimate wherever the record is re-evaluated. Since
  * D219 the temporal write is always a FRESH single-sample record (m = 1, W = 1: one unbiased draw,
  * kept at most two frames so no static sample outlives the denoiser's accumulation window); the
- * general form returns with S3, where spatial domains contribute many independent candidates.
+ * general form returns with S3.
  */
 public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, float3 reconNrm,
                                              float2 wiOct, float3 li, float m, float targetSum,
                                              float w, uint reconIndex) {
     PackedPathReservoir r;
-    r.pathSeed = pathSeed;
     r.reconPos = reconPos;
+    r.pathSeed = pathSeed;
     r.reconNrm = packUnorm16x2(octEncode(reconNrm));
     r.li = packRgb9e5(li);
     r.wi = packUnorm16x2(wiOct);

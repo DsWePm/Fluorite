@@ -12,6 +12,7 @@ import io.github.dswepm.fluorite.rt.light.RtEmitterTint;
 import io.github.dswepm.fluorite.FluoriteMod;
 import io.github.dswepm.fluorite.client.FluoriteJitter;
 import io.github.dswepm.fluorite.mixin.CommandEncoderAccessor;
+import io.github.dswepm.fluorite.rt.gen.PackedPathReservoirData;
 import io.github.dswepm.fluorite.rt.gen.PackedPathSegmentData;
 import io.github.dswepm.fluorite.rt.gen.WaterMediumProbeData;
 import io.github.dswepm.fluorite.rt.gen.WorldPushConstantsData;
@@ -120,10 +121,13 @@ public final class RtComposite {
     /** Must match RESERVOIR_BYTES in restir.slang; the allocation and the shader layout move together. */
     private static final long RESERVOIR_BYTES = 64L;
     /**
-     * Must match PATH_RESERVOIR_BYTES in restir_pt.slang — M28 S2's per-pixel path record, sized to the
-     * same 48-byte cache line the continuation queue uses, for the same no-straddled-access reason.
+     * Taken from the generated record's reflected std430 stride rather than hand-copied, exactly like
+     * PATH_RECORD_BYTES above. D220 is what the hand copy cost: the struct's true stride was 64 -- a
+     * uint declared before its float3 pads to float3's 16-byte alignment -- so the shading indexed a
+     * 48-byte-slot allocation at 64-byte stride, and the first full-resolution session faulted the GPU
+     * with reads past the buffer's end.
      */
-    private static final long PATH_RESERVOIR_BYTES = 48L;
+    private static final long PATH_RESERVOIR_BYTES = PackedPathReservoirData.BYTE_SIZE;
     /**
      * Records pass A queues per render pixel: the base continuation plus the optional transmission split.
      *

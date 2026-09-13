@@ -1018,3 +1018,58 @@ public struct PackedPathSegment {
     public uint seed;
     public uint pathFlags;
 };
+
+/** Must match the RtComposite allocation, which takes the size from the generated record -- so this
+ * declaration and the allocation cannot drift. */
+public static const uint PATH_RESERVOIR_BYTES = 48u;
+
+// The M28 S2 path reservoir: one record per render pixel per frame half, the reusable INDIRECT suffix
+// the temporal merge reconnects. Declared here beside PackedPathSegment for the same reason that
+// record is: its true std430 stride has to be reflected into the generated Java record, and the pack
+// side (restir_pt.slang) imports world_core through segment.slang, whose set-0 bindings collide with
+// the probe.
+//
+// D220: THE FIELD ORDER IS THE ALLOCATION. The first draft declared pathSeed (a uint) before
+// reconPos (a float3); std430 gives float3 a 16-byte alignment, the four bytes of padding that
+// follow pushed the true stride to 64, and the shading indexed a 48-bytes-per-slot allocation at
+// 64-byte stride -- every access past the first slots landed outside the buffer, and the first
+// session that ran at full render resolution walked far enough to fault the GPU (READ_INVALID past
+// the store, then an IP fault in whatever the clobbered neighbour fed the TLAS build). reconPos
+// leads, exactly like ro in PackedPathSegment: sixteen bytes plus eight uints is 48 on the nose.
+//
+// Field semantics (what a temporal merge needs and why -- see restir_pt.slang for the packer):
+//   reconPos   -- x_s, the reconnection vertex this suffix hangs from; also the drift test's anchor.
+//   pathSeed   -- the RNG state the path was traced with (REPLAY CONTRACT, see segment.slang).
+//   reconNrm   -- x_s's shading normal, oct16x2.
+//   li         -- incident radiance arriving at x_s from beyond it, Rgb9e5, RELATIVE (no prefix
+//                 throughput folded in -- the consumer re-weights with its own prefix).
+//   wi         -- the suffix direction, oct16x2.
+//   m          -- effective sample count for GRIS weights (1 in every record written today; D219
+//                 keeps histories single-sample so nothing static outlives the denoiser's window).
+//   targetSum  -- this record's home-vertex contribution luminance (the target a merge weighs).
+//   reconIndex -- which path vertex x_s was (replay depth; the temporal shift requires a match).
+//   W          -- bitcast float merge weight; 1.0 in every record written today. Zero reads as
+//                 "no usable history" alongside m == 0.
+public struct PackedPathReservoir {
+    public float3 reconPos;
+    public uint   pathSeed;
+    public uint   reconNrm;      // oct16x2 packed
+    public uint   li;            // Rgb9e5
+    public uint   wi;            // oct16x2 packed
+    public float  m;
+    public float  targetSum;
+    public uint   reconIndex;
+    public uint   W;             // bitcast float
+};
+
+/** Slot address: one reservoir per pixel per parity. S2 is temporal-only, so no depth or path planes --
+ * the pixel is the whole key. With spp > 1 the samples of a pixel share the slot and the last write
+ * wins; the published SPP is 1, and per-path planes would quadruple a buffer the switch already has to
+ * justify. Revisit only if an spp A/B ever shows the sharing mattering. */
+public uint pathReservoirSlot(uint pixelIndex, uint pixelCount, uint parity) {
+    return pixelIndex + parity * pixelCount;
+}
+
+/** An unwritten or unusable record. `m` counts the candidates a reservoir merged; cleared/stale
+ * memory reads as 0 -- the same emptiness test the M24 store uses. */
+public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }

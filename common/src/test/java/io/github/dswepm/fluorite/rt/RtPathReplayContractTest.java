@@ -42,15 +42,24 @@ final class RtPathReplayContractTest {
 
     @Test
     void thePathReservoirModuleExistsWithThePinnedLayout() throws IOException {
+        String worldCommon = source("shaders/world/world_common.slang");
+        // The record lives beside PackedPathSegment so the layout probe can reflect it (restir_pt's
+        // import chain collides with the probe's bindings). Its stride is pinned by
+        // RtPathReservoirLayoutTest against the generated record, and RtComposite takes its
+        // allocation stride from that same generated constant -- the D220 hand-copy lesson.
+        assertTrue(worldCommon.contains("public struct PackedPathReservoir"));
+        assertTrue(worldCommon.contains("PATH_RESERVOIR_BYTES = 48u"));
+        assertTrue(worldCommon.contains("pathReservoirSlot"));
+        // The float3 MUST lead: std430 gives float3 a 16-byte alignment, and a uint before it pads
+        // the stride to 64 against the 48-byte allocation (the D220 GPU fault, verbatim).
+        String struct = worldCommon.substring(worldCommon.indexOf("public struct PackedPathReservoir"));
+        assertTrue(struct.indexOf("public float3 reconPos;") < struct.indexOf("public uint   pathSeed;"),
+                "PackedPathReservoir field order regressed: reconPos must precede pathSeed or the "
+                        + "stride grows to 64 and every slot access walks off the allocation");
         String restirPt = source("shaders/world/restir_pt.slang");
-        // 48 bytes: the queue record's cache line. Same reasoning as PackedPathSegment -- a per-frame
-        // read/write buffer must not straddle.
-        assertTrue(restirPt.contains("PATH_RESERVOIR_BYTES = 48u"));
-        assertTrue(restirPt.contains("pathSeed"));
-        assertTrue(restirPt.contains("reconPos"));
-        assertTrue(restirPt.contains("pathReservoirSlot"));
-        // The seed field is the replay contract's storage half; losing it breaks temporal reuse quietly.
-        assertTrue(restirPt.contains("REPLAY IS A CONTRACT"));
+        // The estimator side stays in restir_pt: the packer and the merge constants.
+        assertTrue(restirPt.contains("packPathReservoir("));
+        assertTrue(restirPt.contains("PATH_RESERVOIR_M_CAP"));
     }
 
     @Test
@@ -79,7 +88,9 @@ final class RtPathReplayContractTest {
         // W * target(y) is the unbiased-estimate invariant; the m cap bounds how long the past
         // outvotes the present.
         assertTrue(restirPt.contains("PATH_RESERVOIR_M_CAP"));
-        assertTrue(restirPt.contains("public uint    W;"));
+        // W is a lane of the record, which lives in world_common beside PackedPathSegment (D220).
+        String worldCommon = source("shaders/world/world_common.slang");
+        assertTrue(worldCommon.contains("bitcast float merge weight"));
     }
 
     @Test

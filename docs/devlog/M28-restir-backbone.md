@@ -229,3 +229,21 @@ S2 设计定稿（用户裁决 B）与 scaffolding 之后的第一个集成片�
 ### 验收状态
 
 - slangc/test 全绿。**待用户复验**：静止 A/B 噪声应明确减半且无亮度偏移；若残余噪点集中在掠射面（水边、墙沿），报给我——那是 J/重连判据的 S3 份额。
+
+## D220：路径 reservoir 步长 64≠48 —— 全分辨率会话 GPU fault（2026-09-13）
+
+### 现象与取证
+
+用户全分辨率（1600x900，RR 关）会话 2 分 17 秒后 `VK semaphore 5s timeout` 崩溃。Fluorite 的 device-fault 诊断两行钉死：`READ_INVALID` 地址落在 **`ReSTIR path reservoirs 1600x900x2`** 缓冲末尾之外 ~1 MB，随后 `IP_FAULT`（GPU 执行流失效，邻居是 TLAS instance buffer——越界写踩烂下游数据）。追诉：12:23 的 533x300 噪点会话同样在越界（319,800 槽 × 64B = 20.4 MB 跨度 vs 14 MB 分配），只是邻居恰好可读没炸——**D219 记录的「噪点暴增」可能部分是内存踩踏，不止估计量方差**，修复后需重新评估 D219 的两项修复效果。
+
+### 根因：std430 的 float3 对齐
+
+`PackedPathReservoir` 初版把 `pathSeed`（uint）声明在 `reconPos`（float3）之前。std430 给 float3 **16 字节对齐**：4 字节垫片把真实步长推到 **64**，而 RtComposite 按 48 B/槽分配——shader 以 64B 步长索引 48B 槽的缓冲，每个 slot 访问都错位、最后一个 slot 落在缓冲外 ~46 MB。PackedPathSegment 能做到 48 恰因 float3（ro）排第一位。 scaffolding 时只按字段字节数心算 48，且**没给这个结构体接 codegen 探针**——MaterialExtensionData 注释里「a hand-copied 48 that nothing checked against the struct it describes」正是防这个，防住了上一个，没防住这一个。
+
+### 修复与回归缝
+
+1. **字段重排**：`reconPos` 领头（16 + 8×4 = 48，与 PackedPathSegment 同构），记录迁入 world_common（probe 可达；restir_pt 的 import 链撞 probe 绑定，与 PackedPathSegment 同款先例）——banner 里写明「字段序就是分配」。
+2. **codegen 接上**：probe + `PackedPathReservoirData` 生成，反射步长 48 已验证（修正前生成 64，诊断坐实）。
+3. **RtComposite 尺寸改用生成值**：`PATH_RESERVOIR_BYTES = PackedPathReservoirData.BYTE_SIZE`，手抄数字退场——漂移在构造上不可能。
+4. **钉子**：`RtPathReservoirLayoutTest` 钉 48；重放契约测试钉「float3 必须在 pathSeed 之前」。
+5. 教训（与 D211/D215 同族第三课）：**跨语言 ABI 的每一份手抄都是定时炸弹；反射生成 + 注册表测试是唯一的防**。位（D211）、名字（D218）、步长（D220）——三次同一个根：两端各说各话，中间没有机器检查。
