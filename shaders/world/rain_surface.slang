@@ -5,6 +5,7 @@ import world_common;
 import world_core;
 import math;
 import precipitation;
+import relief; // puddleReliefDepth: the single spelling for submersion depth
 
 [[vk::binding(24, 0)]] Sampler2D<float> rainExposureDepth;
 [[vk::binding(25, 0)]] Sampler2D<uint2> rainWetHistory;
@@ -294,6 +295,46 @@ public RainSurface evaluateRainSurface(float3 p, MaterialExtension ext,
     // the ordinary wet film already has a lower authored alpha.
     r.filmAlpha = lerp(max(worldPush.rainSurface.y, 0.01),
                        max(worldPush.rainCalibration0.w, 0.002), puddleFilm);
+    return r;
+}
+
+// The shoreline's softness: submersion values within this band of zero are partially submerged, so the
+// waterline crawls rather than snapping. Feedback-fog-tunability's lesson: a crawling shoreline must be
+// smooth or the player reads pixel flicker, not a tide.
+public static const float PUDDLE_SHORELINE_EPS = 0.05;
+
+/**
+ * M30 C-2: relief-aware puddle evaluation. The OLD evaluateRainSurface answers "how much puddle water
+ * is available here" from position, history and material affinity -- it is a pure position function
+ * that knows nothing about the material's micro-geometry. This variant adds one input -- the relief
+ * height from the parallax march -- so the ANSWER can depend on where this texel sits in the height
+ * field: low-lying texels flood first, high ones flood only after the level rises past them.
+ *
+ * <p>The waterLevel (how much water the rain system says is here) is the OLD formula's output, taken
+ * verbatim. The relief is a SECOND gate: puddleReliefDepth compares the water level against the texel's
+ * height, and the smoothstep turns the crossing into a crawling shoreline.
+ *
+ * <p>reliefHeight >= 1.0 (no height map, parallax off, or linkage off) falls back to the OLD formula
+ * BIT FOR BIT -- the old code path is a branch of this function, not a separate implementation.
+ */
+public RainSurface evaluateRainSurfaceRelief(float3 p, MaterialExtension ext,
+                                              bool filmReceiver, bool topReceiver, bool plantReceiver,
+                                              float reliefHeight) {
+    RainSurface r = evaluateRainSurface(p, ext, filmReceiver, topReceiver, plantReceiver);
+    // The old formula already decided "how much puddle water is available". The relief height is a
+    // SECOND gate on the output: when the water level sits above the texel's height, the texel is
+    // submerged; when it sits below, the texel stays dry regardless of how much water the system has.
+    if (reliefHeight < 1.0 && r.puddle > 0.0) {
+        float waterLevel = r.puddle; // the old formula's answer, repurposed as a LEVEL not a fraction
+        float depth = puddleReliefDepth(waterLevel, reliefHeight);
+        float shoreline = smoothstep(0.0, PUDDLE_SHORELINE_EPS, depth);
+        // The submerged fraction REPLACES the puddle fraction: the height field decides WHERE, the old
+        // formula decided HOW MUCH was available, and the product is what the surface reads.
+        r.puddle = lerp(r.puddle, r.puddle * shoreline, shoreline > 0.0 ? 1.0 : 0.0);
+        // Deeper water darkens more, within the existing ≤ 0.25 cap.
+        float depthDarkening = clamp(depth * worldPush.rainCalibration1.x, 0.0, 0.25);
+        r.darkening = 1.0 - (1.0 - r.darkening) * (1.0 - depthDarkening);
+    }
     return r;
 }
 

@@ -645,6 +645,9 @@ public struct Payload {
     public uint   emissionSss; // packHalf2x16(emission, sss)
     public uint   iorTransmission; // packHalf2x16(IOR, transmission factor)
     public uint   rayCone;     // packHalf2x16(width, spread)
+    // M30 C-line: relief height from the parallax march (half16, 1.0 = no map/off). The rchit writes
+    // it after the march; the raygen reads it for the rain system's puddle-relief linkage.
+    public uint   relief;      // packHalf2x16(reliefHeight, 0)
 };
 
 public static const uint PAYLOAD_SHOW_CELESTIAL = 4u;

@@ -83,6 +83,7 @@ public Payload makeRadiancePayload(uint flags, uint rayCone) {
     p.emissionSss = 0u;
     p.iorTransmission = 0u;
     p.rayCone = rayCone;
+    p.relief = packHalf2(float2(1.0, 0.0)); // no map / off = flat surface
     return p;
 }
 
