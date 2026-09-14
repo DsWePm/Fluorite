@@ -929,6 +929,18 @@ public final class FluoriteConfig {
 
 
             /**
+             * M29: draw the first-person hand with the renderer's own lighting instead of the vanilla
+             * lightmap. The hand's quads are captured from the same vanilla submit stream and re-rasterized
+             * at display resolution, lit by the world's celestial + emitter sources and the M28 sky field;
+             * PBR comes from the same canonical materials the entity path uses.
+             *
+             * <p>Off (default) leaves the vanilla hand on the exact shipped path — nothing is captured, no
+             * pass runs, no textures are mirrored.
+             */
+            public static final BooleanSetting HAND_RT_LIGHTING =
+                    bool("fluorite.rt.composite.handRtLighting", "composite.hand-rt-lighting", false);
+
+            /**
              * How many screen-space neighbours each reused vertex borrows a reservoir from.
              *
              * <p>Costs no memory at all: a neighbour is read from a slot that already exists, so this dial

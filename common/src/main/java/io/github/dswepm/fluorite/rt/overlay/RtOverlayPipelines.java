@@ -18,6 +18,7 @@ import org.lwjgl.vulkan.VkPipelineInputAssemblyStateCreateInfo;
 import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineMultisampleStateCreateInfo;
 import org.lwjgl.vulkan.VkPipelineRasterizationStateCreateInfo;
+import org.lwjgl.vulkan.VkPipelineDepthStencilStateCreateInfo;
 import org.lwjgl.vulkan.VkPipelineRenderingCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
 import org.lwjgl.vulkan.VkPipelineVertexInputStateCreateInfo;
@@ -62,7 +63,9 @@ public final class RtOverlayPipelines {
         /** vec3 position + RGBA8-unorm colour (16B). */
         POSITION_COLOR(3 * Float.BYTES + 4),
         /** vec3 position + vec2 uv + RGBA8-unorm colour (24B). */
-        POSITION_TEX_COLOR(5 * Float.BYTES + 4);
+        POSITION_TEX_COLOR(5 * Float.BYTES + 4),
+        /** M29 hand: pos3+uv2+nrm3+tangent4+tint4 floats then uint4+float4 (RtHandCapture layout). */
+        HAND_LIT(24 * Float.BYTES);
 
         public final int stride;
 
@@ -129,6 +132,8 @@ public final class RtOverlayPipelines {
         private int pushBytes;
         private int pushStages;
         private long descriptorSetLayout;
+        private long[] descriptorSetLayouts;
+        private int depthFormat;
 
         public Spec(String vertSpv, String fragSpv) {
             this.vertSpv = vertSpv;
@@ -175,6 +180,18 @@ public final class RtOverlayPipelines {
             return this;
         }
 
+        /** Two descriptor sets (set 0 = per-frame, set 1 = bindless) — the M29 hand pipeline's shape. */
+        public Spec descriptorSetLayouts(long set0, long set1) {
+            this.descriptorSetLayouts = new long[] { set0, set1 };
+            return this;
+        }
+
+        /** Optional depth attachment; when set, the pipeline gets a depth-stencil state (GREATER, write). */
+        public Spec depthAttachment(int vkFormat) {
+            this.depthFormat = vkFormat;
+            return this;
+        }
+
         public Pipeline build(RtContext ctx, String label) {
             if (attachmentFormat == 0) {
                 throw new IllegalStateException("overlay pipeline '" + label + "' has no attachment format");
@@ -194,7 +211,9 @@ public final class RtOverlayPipelines {
                 push.get(0).stageFlags(spec.pushStages).offset(0).size(spec.pushBytes);
                 layoutCi.pPushConstantRanges(push);
             }
-            if (spec.descriptorSetLayout != 0L) {
+            if (spec.descriptorSetLayouts != null) {
+                layoutCi.pSetLayouts(stack.longs(spec.descriptorSetLayouts));
+            } else if (spec.descriptorSetLayout != 0L) {
                 layoutCi.pSetLayouts(stack.longs(spec.descriptorSetLayout));
             }
             check(VK10.vkCreatePipelineLayout(vk, layoutCi, null, p), "vkCreatePipelineLayout(" + label + ")");
@@ -276,12 +295,25 @@ public final class RtOverlayPipelines {
 
             VkPipelineRenderingCreateInfo renderingInfo = VkPipelineRenderingCreateInfo.calloc(stack).sType$Default()
                     .colorAttachmentCount(1).pColorAttachmentFormats(stack.ints(spec.attachmentFormat));
+            if (spec.depthFormat != 0) {
+                renderingInfo.depthAttachmentFormat(spec.depthFormat);
+            }
+
+            // Optional depth state: hand-lit geometry is real overlapping 3D (arm under held item), so it
+            // depth-tests like vanilla's own hand pass does — GREATER against vanilla's reversed-Z clear.
+            VkPipelineDepthStencilStateCreateInfo depth = null;
+            if (spec.depthFormat != 0) {
+                depth = VkPipelineDepthStencilStateCreateInfo.calloc(stack).sType$Default()
+                        .depthTestEnable(true).depthWriteEnable(true)
+                        .depthCompareOp(VK10.VK_COMPARE_OP_GREATER)
+                        .minDepthBounds(0f).maxDepthBounds(1f);
+            }
 
             VkGraphicsPipelineCreateInfo.Buffer gpci = VkGraphicsPipelineCreateInfo.calloc(1, stack);
             gpci.get(0).sType$Default().pNext(renderingInfo.address())
                     .pStages(stages).pVertexInputState(vertexInput).pInputAssemblyState(inputAssembly)
                     .pViewportState(viewportState).pRasterizationState(raster).pMultisampleState(multisample)
-                    .pColorBlendState(colorBlend).pDynamicState(dynamicState).layout(layout)
+                    .pDepthStencilState(depth).pColorBlendState(colorBlend).pDynamicState(dynamicState).layout(layout)
                     .renderPass(VK10.VK_NULL_HANDLE).subpass(0);
             LongBuffer pPipeline = stack.mallocLong(1);
             check(VK10.vkCreateGraphicsPipelines(vk, VK10.VK_NULL_HANDLE, gpci, null, pPipeline),
@@ -313,6 +345,17 @@ public final class RtOverlayPipelines {
                 attrs.get(0).location(0).binding(0).format(VK10.VK_FORMAT_R32G32B32_SFLOAT).offset(0);
                 attrs.get(1).location(1).binding(0).format(VK10.VK_FORMAT_R32G32_SFLOAT).offset(12);
                 attrs.get(2).location(2).binding(0).format(VK10.VK_FORMAT_R8G8B8A8_UNORM).offset(20);
+                yield attrs;
+            }
+            case HAND_LIT -> {
+                VkVertexInputAttributeDescription.Buffer attrs = VkVertexInputAttributeDescription.calloc(7, stack);
+                attrs.get(0).location(0).binding(0).format(VK10.VK_FORMAT_R32G32B32_SFLOAT).offset(0);
+                attrs.get(1).location(1).binding(0).format(VK10.VK_FORMAT_R32G32_SFLOAT).offset(12);
+                attrs.get(2).location(2).binding(0).format(VK10.VK_FORMAT_R32G32B32_SFLOAT).offset(20);
+                attrs.get(3).location(3).binding(0).format(VK10.VK_FORMAT_R32G32B32A32_SFLOAT).offset(32);
+                attrs.get(4).location(4).binding(0).format(VK10.VK_FORMAT_R32G32B32A32_SFLOAT).offset(48);
+                attrs.get(5).location(5).binding(0).format(VK10.VK_FORMAT_R32G32B32A32_UINT).offset(64);
+                attrs.get(6).location(6).binding(0).format(VK10.VK_FORMAT_R32G32B32A32_SFLOAT).offset(80);
                 yield attrs;
             }
         };

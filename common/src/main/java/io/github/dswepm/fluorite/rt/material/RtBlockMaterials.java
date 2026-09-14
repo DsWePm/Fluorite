@@ -302,6 +302,24 @@ public final class RtBlockMaterials {
         }
     }
 
+    /** How many canonical page bundles exist (M29: the hand pass mirrors them into its own set). */
+    public int pageCount() {
+        return pages.size();
+    }
+
+    /** One canonical page bundle's three views by index, for a pipeline binding its own bindless set. */
+    public long pageSurface0View(int index) {
+        return pages.get(index).surface0().view();
+    }
+
+    public long pageNormalAoView(int index) {
+        return pages.get(index).normalAo().view();
+    }
+
+    public long pageSurface1View(int index) {
+        return pages.get(index).surface1().view();
+    }
+
     public Entry entry(TextureAtlasSprite sprite) {
         return entries.getOrDefault(sprite, fallback);
     }

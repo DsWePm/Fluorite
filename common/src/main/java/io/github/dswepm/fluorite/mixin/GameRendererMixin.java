@@ -10,9 +10,15 @@ import io.github.dswepm.fluorite.client.WorldRenderScaler;
 import io.github.dswepm.fluorite.rt.RtComposite;
 import io.github.dswepm.fluorite.rt.RtReflex;
 import io.github.dswepm.fluorite.rt.RtUiOverlay;
+import io.github.dswepm.fluorite.rt.entity.RtHandCapture;
+import io.github.dswepm.fluorite.rt.overlay.RtHandFeature;
 import io.github.dswepm.fluorite.rt.overlay.RtWorldOverlay;
 import net.minecraft.client.DeltaTracker;
+import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.ItemInHandRenderer;
+import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.SubmitNodeStorage;
 import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
@@ -44,6 +50,7 @@ public abstract class GameRendererMixin {
 	@Inject(method = "render(Lnet/minecraft/client/DeltaTracker;Z)V", at = @At("HEAD"))
 	private void fluorite$beginOverlayFrame(DeltaTracker deltaTracker, boolean advanceGameTime, CallbackInfo ci) {
 		RtUiOverlay.beginFrame();
+		RtHandCapture.INSTANCE().beginFrame();
 		// Clear the stale HDR-present flag every frame: composite() only runs while a level renders, so on
 		// menu frames it would otherwise stay true from the last world frame and present a black HDR image.
 		RtComposite.INSTANCE.beginFrame();
@@ -85,11 +92,54 @@ public abstract class GameRendererMixin {
 		}
 		try {
 			original.call(self, cameraState, deltaPartialTick, modelViewMatrix);
+			// M29: with the vanilla hand suppressed (its submit never reached vanilla's storage), the
+			// captured quads are lit and drawn into this same overlay here — after the world overlays,
+			// before screen effects and the GUI, which is the vanilla hand's exact layer position.
+			RtHandFeature.INSTANCE().draw();
 		} finally {
 			if (redirect) {
 				RtUiOverlay.endOutputRedirect();
 			}
 		}
+	}
+
+	// M29: capture the hand/3D-HUD projection (renderLevel's second setProjectionMatrix input) — the
+	// self-drawn hand projects with the very matrix vanilla rasterizes it with, so pose alignment is
+	// by construction.
+	@ModifyArg(method = "renderLevel(Lnet/minecraft/client/DeltaTracker;)V",
+			at = @At(value = "INVOKE",
+					target = "Lnet/minecraft/client/renderer/ProjectionMatrixBuffer;getBuffer(Lorg/joml/Matrix4f;)Lcom/mojang/blaze3d/buffers/GpuBufferSlice;",
+					ordinal = 1),
+			index = 0)
+	private Matrix4f fluorite$captureHandProjection(Matrix4f projection) {
+		if (RtHandFeature.enabled()) {
+			RtHandCapture.INSTANCE().captureProjection(projection);
+		}
+		return projection;
+	}
+
+	// M29: swap the submit collector when the hand pass is active. The arms/items/map stream routes into
+	// RtHandCapture's collector (material, texture and tint resolution are the entity path's), and
+	// vanilla's own storage stays empty — which is the whole vanilla-hand suppression: it is never
+	// submitted. With the feature off, the original storage flows and the vanilla hand renders unchanged.
+	@WrapOperation(method = "renderItemInHand",
+			at = @At(value = "INVOKE",
+					target = "Lnet/minecraft/client/renderer/ItemInHandRenderer;submitHandsWithItems(FLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/SubmitNodeCollector;Lnet/minecraft/client/player/LocalPlayer;I)V"))
+	private void fluorite$captureHandSubmit(ItemInHandRenderer renderer, float deltaPartialTick,
+			PoseStack poseStack, SubmitNodeCollector storage, LocalPlayer player, int lightCoords,
+			Operation<Void> original) {
+		if (RtHandFeature.enabled()) {
+			RtHandCapture.INSTANCE().beginSubmit();
+			try {
+				original.call(renderer, deltaPartialTick, poseStack,
+						RtHandCapture.INSTANCE().collector(), player, lightCoords);
+			} finally {
+				RtHandCapture.INSTANCE().endSubmit(new Matrix4f(
+						this.gameRenderState().levelRenderState.cameraRenderState.viewRotationMatrix));
+			}
+			return;
+		}
+		original.call(renderer, deltaPartialTick, poseStack, storage, player, lightCoords);
 	}
 
 	// Redirect the screen-effect flush (fire, underwater, view-blocking-block overlays submitted by

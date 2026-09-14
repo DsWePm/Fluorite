@@ -241,3 +241,62 @@ public float waterSurfaceSkyOpenness(float3 p, float skyDepth) {
     }
     return volumeSkyOpenness(gateP);
 }
+
+/**
+ * M29: the SURFACE consumer of the sky field -- the first reader that is not the marched fog.
+ *
+ * <p>Returns the outgoing-radiance-ready sky irradiance factor for a Lambertian surface at `p` facing
+ * `n`: multiply the surface albedo by this and the shared `1/π` has already been folded in, so the
+ * result is directly comparable with `mediumSkyRadiance`-era ambient terms (albedo · this).
+ *
+ * <p>Scalar mode (the flag clear): `mediumSkyRadiance · openness · (1+n_y)/2`. The grid's scalar
+ * channel IS the cosine-weighted open fraction for the up direction, and `(1+n_y)/2` is the same
+ * fraction for a dome the grid reports no azimuth about -- their product is the honest integral for an
+ * azimuth-uniform sky, and it is exactly what the directional mode below collapses to when the four
+ * sector radiances are equal.
+ *
+ * <p>Directional mode (M28 S1): `Σ_k bins_k · skySectorRadiance[k] · A_k(n)/π`, where `A_k(n)` is the
+ * cosine-weighted solid angle sector k subtends at this normal -- the same integral the scalar half
+ * computes, split by world azimuth so a cave mouth to the east lights the east-facing side of the
+ * surface. `A_k` comes from a fixed 32-tap cosine quadrature of the dome (8 azimuths x 4 elevation
+ * strata, equal-CDF), partitioned by sector: the partition makes `Σ_k A_k` reproduce the scalar
+ * anchor `π·(1+n_y)/2` by construction, so the two modes agree wherever the sky is azimuth-flat, and
+ * the fixed taps keep the term NOISE-FREE -- a 1 spp renderer must not buy directionality with new
+ * variance the fog consumer never had.
+ */
+public float3 volumeSkySurfaceIrradiance(float3 p, float3 n) {
+    if ((worldPush.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) == 0u) {
+        return worldPush.mediumSkyRadiance.xyz * volumeSkyOpenness(p) * (1.0 + n.y) * 0.5;
+    }
+    // The dome taps. Elevation strata are equal-CDF in cos(theta) over [0,1]; the azimuths quarter
+    // each sector so every sector holds exactly 8 taps and the sector partition is tap-exact.
+    float3 sum = float3(0.0, 0.0, 0.0);
+    float4 sectorA = float4(0.0, 0.0, 0.0, 0.0);
+    [unroll]
+    for (uint az = 0u; az < 8u; az++) {
+        float phi = (float(az) + 0.5) * (6.28318530718 / 8.0);
+        float3 horizontal = float3(cos(phi), 0.0, sin(phi));
+        [unroll]
+        for (uint q = 0u; q < 4u; q++) {
+            float cLo = float(q) / 4.0;
+            float cHi = float(q + 1u) / 4.0;
+            float c = 0.5 * (cLo + cHi);
+            float s = sqrt(max(1.0 - c * c, 0.0));
+            float3 dir = horizontal * s + float3(0.0, c, 0.0);
+            // Plain-dome measure weight: the cosine-weighted strata weight divided by the tap's own
+            // cosine, so the 32 taps integrate plain radiance over the dome (sum = 2 pi) and the
+            // cosine enters only through the max() below.
+            float plainWeight = (cHi * cHi - cLo * cLo) * (6.28318530718 / 8.0) / max(c, 1.0e-4);
+            float ndl = max(dot(n, dir), 0.0);
+            float contribution = plainWeight * ndl;
+            uint sector = az / 2u; // 8 azimuth taps over 4 sectors: taps 0-1 sector 0, and so on
+            sectorA[sector] += contribution;
+        }
+    }
+    float4 bins = volumeSkyBins(p);
+    sum += sectorA.x * worldPush.skySectorRadiance[0].xyz * bins.x;
+    sum += sectorA.y * worldPush.skySectorRadiance[1].xyz * bins.y;
+    sum += sectorA.z * worldPush.skySectorRadiance[2].xyz * bins.z;
+    sum += sectorA.w * worldPush.skySectorRadiance[3].xyz * bins.w;
+    return sum / 3.14159265359;
+}

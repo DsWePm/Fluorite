@@ -164,6 +164,8 @@ public final class RtFrameStats {
                     // switch on threw out of count() and reverted rendering to vanilla -- which is what
                     // the registry test now catches instead.
                     "pathReservoir",
+                    // M29: the hand pass's capture/draw attribution, same rule as every column above.
+                    "handQuads", "handDraws",
                     "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements"};
 
     public static final Profile FRAME = new Profile("frame", FRAME_STAGE_NAMES, FRAME_COUNTER_NAMES, true);

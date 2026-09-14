@@ -2019,6 +2019,70 @@ public final class RtComposite {
         return currentTlasHandle;
     }
 
+    // ---- M29 hand-pass accessors. The self-drawn hand composites after finishGraphicsUse, one
+    // submission later than the world overlay; that is the same PUSH_RING-slack argument the gpuTimers
+    // ring stands on (see the await comment at the push-slot selection), and the TLAS ring's await
+    // covers rebuild races. Additive reads only — nothing here mutates frame state.
+
+    /** This frame's WorldPush BDA (the hand fragment stage resolves worldPush from it). */
+    public long currentWorldPushAddress() {
+        return pushRing[pushSlot].buffer.deviceAddress;
+    }
+
+    /** The RIS light buffers for the hand's emitter term (0 when terrain is not live). */
+    public long lightBufferAddressForHand() {
+        RtTerrain terrain = RtTerrain.currentOrNull();
+        return terrain != null ? terrain.lightBufferAddress() : 0L;
+    }
+
+    public long lightAliasAddressForHand() {
+        RtTerrain terrain = RtTerrain.currentOrNull();
+        return terrain != null ? terrain.lightAliasBufferAddress() : 0L;
+    }
+
+    public long lightLocalAliasAddressForHand() {
+        RtTerrain terrain = RtTerrain.currentOrNull();
+        return terrain != null ? terrain.lightLocalAliasBufferAddress() : 0L;
+    }
+
+    public long lightGridCellAddressForHand() {
+        RtTerrain terrain = RtTerrain.currentOrNull();
+        return terrain != null ? terrain.lightGridCellBufferAddress() : 0L;
+    }
+
+    public long lightGridSpanAddressForHand() {
+        RtTerrain terrain = RtTerrain.currentOrNull();
+        return terrain != null ? terrain.lightGridSpanBufferAddress() : 0L;
+    }
+
+    /** Sky tables the hand lighting samples: transmittance (celestial E) and the visibility grid. */
+    public long skyTransmittanceViewForHand() {
+        return skyLuts != null ? skyLuts.transmittanceView() : 0L;
+    }
+
+    public long visibilityGridViewForHand() {
+        return skyLuts != null ? skyLuts.visibilityGridView() : 0L;
+    }
+
+    public long cloudShadowViewForHand() {
+        return skyLuts != null ? skyLuts.cloudShadowView() : 0L;
+    }
+
+    /** The canonical material-table address (the same table entity prims carry IDs into). */
+    public long materialTableAddressForHand() {
+        return RtMaterialRegistry.INSTANCE.tableAddress();
+    }
+
+    /** Samplers shared with the world pipeline's bindless and LUT bindings, so texel behaviour matches. */
+    public long atlasSamplerForHand() {
+        return atlasSampler;
+    }
+
+    public long lutSamplerForHand() {
+        RtContext handCtx = RtContext.currentOrNull();
+        return handCtx != null ? lutSampler(handCtx) : 0L;
+    }
+
     private static Identifier[] createMoonIds() {
         MoonPhase[] phases = MoonPhase.values();
         Identifier[] ids = new Identifier[phases.length];

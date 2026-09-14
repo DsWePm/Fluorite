@@ -68,6 +68,10 @@ public final class RtEntityTextures {
     // file). Seeded with the block atlas = slot 0 (also the fallback). Items use a separate item atlas.
     private final Map<Identifier, Integer> atlasSlotCache = new HashMap<>();
     private final List<Pending> pending = new ArrayList<>(); // albedo slots awaiting descriptor upload
+    // Slot -> view, append-only alongside nextSlot (index 0 = the block-atlas fallback). M29's hand pass
+    // maintains its own bindless set and cannot consume `pending` — that would steal from the world
+    // pipeline — so it mirrors by watermark over this list instead.
+    private final List<Long> slotViews = new ArrayList<>();
     // Descriptor array capacity of the currently alive world pipeline. A higher config value applies after
     // reset/recreate; a lower value stops allocating new slots immediately without invalidating old ones.
     private int capacity = maxTextures();
@@ -177,6 +181,7 @@ public final class RtEntityTextures {
         int slot = nextSlot++;
         viewSlotCache.put(view, slot);
         pending.add(new Pending(slot, view));
+        slotViews.add(view);
         return slot;
     }
 
@@ -189,6 +194,33 @@ public final class RtEntityTextures {
             pipeline.setEntityAlbedoTexture(p.slot(), p.view(), sampler);
         }
         pending.clear();
+    }
+
+    /** How many slots are allocated beyond the slot-0 block-atlas fallback (slots 1..allocatedSlots()). */
+    public int allocatedSlots() {
+        return slotViews.size();
+    }
+
+    /** The image view behind one allocated slot (1..allocatedSlots()), for a mirror bindless set.
+     *  Slot 0 (the block atlas) is resolved separately via {@link #blockAtlasView()}. */
+    public long slotView(int slot) {
+        if (slot < 1 || slot > slotViews.size()) {
+            return 0L;
+        }
+        return slotViews.get(slot - 1);
+    }
+
+    /** The block atlas view itself — slot 0's binding, the fallback every unresolved texture lands on. */
+    public long blockAtlasView() {
+        try {
+            var view = Minecraft.getInstance().getTextureManager()
+                    .getTexture(TextureAtlas.LOCATION_BLOCKS).getTextureView();
+            if (view instanceof com.mojang.blaze3d.vulkan.VulkanGpuTextureView v) {
+                return v.vkImageView();
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0L;
     }
 
     /** Drop the registry (call when the world pipeline / bindless set is recreated, or textures reload). */
@@ -205,6 +237,7 @@ public final class RtEntityTextures {
         atlasSlotCache.clear();
         atlasSlotCache.put(TextureAtlas.LOCATION_BLOCKS, 0); // block atlas = the slot-0 fallback
         pending.clear();
+        slotViews.clear();
         nextSlot = 1;
     }
 

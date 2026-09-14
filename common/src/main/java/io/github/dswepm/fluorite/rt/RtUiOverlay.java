@@ -106,6 +106,18 @@ public final class RtUiOverlay {
         return 0L;
     }
 
+    /** The overlay depth image view (0 if not available) — M29's hand pass depth-tests its own geometry
+     * against the cleared-to-0.0 (far) depth vanilla manages, exactly like the vanilla hand did. */
+    public static long overlayDepthView() {
+        if (overlay == null || overlay.getDepthTextureView() == null) {
+            return 0L;
+        }
+        if (overlay.getDepthTextureView() instanceof com.mojang.blaze3d.vulkan.VulkanGpuTextureView v) {
+            return v.vkImageView();
+        }
+        return 0L;
+    }
+
     /** The overlay color image (0 if not available) — pairs with {@link #overlayColorView()} for callers
      * (e.g. the DLSSG "ui" optional resource) that need both the view and the raw image. */
     public static long overlayColorImage() {
