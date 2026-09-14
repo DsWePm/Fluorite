@@ -268,6 +268,8 @@ commit 顺序固定，每项独立可回退：**A-②a（钉现状）→ A-①a�
 
 ## 5. 工作流 B：M29 第一人称手部 RT 光照（前端与光影同步）
 
+> **状态（2026-09-14，B 线实现完成待验收）**：B-0/B-1/B-2 已落地在 `feat/m29-first-person-hand-lighting`。实现期对任务书的两处修正记入 devlog D234：①动态光不在静态 grid（M18 独立 buffer、M24 S3 只进 DI 候选）——`handEmitterTerm` 之外的 `handDynamicTerm` 直读 `worldPush.dynamicLightAddr`（扫 32 条、top-3 阴影线）；②矩阵走 binding 63 的 SSBO（`HandFrameData`），frag 复用 RT 的 push 形状（`WorldPushConstants`）使世界模块原样 import、零二份拼写（页解码除外，已与 rchit 对钉）。深度用自绘图（D32+CLEAR），与 vanilla overlay 解耦。`gradlew build` 全绿（fabric+neoforge，238 tests）。**B-3 游戏内验收待用户**（清单见下）。
+
 **目标**：第一人称的手（手臂 + 手持物）不再吃 vanilla lightmap 的平光，而是接受 RT 场景的**正确光照**（太阳/天空/发光体，含阴影）与 **PBR 材质**（资源包 LabPBR 的法线/高光，手持方块与物品各自生效）。
 
 **现状事实链**（2026-09-14 核验，全部有代码锚点）：
