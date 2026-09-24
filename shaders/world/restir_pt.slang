@@ -46,9 +46,8 @@ public static const float PATH_RECONNECT_MIN_ALPHA = 0.04;
 // consequence of world-block bounds: spatial acceptance collapsed to 0.8-8% (a 0.05-block plane
 // tolerance is a fraction of a pixel's footprint past a few metres, and sub-pixel under DLSS-RR's
 // downscale), so the application gate crossed on ~nothing and the acceptance run saw no effect. A
-// footprint is the surface area one pixel covers at the vertex -- thresholds in footprints are
-// distance- and resolution-independent by construction, which is the whole of the Enhanced paper's
-// reconnection-criterion argument.
+// footprint is the surface area one pixel covers at the vertex. This is an experimental predicate,
+// not Enhanced Eq. 5's two ray-footprint tests.
 
 /** How far off this vertex's tangent plane a neighbour's reconnection vertex may sit, in footprints. */
 public static const float PATH_REUSE_MAX_PLANE_FOOTPRINTS = 2.0;
@@ -64,10 +63,8 @@ public static const float PATH_REUSE_MAX_DRIFT_FOOTPRINTS = 3.0;
  * replaces a binary kill for borderline candidates (compatibility-guided selection, Enhanced-era).
  * Position similarity folds in through the soft bounds themselves (a candidate this far away only
  * reaches the soft gate when its plane/lateral excess is marginal); the normal term is the survey's
- * max(cos,0)^8, which lets a 60-degree neighbour through occasionally while a 120-degree one never.
- * The caller accepts with this probability: thinning the candidate set is unbiased for the values --
- * every accepted candidate still carries its exact reconnection weight -- and it concentrates the
- * accepted set on the neighbours most likely to share the suffix radiance.
+ * max(cos,0)^8. The earlier hard normal gate still rejects angles above about 26 degrees, so this
+ * score cannot admit a 60-degree neighbour. This is post-sampling thinning, not Junkins K-to-M WRS.
  */
 public float pathCompatibilityScore(float3 storedNrm, float3 n, float3 drift, float lateralBound) {
     float normalAgreement = max(dot(storedNrm, n), 0.0);
@@ -114,7 +111,7 @@ public static const float PATH_RESERVOIR_APPLY_MIN_M = 2.0;
  * throughput that carried it is deliberately NOT folded in, because whoever merges this record
  * re-weights it with their own prefix. `targetSum` is this record's home-vertex contribution
  * luminance. `w` is the merge weight, W = targetSum / (m * t_chosen) in the general form -- the
- * identity that keeps W * target(y) an unbiased estimate wherever the record is re-evaluated. Since
+ * RIS normalization identity; it alone does not establish unbiased cross-pixel path reuse. Since
  * D219 the temporal write is always a FRESH single-sample record (m = 1, W = 1: one unbiased draw,
  * kept at most two frames so no static sample outlives the denoiser's accumulation window); the
  * general form returns with S3.
@@ -137,10 +134,8 @@ public PackedPathReservoir packPathReservoir(uint pathSeed, float3 reconPos, flo
 
 /**
  * The continuation weight THIS vertex would give direction `wi`, with the mixture density that
- * weights it: f(wi)*cos/pdf, spelled exactly as the lobe mixture samples. ONE spelling for both
- * shift evaluation paths -- in-place and reconnected (A-01b); two spellings of a density that must
- * agree is how a reuse rate quietly stops meaning anything, which is the file banner's warning
- * made flesh. Returns false when the density is zero (direction outside the mixture's support).
+ * weights it: f(wi)*cos/pdf, spelled exactly as the lobe mixture samples. Returns false when the
+ * density is zero (direction outside the mixture's support).
  */
 public bool continuationReconnectWeight(BsdfContext bc, float3 diffAlb, float3 F0,
                                         float pf, float ps, float walkSssShare,
@@ -162,80 +157,6 @@ public bool continuationReconnectWeight(BsdfContext bc, float3 diffAlb, float3 F
         return false;
     }
     weight = brdf * ndl;
-    return true;
-}
-
-// ---- The reconnected evaluation path (A-01b). SCOPE, and the evidence for it: the assignment's
-// sketch had replayPrefixToReconnect re-driving the stored seed through a sub-tracer to depth
-// reconIndex - 1. That is only stream-faithful when the prefix consumes a deterministic number of
-// draws, and the tracePath stream does not: M24's reuse consumes an acceptance-dependent count at
-// every opaque shading vertex (Enhanced sidesteps this by REMOVING reuse and NEE draws from its
-// replay tracer, section 6.2.3/6.2.4 -- a tracer-level restructure our recorded streams cannot
-// apply retroactively). What survives the evidence: reconIndex == 1, whose prefix anchor y_{k-1}
-// IS the caller's own primary hit -- zero seed draws, nothing to replay, and the shift reduces to
-// the connection from that anchor to the stored reconnection vertex with y_{k-1}'s REAL material
-// (replay-decoded, never retargeted) plus the connection's geometry term. reconIndex >= 2 is
-// rejected outright until a tracer restructure makes intermediate-vertex streams reproducible;
-// the deep-recon stats lane exists precisely to measure whether that regime matters.
-
-/**
- * The reconnection anchor state: who connects, to where, with what material. Built by the caller
- * (the anchor is its own primary hit, whose decoded material is already in scope) and consumed by
- * evalReconnectedSuffixCandidate.
- */
-public struct ReplayedPrefix {
-    public bool   valid;        // false = shift failed, the candidate is dead (callers continue; no silent zero)
-    public float3 throughput;   // the prefix throughput at the anchor y_{k-1}
-    public float3 origin;       // y_{k-1} position
-    public float3 normal;       // y_{k-1} shading normal
-    public float3 wi;           // unit vector y_{k-1} -> stored.reconPos (the connection direction)
-    public float  dist;         // ||stored.reconPos - y_{k-1}||, the visibility ray's tmax
-    public BsdfContext bc;      // y_{k-1}'s real material context (replay-decoded, not retarget)
-    public float3 diffAlb;
-    public float3 F0;
-    public float  pf;
-    public float  ps;
-    public float  walkSssShare;
-};
-
-/**
- * The reconnected-shift candidate: the stored suffix at x_k, reached from y_{k-1} through the
- * connection y_{k-1} -> x_k. The value carries the CONNECTION GEOMETRY TERM cos_y * cos_x / dist^2
- * -- the two anchors are different world points for a spatial shift, and a candidate from a distant
- * pixel correctly contributes less (the in-place path has no such term only because its anchors
- * coincide, which is why the two paths are separate functions over one shared weight spelling).
- */
-public bool evalReconnectedSuffixCandidate(ReplayedPrefix p, float3 storedNrm,
-                                           PackedPathReservoir stored,
-                                           out float3 value, out float count, out float target) {
-    value = float3(0.0, 0.0, 0.0);
-    count = 0.0;
-    target = 0.0;
-    if (!p.valid) {
-        return false;
-    }
-    float storedW = asfloat(stored.W);
-    float meanTarget = stored.m > 0.0 ? stored.targetSum / stored.m : 0.0;
-    if (!(!pathReservoirEmpty(stored) && storedW > 0.0 && meanTarget > 0.0)) {
-        return false;
-    }
-    float cosStored = max(dot(p.wi, storedNrm), 0.0);
-    float cosHere = max(dot(p.wi, p.normal), 0.0);
-    if (cosStored <= PATH_REUSE_MIN_SURFACE_COS || cosHere <= PATH_REUSE_MIN_SURFACE_COS) {
-        return false; // the connection runs tangent to an anchor: no honest density to weigh
-    }
-    float3 reconnectWeight;
-    float pdf;
-    if (!continuationReconnectWeight(p.bc, p.diffAlb, p.F0, p.pf, p.ps, p.walkSssShare,
-                                     p.normal, p.bc.v, p.wi, reconnectWeight, pdf)) {
-        return false;
-    }
-    float geometry = cosStored * cosHere / max(p.dist * p.dist, 1.0e-8);
-    value = max(storedW * p.throughput * (reconnectWeight / pdf) * geometry
-                        * unpackRgb9e5(stored.li),
-                float3(0.0, 0.0, 0.0));
-    count = min(stored.m, PATH_RESERVOIR_M_CAP);
-    target = meanTarget;
     return true;
 }
 
@@ -313,7 +234,7 @@ public bool evalPathSuffixCandidate(BsdfContext bc, float3 diffAlb, float3 F0,
         return false;
     }
 
-    // The continuation weight and its density: one spelling with the reconnected path (A-01b).
+    // The continuation weight and its density for the experimental in-place reuse path.
     // Deliberately NOT evalSampleContrib -- that helper is an AREA-light target (emitter tint
     // inside, SSS back-lobe branch, film floor tied to emitter MIS), none of which describes a
     // suffix sample.

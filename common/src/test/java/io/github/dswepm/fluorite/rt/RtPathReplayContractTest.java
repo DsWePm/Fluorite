@@ -4,14 +4,14 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Random replay (M28 S2) works ONLY while the path tracer's random stream is deterministic from the
- * path seed: the reservoir stores the seed a path was traced with, and a neighbour pixel re-drives the
- * same decision stream on shifted geometry. Nothing at runtime checks that -- a replay that produces
- * different decisions produces wrong reuse WEIGHTS, which look like ordinary noise or a slight brightness
- * shift, never like an error.
+ * M28 path reservoir layout and the seed contract for future random replay. The current tracer does
+ * not replay the seed; D229 suspends the invalid reconnected shift until the full path density can be
+ * evaluated. A future replay implementation must preserve this stream contract.
  *
  * <p>So the contract is pinned at the source level, in three parts: the seed travels with the record
  * (segment.slang), the stream is derived deterministically from it (world.rgen's loop idiom), and the
@@ -33,8 +33,8 @@ final class RtPathReplayContractTest {
     @Test
     void theBounceLoopStreamIsDerivedDeterministicallyFromTheSeed() throws IOException {
         String world = source("shaders/world/world.rgen.slang");
-        // The loop's first draw derives from the segment seed XOR the sample index. Replay re-derives the
-        // same stream from the stored seed, so this exact derivation idiom is load-bearing: changing the
+        // The loop's first draw derives from the segment seed XOR the sample index. A future replay
+        // must re-derive the same stream from the stored seed: changing the
         // constant, the xor, or the pcg placement changes every stored seed's meaning.
         assertTrue(world.contains("uint seed = seg.seed ^ sampleIndex * 2246822519u;"));
         assertTrue(world.contains("seed = pcg(seed);"));
@@ -88,8 +88,8 @@ final class RtPathReplayContractTest {
         assertTrue(world.contains("spatialWins"));
         assertTrue(world.contains("evalPathSuffixCandidate("));
         String restirPt = source("shaders/world/restir_pt.slang");
-        // W * target(y) is the unbiased-estimate invariant; the m cap bounds how long the past
-        // outvotes the present.
+        // The RIS W normalization alone does not prove the cross-pixel estimator unbiased; the m cap
+        // bounds how long the past outvotes the present.
         assertTrue(restirPt.contains("PATH_RESERVOIR_M_CAP"));
         // W is a lane of the record, which lives in world_common beside PackedPathSegment (D220).
         String worldCommon = source("shaders/world/world_common.slang");
@@ -112,20 +112,48 @@ final class RtPathReplayContractTest {
     }
 
     @Test
-    void theReconnectedShiftIsScopedAndShared() throws IOException {
+    void theInvalidReconnectedShiftIsSuspended() throws IOException {
         String world = source("shaders/world/world.rgen.slang");
-        // A-01b scope: the reconnected shift's anchor is the caller's own primary hit, so it
-        // requires reconDepth == 0 and supports reconIndex == 1 only -- deeper chains cross opaque
-        // shading vertices whose recorded draw counts are not reproducible post-hoc (M24 reuse
-        // acceptance); the deep-recon lane is what says whether that regime matters.
-        assertTrue(world.contains("reconDepth == 0u && candidate.reconIndex == 1u"));
-        // Connectivity (the shift's invertibility check) and the shared evaluation entry point.
-        assertTrue(world.contains("visibilityMasked(CULL_SHADOW_NO_SELF"));
-        assertTrue(world.contains("evalReconnectedSuffixCandidate("));
+        // The 48-byte record cannot supply the old connection density required by Enhanced Eq. 2.
+        // A nonzero legacy switch must reject those candidates until a derived estimator exists.
+        String guard = "if (candidate.reconIndex > 0u && worldPush.pathReplayEnabled != 0u) {";
+        int guardedBranch = world.indexOf(guard);
+        int fallback = world.indexOf("} else {\n                    accepted = evalPathSuffixCandidate(", guardedBranch);
+        assertTrue(guardedBranch >= 0 && fallback > guardedBranch);
+        assertTrue(world.substring(guardedBranch, fallback).contains("accepted = false;"));
+        assertFalse(world.contains("evalReconnectedSuffixCandidate("));
         String restirPt = source("shaders/world/restir_pt.slang");
-        // ONE weight spelling across both evaluation paths -- the file banner's warning, enforced.
-        assertTrue(restirPt.contains("continuationReconnectWeight"));
-        assertTrue(restirPt.contains("reconIndex >= 2"));
+        assertFalse(restirPt.contains("public struct ReplayedPrefix"));
+        assertFalse(restirPt.contains("float geometry = cosStored * cosHere"));
+    }
+
+    @Test
+    void spatialPixelCoordinatesRoundTripAtNonSquareResolution() throws IOException {
+        String world = source("shaders/world/world.rgen.slang");
+        assertTrue(world.contains("int(readPixel / renderSize.x)"));
+        assertFalse(world.contains("int(readPixel / renderSize.y)"));
+        int width = 1920;
+        int height = 1080;
+        for (int y : new int[] {0, 500, 800, height - 1}) {
+            for (int x : new int[] {0, 100, width - 1}) {
+                int readPixel = y * width + x;
+                assertEquals(x, readPixel % width);
+                assertEquals(y, readPixel / width);
+            }
+        }
+    }
+
+    @Test
+    void historyIsEvaluatedOnlyAtTheFirstReconnectionBounce() throws IOException {
+        String world = source("shaders/world/world.rgen.slang");
+        int snapshot = world.indexOf("bool firstReconThisBounce = reconQualifies;");
+        int reset = world.indexOf("reconQualifies = false;", snapshot);
+        int history = world.indexOf("if (recordPath && firstReconThisBounce) {", reset);
+        int temporal = world.indexOf("evalPathSuffixCandidate(", history);
+        int roulette = world.indexOf("// Russian roulette on deeper bounces", temporal);
+        assertTrue(snapshot >= 0 && snapshot < reset && reset < history
+                && history < temporal && temporal < roulette);
+        assertFalse(world.substring(history, roulette).contains("if (recordPath && reconFound)"));
     }
 
     @Test
@@ -154,9 +182,10 @@ final class RtPathReplayContractTest {
         // A-01a: Enhanced §4.2's single-vertex roughness gate. The qualification reads the PREVIOUS
         // opaque vertex's alpha (a mirror behind the reconnection kills the suffix transfer; this
         // vertex's own rough continuation is what makes it reconnectable), and the state rides the
-        // tracePath locals so dielectric-only chains keep their camera-prefix default of 1.0.
+        // tracePath locals. Dielectric interfaces must clear this eligibility before continuing.
         assertTrue(world.contains("float prevVertexRough = 1.0;"));
         assertTrue(world.contains("prevVertexRough >= PATH_RECONNECT_MIN_ALPHA"));
+        assertTrue(world.contains("prevVertexRough = 0.0;"));
         String restirPt = source("shaders/world/restir_pt.slang");
         // 0.04 is the paper's rho_min = 0.2 converted from Falcor perceptual roughness to this
         // repository's GGX-alpha storage (iron law 2): a one-time unit conversion, not a square.

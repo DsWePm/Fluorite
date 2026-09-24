@@ -914,16 +914,15 @@ public final class FluoriteConfig {
              * <p>Off (default) allocates nothing and leaves every code path untouched: the reservoir
              * buffer is created under this switch, so the off state costs neither VRAM nor a branch in
              * the hot loop. On allocates about 200 MB at 1080p (48 B x pixels x 2 parities) and turns
-             * on the hybrid shift with random replay at the primary hit.
+             * on the experimental suffix reservoir reuse at the primary hit.
              */
             public static final BooleanSetting PATH_RESERVOIR =
                     bool("fluorite.rt.composite.pathReservoir", "composite.path-reservoir", false);
             /**
-             * M28 A-01b: the reconnected shift for path-reservoir candidates whose reconnection sits
-             * behind a specular chain (reconIndex > 0). Off (default) keeps those candidates on the
-             * in-place retarget evaluation -- the measurement A/B arm, and the fallback if replay's
-             * cost blows the budget. ReconIndex == 0 candidates never engage this; the mainstream
-             * diffuse pixel is an exact shift with or without it.
+             * Legacy M28 A-01b switch. The reconnected estimator is suspended after the Eq. 2 audit:
+             * its 48-byte record lacks the old-path density needed for a Jacobian ratio. On rejects
+             * spatial candidates with reconIndex > 0; off (default) preserves the pre-D227 in-place
+             * retarget baseline. This switch does not currently perform random replay.
              */
             public static final BooleanSetting PATH_REPLAY =
                     bool("fluorite.rt.composite.pathReplay", "composite.path-replay", false);

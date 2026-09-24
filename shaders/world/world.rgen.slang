@@ -159,10 +159,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     // remains active with its full configured candidate count at every hit. Pass A's primary/interface
     // prefix is outside this SSS quality budget.
     int indirectDepth = 0;
-    // M28 S2 initial candidate: this pixel's own path, recorded so next frame's temporal shift can
-    // replay it at a shifted primary hit. The reconnection vertex is the FIRST opaque vertex whose
-    // continuation has a finite density -- dielectric chains and exact mirrors stay prefix, because a
-    // replayed decision has no density to reconnect on there. The suffix beyond it is recovered after
+    // M28 S2 initial candidate: this pixel's own path, recorded for next frame's experimental
+    // suffix reuse. The reconnection vertex is the FIRST opaque vertex whose continuation has a
+    // finite density -- dielectric chains and exact mirrors stay prefix. The suffix is recovered after
     // the loop by snapshot subtraction, so the radiance accumulation sites stay untouched and the
     // switch-off state (no buffer published) dead-codes every line this block adds.
     bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;
@@ -183,10 +182,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     float temporalSum = 0.0;
     float temporalCount = 0.0;
     uint temporalReadPixel = 0u;
-    // A-01a: the roughness of the previous opaque shading vertex, for the reconnection gate.
+    // A-01a: the roughness of the previous shading vertex, for the reconnection gate.
     // 1.0 means the camera prefix is treated as unconditionally rough -- reconIndex == 0 has no
     // x_{k-1} surface (the paper's diffuse-case footnote), so the gate only ever bites a specular
-    // chain.
+    // chain. Dielectric interfaces set this to zero because their density is not represented.
     float prevVertexRough = 1.0;
     // The spatial candidates (S3a): accumulated values/counts/targets across accepted neighbours,
     // plus the streaming survivor's slot and home target for the post-loop write.
@@ -339,6 +338,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // (payloadDielectricEntering), so a stray or missing face cannot desync the medium for the rest
         // of the path.
         if (material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC) {
+            // A dielectric predecessor is outside the opaque reconnection density model.
+            // Keep the next opaque hit from treating this edge as the camera prefix.
+            prevVertexRough = 0.0;
             // A dielectric has no local shading term. At the path cap its continuation cannot be traced,
             // so avoid computing an unused Fresnel choice, medium update, and roulette step.
             if (bounce >= maxBounces) {
@@ -922,7 +924,8 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // The continuation committed: this is the reconnection vertex. Snapshot what the suffix needs
         // -- everything L holds NOW is prefix, everything added AFTER this point is the suffix; the
         // post-selection throughput is what divides that tail into an incident-radiance estimate.
-        if (reconQualifies) {
+        bool firstReconThisBounce = reconQualifies;
+        if (firstReconThisBounce) {
             reconFound = true;
             reconQualifies = false;
             reconPos = hitPos;
@@ -948,11 +951,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // for the reason restir.slang's spatial loop gives: there is no seam in this dispatch where
         // every record is written and nothing is shaded yet.
         //
-        // VALIDATION IS THE v1 SHIFT. The pinned design's random-replay sub-loop has no estimator
-        // role in a suffix-level merge -- stored suffixes are re-used in place, never re-traced. The
-        // reconnection shift is exact for the dominant reconIndex == 0 (diffuse-primary) pixels,
-        // whose prefix is empty; prefix replay for specular chains remains S3 work.
-        if (recordPath && reconFound) {
+        // Evaluate history only at the vertex whose prefix/suffix state was snapshotted above.
+        // Later bounces belong to the same suffix and must not merge that history a second time.
+        if (recordPath && firstReconThisBounce) {
             uint pixelIndex = pix.y * renderSize.x + pix.x;
             uint readPixel = pixelIndex;
             bool haveHistory = true;
@@ -1007,7 +1008,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // among the accepted neighbours (target-proportional) for the post-loop write.
             for (uint i = 0u; i < worldPush.restirSpatialNeighbours
                               && temporalCount + spatialCount < PATH_RESERVOIR_M_CAP; i++) {
-                int2 centre = int2(int(readPixel % renderSize.x), int(readPixel / renderSize.y));
+                int2 centre = int2(int(readPixel % renderSize.x), int(readPixel / renderSize.x));
                 int2 q = centre + spatialNeighbourOffset(seed);
                 if (any(q < int2(0, 0)) || any(q >= int2(renderSize))) {
                     continue;
@@ -1027,54 +1028,14 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 float candMeanTarget;
                 bool accepted;
                 if (candidate.reconIndex > 0u && worldPush.pathReplayEnabled != 0u) {
-                    // ---- A-01b reconnected shift. Scope (restir_pt's note carries the evidence):
-                    // the anchor is THIS pixel's own primary hit, whose decoded state is in scope
-                    // only when reconDepth == 0, and only reconIndex == 1 prefixes are supported --
-                    // deeper chains cross opaque shading vertices whose recorded draw counts are not
-                    // reproducible post-hoc (M24's reuse consumes an acceptance-dependent number of
-                    // draws; Enhanced removes those from its replay tracer at the tracer level).
+                    // D227's reconnected estimator used an absolute connection geometry term where
+                    // Enhanced Eq. 2 requires a ratio of both path densities. The 48-byte record does
+                    // not carry the old anchor/densities needed to form it. While replay is requested,
+                    // reject these candidates rather than apply a known-invalid estimate. Off retains
+                    // the pre-D227 in-place retarget path for the existing A/B baseline.
                     accepted = false;
                     if (sampled) {
                         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[6], 1u);
-                    }
-                    if (reconDepth == 0u && candidate.reconIndex == 1u) {
-                        float3 toRecon = candidate.reconPos - hitPos;
-                        float dist = max(sqrt(dot(toRecon, toRecon)), 1.0e-6);
-                        ReplayedPrefix rp;
-                        rp.valid = true;
-                        rp.throughput = reconTpre;
-                        rp.origin = hitPos;
-                        rp.normal = n;
-                        rp.wi = toRecon / dist;
-                        rp.dist = dist;
-                        rp.bc = bc;
-                        rp.diffAlb = diffAlb;
-                        rp.F0 = F0;
-                        rp.pf = pf;
-                        rp.ps = ps;
-                        rp.walkSssShare = walkSssShare;
-                        // Connectivity: the connection ray must actually reach the stored anchor --
-                        // the shift's invertibility check in its cheapest form.
-                        float3 vis = visibilityMasked(CULL_SHADOW_NO_SELF,
-                                offsetSurfaceOrigin(rp.origin, rp.normal, rp.wi, SURF_BIAS),
-                                rp.wi, rp.dist).transmittance;
-                        if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
-                            float3 rpValue;
-                            float rpCount;
-                            float rpTarget;
-                            if (evalReconnectedSuffixCandidate(rp,
-                                    octDecode(unpackUnorm16x2(candidate.reconNrm)),
-                                    candidate, rpValue, rpCount, rpTarget)) {
-                                candValue = rpValue;
-                                candCount = rpCount;
-                                candMeanTarget = rpTarget;
-                                accepted = true;
-                                if (sampled) {
-                                    InterlockedAdd(
-                                            DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[7], 1u);
-                                }
-                            }
-                        }
                     }
                 } else {
                     accepted = evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,

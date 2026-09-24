@@ -488,9 +488,9 @@ public struct WorldPush {
      */
     public uint64_t pathReservoirStatsAddr;
     /**
-     * A-01b: composite.path-replay as a 0/1 word. The reconnected shift only engages for records
-     * whose reconIndex > 0, and off means those candidates keep the in-place retarget evaluation --
-     * the measurement A/B arm and the fallback if replay's cost blows the budget on the 2080 Mobile.
+     * Legacy composite.path-replay switch. The D227 reconnected estimator is suspended because its
+     * connection weight lacks the old-path density in Enhanced Eq. 2. On rejects reconIndex > 0
+     * spatial candidates; off preserves the pre-D227 in-place retarget baseline.
      * Tail-appended under the parallel freeze order's sole exemption; offsets above are untouched.
      */
     public uint pathReplayEnabled;
@@ -1054,7 +1054,7 @@ public static const uint PATH_RESERVOIR_BYTES = 48u;
 //   m          -- effective sample count for GRIS weights (1 in every record written today; D219
 //                 keeps histories single-sample so nothing static outlives the denoiser's window).
 //   targetSum  -- this record's home-vertex contribution luminance (the target a merge weighs).
-//   reconIndex -- which path vertex x_s was (replay depth; the temporal shift requires a match).
+//   reconIndex -- which path vertex x_s was (the in-place temporal shift requires a match).
 //   W          -- bitcast float merge weight; 1.0 in every record written today. Zero reads as
 //                 "no usable history" alongside m == 0.
 public struct PackedPathReservoir {
