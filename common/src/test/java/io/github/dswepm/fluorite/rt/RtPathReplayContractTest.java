@@ -156,6 +156,41 @@ final class RtPathReplayContractTest {
     }
 
     @Test
+    void theShippedPassBCompilesThePathReuseOut() throws IOException {
+        // D231 (G15): the path reuse runs in its own pass B pipeline so a switch-off frame binds exactly
+        // what shipped. Four spellings have to agree, and none of them fails loudly on its own.
+        String gradle = source("build.gradle");
+        assertTrue(gradle.contains("def reuse = [\"-DFLUORITE_PATH_REUSE\"]"));
+        assertTrue(gradle.contains("new File(scratchDir, \"world_reuse.rgen.spv\"), reuse)"));
+        assertTrue(gradle.contains("new File(scratchDir, \"world_ser_reuse.rgen.spv\"), ser + reuse)"),
+                "the SER device gets a reuse variant too, or it silently falls back to the plain tracer");
+
+        String bringup = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtDeviceBringup.java");
+        assertTrue(bringup.contains("\"world.rgen.spv\", \"world_reuse.rgen.spv\")"));
+        assertTrue(bringup.contains("\"world_ser.rgen.spv\", \"world_ser_reuse.rgen.spv\")"));
+
+        String world = source("shaders/world/world.rgen.slang");
+        int define = world.indexOf("#ifdef FLUORITE_PATH_REUSE");
+        int live = world.indexOf("bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;", define);
+        int dead = world.indexOf("const bool recordPath = false;", live);
+        int end = world.indexOf("#endif", dead);
+        assertTrue(define >= 0 && live > define && dead > live && end > dead,
+                "without the define recordPath must be a compile-time false, so the reuse compiles out");
+
+        String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
+        assertTrue(composite.contains("active.trace(cmd, renderW, renderH, pushConstants, 0, passB);"));
+        assertTrue(composite.contains("active.trace(cmd, renderW, renderH, pushConstants, 1);"),
+                "the switch-off frame keeps launching the shipped raygen record");
+        String variant = composite.substring(composite.indexOf("private RtPipeline.Variant pathReuseVariant(RtPipeline active) {"));
+        assertTrue(variant.indexOf("if (pathReservoirStore == null) {") < variant.indexOf("createVariant("),
+                "the variant is bound only while the path reservoir's store exists");
+
+        String pipeline = source("common/src/main/java/io/github/dswepm/fluorite/rt/pipeline/RtPipeline.java");
+        assertTrue(pipeline.contains("buildPipeline(ctx, stack, pipelineLayout, rgen, missShaders, closestHitShader,"),
+                "a variant is built over the SAME layout, so the base pipeline's descriptor sets bind to it");
+    }
+
+    @Test
     void thePathReuseCarriesItsOwnNeighbourCountInItsSwitchWord() throws IOException {
         // D231 (G14): composite.path-replay is retired and its WorldPush lane is the path reuse's
         // switch word. Its first field is the path reuse's own spatial neighbour count, split from

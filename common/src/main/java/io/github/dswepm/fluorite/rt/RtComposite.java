@@ -1497,6 +1497,27 @@ public final class RtComposite {
         return pathStats.address();
     }
 
+    /**
+     * The pipeline variant pass B launches this frame: the path reuse's while its store exists, null
+     * (the shipped raygen record of the world pipeline) otherwise (D231, G15).
+     *
+     * <p>Built on first use and then kept: a ray tracing pipeline takes the driver a noticeable moment
+     * to compile, so the first switch-on frame pays it once rather than every toggle paying it again.
+     * It is destroyed only with the world pipeline it is a variant of.
+     */
+    private RtPipeline.Variant pathReuseVariant(RtPipeline active) {
+        if (pathReservoirStore == null) {
+            return null;
+        }
+        if (pathReuseVariant == null) {
+            pathReuseVariant = active.createVariant(
+                    new String[]{RtDeviceBringup.worldReuseRaygenShader()}, "path reuse pass B");
+            FluoriteMod.LOGGER.info("RT path reuse pass B pipeline built ({})",
+                    RtDeviceBringup.worldReuseRaygenShader());
+        }
+        return pathReuseVariant;
+    }
+
     /** Bit position and width of the path reuse's spatial neighbour count in its switch word. */
     static final int PATH_REUSE_NEIGHBOURS_SHIFT = 8;
     static final int PATH_REUSE_NEIGHBOURS_MASK = 0xF;
@@ -1591,6 +1612,10 @@ public final class RtComposite {
     }
 
     private RtPipeline worldPipeline;
+    // M28 D231 (G15): pass B with the path reuse compiled in -- a variant of worldPipeline built the
+    // first time the path reservoir switch is on, destroyed with it. Every site that drops
+    // worldPipeline drops this too.
+    private RtPipeline.Variant pathReuseVariant;
     // Set at the HEAD of Minecraft.reloadResourcePacks() (mixin): a resource reload recreates the block
     // atlas + entity textures. We tear down the world pipeline there (drops all descriptor references) and
     // rebuild it once the NEW atlas is in place — detected by the atlas view handle changing away from
@@ -2296,6 +2321,7 @@ public final class RtComposite {
         ctx.waitIdle();
         worldPipeline.destroy();
         worldPipeline = null;
+        pathReuseVariant = null; // destroyed with its pipeline
         bindlessTextureCapacity = 0;
         materialBindingsReady = false;
     }
@@ -2439,6 +2465,7 @@ public final class RtComposite {
             if (worldPipeline != null) {
                 worldPipeline.destroy();
                 worldPipeline = null;
+                pathReuseVariant = null; // destroyed with its pipeline
                 bindlessTextureCapacity = 0;
             }
             if (environmentTextures != null) {
@@ -3786,7 +3813,14 @@ public final class RtComposite {
                 if (gpuTimers != null) {
                     gpuTimers.begin(cmd, pushSlot, GPU_ZONE_TRACE_INDIRECT);
                 }
-                active.trace(cmd, renderW, renderH, pushConstants, 1);
+                // D231 (G15): the path reuse's pass B is its own pipeline, bound only while its store
+                // exists; a switch-off frame launches the shipped raygen record exactly as before.
+                RtPipeline.Variant passB = pathReuseVariant(active);
+                if (passB != null) {
+                    active.trace(cmd, renderW, renderH, pushConstants, 0, passB);
+                } else {
+                    active.trace(cmd, renderW, renderH, pushConstants, 1);
+                }
                 if (gpuTimers != null) {
                     gpuTimers.end(cmd, pushSlot, GPU_ZONE_TRACE_INDIRECT);
                 }
@@ -4299,6 +4333,7 @@ public final class RtComposite {
         if (worldPipeline != null) {
             worldPipeline.destroy();
             worldPipeline = null;
+            pathReuseVariant = null; // destroyed with its pipeline
         }
         if (environmentTextures != null) {
             environmentTextures.destroy();

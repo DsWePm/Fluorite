@@ -143,9 +143,17 @@ abstract class CompileShaders extends DefaultTask {
 				if (worldIndirectRaygen) {
 					// Keep a capability-free TraceRay fallback for devices without EXT SER, and
 					// publish the reordered variant separately when the extension is available.
+					def ser = ["-DFLUORITE_ENABLE_EXT_SER", "-capability", "spvShaderInvocationReorderEXT"]
 					compileOneSlang(src, spv, [])
-					compileOneSlang(src, new File(scratchDir, "world_ser.rgen.spv"),
-							["-DFLUORITE_ENABLE_EXT_SER", "-capability", "spvShaderInvocationReorderEXT"])
+					compileOneSlang(src, new File(scratchDir, "world_ser.rgen.spv"), ser)
+					// M28 D231 (G15): the path reuse's pass B, a separate pipeline the path reservoir
+					// switch binds. Without the define every path-reservoir line is statically dead,
+					// so the pipeline a switch-off frame binds carries none of it -- ray tracing
+					// pipelines allocate registers pipeline-wide, and a runtime branch would make the
+					// shipped picture pay the reuse's occupancy.
+					def reuse = ["-DFLUORITE_PATH_REUSE"]
+					compileOneSlang(src, new File(scratchDir, "world_reuse.rgen.spv"), reuse)
+					compileOneSlang(src, new File(scratchDir, "world_ser_reuse.rgen.spv"), ser + reuse)
 				} else {
 					// Pass A intentionally uses ordinary TraceRay.
 					compileOneSlang(src, spv, [])

@@ -164,7 +164,15 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     // finite density -- dielectric chains and exact mirrors stay prefix. The suffix is recovered after
     // the loop by snapshot subtraction, so the radiance accumulation sites stay untouched and the
     // switch-off state (no buffer published) dead-codes every line this block adds.
+#ifdef FLUORITE_PATH_REUSE
     bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;
+#else
+    // The shipped pass B (D231, G15): without the define every path-reservoir line in this function is
+    // statically dead and compiles out, so the pipeline a switch-off frame binds carries none of it --
+    // ray tracing pipelines allocate registers pipeline-wide, and the reuse's state would otherwise
+    // cost the shipped picture occupancy. The path reservoir switch binds world_reuse.rgen instead.
+    const bool recordPath = false;
+#endif
     bool reconFound = false;
     bool reconQualifies = false;
     float3 reconPos = float3(0.0, 0.0, 0.0);

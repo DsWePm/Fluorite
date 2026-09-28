@@ -211,21 +211,24 @@ public final class RtDeviceBringup {
             RAY_QUERY_FEATURE);
 
     private enum SerBackend {
-        NONE("none", null, "world_primary.rgen.spv", "world.rgen.spv"),
+        NONE("none", null, "world_primary.rgen.spv", "world.rgen.spv", "world_reuse.rgen.spv"),
         EXT("EXT", VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME,
-                "world_primary.rgen.spv", "world_ser.rgen.spv");
+                "world_primary.rgen.spv", "world_ser.rgen.spv", "world_ser_reuse.rgen.spv");
 
         final String label;
         final String extensionName;
         final String worldPrimaryRaygenShader;
         final String worldRaygenShader;
+        /** Pass B compiled with FLUORITE_PATH_REUSE: the variant pipeline the path reservoir binds (D231). */
+        final String worldReuseRaygenShader;
 
         SerBackend(String label, String extensionName, String worldPrimaryRaygenShader,
-                   String worldRaygenShader) {
+                   String worldRaygenShader, String worldReuseRaygenShader) {
             this.label = label;
             this.extensionName = extensionName;
             this.worldPrimaryRaygenShader = worldPrimaryRaygenShader;
             this.worldRaygenShader = worldRaygenShader;
+            this.worldReuseRaygenShader = worldReuseRaygenShader;
         }
     }
 
@@ -250,6 +253,11 @@ public final class RtDeviceBringup {
 
     public static String worldPrimaryRaygenShader() {
         return serBackend.worldPrimaryRaygenShader;
+    }
+
+    /** Pass B with the path reuse compiled in, matching the device's SER backend (D231, G15). */
+    public static String worldReuseRaygenShader() {
+        return serBackend.worldReuseRaygenShader;
     }
 
     public static boolean serExtEnabled() {
