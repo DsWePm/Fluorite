@@ -37,8 +37,12 @@ public final class RtFrameStats {
     // — but only when stats are switched on, which is never during ordinary play. That is exactly how
     // frame.tracePrimary/frame.traceIndirect (the two-pass split of the old frame.trace) and
     // terrain.lightGridPublish came to be missing. Adding a stage() call means adding the name here.
-    public static final Profile FRAME = new Profile("frame",
-            new String[] {
+    //
+    // BOTH arrays are public constants because the registry and its call sites live in different files
+    // and the throw lands at runtime, mid-frame, on the frame a switch first flips — D217's pathReservoir
+    // crash was exactly this trap (documented two comments down and still walked into). The registry test
+    // reads the constants and scans the call sites, so the mismatch surfaces in `gradlew test` instead.
+    public static final String[] FRAME_STAGE_NAMES = {
                     "terrain.windowSync",
                     "terrain.dirtyDrain",
                     "terrain.drainCompletion",
@@ -91,6 +95,7 @@ public final class RtFrameStats {
                     // hands the frame back to vanilla — which is how this one announced itself.
                     "gpu.skyBake",
                     "gpu.visBake",
+                    "gpu.visFarBake",
                     "gpu.froxelBake",
                     // D176's cloud shadow map. Its own column because 8.10 costed it at about 1% of the
                     // primary trace on paper and nothing has weighed it; resolution and step count are
@@ -126,8 +131,10 @@ public final class RtFrameStats {
                     "frame.bloomFlare",
                     "frame.displayMap",
                     "frame.copyOutput"
-            },
-            new String[] {"sectionsSnapshotted", "sectionCopies", "terrainBuildsCompleted",
+            };
+
+    /** Counter (CSV 0/1 attribution columns and hitch totals) names; same registration rule as the stages. */
+    public static final String[] FRAME_COUNTER_NAMES = new String[] {"sectionsSnapshotted", "sectionCopies", "terrainBuildsCompleted",
                     "terrainMaterialEpochRejects", "entitiesCaptured", "blockEntitiesCaptured",
                     "particlesCaptured", "refits", "entityReuse", "entityRigidFitSuccesses",
                     "entityRigidFitFailures", "vmaBufferCreates",
@@ -147,8 +154,19 @@ public final class RtFrameStats {
                     "dynamicLightUploadBytes", "dynamicLightFlushes",
                     "rainExposureCpuQueries", "rainExposureUploadBytes",
                     "rainStreakInstances", "rainImpactRays", "rainImpactsSpawned",
-                    "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements"},
-            true);
+                    // M28 S1: the two live switch states, mirrored into the CSV as 0/1. Recorded because
+                    // D208's measurement could not tell from the file alone which side of a toggle each
+                    // frame was on -- a capture whose attribution hinges on a switch must carry the
+                    // switch, or the A/B degrades into a guess exactly when the numbers look wrong.
+                    "skyDirectionalField", "fogBeyondGridClamp",
+                    // M28 S2: the path reservoir's own attribution column, same rule as the two above.
+                    // D217: this one shipped without its registration here, and the first frame with the
+                    // switch on threw out of count() and reverted rendering to vanilla -- which is what
+                    // the registry test now catches instead.
+                    "pathReservoir",
+                    "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements"};
+
+    public static final Profile FRAME = new Profile("frame", FRAME_STAGE_NAMES, FRAME_COUNTER_NAMES, true);
 
     private static final List<GarbageCollectorMXBean> GC_BEANS = ManagementFactory.getGarbageCollectorMXBeans();
 

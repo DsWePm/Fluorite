@@ -100,6 +100,14 @@ public float3 unpackRgb9e5(uint p) {
     return float3(p & 0x1ffu, (p >> 9u) & 0x1ffu, (p >> 18u) & 0x1ffu) * scale;
 }
 
+// REPLAY CONTRACT (M28 S2): the path's `seed` is the WHOLE record of the random decisions made along
+// it -- every rndf/pcg draw in the bounce loop advances that one state deterministically. The ReSTIR PT
+// path reservoir stores this seed so a neighbor pixel can re-drive the same decision stream on shifted
+// geometry. If you change the draw ORDER, the number of draws per vertex, or the seed-derivation idiom
+// (the `seed ^ const -> pcg` pattern the loops open with), stored seeds from frames before the change
+// replay into different decisions -- silently, no error, just wrong reuse weights. Change the tracer and
+// the RtPathReplayContractTest pins in the same commit, and bump the reservoir's build flag so old
+// histories are discarded.
 public PackedPathSegment packPathSegment(PathSegment seg, bool hasNext) {
     PackedPathSegment p;
     p.ro = seg.ro;

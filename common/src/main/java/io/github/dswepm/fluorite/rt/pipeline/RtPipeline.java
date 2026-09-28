@@ -110,6 +110,7 @@ public final class RtPipeline {
     private final int cloudWeatherBinding;
     private final int cloudWarpBinding;
     private final int cloudShadowBinding;
+    private final int visibilityFarGridBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
@@ -120,7 +121,8 @@ public final class RtPipeline {
                         int environmentTransferBinding, int environmentDiskEntryBinding,
                         int environmentDiskExitBinding, int rainExposureBinding,
                         int rainWetHistoryBinding, int highCloudPatchBinding,
-                        int cloudWeatherBinding, int cloudWarpBinding, int cloudShadowBinding) {
+                        int cloudWeatherBinding, int cloudWarpBinding, int cloudShadowBinding,
+                        int visibilityFarGridBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -162,6 +164,7 @@ public final class RtPipeline {
         this.cloudWeatherBinding = cloudWeatherBinding;
         this.cloudWarpBinding = cloudWarpBinding;
         this.cloudShadowBinding = cloudShadowBinding;
+        this.visibilityFarGridBinding = visibilityFarGridBinding;
     }
 
     /**
@@ -284,6 +287,13 @@ public final class RtPipeline {
             // square there is no answer to extrapolate, so the edge texel is the honest fallback.
             int cloudShadowBinding = skyAtlas ? cloudWarpBinding + cloudWarpSamplers : -1;
             int cloudShadowSamplers = skyAtlas ? 1 : 0;
+            // The second-level visibility grid (M28 S1.5), binding 30. RAYGEN-only like the fine grid:
+            // volume.slang's marched beyond-grid stretches are its sole readers, through the module
+            // that declares both levels. Filtered for the same reason the fine grid is -- the far
+            // field interpolates coarse cells, and a nearest fetch would draw the eight-block lattice
+            // into the far fog as steps.
+            int visibilityFarGridBinding = skyAtlas ? cloudShadowBinding + cloudShadowSamplers : -1;
+            int visibilityFarGridSamplers = skyAtlas ? 1 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers + transmittanceSamplers
                     + multiScatterSamplers + skyViewSamplers + froxelSamplers + visibilityGridSamplers
                     + cloudNoiseSamplers + waterHeightSamplers + fogNoiseSamplers
@@ -291,7 +301,7 @@ public final class RtPipeline {
                     + environmentDiskEntrySamplers + environmentDiskExitSamplers
                     + rainExposureSamplers + rainWetHistorySamplers
                     + highCloudPatchSamplers + cloudWeatherSamplers + cloudWarpSamplers
-                    + cloudShadowSamplers;
+                    + cloudShadowSamplers + visibilityFarGridSamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
                     .descriptorCount(1).stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
@@ -364,6 +374,9 @@ public final class RtPipeline {
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
                 binds.get(cloudShadowBinding).binding(cloudShadowBinding)
+                        .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
+                        .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+                binds.get(visibilityFarGridBinding).binding(visibilityFarGridBinding)
                         .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(1)
                         .stageFlags(VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
@@ -571,7 +584,7 @@ public final class RtPipeline {
                     environmentRadianceBinding, environmentTransferBinding,
                     environmentDiskEntryBinding, environmentDiskExitBinding, rainExposureBinding,
                     rainWetHistoryBinding, highCloudPatchBinding, cloudWeatherBinding,
-                    cloudWarpBinding, cloudShadowBinding);
+                    cloudWarpBinding, cloudShadowBinding, visibilityFarGridBinding);
         }
     }
 
@@ -688,6 +701,11 @@ public final class RtPipeline {
     /** Bind the volumetric visibility grid (M13.2), sampled by the fog on every marched segment. */
     public void setVolumeVisibilityGrid(long imageView, long sampler) {
         writeAtlasBinding(visibilityGridBinding, imageView, sampler);
+    }
+
+    /** Bind the second-level visibility grid (M28 S1.5), the marched fog's beyond-grid field. */
+    public void setVolumeVisibilityFarGrid(long imageView, long sampler) {
+        writeAtlasBinding(visibilityFarGridBinding, imageView, sampler);
     }
 
     /** Bind the finite water simulation field used by shading and interface displacement. */

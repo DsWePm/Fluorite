@@ -249,6 +249,14 @@ abstract class GenerateShaderRecords extends DefaultTask {
         Map packedPathSegmentType = segmentProbeArray.type.elementType as Map
         int packedPathSegmentByteSize = segmentProbeArray.type.uniformStride as int
 
+        def pathReservoirParameter = reflection.parameters.find { it.name == "packedPathReservoirLayoutProbe" }
+        def pathReservoirProbeArray = pathReservoirParameter?.type?.resultType?.fields?.find { it.name == "values" }
+        if (pathReservoirProbeArray?.type?.kind != "array" || pathReservoirProbeArray.type.elementType?.name != "PackedPathReservoir") {
+            throw new GradleException("unexpected PackedPathReservoir reflection probe shape")
+        }
+        Map packedPathReservoirType = pathReservoirProbeArray.type.elementType as Map
+        int packedPathReservoirByteSize = pathReservoirProbeArray.type.uniformStride as int
+
         def waterProbeParameter = reflection.parameters.find { it.name == "waterMediumProbeLayoutProbe" }
         def waterProbeArray = waterProbeParameter?.type?.resultType?.fields?.find { it.name == "values" }
         if (waterProbeArray?.type?.kind != "array" || waterProbeArray.type.elementType?.name != "WaterMediumProbe") {
@@ -283,6 +291,8 @@ abstract class GenerateShaderRecords extends DefaultTask {
                 generateJava(materialExtensionType, materialExtensionByteSize, "MaterialExtensionData"), "UTF-8")
         new File(packageDir, "PackedPathSegmentData.java").setText(
                 generateJava(packedPathSegmentType, packedPathSegmentByteSize, "PackedPathSegmentData"), "UTF-8")
+        new File(packageDir, "PackedPathReservoirData.java").setText(
+                generateJava(packedPathReservoirType, packedPathReservoirByteSize, "PackedPathReservoirData"), "UTF-8")
         new File(packageDir, "WaterMediumProbeData.java").setText(
                 generateJava(waterMediumProbeType, waterMediumProbeByteSize, "WaterMediumProbeData"), "UTF-8")
     }

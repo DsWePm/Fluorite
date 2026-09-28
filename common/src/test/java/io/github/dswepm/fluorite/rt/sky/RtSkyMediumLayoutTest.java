@@ -47,7 +47,40 @@ final class RtSkyMediumLayoutTest {
         // the space is for, and the difference from M25 matters — this one is load-bearing for a feature
         // that stays. The push-constant block was checked first and had four bytes free, which is half an
         // address, so there was no cheaper home for it.
-        assertEquals(1184, WorldPushData.BYTE_SIZE);
+        //
+        // M28 S1 appends four vectors: the sky's phase-integrated radiance split into the visibility
+        // grid's four world-azimuth sectors. They are the radiance half of a two-sided contract whose
+        // visibility half lives in the grid's RGBA bins, so neither side means anything without the
+        // other; that is what makes them a real feature's ABI rather than M25-style rent. Appended at
+        // the END of the struct, so every offset below still holds.
+        //
+        // D211 then appends ONE word: volumetricSwitches, the two live fog switches' own lane. They
+        // first shipped as flags bits 27/28, which M17's SCATTER_VERTEX and VOLUME_EMITTER_NEE had owned
+        // all along -- a bit audit that grepped only the Slang readers declared the bits free -- so the
+        // collision wired both switches permanently on until the capture columns caught it. The flags
+        // word is FULL; a new switch takes a lane here, not a bit there.
+        // S1.5 adds the far grid's placement vector after the switches word: 1280.
+        // M28 S2 adds the path reservoir's device address at the tail: 1296. The push-constant block
+        // has four bytes left -- half an address -- and this buffer keys a ~200 MB allocation, so like
+        // restirStatsAddr it travels in WorldPush for the reason that banner records. It is the struct's
+        // second address lane and the off state publishes 0, which is the switch's whole shader-side
+        // presence: no flag to disagree with.
+        // D217's acceptance counters follow at 1288 -- the lane the first address's padding was holding,
+        // so the struct does not move until a third address shows up.
+        // A-01b appends the replay switch word at 1296 under the parallel freeze order's sole
+        // tail-append exemption: the struct rounds to 1312.
+        assertEquals(1312, WorldPushData.BYTE_SIZE);
+        assertEquals(1248, WorldPushData.VOLUMETRIC_SWITCHES_OFFSET);
+        assertEquals(1264, WorldPushData.VIS_FAR_GRID_ORIGIN_OFFSET);
+        assertEquals(1280, WorldPushData.PATH_RESERVOIR_ADDR_OFFSET);
+        assertEquals(1288, WorldPushData.PATH_RESERVOIR_STATS_ADDR_OFFSET);
+        assertEquals(1296, WorldPushData.PATH_REPLAY_ENABLED_OFFSET);
+        assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("skySectorRadiance")));
+        assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("volumetricSwitches")));
+        assertTrue(Arrays.stream(WorldPushData.class.getRecordComponents())
+                .anyMatch(component -> component.getName().equals("visFarGridOrigin")));
         // AND THEIR ORDER, which the size alone cannot see. WorldPushData is generated from the shader's
         // reflection, so its constructor is POSITIONAL: RtComposite must pass these in the order
         // world_common declares them. Passing them in a different order compiles, runs, and feeds every

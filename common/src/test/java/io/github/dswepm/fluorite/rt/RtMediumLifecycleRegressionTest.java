@@ -89,9 +89,9 @@ final class RtMediumLifecycleRegressionTest {
         assertTrue(indirect.contains(
                 "prefix = integrateSegment(waterExtinction(worldPush.waterParams.xyz), MEDIUM_FLAG_WATER"));
         assertTrue(indirect.contains("prefix.transmittance * (frameRadiance"));
-        assertTrue(indirect.contains("DEBUG_VIEW_CAMERA_PREFIX = 20u"));
+        assertTrue(indirect.contains("DEBUG_VIEW_CAMERA_PREFIX = 14u"));
         assertTrue(indirect.contains("cameraPrefixIntegral("));
-        assertTrue(indirect.contains("DEBUG_VIEW_COMPOSITE_PREFIX_AB = 21u"));
+        assertTrue(indirect.contains("DEBUG_VIEW_COMPOSITE_PREFIX_AB = 15u"));
         assertTrue(indirect.contains("prefix.inScatter + leafRadiance"));
     }
 

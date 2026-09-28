@@ -108,6 +108,65 @@ public static const uint SHADE_SOLID_LAYER_SSS = 1u;
  */
 public static const uint SHADE_DYNAMIC_EMITTER_RIS = 2u;
 
+/**
+ * The two live volumetric switches, carried in WorldPush.volumetricSwitches -- NOT in WorldPush.flags,
+ * and the reason is a landed bug worth remembering (D211): both switches first shipped as bits 27/28 of
+ * the flags word after a bit audit that grepped only the SLANG readers and declared the bits free. The
+ * Java assembly had owned them all along -- bit 27 is M17's SCATTER_VERTEX, bit 28 its nested
+ * VOLUME_EMITTER_NEE -- so from the day S1 landed until this field existed, the bake ran directional
+ * and the clamp applied whenever those (default-on) features set their bits, the switches did nothing,
+ * and the off state was not the shipped picture. THE RULE: a bit is free only after enumerating every
+ * writer of the word on every side of the language boundary; when in doubt, a word this cheap to append
+ * is cheaper than a second silent collision.
+ *
+ * <p>Bit 2 (FLAG_FAR_VISIBILITY_FIELD) gates the second-level grid: when set and
+ * visFarGridOrigin.w > 0, the marched fog's beyond-grid stretches read the far field's trilinear
+ * bins instead of the fine grid's clamped boundary -- the far grid IS the data the clamp guesses
+ * with. Bit 1 (the clamp) stays the master gate for what happens when the far field is absent.
+ */
+public static const uint FLAG_SKY_FIELD_DIRECTIONAL = 1u << 0u;
+
+/** Read the far visibility grid in the marched fog's beyond-grid regions (M28 S1.5, D214). */
+public static const uint FLAG_FAR_VISIBILITY_FIELD = 1u << 2u;
+
+/**
+ * Fog stretches the visibility grid's span does not cover read the CLAMPED field instead of assuming
+ * open. The march cuts each segment into the stretch before the grid, the stretch inside it, and the
+ * stretch beyond; the two outer ones were hardwired to openness 1 -- D178's deliberate leftover, kept
+ * only so its clamp could be attributed alone, and that attribution closed the day it shipped. The
+ * symptom of the leftover is exactly #41's original report: cave fog roughly a grid radius from the
+ * camera (about 32 blocks at the default cell) glowing as if under open sky while nearby fog is dark.
+ *
+ * <p>The clamp is D178's, not a new miss policy: a sample outside the box asks the nearest measured
+ * cell. Outdoors that boundary reads open, so the open-world far field keeps its brightness; in a cave
+ * the boundary is roofed and the far fog goes dark with the near fog.
+ */
+public static const uint FLAG_FOG_BEYOND_GRID_CLAMP = 1u << 1u;
+
+/**
+ * Which of the four world-azimuth quarter sectors a direction belongs to, and the ONE definition of
+ * "sector" for everything S1 touches: sky_medium_reduce splits the sky integral by it, and the
+ * visibility bake samples one cosine-weighted ray per sector with azimuth (k + u) * pi/2 in the same
+ * frame -- +X toward +Z, matching cosineHemisphereUp. If either side's azimuth convention moves, both
+ * move or a sector's visibility is weighted by a different sector's radiance, which presents as cave
+ * mouths lit from the wrong side.
+ */
+public uint skySectorIndexOf(float3 dir) {
+    float phi = atan2(dir.z, dir.x);          // (-pi, pi]
+    float turned = phi + 6.28318530718 * (phi <= 0.0 ? 1.0 : 0.0);
+    return min(uint(turned * 0.63661977236), 3u); // turned / (pi/2), clamped at the 2*pi edge
+}
+
+// A sector's representative direction for anything that must point at the sector rather than into it:
+// its centre azimuth, at the cosine-weighted hemisphere's mean elevation (sin = 2/3). Currently only
+// documentation-grade -- the marched sky term needs no direction because the phase is folded into the
+// sector's radiance -- but a future consumer must take the direction from here, not re-derive it.
+float3 skySectorDirection(uint sector) {
+    float phi = (float(sector) + 0.5) * 1.57079632679;
+    float cosE = 0.7453559925; // sqrt(1 - 4/9)
+    return float3(cosE * cos(phi), 0.6666666667, cosE * sin(phi));
+}
+
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
 // w = bindless entityAlbedoTex slot of the destroy-stage texture.
 public struct BreakEntry {
@@ -380,6 +439,61 @@ public struct WorldPush {
      * Tinting one side of that comparison and not the other would reject every stored sample.
      */
     public float4   emitterTint;
+    /**
+     * M28 S1: the sky's phase-integrated radiance split into the visibility grid's four world-azimuth
+     * quarter sectors, so the marched ambient sky term can weight each sector's VISIBILITY (the grid's
+     * bins) by that sector's own radiance instead of by the whole dome's mean. Each entry is the same
+     * integral mediumSkyRadiance is, restricted to one sector; their sum therefore reproduces
+     * mediumSkyRadiance up to summation order, which is what keeps a sector-lit cave mouth and an open
+     * field consistent at the grid's boundary.
+     *
+     * <p>Written by sky_medium_reduce.comp every frame for atmosphere providers -- the same pass that
+     * writes mediumSkyRadiance, from the same LUT, so the split cannot drift from the whole. The CPU
+     * fallback below (no reduce runs outside an atmosphere) is the isotropic split: four quarters of
+     * mediumSkyRadiance, whose sum is then EXACTLY the scalar. Consumers must not read these lanes
+     * unless FLAG_SKY_FIELD_DIRECTIONAL is set.
+     */
+    public float4   skySectorRadiance[4]; // xyz sector phase-integrated radiance, w zero
+    /**
+     * Live volumetric switches, in their own word -- see the FLAG_SKY_FIELD_DIRECTIONAL banner for why
+     * these are not bits of WorldPush.flags. Bit 0 = directional sky field, bit 1 = beyond-grid fog
+     * clamp. Written by RtComposite from the same config values it counts into the frame CSV, so the
+     * word and the capture columns cannot disagree about what a frame was told to do.
+     */
+    public uint     volumetricSwitches;
+    /**
+     * The second-level visibility grid's placement (M28 S1.5): xyz snapped minimum corner in rebased
+     * blocks, w the far cell size in blocks -- 0 when the feature is off or no grid was asked for,
+     * which is the consumers' skip signal. World-anchored and recentred with hysteresis by the CPU,
+     * for the same reason visGridOrigin snaps: a far field that slid with the camera would need
+     * reprojection at eight times the cell size, and the far field's whole point is to be the stable
+     * answer the fine grid's boundary cannot give.
+     */
+    public float4   visFarGridOrigin;
+    /**
+     * M28 S2's path reservoir store (restir_pt.slang): one 48-byte record per pixel per parity, the
+     * reusable INDIRECT suffix a temporal shift reconnects. 0 whenever composite.path-reservoir is
+     * off, and that is the whole off state -- the shading checks the address, not a flag, so a frame
+     * without the buffer cannot spend a branch or a register on it.
+     *
+     * <p>HERE rather than in the push-constant block, for the reason restirStatsAddr's banner gives:
+     * that block filled at Vulkan's guaranteed 128-byte floor and has four bytes left, which is half
+     * an address. At the struct tail, so every offset the layout test pins below it stays put.
+     */
+    public uint64_t pathReservoirAddr;
+    /**
+     * The path reservoir's temporal-reuse counters (RtPathReservoirStats): records read, records that
+     * passed validation, merges applied. 0 when diagnostics.restir-stats is off or the reservoir is --
+     * the shader's skip signal, exactly like restirStatsAddr for the M24 store.
+     */
+    public uint64_t pathReservoirStatsAddr;
+    /**
+     * Legacy composite.path-replay switch. The D227 reconnected estimator is suspended because its
+     * connection weight lacks the old-path density in Enhanced Eq. 2. On rejects reconIndex > 0
+     * spatial candidates; off preserves the pre-D227 in-place retarget baseline.
+     * Tail-appended under the parallel freeze order's sole exemption; offsets above are untouched.
+     */
+    public uint pathReplayEnabled;
 };
 
 // 32-byte hot area-light record. Radiance uses packed R11G11B10 and the grid-relative owner section
@@ -911,3 +1025,76 @@ public struct PackedPathSegment {
     public uint seed;
     public uint pathFlags;
 };
+
+/** Must match the RtComposite allocation, which takes the size from the generated record -- so this
+ * declaration and the allocation cannot drift. */
+public static const uint PATH_RESERVOIR_BYTES = 48u;
+
+// The M28 S2 path reservoir: one record per render pixel per frame half, the reusable INDIRECT suffix
+// the temporal merge reconnects. Declared here beside PackedPathSegment for the same reason that
+// record is: its true std430 stride has to be reflected into the generated Java record, and the pack
+// side (restir_pt.slang) imports world_core through segment.slang, whose set-0 bindings collide with
+// the probe.
+//
+// D220: THE FIELD ORDER IS THE ALLOCATION. The first draft declared pathSeed (a uint) before
+// reconPos (a float3); std430 gives float3 a 16-byte alignment, the four bytes of padding that
+// follow pushed the true stride to 64, and the shading indexed a 48-bytes-per-slot allocation at
+// 64-byte stride -- every access past the first slots landed outside the buffer, and the first
+// session that ran at full render resolution walked far enough to fault the GPU (READ_INVALID past
+// the store, then an IP fault in whatever the clobbered neighbour fed the TLAS build). reconPos
+// leads, exactly like ro in PackedPathSegment: sixteen bytes plus eight uints is 48 on the nose.
+//
+// Field semantics (what a temporal merge needs and why -- see restir_pt.slang for the packer):
+//   reconPos   -- x_s, the reconnection vertex this suffix hangs from; also the drift test's anchor.
+//   pathSeed   -- the RNG state the path was traced with (REPLAY CONTRACT, see segment.slang).
+//   reconNrm   -- x_s's shading normal, oct16x2.
+//   li         -- incident radiance arriving at x_s from beyond it, Rgb9e5, RELATIVE (no prefix
+//                 throughput folded in -- the consumer re-weights with its own prefix).
+//   wi         -- the suffix direction, oct16x2.
+//   m          -- effective sample count (confidence) for GRIS weights: 1 for a fresh record, 1 plus
+//                 the capped counts of the accepted candidates for a merged write (S3a), 0 for the
+//                 empty record a pixel writes when it found no reconnection vertex (D230).
+//   targetSum  -- this record's home-vertex contribution luminance (the target a merge weighs).
+//   reconIndex -- which path vertex x_s was (the in-place temporal shift requires a match).
+//   W          -- bitcast float merge weight: the multiplier on the re-evaluating vertex's own
+//                 f*cos/pdf, 1.0 for a fresh record; a merged write divides by the winner's target
+//                 WITHOUT its old W (D230). Zero reads as "no usable history" alongside m == 0.
+public struct PackedPathReservoir {
+    public float3 reconPos;
+    public uint   pathSeed;
+    public uint   reconNrm;      // oct16x2 packed
+    public uint   li;            // Rgb9e5
+    public uint   wi;            // oct16x2 packed
+    public float  m;
+    public float  targetSum;
+    public uint   reconIndex;
+    public uint   W;             // bitcast float
+};
+
+/** Slot address: one reservoir per pixel per parity. S2 is temporal-only, so no depth or path planes --
+ * the pixel is the whole key. With spp > 1 the samples of a pixel share the slot and the last write
+ * wins; the published SPP is 1, and per-path planes would quadruple a buffer the switch already has to
+ * justify. Revisit only if an spp A/B ever shows the sharing mattering. */
+public uint pathReservoirSlot(uint pixelIndex, uint pixelCount, uint parity) {
+    return pixelIndex + parity * pixelCount;
+}
+
+/** An unwritten or unusable record. `m` counts the candidates a reservoir merged; cleared/stale
+ * memory reads as 0 -- the same emptiness test the M24 store uses. */
+public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }
+
+/** The record a pixel writes when this frame found no reconnection vertex: all zero, exactly what the
+ * allocation's clear leaves, so it reads as empty through the same test (D230). */
+public PackedPathReservoir emptyPathReservoir() {
+    PackedPathReservoir r;
+    r.reconPos = float3(0.0, 0.0, 0.0);
+    r.pathSeed = 0u;
+    r.reconNrm = 0u;
+    r.li = 0u;
+    r.wi = 0u;
+    r.m = 0.0;
+    r.targetSum = 0.0;
+    r.reconIndex = 0u;
+    r.W = 0u;
+    return r;
+}

@@ -242,8 +242,8 @@ float rainPuddleMaskAt(float3 p, bool topReceiver) {
 //
 // The 1..25 constants stay in world.rgen: they are consumed only there, and moving them would put a
 // pile of unrelated names into every importer of this file.
-public static const uint DEBUG_VIEW_RAIN_SURFACE = 26u;
-public static const uint DEBUG_VIEW_RAIN_PUDDLE = 27u;
+public static const uint DEBUG_VIEW_RAIN_SURFACE = 20u;
+public static const uint DEBUG_VIEW_RAIN_PUDDLE = 21u;
 
 /** M21 diagnostic: R retained storage, G procedural/slope basin, B final material response. */
 public float3 rainPuddleDebugAt(float3 p, MaterialExtension ext, bool topReceiver) {
