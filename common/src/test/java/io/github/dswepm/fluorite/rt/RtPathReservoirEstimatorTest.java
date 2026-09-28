@@ -31,7 +31,7 @@ final class RtPathReservoirEstimatorTest {
 
     @Test
     void theWinnersStoredWeightIsMultipliedBackOutOfItsReceiverLuminance() throws IOException {
-        String rgen = code(source("shaders/world/world.rgen.slang"));
+        String rgen = code(source("shaders/world/path_reuse_trace.slang"));
         assertTrue(rgen.contains("? asfloat(prev.W) * totalTarget / (writtenM * chosenTarget) : 0.0,"),
                 "temporal winner: chosenTarget carries prev's W, which must be multiplied back out");
         assertTrue(rgen.contains("? asfloat(prev.W) * totalTarget / (writtenM * spatialWinTarget) : 0.0,"),
@@ -45,7 +45,7 @@ final class RtPathReservoirEstimatorTest {
 
     @Test
     void aPixelWithoutAReconnectionVertexWritesAnEmptyRecord() throws IOException {
-        String rgen = code(source("shaders/world/world.rgen.slang"));
+        String rgen = code(source("shaders/world/path_reuse_trace.slang"));
         int found = rgen.indexOf("if (recordPath && reconFound) {");
         int empty = rgen.indexOf("} else if (recordPath) {", found);
         int write = rgen.indexOf("= emptyPathReservoir();", empty);

@@ -33,7 +33,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void theBounceLoopStreamIsDerivedDeterministicallyFromTheSeed() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         // The loop's first draw derives from the segment seed XOR the sample index. A future replay
         // must re-derive the same stream from the stored seed: changing the
         // constant, the xor, or the pcg placement changes every stored seed's meaning.
@@ -65,7 +65,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void theBounceLoopSnapshotsTheStreamBaseTheReservoirStores() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         // The recorded pathSeed must be the stream's BASE, snapshotted before the first draw mutates
         // the working seed -- storing a mid-stream state would replay only the tail of the path.
         assertTrue(world.contains("uint pathSeedBase = seed;"));
@@ -77,7 +77,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void theTemporalMergeReprojectsAndCarriesAMergeWeight() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         // The temporal read goes through M24's d0 reprojection at the primary hit -- without it a
         // moving camera reads a history that was never this point's.
         assertTrue(world.contains("restirPreviousPixel(hitPos, renderSize, readPixel)"));
@@ -99,7 +99,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void theAppliedEstimateAccumulatesInRgbAndSelectsByScalar() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         // Decision 6's RGB vector weights, pinned in its shipped form (A-②a): the APPLIED estimate
         // accumulates candidates as RGB (vector weights reach the picture -- chroma noise averages),
         // while the survivor SELECTION is driven by the scalar luminance target. Decoupling those two
@@ -114,7 +114,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void theInvalidReconnectedShiftStaysGone() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         // D229 removed D227's reconnected estimator (an absolute geometry term where Enhanced Eq. 2
         // wants a density ratio); D231 retired the composite.path-replay switch that rejected the deep
         // candidates it used to serve. Neither may come back except as the rebuild's derived shift.
@@ -128,7 +128,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void spatialPixelCoordinatesRoundTripAtNonSquareResolution() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         assertTrue(world.contains("int(readPixel / renderSize.x)"));
         assertFalse(world.contains("int(readPixel / renderSize.y)"));
         int width = 1920;
@@ -144,7 +144,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void historyIsEvaluatedOnlyAtTheFirstReconnectionBounce() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         int snapshot = world.indexOf("bool firstReconThisBounce = reconQualifies;");
         int reset = world.indexOf("reconQualifies = false;", snapshot);
         int history = world.indexOf("if (recordPath && firstReconThisBounce) {", reset);
@@ -169,13 +169,21 @@ final class RtPathReplayContractTest {
         assertTrue(bringup.contains("\"world.rgen.spv\", \"world_reuse.rgen.spv\")"));
         assertTrue(bringup.contains("\"world_ser.rgen.spv\", \"world_ser_reuse.rgen.spv\")"));
 
-        String world = source("shaders/world/world.rgen.slang");
-        int define = world.indexOf("#ifdef FLUORITE_PATH_REUSE");
-        int live = world.indexOf("bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;", define);
-        int dead = world.indexOf("const bool recordPath = false;", live);
-        int end = world.indexOf("#endif", dead);
-        assertTrue(define >= 0 && live > define && dead > live && end > dead,
-                "without the define recordPath must be a compile-time false, so the reuse compiles out");
+        // The shipped tracer carries no path reservoir at all; the reuse tracer is included, and
+        // called, only under the define.
+        String shipped = source("shaders/world/world.rgen.slang");
+        assertFalse(shipped.contains("pathReservoirAddr"),
+                "world.rgen's own tracePath is the tracer that shipped before S2; the reuse lives elsewhere");
+        int include = shipped.indexOf("#ifdef FLUORITE_PATH_REUSE\n"
+                + "// M28 D231 (G15): the path reuse's pass B tracer, in the variant pipeline only. See the file banner.\n"
+                + "#include \"path_reuse_trace.slang\"\n#endif");
+        assertTrue(include >= 0, "the reuse tracer is included only into the variant");
+        assertTrue(shipped.contains("#ifdef FLUORITE_PATH_REUSE\n                    tracePathReuse(segment,")
+                && shipped.contains("#else\n                    tracePath(segment,"),
+                "main() calls the reuse tracer only in the variant");
+        String reuse = source("shaders/world/path_reuse_trace.slang");
+        assertTrue(reuse.contains("public float3 tracePathReuse(__ref PathSegment seg,"));
+        assertTrue(reuse.contains("bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;"));
 
         String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
         assertTrue(composite.contains("active.trace(cmd, renderW, renderH, pushConstants, 0, passB);"));
@@ -188,6 +196,45 @@ final class RtPathReplayContractTest {
         String pipeline = source("common/src/main/java/io/github/dswepm/fluorite/rt/pipeline/RtPipeline.java");
         assertTrue(pipeline.contains("buildPipeline(ctx, stack, pipelineLayout, rgen, missShaders, closestHitShader,"),
                 "a variant is built over the SAME layout, so the base pipeline's descriptor sets bind to it");
+    }
+
+    @Test
+    void theReuseTracerIsTheShippedTracerPlusThePathReservoir() throws IOException {
+        // Until R1 restructures the copy, the reuse tracer must be the shipped tracePath with the path
+        // reservoir ADDED and nothing else changed: every line of the shipped body appears in the reuse
+        // body, in order. A line edited in one copy only is exactly what this catches -- the switch would
+        // then compare two different tracers instead of reuse against no reuse.
+        java.util.List<String> shipped = body(source("shaders/world/world.rgen.slang"),
+                "public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,");
+        java.util.List<String> reuse = body(source("shaders/world/path_reuse_trace.slang"),
+                "public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,");
+        int at = 0;
+        for (String line : shipped) {
+            while (at < reuse.size() && !reuse.get(at).equals(line)) {
+                at++;
+            }
+            assertTrue(at < reuse.size(), "shipped line missing from the reuse tracer (or out of order): " + line);
+            at++;
+        }
+    }
+
+    /** The trimmed, non-blank lines of a function's body, from its signature to its closing brace. */
+    private static java.util.List<String> body(String source, String signature) {
+        int start = source.indexOf(signature);
+        assertTrue(start >= 0, "missing: " + signature);
+        int end = source.indexOf("\n}\n", start);
+        if (end < 0 && source.endsWith("\n}")) {
+            end = source.length() - 2; // the function is the file's last declaration
+        }
+        assertTrue(end > start, "unterminated: " + signature);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (String line : source.substring(source.indexOf('\n', start) + 1, end).split("\n")) {
+            String t = line.trim();
+            if (!t.isEmpty() && !t.equals("return L;")) {
+                lines.add(t);
+            }
+        }
+        return lines;
     }
 
     @Test
@@ -211,7 +258,7 @@ final class RtPathReplayContractTest {
         assertTrue(RtComposite.PATH_REUSE_NEIGHBOURS_MASK >= 8,
                 "the field must hold the dial's whole range");
 
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         assertTrue(world.contains("i < pathReuseSpatialNeighbours()"),
                 "the path reuse's spatial loop reads its own count");
         String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
@@ -226,7 +273,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void theSelectionTargetStaysInOneDomain() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         // A-02b: selection moved to the RECEIVER domain (Enhanced §6.3 survivor representativeness).
         // Unbiasedness does not care which positive function selects, but it DOES care that the
         // draw, the sums and t_chosen stay in one domain -- so all three spellings are pinned.
@@ -239,7 +286,7 @@ final class RtPathReplayContractTest {
 
     @Test
     void theReconnectionGateLooksAtThePredecessorRoughness() throws IOException {
-        String world = source("shaders/world/world.rgen.slang");
+        String world = source("shaders/world/path_reuse_trace.slang");
         // A-01a: Enhanced §4.2's single-vertex roughness gate. The qualification reads the PREVIOUS
         // opaque vertex's alpha (a mirror behind the reconnection kills the suffix transfer; this
         // vertex's own rough continuation is what makes it reconnectable), and the state rides the

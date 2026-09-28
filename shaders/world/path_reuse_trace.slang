@@ -1,85 +1,14 @@
-// Indirect pass (pass B of the wavefront split — see docs/WAVEFRONT_PLAN.md).
+// The path reuse's pass B tracer (M28 D231, G15/R1). Textually included into world.rgen.slang ONLY
+// when FLUORITE_PATH_REUSE is defined, so it exists only in world_reuse.rgen / world_ser_reuse.rgen --
+// the pipeline the path reservoir switch binds. The shipped pass B (world.rgen's tracePath) carries none
+// of this file and stays byte-for-byte the tracer that shipped before S2; a switch-off frame binds it.
 //
-// Resumes the continuations the primary pass queued and runs the bounce loop: NEE toward the sun, RIS
-// emitter lighting, thin-surface SSS, BSDF continuation and Russian roulette. It captures no guides and
-// owns no motion vectors — guides and primary are deliberately absent from the include list
-// below, so guide state cannot leak into this pass by accident.
-//
-// Lighting is iterative here rather than recursive from closest-hit, so maxRayRecursionDepth stays 1.
-// At each surface vertex:
-//   * NEE toward the sun — a single analytic directional light, gated by one hit-object visibility
-//     query (TerminateOnFirstHit | SkipClosestHit). Lambertian BRDF = albedo/PI.
-//   * a cosine-weighted Lambertian continuation ray (throughput *= albedo; the PI and cos cancel).
-// Sky / ambient light needs no separate AO pass: continuation rays that escape land in world.rmiss,
-// which returns sky radiance — so soft sky fill and contact AO both fall out of the path integral.
-//
-// Each frame emits a single SPP-averaged (still noisy) estimate; temporal convergence is the denoiser's
-// job. With RR disabled the output is the raw noisy path trace — a reference view, not a converged
-// image. Output is HDR (R16G16B16A16_SFLOAT); the HDR -> LDR tonemap happens at the display.comp seam.
-//
-// The build emits an ordinary TraceRay fallback and an optional EXT SER variant from this source.
-import world_common;
-import world_core;
-import math;
-import bsdf;
-import rain_surface;
-import medium;
-import volume;
-import volume_source; // debug 25 shares D66's exact resolution and multiplier helpers
-import volume_visibility; // debug view 18 reads the grid directly
-import cloud;
-import segment;
-import water;
-import trace;
-#ifdef FLUORITE_ENABLE_EXT_SER
-import trace_ser;
-#endif
-import subsurface;
-import lighting;
-import restir; // temporal reservoir reuse at both RIS vertices
-#ifdef FLUORITE_PATH_REUSE
-import restir_pt; // M28: the path reservoir; its tracer is included below, variant only (D231)
-#endif
-// The transmittance table. Raygen already has binding 10 in its stage flags — the NEE consumers below
-// are next in line for it — and debugView 12 reads it here.
-import atmosphere;
-import atmosphere_lut;
-import environment;
+// This is tracePath with the path reservoir recorded and reused. Everything that is NOT the path
+// reservoir must stay identical to tracePath: RtPathReplayContractTest checks the shipped body survives here,
+// and a divergence would make the switch compare two different tracers rather than reuse against none.
+// The rebuild's slices (R1+) restructure this copy only.
 
-public struct FirstSegmentTrace {
-    public float3 inScatter;
-    public float segmentEnd;
-    public float3 transmittance;
-    public float hitT;
-    public float3 throughput;
-    public uint material;
-    public uint escaped;
-    public uint mediumProfile;
-};
-
-FirstSegmentTrace emptyFirstSegmentTrace(PathSegment seg, uint activeMediumFlags) {
-    FirstSegmentTrace first;
-    first.inScatter = float3(0.0, 0.0, 0.0);
-    first.segmentEnd = 0.0;
-    first.transmittance = float3(1.0, 1.0, 1.0);
-    first.hitT = -1.0;
-    first.throughput = seg.throughput;
-    first.material = 0xFFFFFFFFu;
-    first.escaped = 1u;
-    first.mediumProfile = mediumProfileFlags(activeCurrentMediumFlags(activeMediumFlags));
-    return first;
-}
-
-// Slang's ordinary `in` struct parameter is lowered by transformParamsToConstRef; runtime telemetry
-// showed that lowering changed nested Medium.flags from WATER (1) to WATER|AMBIENT (3). An explicit
-// `ref` bypasses that copy/lowering seam. Treat the referenced record as immutable: its transport fields
-// are copied once into primitive active state below, which is the only representation mutated by bounces.
-// `sampleIndex` is also the reservoir store's PATH index: main() forms it as `s + leaf * spp`, which is
-// exactly the plane numbering restir.slang needs to keep this invocation's history separate from the
-// other spp samples of this pixel and from the refraction split's. The two uses are the same number for
-// the same reason -- it identifies which of a pixel's paths this is -- so it is deliberately not a
-// second parameter.
-public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
+public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         uint2 pix, uint sampleIndex, uint2 renderSize,
                         bool captureFirst, out FirstSegmentTrace firstTrace,
                         inout uint4 reuseCounts) {
@@ -92,6 +21,10 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     // produces independent lighting/BSDF paths from the shared terminal continuation.
     uint seed = seg.seed ^ sampleIndex * 2246822519u;
     seed = pcg(seed);
+    // M28 S2: this state is what the path reservoir stores -- the whole bounce loop's decision stream
+    // derives from it deterministically (see the REPLAY CONTRACT in segment.slang), so a replay starts
+    // from here. Snapshotted before the first draw mutates `seed`.
+    uint pathSeedBase = seed;
     float rayConeWidth = seg.rayConeWidth;
     float rayConeSpread = max(seg.rayConeSpread, RAY_CONE_MIN_SPREAD);
     int maxBounces = int(worldPush.maxBounces);
@@ -157,6 +90,41 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     // remains active with its full configured candidate count at every hit. Pass A's primary/interface
     // prefix is outside this SSS quality budget.
     int indirectDepth = 0;
+    // M28 S2 initial candidate: this pixel's own path, recorded for next frame's experimental
+    // suffix reuse. The reconnection vertex is the FIRST opaque vertex whose continuation has a
+    // finite density -- dielectric chains and exact mirrors stay prefix. The suffix is recovered after
+    // the loop by snapshot subtraction, so the radiance accumulation sites stay untouched and the
+    // switch-off state (no buffer published) dead-codes every line this block adds.
+    bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;
+    bool reconFound = false;
+    bool reconQualifies = false;
+    float3 reconPos = float3(0.0, 0.0, 0.0);
+    float3 reconNrm = float3(0.0, 0.0, 1.0);
+    float2 reconWi = float2(0.5, 0.5);
+    uint reconDepth = 0u;
+    float3 reconLpre = float3(0.0, 0.0, 0.0);
+    float3 reconTpre = float3(0.0, 0.0, 0.0);
+    float3 reconTpost = float3(0.0, 0.0, 0.0);
+    // The temporal candidate (S2), evaluated at the reconnection vertex and carried out for the
+    // post-loop merge: the re-weighted history sample, its target sum (m_n * mean home target), its
+    // count, and where its record was read from -- the write re-reads that slot if the history wins
+    // the survivor draw, rather than keeping twelve lanes of its identity live through the loop.
+    float3 temporalValue = float3(0.0, 0.0, 0.0);
+    float temporalSum = 0.0;
+    float temporalCount = 0.0;
+    uint temporalReadPixel = 0u;
+    // A-01a: the roughness of the previous shading vertex, for the reconnection gate.
+    // 1.0 means the camera prefix is treated as unconditionally rough -- reconIndex == 0 has no
+    // x_{k-1} surface (the paper's diffuse-case footnote), so the gate only ever bites a specular
+    // chain. Dielectric interfaces set this to zero because their density is not represented.
+    float prevVertexRough = 1.0;
+    // The spatial candidates (S3a): accumulated values/counts/targets across accepted neighbours,
+    // plus the streaming survivor's slot and home target for the post-loop write.
+    float3 spatialValue = float3(0.0, 0.0, 0.0);
+    float spatialCount = 0.0;
+    float spatialTargetSum = 0.0;
+    uint spatialWinSlot = 0u;
+    float spatialWinTarget = 0.0;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
@@ -301,6 +269,9 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // (payloadDielectricEntering), so a stray or missing face cannot desync the medium for the rest
         // of the path.
         if (material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC) {
+            // A dielectric predecessor is outside the opaque reconnection density model.
+            // Keep the next opaque hit from treating this edge as the camera prefix.
+            prevVertexRough = 0.0;
             // A dielectric has no local shading term. At the path cap its continuation cannot be traced,
             // so avoid computing an unused Fresnel choice, medium update, and roulette step.
             if (bounce >= maxBounces) {
@@ -505,6 +476,19 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
         // reflection sharp instead of accumulating it as a glossy lobe.
         bool exactSpecular = isDeltaAlpha(rough);
         rough = exactSpecular ? 0.0 : rough;
+        // This vertex reconnects if it survives to trace a continuation: a delta lobe has no sampling
+        // density for a shift's Jacobian to weigh, so only finite lobes qualify. Nothing between here
+        // and the lobe selection below touches throughput, so the pre-selection value snapshots here.
+        // A-01a: the gate looks at x_{k-1}'s roughness (below), never this vertex's -- a rough
+        // continuation is exactly what makes this vertex reconnectable; it is a mirror BEHIND the
+        // reconnection that the suffix transfer cannot survive.
+        reconQualifies = recordPath && !reconFound && !exactSpecular
+                && prevVertexRough >= PATH_RECONNECT_MIN_ALPHA;
+        if (reconQualifies) {
+            reconTpre = throughput;
+        }
+        // This vertex is x_{k-1} for the next one.
+        prevVertexRough = rough;
         float3 diffAlb = albedo * (1.0 - metal);
         float3 F0 = payload.f0;
         // Probability of continuing along the specular lobe rather than the diffuse one. Hoisted above
@@ -832,6 +816,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // walk enters, scatters and leaves before the path continues — so nothing here reaches the
             // continuation record or the pass boundary.
             //
+            reconQualifies = false; // the walk's exit direction has no analytic density to reconnect on
             float lobeProb = (1.0 - pf) * (1.0 - ps) * walkSss;
             WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, sssRadius, ext.specular.w,
                                                    sssMaxEvents, seed);
@@ -867,6 +852,137 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
         }
 
+        // The continuation committed: this is the reconnection vertex. Snapshot what the suffix needs
+        // -- everything L holds NOW is prefix, everything added AFTER this point is the suffix; the
+        // post-selection throughput is what divides that tail into an incident-radiance estimate.
+        bool firstReconThisBounce = reconQualifies;
+        if (firstReconThisBounce) {
+            reconFound = true;
+            reconQualifies = false;
+            reconPos = hitPos;
+            reconNrm = n;
+            reconWi = octEncode(rd);
+            reconDepth = uint(hitDepth);
+            reconLpre = L;
+            reconTpost = throughput;
+        }
+
+        // ---- M28 S2/S3 candidates: last frame's record at this point (temporal shift) and K
+        // neighbours' records (spatial shift), re-weighted by THIS vertex. Validation and evaluation
+        // are ONE spelling -- restir_pt.slang's evalPathSuffixCandidate -- with only the surface
+        // predicate differing between the two shifts. Values accumulate; the pixel takes the weighted
+        // average once the history carries PATH_RESERVOIR_APPLY_MIN_M independent candidates (D221),
+        // and the survivor write happens after the loop, where the own suffix finally exists.
+        //
+        // The temporal read is reprojected exactly like M24's d0 -- but only where that is
+        // meaningful: the reprojection answers "where was THIS point on screen", which is the
+        // primary hit's question. A deeper reconnection vertex is off the camera ray, so it reads its
+        // own pixel, which is the arrangement M24's bounce vertices already live under. Spatial
+        // neighbours are searched around that same reprojected centre, from the same (previous) half,
+        // for the reason restir.slang's spatial loop gives: there is no seam in this dispatch where
+        // every record is written and nothing is shaded yet.
+        //
+        // Evaluate history only at the vertex whose prefix/suffix state was snapshotted above.
+        // Later bounces belong to the same suffix and must not merge that history a second time.
+        if (recordPath && firstReconThisBounce) {
+            uint pixelIndex = pix.y * renderSize.x + pix.x;
+            uint readPixel = pixelIndex;
+            bool haveHistory = true;
+            if (reconDepth == 0u) {
+                haveHistory = restirPreviousPixel(hitPos, renderSize, readPixel);
+            }
+            // Acceptance attribution (the D211 rule): one pixel in sixteen reports its outcome, so
+            // "the switch did nothing" can never mean "the merge silently never fired".
+            bool sampled = worldPush.pathReservoirStatsAddr != 0u
+                    && ((pixelIndex ^ worldPush.frameIndex) & 15u) == 0u;
+            if (sampled && haveHistory) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u);
+            }
+            DevicePtr<PackedPathReservoir> store =
+                    DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
+            uint prevParity = (worldPush.frameIndex & 1u) ^ 1u;
+            // The footprint one pixel covers at this vertex, in world units -- the spatial lateral
+            // bound is measured in these, for the same reason M24's is.
+            float footprint = surfaceFootprint(rayConeWidth, -v, n);
+
+            // ---- temporal candidate: last frame's record at the reprojected pixel.
+            if (haveHistory) {
+                PackedPathReservoir stored = store[pathReservoirSlot(readPixel,
+                        renderSize.x * renderSize.y, prevParity)];
+                float3 candValue;
+                float candCount;
+                float candMeanTarget;
+                if (evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
+                                            hitPos, n, reconTpre, footprint, reconDepth, false,
+                                            seed, stored, candValue, candCount, candMeanTarget)) {
+                    temporalValue = candValue;
+                    temporalCount = candCount;
+                    // A-02b: selection weights live in the RECEIVER domain (this vertex's
+                    // re-evaluated luminance), matching Enhanced §6.3's survivor-representativeness.
+                    // Unbiasedness needs draw/sums/t_chosen in ONE domain -- all three switched
+                    // together below; the record's home-domain targetSum/m stays a next-frame hint.
+                    temporalSum = candCount * luminance(candValue);
+                    temporalReadPixel = readPixel;
+                    if (sampled) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u);
+                        // A-01a's plate: how many accepted candidates sit behind a specular chain.
+                        // Decides whether the replay sub-loop has an estimator role here at all.
+                        if (reconDepth > 0u) {
+                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[5], 1u);
+                        }
+                    }
+                }
+            }
+
+            // ---- spatial candidates (S3a): the independent samples that push a history past the
+            // application gate. Accumulate values, counts and target sums; stream a survivor draw
+            // among the accepted neighbours (target-proportional) for the post-loop write.
+            for (uint i = 0u; i < pathReuseSpatialNeighbours()
+                              && temporalCount + spatialCount < PATH_RESERVOIR_M_CAP; i++) {
+                int2 centre = int2(int(readPixel % renderSize.x), int(readPixel / renderSize.x));
+                int2 q = centre + spatialNeighbourOffset(seed);
+                if (any(q < int2(0, 0)) || any(q >= int2(renderSize))) {
+                    continue;
+                }
+                uint neighbourPixel = uint(q.y) * renderSize.x + uint(q.x);
+                if (neighbourPixel == readPixel) {
+                    continue; // that is the temporal candidate; counting it twice would double its say
+                }
+                if (sampled) {
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[2], 1u);
+                }
+                uint neighbourSlot = pathReservoirSlot(neighbourPixel,
+                        renderSize.x * renderSize.y, prevParity);
+                PackedPathReservoir candidate = store[neighbourSlot];
+                float3 candValue;
+                float candCount;
+                float candMeanTarget;
+                // composite.path-replay's reject branch retired with the switch (D231): what remains
+                // is the in-place evaluation its off state always ran, until R2 retires that too.
+                bool accepted = evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
+                        hitPos, n, reconTpre, footprint, reconDepth, true,
+                        seed, candidate, candValue, candCount, candMeanTarget);
+                if (!accepted) {
+                    continue;
+                }
+                if (sampled) {
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[3], 1u);
+                    if (reconDepth > 0u) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[5], 1u);
+                    }
+                }
+                // A-02b: same receiver-domain switch as the temporal candidate above -- one spelling.
+                float candWeight = candCount * luminance(candValue);
+                spatialValue += candCount * candValue;
+                spatialCount += candCount;
+                spatialTargetSum += candWeight;
+                if (rndf(seed) * spatialTargetSum < candWeight) {
+                    spatialWinSlot = neighbourSlot;
+                    spatialWinTarget = luminance(candValue);
+                }
+            }
+        }
+
         // Russian roulette on deeper bounces: survive with prob = max channel, rescale survivors.
         if (bounce >= rrStart) {
             float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
@@ -876,499 +992,107 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             throughput /= q;
         }
     }
-    return L;
-}
-
-#ifdef FLUORITE_PATH_REUSE
-// M28 D231 (G15): the path reuse's pass B tracer, in the variant pipeline only. See the file banner.
-#include "path_reuse_trace.slang"
-#endif
-
-// ---- Volume diagnostics (debugView 8..10), owned by this pass because the guide buffers pass A can
-// visualize say nothing about what happens BETWEEN hits.
-//
-// Every one of them describes the same thing — the queued record's first segment — so they can be read
-// against each other pixel by pixel: how long it was, what medium it was in, what the sun could see from
-// its origin, and what all that produced. Written because the water's in-scatter was reasoned about three
-// times from the formula and the formula was right each time.
-//
-// These go through exposure and the tonemap like any other frame, since they are written into the same
-// image. For 8 that is what is wanted (it is radiance). For 9 and 10 read them as "black or not black"
-// and as ordering, not as absolute values.
-static const uint DEBUG_VIEW_VOLUME_INSCATTER = 8u;
-static const uint DEBUG_VIEW_VOLUME_SEGMENT = 9u;
-static const uint DEBUG_VIEW_VOLUME_SUNVIS = 10u;
-// The caustic's CHROMATIC DEVIATION, amplified. Not the caustic itself: showing the raw factor could
-// not distinguish "the three channels are identical" from "they differ by a few percent", and a few
-// percent is invisible against a black-and-white pattern — which is exactly the ambiguity that made a
-// first attempt at this view useless. Each channel is divided by the mean and the difference multiplied
-// up, so identical channels are EXACTLY neutral grey and any real spread is a strong tint.
-static const uint DEBUG_VIEW_WATER_CAUSTIC = 11u;
-static const float CAUSTIC_DEVIATION_GAIN = 20.0;
-
-// The aerial-perspective froxel, read at the depth the slider is parked on, across the whole screen.
-//
-// Left is what the air ADDS between the eye and that depth, right is what it LEAVES of whatever is behind
-// it — the two halves of the same integral, and the pair a consumer will multiply and add with. Split so
-// a grid that is all in-scatter and no extinction, or the reverse, is obvious before anything downstream
-// starts using it.
-//
-// Expected at the far slice: a faint wash that follows the fog's height profile, brighter toward the sun,
-// with the transmittance darkest where the sightline is longest and lowest. Expected at the NEAR slices:
-// almost nothing, which is the point of distributing the depth axis exponentially (see froxelSliceDepth).
-static const uint DEBUG_VIEW_FROXEL = 12u;
-static const float FROXEL_DEBUG_SLICE = 0.95; // near the far edge, where there is something to see
-
-// The volumetric visibility grid, at this pixel's own camera segment. See volumeVisibilityDebug.
-static const uint DEBUG_VIEW_VOLUME_VISIBILITY = 13u;
-
-// The second-level grid (M28 S1.5), sampled at a FIXED 96 blocks along this pixel's view ray -- fixed,
-// not the camera segment's midpoint, because the midpoint usually sits inside the fine grid where the
-// far field has nothing to say. 96 is past the fine grid's 32-block face and well inside the far
-// grid's 256: exactly the stretch whose answer changed when the far field landed. See farVisibilityDebug.
-static const uint DEBUG_VIEW_FAR_VISIBILITY = 19u;
-static const float FAR_DEBUG_DISTANCE = 96.0;
-
-
-// The exact camera-prefix in-scatter consumed by the normal compositor, before any leaf radiance, RR,
-// exposure or tonemap. Unlike debug 8, this is the camera-to-first-interface segment rather than the
-// queued first leaf. It exists to distinguish "the water estimator is alive somewhere in the path" from
-// "the water term the normal image actually adds is alive".
-static const uint DEBUG_VIEW_CAMERA_PREFIX = 14u;
-
-// Full raw compositor with and without the camera prefix in alternating equal-screen bands. This runs
-// the normal leaf loop but bypasses RR, so it answers whether the prefix survives the actual HDR sum.
-// The lower quarter paints its luminance fraction (R = 8x, G = 2x, B = 1x) instead of scene colour.
-static const uint DEBUG_VIEW_COMPOSITE_PREFIX_AB = 15u;
-// M11: which stage of the cloud chain is empty. See cloud.slang cloudDebugProbe for the colour key.
-static const uint DEBUG_VIEW_CLOUD_PROBE = 16u;
-// M12: the water simulation's height field, and whether its domain is live at all.
-static const uint DEBUG_VIEW_WATER_SIM = 17u;
-// 24: the same field, but sampled the way the SHADING samples it. 23 proves the field has content; this
-// proves the content reaches the surface. They fail independently, which is the whole reason for two.
-static const uint DEBUG_VIEW_WATER_SIM_REACH = 18u;
-float3 froxelDebug(float2 uv) {
-    // Screen uv straight into the grid's x and y: the froxel is laid over this same frustum, and a debug
-    // view that resampled it through anything else would be testing the resampling.
-    // No vertical flip: the froxel's y comes from the same ndc the primary rays use, so screen up
-    // is grid up. The 1.0 - uv.y that was here is the third time that flip has been copied from a view
-    // whose axis meant something else.
-    float3 p = float3(uv.x < 0.5 ? uv.x * 2.0 : (uv.x - 0.5) * 2.0, uv.y, FROXEL_DEBUG_SLICE);
-    float4 f = aerialPerspectiveLut.SampleLevel(p, 0.0);
-    if (uv.x < 0.5) {
-        return f.rgb;
-    }
-    return float3(f.a, f.a, f.a);
-}
-
-/**
- * Four equal vertical bands through the actual raygen binding and runtime push values:
- *   1. decoded base, 2. decoded detail, 3. D66 base/detail resolved weights, 4. final multiplier.
- *
- * A fixed world-space distance makes this a spatial slice instead of allowing scene depth to scramble
- * the field. The footprint is the one a full camera-to-cull interval receives under the configured cap.
- */
-// The volumetric visibility grid (M13.2), sampled at the MIDPOINT of this pixel's camera segment.
-//
-// NAMED BANDS, NOT A GRADIENT, and the bottom two exist because the first version of this view could not
-// tell a correct reading from the failure it was built to find. A scalar drawn as a shade asks the reader
-// to judge a number through a tonemap, which eyes do not do; quantised, the answer is a colour that can be
-// named and spoken aloud.
-//
-//   navy : sealed, below the sampled grid's own quantum   cyan : a FLOOR -- small but not zero
-//   blue : a little   green : some   yellow : about half   orange : most of it   red : fully open
-//
-// WHY NAVY AND CYAN ARE SEPARATE. The bands were uniform fifths, so the lowest one covered 0 to 0.2 and
-// painted a stalled accumulator sitting at 0.125 the same colour as a genuinely sealed cell. A sealed room
-// with visibly lit fog was reported as "the grid says sealed, so the grid is fine" -- and the grid was not
-// fine. A diagnostic whose resolution is coarser than the defect it is pointed at will confirm whichever
-// answer it was aimed with. The split is at 1.5/255 because that is where the UNORM8 grid the consumers
-// actually sample rounds to zero: below it the fog receives nothing, above it the fog receives something.
-//
-// Dimmed means the cell has not yet gathered its full sample count, so convergence is visible without
-// another hue. Black is a point outside the grid or with no grid published.
-//
-// The midpoint of the camera segment rather than a fixed distance: a fixed distance would report the air
-// on the far side of a wall while the player stands in a room looking at that wall, which is the exact
-// case this grid was built for and the exact case a fixed distance answers wrongly.
-//
-// This is the grid ITSELF, with no fog arithmetic anywhere in it. If the room reads black here and its fog
-// is still lit, the grid is right and the consumer is wrong; if it reads yellow here, the grid is wrong and
-// nothing downstream can fix it.
-/**
- * The far grid's openness at a fixed 96-block sample down this pixel's ray, in the fine grid's debug
- * bands. Grey means the far grid is not published (feature off, or the fine grid it bootstraps from
- * is off) -- a distinct answer from navy's "published and sealed".
- */
-float3 farVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
-    if (worldPush.visFarGridOrigin.w <= 0.0) {
-        return float3(0.15, 0.15, 0.15);
-    }
-    CameraRay cam = cameraRay(dispatchIndex, dimensions);
-    float3 p = cam.origin + normalize(hitPos - cam.origin) * FAR_DEBUG_DISTANCE;
-    float4 bins = farSkyBins(p);
-    float open = (worldPush.volumetricSwitches & FLAG_SKY_FIELD_DIRECTIONAL) != 0u
-            ? dot(bins, float4(0.25, 0.25, 0.25, 0.25))
-            : bins.r;
-    if (open < 1.5 / 255.0) {
-        return float3(0.0, 0.0, 0.35);   // navy   : sealed, and the consumers see exactly zero
-    }
-    if (open < 0.05) {
-        return float3(0.0, 0.85, 0.95);  // cyan   : a floor -- small, nonzero, and lighting the fog
-    }
-    int band = clamp(int((open - 0.05) * (5.0 / 0.95)), 0, 4);
-    return band == 0 ? float3(0.1, 0.25, 1.0)
-         : band == 1 ? float3(0.0, 0.7, 0.2)
-         : band == 2 ? float3(0.9, 0.9, 0.0)
-         : band == 3 ? float3(1.0, 0.45, 0.0)
-                     : float3(0.9, 0.0, 0.0);
-}
-
-float3 volumeVisibilityDebug(uint2 dispatchIndex, uint2 dimensions, float3 hitPos) {
-    CameraRay cam = cameraRay(dispatchIndex, dimensions);
-    float3 p = cam.origin + (hitPos - cam.origin) * 0.5;
-    float open = volumeSkyOpenness(p);
-    if (open < 1.5 / 255.0) {
-        return float3(0.0, 0.0, 0.35);   // navy   : sealed, and the consumers see exactly zero
-    }
-    if (open < 0.05) {
-        return float3(0.0, 0.85, 0.95);  // cyan   : a floor -- small, nonzero, and lighting the fog
-    }
-    int band = clamp(int((open - 0.05) * (5.0 / 0.95)), 0, 4);
-    return band == 0 ? float3(0.1, 0.25, 1.0)
-         : band == 1 ? float3(0.0, 0.7, 0.2)
-         : band == 2 ? float3(0.9, 0.9, 0.0)
-         : band == 3 ? float3(1.0, 0.45, 0.0)
-                     : float3(0.9, 0.0, 0.0);
-}
-
-float3 volumeDebug(PackedPathSegment packed, uint pixelIndex) {
-    PathSegment seg = unpackPathSegment(packed);
-    traceRadiance(seg.bounce == 0 ? CULL_PRIMARY : secondaryCullMask(),
-                   seg.ro, 0.0, seg.rd, RAY_FAR, seg.showCelestial, false,
-                   seg.rayConeWidth, seg.rayConeSpread);
-    bool escaped = payload.hitT < 0.0;
-    float segmentEnd = escaped ? RAY_FAR : payload.hitT;
-
-    if (pc.debugView == DEBUG_VIEW_VOLUME_SEGMENT) {
-        // R: the segment hit nothing and therefore ran the full RAY_FAR — the case whose in-scatter should
-        // saturate. G: length, ramped to 64 blocks. B: the medium is water.
-        return float3(escaped ? 1.0 : 0.0,
-                      min(segmentEnd * (1.0 / 64.0), 1.0),
-                      mediumIsWater(seg.medium.current) ? 1.0 : 0.0);
-    }
-    if (pc.debugView == DEBUG_VIEW_WATER_CAUSTIC) {
-        // Same conditions the sun NEE applies it under: an underwater receiver whose shadow ray crossed
-        // a water surface. Black therefore means "no caustic here", which is itself an answer.
-        if (worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE || escaped
-                || !mediumFlagsWater(unpackCurrentMediumFlags(packed.pathFlags))) {
-            return float3(0.0, 0.0, 0.0);
-        }
-        float3 hitPos = seg.ro + seg.rd * segmentEnd;
-        float3 lightDir = worldPush.lightDir.xyz;
-        VisibilityResult sh = visibilityMasked(CULL_SHADOW_NO_SELF,
-                hitPos - seg.rd * SURF_BIAS, lightDir, RAY_FAR);
-        if (sh.waterHitT <= 0.0) {
-            return float3(0.0, 0.0, 0.0);
-        }
-        float3 caustic = waterCaustic(hitPos + lightDir * sh.waterHitT, lightDir, sh.waterHitT);
-        float mean = max((caustic.x + caustic.y + caustic.z) * (1.0 / 3.0), 1.0e-6);
-        return float3(0.5, 0.5, 0.5) + (caustic / mean - 1.0) * CAUSTIC_DEVIATION_GAIN;
-    }
-    if (pc.debugView == DEBUG_VIEW_VOLUME_SUNVIS) {
-        // The shadow ray enclosedSingleScatter casts, on its own. Black here means the scattering has no
-        // sun term at all, whatever the rest of the arithmetic does.
-        if (worldPush.skyProvider != SKY_PROVIDER_ATMOSPHERE) {
-            return float3(0.0, 0.0, 0.0);
-        }
-        return visibilityMasked(CULL_SHADOW_NO_SELF, seg.ro,
-                                worldPush.lightDir.xyz, RAY_FAR).transmittance;
-    }
-    // What the segment added, with nothing the path did afterwards. A water medium is never ambient, so
-    // for a submerged view this is the enclosed single-scattering term alone.
-    // Stable per-pixel noise makes the raw estimator inspectable. A frame-only seed made every pixel draw
-    // the same sample and change it in lockstep each frame, turning ordinary variance into a full-screen
-    // cyan flash. Keeping the frame out deliberately freezes that variance while this debug view is active.
-    uint debugSeed = pixelIndex ^ (uint(pc.debugView) * 2654435761u);
-    debugSeed = pcg(debugSeed);
-    return integrateSegment(seg.medium.current.extinction, unpackCurrentMediumFlags(packed.pathFlags),
-                            seg.ro, seg.rd, segmentEnd, debugSeed).inScatter;
-}
-
-SegmentIntegral cameraPrefixIntegral(uint2 dispatchIndex, uint2 dimensions,
-                                     PackedPathSegment firstLeaf, uint pixelIndex) {
-    // The prefix segment: camera to wherever the primary pass left off. Pass A consumed the interface and
-    // queued its Fresnel leaves, but deliberately left this segment's radiometry untouched. The prefix is
-    // shared by those leaves, so integrating it once here applies both in-scatter and transmittance once,
-    // through the same SegmentIntegral contract used by every other travelled medium segment.
+    // The path reservoir post-loop (M28 S2/S3): the suffix is this path's tail past the reconnection
+    // vertex, recovered exactly by subtraction -- the adds into L never changed. Then the merge: the
+    // pixel takes the weighted average of its own sample and every accepted candidate, once the
+    // candidates carry PATH_RESERVOIR_APPLY_MIN_M independent samples in total (D221: under RR a
+    // single-sample history is strictly worse than no merge). The surviving representative is then
+    // written for next frame.
     //
-    // A straight line, always. The primary pass traces one ray and resolves at most one interface, so the
-    // prefix is either zero-length (it did not split, and the queued origin is the camera's) or the one
-    // segment up to that interface. Both branches share it and it is additively independent of them, so
-    // it is integrated once here rather than per leaf. See docs/WAVEFRONT_PLAN.md.
-    CameraRay camera = cameraRay(dispatchIndex, dimensions);
-    float3 prefixOrigin = camera.origin;
-    float prefixLength = length(firstLeaf.ro - prefixOrigin);
-    bool cameraInWater = (worldPush.flags & 1u) != 0u;
-    SegmentIntegral prefix;
-    if (!cameraInWater) {
-        // The froxel answers for this stretch, because this stretch is exactly what it covers: the eye,
-        // this pixel's ray, out to a distance. Everything else in the renderer still marches, and has to —
-        // a bounce ray is not on the screen, so it has no column here to read.
-        //
-        // A lateral move on its own. The closed form it replaces is an exact integral of the same
-        // unshadowed medium, and 32 interpolated slices are not more accurate than exact. What the grid
-        // has that the closed form cannot is a place to put VISIBILITY, resolved in world-space cells and
-        // interpolated, which is the whole of M13 and the reason this is wired now rather than then: if 64
-        // slices band, or the exponential axis shows shells in the near field, that has to surface while
-        // the closed form is still here to compare against.
-        float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
-        float4 aerial = sampleAerialPerspective(screenUv, prefixLength, worldPush.fogParams.w);
-        // Bit 17 (Rt.Volumetrics.SEGMENT_SOURCE): silence the froxel's half of the fog. The alpha is
-        // kept — what this stretch of air HIDES is not in question, only what it emits.
-        prefix.inScatter = ((worldPush.flags >> 17u) & 1u) != 0u
-                ? float3(0.0, 0.0, 0.0)
-                : aerial.rgb;
-        prefix.transmittance = float3(aerial.a, aerial.a, aerial.a);
-    } else {
-        // Submerged: this is a real water segment, not ambient fog and not a zero-extinction placeholder.
-        // Its closed-form adapter returns the water in-scatter and the Beer transmittance together; Pass A
-        // no longer pre-applies either half, so the result below is the prefix's sole energy accounting.
-        // The prefix runs outside tracePath and so has no path seed of its own. Derived from the pixel
-        // and the frame so it decorrelates the same way every other sample in the renderer does.
-        uint prefixSeed = pixelIndex ^ (worldPush.frameIndex * 2654435761u);
-        prefixSeed = pcg(prefixSeed);
-        prefix = integrateSegment(waterExtinction(worldPush.waterParams.xyz), MEDIUM_FLAG_WATER,
-                                  prefixOrigin, camera.dir, prefixLength, prefixSeed);
-    }
-    return prefix;
-}
-
-void writeWaterMediumProbe(uint2 dispatchIndex, uint2 dimensions, PackedPathSegment firstLeaf,
-                           SegmentIntegral prefix, float3 leafRadiance, float3 compositeRadiance,
-                           FirstSegmentTrace firstTrace) {
-    if (pc.waterProbeAddr == 0 || any(dispatchIndex != dimensions / 2u)) {
-        return;
-    }
-
-    CameraRay camera = cameraRay(dispatchIndex, dimensions);
-    bool submerged = (worldPush.flags & 1u) != 0u;
-    float prefixLength = length(firstLeaf.ro - camera.origin);
-    float prefixLum = luminance(max(prefix.inScatter, float3(0.0, 0.0, 0.0)));
-    float leafLum = luminance(max(leafRadiance, float3(0.0, 0.0, 0.0)));
-    float compositeLum = luminance(max(compositeRadiance, float3(0.0, 0.0, 0.0)));
-
-    float measuredUpWater = 0.0;
-    float fallbackDepth = max(worldPush.waterAnchor.w - camera.origin.y, 0.0);
-    float skyDepth = fallbackDepth;
-    float skyOpen = 1.0;
-    if (submerged) {
-        // Repeats the sky term's representative up-ray for one pixel only. Recording it independently is
-        // intentional: if streamed geometry shortens this measurement, the log must show the input that
-        // changed rather than merely the resulting blue value.
-        VisibilityResult up = visibilityMasked(CULL_SECONDARY_NO_SELF, camera.origin,
-                                               float3(0.0, 1.0, 0.0), RAY_FAR);
-        measuredUpWater = up.waterHitT;
-        skyDepth = measuredUpWater > 0.0 ? measuredUpWater : fallbackDepth;
-        // The gate point itself is NOT re-derived here, deliberately, and it is the opposite call from the
-        // ray above: the ray is duplicated so a change in the measurement is visible, the gate point is
-        // shared so the probe cannot drift into reporting a query the shading never makes.
-        skyOpen = waterSurfaceSkyOpenness(camera.origin, skyDepth);
-    }
-
-    bool finiteOutput = all(prefix.inScatter == prefix.inScatter)
-            && all(prefix.transmittance == prefix.transmittance)
-            && all(leafRadiance == leafRadiance)
-            && all(compositeRadiance == compositeRadiance);
-    WaterMediumProbe probe;
-    probe.frameIndex = worldPush.frameIndex;
-    probe.flags = 1u | (submerged ? 2u : 0u) | (prefixLength > 1.0e-3 ? 4u : 0u)
-            | (finiteOutput ? 8u : 0u);
-    probe.pathFlags = firstLeaf.pathFlags;
-    probe.debugView = pc.debugView;
-    probe.prefixScatterLength = float4(prefix.inScatter, prefixLength);
-    probe.prefixTransmittance = float4(prefix.transmittance, luminance(prefix.transmittance));
-    probe.leafRadiance = float4(leafRadiance, leafLum);
-    probe.compositeRadiance = float4(compositeRadiance, prefixLum / max(compositeLum, 1.0e-8));
-    probe.skySourceOpen = float4(worldPush.mediumSkyRadiance.xyz, skyOpen);
-    probe.upwardWater = float4(measuredUpWater, skyDepth, fallbackDepth, worldPush.waterAnchor.w);
-
-    // These values are copied out of tracePath's ACTUAL first TraceRay, not reconstructed with a second
-    // traversal. firstWeightedScatter is the exact non-prefix term added to L on that iteration and gives
-    // the log a conservation check: leaf radiance cannot be below it unless later code loses energy.
-    probe.firstSegmentScatter = float4(firstTrace.inScatter, firstTrace.segmentEnd);
-    probe.firstSegmentT = float4(firstTrace.transmittance,
-                                 luminance(firstTrace.transmittance));
-    probe.firstHit = float4(firstTrace.hitT, float(firstTrace.material), float(firstTrace.escaped),
-                            float(firstTrace.mediumProfile));
-    probe.firstThroughput = float4(firstTrace.throughput,
-                                   luminance(max(firstTrace.throughput, float3(0.0, 0.0, 0.0))));
-    float3 weightedFirstScatter = firstTrace.throughput * firstTrace.inScatter;
-    probe.firstWeightedScatter = float4(weightedFirstScatter,
-            luminance(max(weightedFirstScatter, float3(0.0, 0.0, 0.0))));
-    DevicePtr<WaterMediumProbe>(pc.waterProbeAddr)[0] = probe;
-}
-
-[shader("raygeneration")]
-void main() {
-    worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-    undyedCelestialIrradiance = worldPush.lightRadiance.xyz;
-    // Preserve the CPU-pushed UNDYED peak for finite-emitter samples. The compatibility WorldPush copy is
-    // then dyed at the centre for legacy consumers; stochastic NEE applies the LUT at its sampled direction.
-    dyeCelestialLight(worldPush);
-    uint2 dispatchIndex = DispatchRaysIndex().xy;
-    uint2 dimensions = DispatchRaysDimensions().xy;
-    int2 pix = int2(dispatchIndex);
-    uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
-    ConstPtr<PackedPathSegment> queue = ConstPtr<PackedPathSegment>(pc.pathQueueAddr);
-    // Read outside the probe guard: line ~1582 splits the frame on it, and a release build
-    // must still resolve it to false rather than fail to compile.
-    bool compositePrefixDebug = pc.debugView == DEBUG_VIEW_COMPOSITE_PREFIX_AB;
-#ifdef FLUORITE_PROBES
-    // ---- DIAGNOSTIC SURFACE. Present only in a probe build; -Pfluorite.probes=false keeps every line
-    // between here and the matching #endif out of the SPIR-V entirely.
-    //
-    // Stripped rather than branched because this is a ray generation shader: a branch the driver never
-    // takes still costs the registers its live range reserves and the instruction cache its body fills,
-    // and occupancy is what pass B is short of. The debug chain below is the largest such body in the
-    // renderer.
-    if (pc.debugView != 0u && !compositePrefixDebug) {
-        // Pass A owns both rain diagnostics -- the direct-hit material/film/exposure view and the puddle
-        // storage/basin/result view -- so this stage must not write over either.
-        //
-        // BOTH, and it used to be only 26. The chain below opens with `>= DEBUG_VIEW_SKY_TRANSMITTANCE`,
-        // which 27 satisfies; no ternary arm claims it, so it fell through to the froxel default and this
-        // pass painted the froxel over pass A's puddle image every frame. The view was simply wrong for
-        // as long as it has existed, and it reads as a plausible picture, which is why nothing caught it.
-        // Naming the two constants is what surfaced it: with bare literals there was nothing to notice
-        // that 26 was handled here and 27 was not.
-        if (pc.debugView == DEBUG_VIEW_RAIN_SURFACE || pc.debugView == DEBUG_VIEW_RAIN_PUDDLE) {
-            return;
+    // SURVIVOR, NOT SUM, goes to storage: a path suffix cannot be averaged (two directions are not one
+    // direction), so the reservoir keeps one representative drawn target-proportionally, with
+    // W = targetSum / (m * t_chosen). That W is what keeps W * target(y') unbiased wherever the record
+    // is re-evaluated -- the standard RIS identity, and the reason the count m can grow while the
+    // weight stays O(1). t_chosen is the chosen sample's target WITHOUT its own stored W: the stored W
+    // multiplies whatever this vertex's re-evaluation gives next frame, so a winner's receiver-domain
+    // luminance(candValue) -- which already carries its old W -- has that W multiplied back out below
+    // (D230, audit B03: leaving it in divided every carried history by its previous W, and a static
+    // chain in the merged regime came out +16% to +5600% bright depending on the lighting's range).
+    // D219's fresh-single-sample rule still governs the INERT regime: with fewer
+    // candidates than the gate, nothing is applied and the record is written fresh, so no stale
+    // single sample ever gets re-broadcast through the temporal link.
+    if (recordPath && reconFound) {
+        float3 ownSuffix = max(L - reconLpre, float3(0.0, 0.0, 0.0));
+        float3 tRel = max(reconTpost, float3(1.0e-6, 1.0e-6, 1.0e-6));
+        float ownTarget = luminance(ownSuffix);
+        float extraCount = temporalCount + spatialCount;
+        bool merged = extraCount >= PATH_RESERVOIR_APPLY_MIN_M;
+        // The applied lane lives here, not in the candidate loop: the gate is what it counts. D223
+        // note -- S3a's restructure dropped this increment and the acceptance log then read applied
+        // zero while the merge was quietly crossing the gate on a few percent of pixels.
+        if (merged && worldPush.pathReservoirStatsAddr != 0u
+                && (((pix.y * renderSize.x + pix.x) ^ worldPush.frameIndex) & 15u) == 0u) {
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[4], 1u);
         }
-        if (pc.debugView == DEBUG_VIEW_CAMERA_PREFIX) {
-            SegmentIntegral prefix = cameraPrefixIntegral(
-                    dispatchIndex, dimensions, queue[pixelIndex], pixelIndex);
-            float3 prefixDebug = prefix.inScatter;
-            // Right-edge status strip keeps a black radiance result unambiguous:
-            //   green = submerged and a non-zero camera-to-interface prefix was reconstructed;
-            //   red   = submerged but this ray reached no consumed interface (the leaf owns the segment);
-            //   blue  = the CPU did not classify the camera as submerged.
-            if (dispatchIndex.x >= dimensions.x - max(dimensions.x / 12u, 1u)) {
-                CameraRay debugCamera = cameraRay(dispatchIndex, dimensions);
-                float debugPrefixLength = length(queue[pixelIndex].ro - debugCamera.origin);
-                bool debugCameraInWater = (worldPush.flags & 1u) != 0u;
-                prefixDebug = !debugCameraInWater
-                        ? float3(0.0, 0.0, 1.0)
-                        : debugPrefixLength > 1.0e-3
-                        ? float3(0.0, 1.0, 0.0)
-                        : float3(1.0, 0.0, 0.0);
-            }
-            outImage[pix] = float4(prefixDebug, 1.0);
-        } else if (pc.debugView >= DEBUG_VIEW_FROXEL) {
-            // Screen-space, not a path property, so these take the pixel rather than the queued record.
-            //
-            // OPENS AT FROXEL (17), and 12-16 are now unclaimed. They were the four atmosphere tables and
-            // the celestial dye -- retired once the atmosphere stopped changing, along with 25's fog noise
-            // field. The numbers were NOT reused: every devlog, every comment and every note that names a
-            // view by number stays true, and renumbering would have made all of them quietly wrong.
-            //
-            // WHICH IS WHY THE DEFAULT IS LOUD. This chain used to end in `: froxelDebug(screenUv)`, so a
-            // number no arm claimed painted the froxel -- and that is not hypothetical: view 27 fell
-            // through to it and painted over pass A's puddle image for as long as the view existed,
-            // because a froxel is a plausible-looking picture and nobody reads it as an error. Retiring
-            // six numbers creates six more chances to make exactly that mistake, so an unclaimed number
-            // now returns magenta, which is not a picture of anything.
-            float2 screenUv = (float2(dispatchIndex) + 0.5) / float2(dimensions);
-            float3 table = pc.debugView == DEBUG_VIEW_FROXEL
-                    ? froxelDebug(screenUv)
-                    : pc.debugView == DEBUG_VIEW_VOLUME_VISIBILITY
-                    // The queued record's origin is where the primary pass stopped, which is this pixel's
-                    // camera segment's far end. Taken from the queue rather than re-traced: a debug view
-                    // that traces its own ray is testing its own ray.
-                    ? volumeVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
-                    : pc.debugView == DEBUG_VIEW_FAR_VISIBILITY
-                    ? farVisibilityDebug(dispatchIndex, dimensions, queue[pixelIndex].ro)
-                    : pc.debugView == DEBUG_VIEW_WATER_SIM
-                    ? waterSimDebug(screenUv)
-                    : pc.debugView == DEBUG_VIEW_WATER_SIM_REACH
-                    ? waterSimReachDebug(unpackPathSegment(queue[pixelIndex]).ro)
-                    : pc.debugView == DEBUG_VIEW_CLOUD_PROBE
-                    // The queued record carries the ray pass A stopped on, which for a pixel looking at
-                    // sky is the camera ray itself. Taken from the queue rather than rebuilt here: a
-                    // diagnostic that constructs its own ray is testing its own ray.
-                    ? cloudDebugProbe(unpackPathSegment(queue[pixelIndex]).ro,
-                                      unpackPathSegment(queue[pixelIndex]).rd)
-                    : float3(1.0, 0.0, 1.0); // unclaimed view number
-            outImage[pix] = float4(table, 1.0);
-        } else if (pc.debugView >= DEBUG_VIEW_VOLUME_INSCATTER) {
-            outImage[pix] = float4(volumeDebug(queue[pixelIndex], pixelIndex), 1.0);
+        if (merged) {
+            // The pixel sees the candidate-weighted average (each candidate standing for its count);
+            // own luminance above stays the fresh sample's own target, unbias either way.
+            float3 applied = (ownSuffix + temporalCount * temporalValue + spatialValue)
+                    / (1.0 + extraCount);
+            L = reconLpre + applied;
         }
-        return; // pass A owns the guide visualizations
-    }
-#endif
-    uint spp = max(worldPush.spp, 1u);
-    float3 frameRadiance = float3(0.0, 0.0, 0.0);
-    uint recordIndex = pixelIndex;
-    PathSegment firstQueuedSegment = unpackPathSegment(queue[pixelIndex]);
-    FirstSegmentTrace actualFirstTrace = emptyFirstSegmentTrace(
-            firstQueuedSegment, unpackActiveMediumFlags(queue[pixelIndex].pathFlags));
-    bool captureProbe = pc.waterProbeAddr != 0 && all(dispatchIndex == dimensions / 2u);
-
-    SegmentIntegral prefix = cameraPrefixIntegral(
-            dispatchIndex, dimensions, queue[pixelIndex], pixelIndex);
-
-    // One nibble per reuse depth: .x counts where a stored reservoir was looked at, .y where it was
-    // accepted. Accumulated across every path of this pixel and folded into the frame's totals once,
-    // below, so the per-pixel cost of the diagnostic is register arithmetic and nothing else.
-    uint4 reuseCounts = uint4(0u, 0u, 0u, 0u);
-    for (uint leaf = 0u; leaf < MAX_PATH_SEGMENTS; ++leaf) {
-        PackedPathSegment packed = queue[recordIndex];
-        // tracePath owns primitive active state and leaves this transport record unchanged, so all SPP
-        // can share one unpack without inheriting a previous sample's dielectric transitions.
-        PathSegment segment = unpackPathSegment(packed);
-        for (uint s = 0u; s < spp; ++s) {
-            bool captureFirst = captureProbe && leaf == 0u && s == 0u;
-            FirstSegmentTrace tracedFirst;
-            frameRadiance +=
-#ifdef FLUORITE_PATH_REUSE
-                    tracePathReuse(segment, unpackActiveMediumFlags(packed.pathFlags),
-#else
-                    tracePath(segment, unpackActiveMediumFlags(packed.pathFlags),
-#endif
-                                       uint2(pix), s + leaf * spp, dimensions,
-                                       captureFirst, tracedFirst, reuseCounts);
-            if (captureFirst) {
-                actualFirstTrace = tracedFirst;
-            }
+        // Survivor: target-proportional over own and the two shift representatives.
+        float totalTarget = ownTarget + temporalSum + spatialTargetSum;
+        bool temporalWins = false;
+        bool spatialWins = false;
+        if (merged) {
+            float draw = rndf(seed) * totalTarget;
+            temporalWins = temporalSum > 0.0 && draw >= ownTarget
+                    && draw < ownTarget + temporalSum;
+            spatialWins = !temporalWins && spatialTargetSum > 0.0
+                    && draw >= ownTarget + temporalSum;
         }
-        if ((packed.pathFlags & PATH_HAS_NEXT) == 0u) {
-            break;
-        }
-        // Recomputed rather than stored. world_primary builds the split record's index from exactly this
-        // expression, so the two have to keep agreeing — which they do structurally, both being derived
-        // from the same dispatch dimensions, rather than because a uint was carried across the pass
-        // boundary to say it.
-        recordIndex = dimensions.x * dimensions.y + pixelIndex;
-    }
-    float3 leafRadiance = prefix.transmittance * (frameRadiance / float(spp));
-    float3 compositeRadiance = prefix.inScatter + leafRadiance;
-    if (compositePrefixDebug) {
-        if (dispatchIndex.y >= dimensions.y * 3u / 4u) {
-            float prefixLum = luminance(max(prefix.inScatter, float3(0.0, 0.0, 0.0)));
-            float compositeLum = luminance(max(compositeRadiance, float3(0.0, 0.0, 0.0)));
-            float fraction = prefixLum / max(compositeLum, 1.0e-8);
-            compositeRadiance = saturate(float3(fraction * 8.0, fraction * 2.0, fraction));
+        DevicePtr<PackedPathReservoir> store =
+                DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
+        uint writeSlot = pathReservoirSlot(pix.y * renderSize.x + pix.x,
+                                           renderSize.x * renderSize.y, worldPush.frameIndex & 1u);
+        uint prevParity = (worldPush.frameIndex & 1u) ^ 1u;
+        if (temporalWins) {
+            PackedPathReservoir prev = store[pathReservoirSlot(temporalReadPixel,
+                    renderSize.x * renderSize.y, prevParity)];
+            float writtenM = 1.0 + extraCount;
+            float chosenTarget = temporalSum / temporalCount;
+            // chosenTarget is luminance(candValue), which already carries prev's W -- multiply it back
+            // out (see the banner above: the stored W must not be divided by itself).
+            store[writeSlot] = packPathReservoir(prev.pathSeed, prev.reconPos,
+                    octDecode(unpackUnorm16x2(prev.reconNrm)),
+                    unpackUnorm16x2(prev.wi), unpackRgb9e5(prev.li),
+                    writtenM, totalTarget,
+                    chosenTarget > 0.0
+                            ? asfloat(prev.W) * totalTarget / (writtenM * chosenTarget) : 0.0,
+                    prev.reconIndex);
+        } else if (spatialWins) {
+            PackedPathReservoir prev = store[spatialWinSlot];
+            float writtenM = 1.0 + extraCount;
+            // Same correction as the temporal winner: spatialWinTarget carries the neighbour's W.
+            store[writeSlot] = packPathReservoir(prev.pathSeed, prev.reconPos,
+                    octDecode(unpackUnorm16x2(prev.reconNrm)),
+                    unpackUnorm16x2(prev.wi), unpackRgb9e5(prev.li),
+                    writtenM, totalTarget,
+                    spatialWinTarget > 0.0
+                            ? asfloat(prev.W) * totalTarget / (writtenM * spatialWinTarget) : 0.0,
+                    prev.reconIndex);
         } else {
-            // Neighbouring 32-pixel bands compare almost the same view direction. A visible seam means the
-            // prefix materially changes the raw HDR composite before RR/exposure/tonemap.
-            bool includePrefix = ((dispatchIndex.x / 32u) & 1u) == 0u;
-            compositeRadiance = includePrefix ? compositeRadiance : leafRadiance;
+            // Own survives, or nothing merged: a fresh single-sample record (D219), except that a
+            // merged write carries the accepted candidates' counts in m and their targets in
+            // targetSum -- the accumulation the application gate and next frame's weights read.
+            float writtenM = merged ? 1.0 + extraCount : 1.0;
+            float writtenTarget = merged ? totalTarget : ownTarget;
+            store[writeSlot] = packPathReservoir(pathSeedBase, reconPos, reconNrm, reconWi,
+                    ownSuffix / tRel, writtenM, writtenTarget,
+                    writtenTarget > 0.0 ? writtenTarget / (writtenM * ownTarget) : 0.0,
+                    reconDepth);
         }
+    } else if (recordPath) {
+        // No reconnection vertex this frame -- sky, a mirror to the sky, the bounce cap, the walk lobe,
+        // a microfacet reflected below the surface. Write an EMPTY record rather than leave the slot
+        // alone: unlike M24's DI store, whose reuse re-traces visibility, a path record carries radiance,
+        // and a slot this frame does not reach would hand its neighbours and the temporal link a suffix
+        // of arbitrary age (D230, audit B05). Only leaf 0 / sample 0 ever gets here, once per frame.
+        DevicePtr<PackedPathReservoir> store =
+                DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
+        store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,
+                                worldPush.frameIndex & 1u)] = emptyPathReservoir();
     }
-#ifdef FLUORITE_PROBES
-    restirStatsAccumulate(reuseCounts, pixelIndex);
-    writeWaterMediumProbe(dispatchIndex, dimensions, queue[pixelIndex], prefix,
-                          leafRadiance, prefix.inScatter + leafRadiance, actualFirstTrace);
-#endif
-    outImage[pix] = float4(compositeRadiance, 1.0);
+    return L;
 }
