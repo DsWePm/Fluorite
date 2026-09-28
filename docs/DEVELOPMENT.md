@@ -817,7 +817,7 @@ d0 的重投影已实现并实测（`projectPrevNdc` 移到 `world_core`，两�
 - 隐身穿甲、名牌 ghost。
 - NRD + FSR、LOD。
 
-### 8.13 M28：统一 ReSTIR 路径复用骨架与雾照明重构（方向已批，未开工）
+### 8.13 M28：统一 ReSTIR 路径复用骨架与雾照明重构（进行中；S3 按 D230 重建）
 
 依据：2026-09-02 对七篇 2025–2026 论文（ReSTIR PT Enhanced、Stochastic Pairwise MIS、Multi-Layer Reservoir Splatting、Compatibility-Guided Neighbor Selection、ReSTIR PG、LoD-aware ReSTIR、ReSTIR BDPT）的精读与设计拷问；完整思路与逐篇映射见 [Papers/M28-restir-backbone-survey.md](../Papers/M28-restir-backbone-survey.md)。实施期决策按时间线取 D209+。
 
@@ -841,7 +841,7 @@ d0 的重投影已实现并实测（`projectPrevNdc` 移到 `world_core`，两�
 | S1 | 可见性网格 → 方向性天空场 + 出格雾段读钳制场（`volumetricSwitches` 专属字，D211 起） | **已关闭（2026-09-07）**：A/B 与 visBake 归档（D212）＋移动闪烁邻居播种修复（D213，用户复验通过）；D214 遗留的钳制暗区接棒给 S1.5 |
 | S1.5 | 第二级粗网格（远场结构，D214 用户裁决）：4 格/格 ±128 格、世界锚定、细网格钳制值自举、轮询刷新 | 落地并消除移动闪烁；**山体旁残余暗区未解决（4 格也无改善，坡旁偏差假设被否）**，已挂 [Issue #77](https://github.com/DsWePm/Fluorite/issues/77) 等真值探针取证后重启；默认关，开关状态逐帧入 frame.csv |
 | S2 | 统一路径 reservoir：初始采样（M26 池 + alias/RIS 出候选）+ temporal | 默认关；与 M24 并行期盯显存峰值 |
-| S3 | spatial 复用 + 决策 6 四项技术 | **审计后未通过验收**（D229）：修复了邻域索引、重复合并与电介质前驱资格；A-①b 的重连移位因缺 Eq. 2 旧路径密度而暂停，`composite.path-replay` 开档暂拒绝深链空间候选，关档维持原 in-place retarget 基线。兼容度 K→M WRS、双 ray-footprint、duplication map 均未完成；需重测视觉与 GPU 时间后再裁决。 |
+| S3 | spatial 复用 + 决策 6 四项技术 | **判定重建**（D230，2026-09-26 复审）：in-place 估计量本身有偏且不是已批设计（重连顶点差一位，B01）；静止场景空间复用被时域计数饿死（B02）；幸存者 W 链偏亮（B03，Phase 0 已修）；陈旧槽（B05，已修）。用户裁决按论文完整 hybrid + 随机重放 + pairwise MIS 重建：path-tree 单事件样本、80 B 记录、编译期变体 `FLUORITE_PATH_REUSE`，切片 R0–R6（设计记录 D231）。决策 6 四项随重建落地。报告见 `F:\MC\Shader\evidence\M28-ReSTIR-audit-2026-09-26.md`。 |
 | S4 | 表面 DI 迁入统一链，M24 reservoir 退役 | 铁律 8 逐开关成立 |
 | S5 | 太阳/天体入池 | 定制物理逐项过契约测试 |
 | S6 | 雾照明接统一链路 + 方向场；**含 D210 的水闭式解拆段**（段跨开阔度遮挡边界时拆分，顺带消除浅顶暗/深顶亮的不一致） | 雾观感可调性是验收重点（M25 教训）；水拆段自备开关与验收 |
@@ -855,6 +855,8 @@ d0 的重投影已实现并实测（`projectPrevNdc` 移到 `world_core`，两�
 - 雾段照明噪声形态未知（一个错误天空样本影响整段 in-scatter），S1 的网格连续性正是对此的对冲；S6 验收重点观察。
 
 **S2 设计（定稿 2026-09-09，用户裁决 B：完整 hybrid + 随机重放）**：
+
+> 下文是 09-09 的设计原文，仅作追溯。实现中的「重连顶点 = 首个密度有限的不透明顶点（主流像素即 x₁）」「校验即 v1 移位」与「reconIndex == 0 精确移位」已被 D229/D230 判定不成立；「雅可比 v1 = cos 比值、固定机位收敛 = 无偏性验收」只对时域恒等移位成立。重建以 D230 的用户裁决（完整 hybrid + 随机重放、pairwise MIS、path-tree 单事件样本、80 B 记录、编译期变体）为准。
 
 - **机制**：ReSTIR PT 完整形态。每像素一个路径 reservoir（双缓冲），存：路径种子（重放基）、重连顶点位置+法线、入射辐亮度（Rgb9e5）+方向（oct16×2）、M、target 和、重连顶点序号。约 40–48 B/像素/缓冲，双缓冲 ~200 MB @1080p，**仅开关开启时分配**（关档零显存，铁律 8 对显存同样成立）。
 - **关键架构事实**（推翻 D211 前的担忧）：Pass B 是 raygen 内联 `traceRay` 弹射循环，**重放 = 主命中处的内联子循环**（按存储种子重放邻居前缀、内联追踪到重连顶点、雅可比逐顶点累计）——不需要独立 dispatch，不需要动 48B 段队列。`PathSegment.seed` 全程携带且逐顶点确定性推进，重放可行性已验证。

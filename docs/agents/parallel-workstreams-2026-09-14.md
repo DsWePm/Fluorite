@@ -121,6 +121,8 @@
 
 ## 4. 工作流 A：M28 S3 收尾（ReSTIR 主干）
 
+> **2026-09-26 起 A 线由新会话接手，本节任务定义已被取代。** 复审（D230，报告 `F:\MC\Shader\evidence\M28-ReSTIR-audit-2026-09-26.md`）判定：in-place 估计量有偏且不是已批设计，本节 A-①b 所称「`reconIndex == 0` 精确移位」不成立。用户裁决按论文完整 hybrid + 随机重放 + pairwise MIS 重建（path-tree 单事件样本、80 B 记录——即解除 §3.2 对 `PackedPathReservoir` 的冻结——编译期变体 `FLUORITE_PATH_REUSE`）。A-①c、A-③ 并入重建切片 R0–R6，以 D230/D231 为准。下文仅作追溯。
+
 **目标**：把 S3 剩余的三项决策 6 技术收尾，让「静止 + 邻居≥2」的降噪收益在用户复验中成立且无偏。
 
 **必读**（全体的之外）：`devlog/M28-restir-backbone.md` 全文（重点 D216–D223）；`Papers/M28-restir-backbone-survey.md` §1.1/§2.2（Enhanced 论文细节查 `Papers/_txt/` 的 lin2026restirptenhanced）；`shaders/world/restir_pt.slang` 现状（`evalPathSuffixCandidate`、幸存者抽签、W 恒等式注释）；`world.rgen.slang` 的空间循环与时域块。
