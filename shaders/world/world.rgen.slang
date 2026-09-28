@@ -1006,7 +1006,7 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
             // ---- spatial candidates (S3a): the independent samples that push a history past the
             // application gate. Accumulate values, counts and target sums; stream a survivor draw
             // among the accepted neighbours (target-proportional) for the post-loop write.
-            for (uint i = 0u; i < worldPush.restirSpatialNeighbours
+            for (uint i = 0u; i < pathReuseSpatialNeighbours()
                               && temporalCount + spatialCount < PATH_RESERVOIR_M_CAP; i++) {
                 int2 centre = int2(int(readPixel % renderSize.x), int(readPixel / renderSize.x));
                 int2 q = centre + spatialNeighbourOffset(seed);
@@ -1026,22 +1026,11 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                 float3 candValue;
                 float candCount;
                 float candMeanTarget;
-                bool accepted;
-                if (candidate.reconIndex > 0u && worldPush.pathReplayEnabled != 0u) {
-                    // D227's reconnected estimator used an absolute connection geometry term where
-                    // Enhanced Eq. 2 requires a ratio of both path densities. The 48-byte record does
-                    // not carry the old anchor/densities needed to form it. While replay is requested,
-                    // reject these candidates rather than apply a known-invalid estimate. Off retains
-                    // the pre-D227 in-place retarget path for the existing A/B baseline.
-                    accepted = false;
-                    if (sampled) {
-                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[6], 1u);
-                    }
-                } else {
-                    accepted = evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
-                            hitPos, n, reconTpre, footprint, reconDepth, true,
-                            seed, candidate, candValue, candCount, candMeanTarget);
-                }
+                // composite.path-replay's reject branch retired with the switch (D231): what remains
+                // is the in-place evaluation its off state always ran, until R2 retires that too.
+                bool accepted = evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
+                        hitPos, n, reconTpre, footprint, reconDepth, true,
+                        seed, candidate, candValue, candCount, candMeanTarget);
                 if (!accepted) {
                     continue;
                 }

@@ -919,13 +919,18 @@ public final class FluoriteConfig {
             public static final BooleanSetting PATH_RESERVOIR =
                     bool("fluorite.rt.composite.pathReservoir", "composite.path-reservoir", false);
             /**
-             * Legacy M28 A-01b switch. The reconnected estimator is suspended after the Eq. 2 audit:
-             * its 48-byte record lacks the old-path density needed for a Jacobian ratio. On rejects
-             * spatial candidates with reconIndex > 0; off (default) preserves the pre-D227 in-place
-             * retarget baseline. This switch does not currently perform random replay.
+             * M28 D231 (G14): how many screen-space neighbours the PATH reuse borrows from, its own dial.
+             *
+             * <p>It used to share composite.restir-spatial-neighbours with M24's light reservoirs, which
+             * meant neither could be tuned without moving the other's cost. It reaches the shader as
+             * bits 8-11 of the path reuse's switch word (WorldPush offset 1296), so it adds no lane.
+             * Default 0: the path reservoir switch alone gathers no spatial candidates. The legacy
+             * composite.path-replay switch it replaces is retired -- its only remaining effect was to
+             * reject deep spatial candidates, and the rebuild (D231) retires the estimator it guarded.
              */
-            public static final BooleanSetting PATH_REPLAY =
-                    bool("fluorite.rt.composite.pathReplay", "composite.path-replay", false);
+            public static final IntSetting PATH_REUSE_SPATIAL_NEIGHBOURS =
+                    clampedInt("fluorite.rt.pathReuseSpatialNeighbours",
+                            "composite.path-reuse-spatial-neighbours", 0, 0, 8);
 
 
             /**

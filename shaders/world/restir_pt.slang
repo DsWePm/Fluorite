@@ -76,6 +76,17 @@ public float pathCompatibilityScore(float3 storedNrm, float3 n, float3 drift, fl
     return score * exp(-excess2);
 }
 
+// ---- The path reuse's switch word (D231, G14): WorldPush.pathReplayEnabled is a bitfield now, whose
+// fields arrive with the slices that consume them. RtComposite.pathReuseSwitchWord packs the same shift
+// and mask; RtPathReplayContractTest pins the two spellings together.
+public static const uint PATH_REUSE_NEIGHBOURS_SHIFT = 8u;
+public static const uint PATH_REUSE_NEIGHBOURS_MASK = 15u;
+
+/** The path reuse's own spatial neighbour count -- no longer M24's restirSpatialNeighbours. */
+public uint pathReuseSpatialNeighbours() {
+    return (worldPush.pathReplayEnabled >> PATH_REUSE_NEIGHBOURS_SHIFT) & PATH_REUSE_NEIGHBOURS_MASK;
+}
+
 /**
  * How much history one path reservoir may accumulate, as an effective sample count.
  *

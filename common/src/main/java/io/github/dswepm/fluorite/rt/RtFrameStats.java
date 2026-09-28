@@ -164,6 +164,8 @@ public final class RtFrameStats {
                     // switch on threw out of count() and reverted rendering to vanilla -- which is what
                     // the registry test now catches instead.
                     "pathReservoir",
+                    // D231 (G14): the path reuse's packed switch word -- one column for every sub-switch.
+                    "pathReuseSwitches",
                     "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements"};
 
     public static final Profile FRAME = new Profile("frame", FRAME_STAGE_NAMES, FRAME_COUNTER_NAMES, true);

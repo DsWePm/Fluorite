@@ -1496,6 +1496,21 @@ public final class RtComposite {
         pathStats.prepare(ctx, PUSH_RING, pathReservoirStore != null);
         return pathStats.address();
     }
+
+    /** Bit position and width of the path reuse's spatial neighbour count in its switch word. */
+    static final int PATH_REUSE_NEIGHBOURS_SHIFT = 8;
+    static final int PATH_REUSE_NEIGHBOURS_MASK = 0xF;
+
+    /**
+     * The path reuse's switch word (D231, G14): one uint at WorldPush offset 1296, a bitfield whose
+     * fields arrive with the slices that consume them, so no sub-switch exists before it does anything
+     * (D211's lesson). Today: bits 8-11 = the spatial neighbour count. restir_pt.slang spells the same
+     * shift and mask; RtPathReplayContractTest pins the two spellings together.
+     */
+    static int pathReuseSwitchWord() {
+        int neighbours = FluoriteConfig.Rt.Composite.PATH_REUSE_SPATIAL_NEIGHBOURS.value();
+        return (neighbours & PATH_REUSE_NEIGHBOURS_MASK) << PATH_REUSE_NEIGHBOURS_SHIFT;
+    }
     /** Smallest patch an entity disturbs, in BLOCKS — so the size of a splash does not follow the grid. */
     private static final double WATER_IMPULSE_MIN_RADIUS = 0.5;
     /** How far from the feet still counts as touching water, in blocks. Contact is by definition close. */
@@ -3162,6 +3177,9 @@ public final class RtComposite {
             // what a frame was told to do.
             RtFrameStats.FRAME.count("pathReservoir",
                     FluoriteConfig.Rt.Composite.PATH_RESERVOIR.value() ? 1 : 0);
+            // D231 (G14): the path reuse's packed switch word, from the same function that fills its
+            // WorldPush lane -- every sub-switch a slice adds is captured with no new column.
+            RtFrameStats.FRAME.count("pathReuseSwitches", pathReuseSwitchWord());
             if (skyPreset.cloudsEnabled() && FluoriteConfig.Rt.Volumetrics.CLOUDS.value()) {
                 flags |= 1 << 30; // volumetric clouds (M11)
                 // Bits 2-3: how much march a ray that is not the first of its path may spend. A cost
@@ -3358,10 +3376,9 @@ public final class RtComposite {
                     reservoirStore != null ? reservoirPaths : 0,
                     // Not read back out of an allocation, because it allocates nothing: a neighbour is a
                     // read of a slot that already exists, so this one can follow the knob directly.
-                    // S3a: the path reservoir's spatial shift shares the knob -- M24's own reuse checks
-                    // its store's address first and returns before reading this, so a live path store
-                    // publishing the count cannot reach it.
-                    reservoirStore != null || pathReservoirStore != null
+                    // M24's light reservoirs only: the path reuse has had its own neighbour count since
+                    // D231 (G14), carried in its switch word below.
+                    reservoirStore != null
                             ? FluoriteConfig.Rt.Composite.RESTIR_SPATIAL_NEIGHBOURS.value() : 0,
                     // M26's presampled pool. Read back out of the ALLOCATION rather than from the
                     // knob, like the reservoir shape above: the shader indexes it by a cell's rank, so a
@@ -3409,9 +3426,10 @@ public final class RtComposite {
                     // And its acceptance counters, under the same diagnostics.restir-stats checkbox as
                     // the M24 store's -- one "ReSTIR stats" switch, two stores measured.
                     pathReservoirStatsAddress(ctx),
-                    // A-01b: the reconnected shift's isolation switch, published as a word for the
-                    // same reason the store address is -- the shader reads it where its candidates do.
-                    FluoriteConfig.Rt.Composite.PATH_REPLAY.value() ? 1 : 0
+                    // D231 (G14): the path reuse's switch word, in the lane A-01b's isolation switch
+                    // used to occupy (WorldPush offset 1296 is pinned by M30's layout test, so the lane
+                    // keeps its name and changes meaning). See pathReuseSwitchWord.
+                    pathReuseSwitchWord()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

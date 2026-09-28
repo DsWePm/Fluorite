@@ -488,9 +488,11 @@ public struct WorldPush {
      */
     public uint64_t pathReservoirStatsAddr;
     /**
-     * Legacy composite.path-replay switch. The D227 reconnected estimator is suspended because its
-     * connection weight lacks the old-path density in Enhanced Eq. 2. On rejects reconIndex > 0
-     * spatial candidates; off preserves the pre-D227 in-place retarget baseline.
+     * The path reuse's SWITCH WORD (D231, G14) -- a bitfield, despite the name. The lane was
+     * composite.path-replay's isolation switch until that switch retired; M30's layout test pins this
+     * offset (1296) by the generated name, so the name stays and the meaning changed. Fields arrive with
+     * the slices that consume them: bits 8-11 = the path reuse's own spatial neighbour count (read
+     * through pathReuseSpatialNeighbours in restir_pt.slang; RtComposite.pathReuseSwitchWord packs it).
      * Tail-appended under the parallel freeze order's sole exemption; offsets above are untouched.
      */
     public uint pathReplayEnabled;

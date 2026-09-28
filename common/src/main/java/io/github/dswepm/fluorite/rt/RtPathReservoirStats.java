@@ -33,7 +33,7 @@ import java.util.Locale;
  * ({@code PUSH_RING} frames later, no fence of its own -- the RtRestirStats arrangement verbatim).
  */
 public final class RtPathReservoirStats {
-    /** Temporal read/usable, spatial attempted/usable, applied, deep-recon, replay rejected/valid. */
+    /** Temporal read/usable, spatial attempted/usable, applied, deep-recon; lanes 6-7 are free (D231). */
     public static final int LANES = 8;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
@@ -132,9 +132,7 @@ public final class RtPathReservoirStats {
         long sUsable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 12L));
         long applied = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 16L));
         long deepRecon = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 20L));
-        long replayAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 24L));
-        long replayValid = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 28L));
-        if (tRead == 0L && sAttempt == 0L && replayAttempt == 0L) {
+        if (tRead == 0L && sAttempt == 0L) {
             return; // nothing attempted: a sky view or a menu carries no information either way
         }
         long now = System.nanoTime();
@@ -145,14 +143,13 @@ public final class RtPathReservoirStats {
         // Attempts travel with the rates (RtRestirStats's reasoning); the two rates are reported
         // apart because the shifts answer different questions. Applied is the D221 gate's counter --
         // zero while no history carries enough independent candidates, which is the honest reading.
-        // deep-recon counts accepted candidates whose receiver reconDepth is above zero. The legacy
-        // replay-attempt lane now counts deep spatial candidates rejected while the invalid D227
-        // estimator is suspended; the valid lane stays zero until a derived shift replaces it.
+        // deep-recon counts accepted candidates whose receiver reconDepth is above zero. Lanes 6-7
+        // held composite.path-replay's counts and are free since it retired (D231): the rebuild's
+        // slices claim lanes as they add the counters that fill them, never ahead of them.
         FluoriteMod.LOGGER.info(
                 "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, "
-                        + "deep-recon {}, replay-suspended {} ({})",
-                tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon,
-                replayAttempt, rate(replayValid, replayAttempt));
+                        + "deep-recon {}",
+                tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon);
     }
 
     private static String rate(long part, long total) {

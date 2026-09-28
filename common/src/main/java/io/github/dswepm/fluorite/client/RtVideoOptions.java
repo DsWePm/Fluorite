@@ -96,7 +96,8 @@ public final class RtVideoOptions {
                 // menu.
                 case TRACING -> List.of(
                         Section.of(spp(), maxBounces(), restirReuseDepth(),
-                                restirSpatialNeighbours(), pathReservoir(), dynamicRisCandidates(),
+                                restirSpatialNeighbours(), pathReservoir(), pathReuseSpatialNeighbours(),
+                                dynamicRisCandidates(),
                                 emitterBrightness(), emitterTemperature(),
                                 sunSize(), entities(), particles(),
                                 particleShadows()),
@@ -896,6 +897,24 @@ public final class RtVideoOptions {
      */
     private static OptionInstance<Boolean> pathReservoir() {
         return bool("fluorite.options.rt.pathReservoir", FluoriteConfig.Rt.Composite.PATH_RESERVOIR);
+    }
+
+    /**
+     * The path reuse's own spatial neighbour count (D231, G14), beside the switch it only means anything
+     * under. Split from M24's dial so the two stores can be tuned -- and measured -- apart.
+     */
+    private static OptionInstance<Integer> pathReuseSpatialNeighbours() {
+        IntSetting setting = FluoriteConfig.Rt.Composite.PATH_REUSE_SPATIAL_NEIGHBOURS;
+        return new OptionInstance<>(
+            "fluorite.options.rt.pathReuseSpatialNeighbours",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("fluorite.options.rt.pathReuseSpatialNeighbours.tooltip")),
+            (caption, value) -> value == 0
+                    ? Options.genericValueLabel(caption, CommonComponents.OPTION_OFF)
+                    : Options.genericValueLabel(caption, value),
+            new OptionInstance.IntRange(0, 8),
+            Math.clamp(setting.value(), 0, 8),
+            setting::set);
     }
 
     /**

@@ -1,5 +1,6 @@
 package io.github.dswepm.fluorite.rt;
 
+import io.github.dswepm.fluorite.FluoriteConfig;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -112,16 +113,14 @@ final class RtPathReplayContractTest {
     }
 
     @Test
-    void theInvalidReconnectedShiftIsSuspended() throws IOException {
+    void theInvalidReconnectedShiftStaysGone() throws IOException {
         String world = source("shaders/world/world.rgen.slang");
-        // The 48-byte record cannot supply the old connection density required by Enhanced Eq. 2.
-        // A nonzero legacy switch must reject those candidates until a derived estimator exists.
-        String guard = "if (candidate.reconIndex > 0u && worldPush.pathReplayEnabled != 0u) {";
-        int guardedBranch = world.indexOf(guard);
-        int fallback = world.indexOf("} else {\n                    accepted = evalPathSuffixCandidate(", guardedBranch);
-        assertTrue(guardedBranch >= 0 && fallback > guardedBranch);
-        assertTrue(world.substring(guardedBranch, fallback).contains("accepted = false;"));
+        // D229 removed D227's reconnected estimator (an absolute geometry term where Enhanced Eq. 2
+        // wants a density ratio); D231 retired the composite.path-replay switch that rejected the deep
+        // candidates it used to serve. Neither may come back except as the rebuild's derived shift.
         assertFalse(world.contains("evalReconnectedSuffixCandidate("));
+        assertFalse(world.contains("worldPush.pathReplayEnabled != 0u"),
+                "the switch word is a bitfield now; testing it as a whole reads every future field");
         String restirPt = source("shaders/world/restir_pt.slang");
         assertFalse(restirPt.contains("public struct ReplayedPrefix"));
         assertFalse(restirPt.contains("float geometry = cosStored * cosHere"));
@@ -157,10 +156,37 @@ final class RtPathReplayContractTest {
     }
 
     @Test
-    void thePathReplaySwitchExistsAndDefaultsToOff() throws IOException {
+    void thePathReuseCarriesItsOwnNeighbourCountInItsSwitchWord() throws IOException {
+        // D231 (G14): composite.path-replay is retired and its WorldPush lane is the path reuse's
+        // switch word. Its first field is the path reuse's own spatial neighbour count, split from
+        // M24's dial so the two stores can be tuned and measured apart.
         String config = source("common/src/main/java/io/github/dswepm/fluorite/FluoriteConfig.java");
-        assertTrue(config.contains("PATH_REPLAY ="));
-        assertTrue(config.contains("\"composite.path-replay\", false"));
+        assertFalse(config.contains("PATH_REPLAY ="), "composite.path-replay is retired");
+        assertEquals(0, FluoriteConfig.Rt.Composite.PATH_REUSE_SPATIAL_NEIGHBOURS.defaultValue().intValue(),
+                "the path reservoir switch alone gathers no spatial candidates");
+
+        // The Java packer and the Slang reader spell the same field: pinned by value, not by prose.
+        String restirPt = source("shaders/world/restir_pt.slang");
+        assertTrue(restirPt.contains("PATH_REUSE_NEIGHBOURS_SHIFT = "
+                + RtComposite.PATH_REUSE_NEIGHBOURS_SHIFT + "u;"));
+        assertTrue(restirPt.contains("PATH_REUSE_NEIGHBOURS_MASK = "
+                + RtComposite.PATH_REUSE_NEIGHBOURS_MASK + "u;"));
+        assertTrue(restirPt.contains(
+                "(worldPush.pathReplayEnabled >> PATH_REUSE_NEIGHBOURS_SHIFT) & PATH_REUSE_NEIGHBOURS_MASK"));
+        assertTrue(RtComposite.PATH_REUSE_NEIGHBOURS_MASK >= 8,
+                "the field must hold the dial's whole range");
+
+        String world = source("shaders/world/world.rgen.slang");
+        assertTrue(world.contains("i < pathReuseSpatialNeighbours()"),
+                "the path reuse's spatial loop reads its own count");
+        String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
+        assertFalse(composite.contains("reservoirStore != null || pathReservoirStore != null"),
+                "M24's restirSpatialNeighbours lane serves the light reservoirs only");
+        assertTrue(composite.contains("pathReuseSwitchWord()\n            ).write(push);")
+                        || composite.contains("pathReuseSwitchWord()\r\n            ).write(push);"),
+                "the switch word fills the WorldPush lane");
+        // D211: the capture reads the very function that fills the lane.
+        assertTrue(composite.contains("RtFrameStats.FRAME.count(\"pathReuseSwitches\", pathReuseSwitchWord());"));
     }
 
     @Test
