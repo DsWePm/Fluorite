@@ -4,9 +4,359 @@
 // of this file and stays byte-for-byte the tracer that shipped before S2; a switch-off frame binds it.
 //
 // This is tracePath with the path reservoir recorded and reused. Everything that is NOT the path
-// reservoir must stay identical to tracePath: RtPathReplayContractTest checks the shipped body survives here,
+// reservoir must stay identical to tracePath: RtPathReplayContractTest checks the shipped body survives here
 // and a divergence would make the switch compare two different tracers rather than reuse against none.
 // The rebuild's slices (R1+) restructure this copy only.
+
+// ---- Vertex decisions, ONE spelling for the bounce loop below and the hybrid shift's replay (R1b).
+//
+// A replay re-drives a path's decisions on another pixel's geometry, so it has to decide exactly as the
+// loop that recorded the path did: same lobe mixture, same sampling, same medium bookkeeping, same cone.
+// Two spellings of that would drift apart silently -- a replayed path that decides differently is not
+// an error, it is a wrong weight (the file banner's warning, and D217's risk 3). So the decisions live
+// here and both callers use them. Every line below is the bounce loop's own, moved verbatim; the random
+// stream is a parameter so the caller decides where the draws come from.
+
+/**
+ * Resolve a dielectric interface (water, glass, ice): the rippled normal, the Fresnel choice between
+ * reflection and refraction, the new ray, the medium stack, and the rough interface's G1 weight.
+ * Reads the payload of the hit being resolved. False when the path cannot continue.
+ */
+bool reuseResolveDielectric(uint material, float3 hitPos, float3 n, float rayConeWidth, bool waterWaves,
+                            inout float3 ro, inout float3 rd, inout float3 throughput,
+                            inout float currentIor, inout float3 currentExtinction,
+                            inout float outerIor, inout float3 outerExtinction,
+                            inout uint activeMediumFlags, inout float rayConeSpread, inout uint stream) {
+    bool isWater = material == MATERIAL_WATER;
+    bool entering = payloadDielectricEntering();
+    float3 tint = payload.albedo;
+    float transmission = clamp(payloadTransmission(), 0.0, 1.0);
+
+    // Ripple the (near-flat) surface normal before any Fresnel/guide use → glints, broken
+    // reflections, wobbling refraction. The wave domain is world-stable: rebased hit XZ plus the
+    // pushed anchor (terrain origin mod 4096) survives the per-move terrain rebase.
+    float3 geometricNormal = n; // unrippled; ray origins offset along this
+    if (isWater && waterWaves) {
+        // The hit's own y rides along: the field is two-dimensional and has to be told which
+        // surface it belongs to, or every water in this column ripples together.
+        float3 waterDomain = float3(hitPos.x + worldPush.waterAnchor.x, hitPos.y,
+                                    hitPos.z + worldPush.waterAnchor.y);
+        float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.12);
+        n = applyWaterWaves(geometricNormal, waterDomain,
+                            worldPush.waterParams.w, waterFootprint);
+    }
+    if (isWater) {
+        float impactFootprint = surfaceFootprint(rayConeWidth, rd, geometricNormal);
+        n = applyRainImpactRipples(hitPos, n, openWaterRainImpact(hitPos), impactFootprint);
+    }
+
+    // The medium this face opens into, and the one it returns to on the way out — which is what
+    // the stack remembers.
+    float enteredIor = max(payloadIor(), 1.0);
+    float3 enteredExtinction = dielectricMediumExtinction(isWater, tint, transmission);
+    uint enteredFlags = dielectricMediumFlags(isWater);
+    float etaI = currentIor;
+    float etaT = entering ? enteredIor : outerIor;
+
+    // The normal the interface refracts about. A smooth dielectric uses its own surface normal
+    // and stays an exact delta — which is water, glass and ice, everything vanilla ships. A
+    // rough one draws a microfacet from the GGX visible-normal distribution instead, and that
+    // is the whole of what turns a pane into frosted glass: same Fresnel, same medium push and
+    // pop, same bias choice, one different normal.
+    //
+    // Resolving both here rather than as two materials is what keeps the medium bookkeeping
+    // singular. A second code path would be a second place for a push to go missing.
+    float interfaceAlpha = clamp(payloadRoughness(), 0.0, 1.0);
+    bool deltaInterface = isDeltaTransmission(interfaceAlpha);
+    float3 m = deltaInterface ? n : sampleGGXVNDF(n, -rd, interfaceAlpha, stream);
+
+    float cosI = clamp(dot(-rd, m), 0.0, 1.0);
+    float F = fresnelDielectric(cosI, etaI, etaT);
+    float3 transmittedDir = refract(rd, m, etaI / etaT);
+    // The translucent terrain layer is recessed by TRANSLUCENT_INSET (RtTerrainMesher), so a
+    // glass/ice face touching a slab or stair sits a hair behind that neighbour's surface. A full
+    // SURF_BIAS would restart the transmitted ray past the neighbour and see through it. Water
+    // comes from the fluid mesher, which applies no inset, so it takes the ordinary bias.
+    float transmitBias = isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS;
+
+    bool chooseReflection = rndf(stream) < F;
+    if (chooseReflection) {
+        rd = reflect(rd, m);
+        // A microfacet can reflect back into the surface it sits on. The delta case cannot, so
+        // this only ever fires for a rough interface.
+        if (!deltaInterface && dot(rd, geometricNormal) <= 0.0) {
+            return false;
+        }
+        ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, SURF_BIAS);
+    } else {
+        if (dot(transmittedDir, transmittedDir) <= 0.0) return false; // TIR with F < 1 cannot happen
+        rd = normalize(transmittedDir);
+        ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, transmitBias);
+        // Crossing into or out of the volume. Absorption is the medium's job from here, so the
+        // tint is NOT also multiplied into the throughput — that would double-count it.
+        if (entering) {
+            outerIor = currentIor;
+            outerExtinction = currentExtinction;
+            currentIor = enteredIor;
+            currentExtinction = enteredExtinction;
+            activeMediumFlags = enterActiveMediumFlags(activeMediumFlags, enteredFlags);
+        } else {
+            currentIor = outerIor;
+            currentExtinction = outerExtinction;
+            outerIor = 1.0;
+            outerExtinction = float3(0.0, 0.0, 0.0);
+            activeMediumFlags = exitActiveMediumFlags(activeMediumFlags);
+        }
+    }
+    if (!deltaInterface) {
+        // VNDF weight. The Fresnel split is already paid by the stochastic branch above, and
+        // the sampling density cancels the distribution, leaving Smith's shadowing on the
+        // outgoing direction — the same reduction the opaque specular lobe gets, and it holds
+        // for the refracted branch too under the separable Smith approximation. abs() because
+        // the transmitted direction is on the far side of the normal.
+        throughput *= ggxG1(abs(dot(n, rd)), interfaceAlpha);
+        rayConeSpread = max(rayConeSpread, interfaceAlpha * RAY_CONE_GLOSSY_SPREAD_SCALE);
+    }
+    return true;
+}
+
+/** An opaque vertex's decoded material and lobe mixture: everything the vertex's shading and its
+ * continuation read, decoded once from the payload of the hit. */
+public struct ReuseOpaqueVertex {
+    public float3 albedo;
+    public float sss;
+    public float3 v;
+    public MaterialExtension ext;
+    public RainSurface rain;
+    public float3 n;
+    public float impactFootprint;
+    public float3 p;
+    public float rough;
+    public float metal;
+    public bool exactSpecular;
+    public float3 diffAlb;
+    public float3 F0;
+    public float ps;
+    public float activeSss;
+    public float3 sssRadius;
+    public float walkSssShare;
+    public BsdfContext bc;
+    public float pf;
+};
+
+/** Decode an opaque hit (the payload of the hit just traced) into its material and lobe mixture. */
+ReuseOpaqueVertex reuseOpaqueVertex(float3 hitPos, float3 n, float3 rd, float rayConeWidth, int hitDepth,
+                                    uint sssMode, int sssMaxEvents) {
+    ReuseOpaqueVertex o;
+    float3 albedo = payload.albedo;
+    float sss = payloadSss(); // LabPBR SSS strength (0 when absent)
+    float3 v = -rd; // view direction (toward the camera / incoming ray)
+    MaterialExtension ext = materialExtension(payload.flags);
+    RainSurface rain = evaluateRainSurface(hitPos, ext,
+            payloadRainFilmReceiver(), payloadRainTopFace(), payloadRainPlant());
+    n = applyRainLayerNormal(n, rain, payloadRainTopFace(), payloadRainPlant());
+    float impactFootprint = surfaceFootprint(rayConeWidth, rd, n);
+    n = applyRainImpactRipples(hitPos, n, rain.puddle, impactFootprint);
+    albedo *= 1.0 - rain.darkening;
+    float3 p = hitPos + n * SURF_BIAS;
+
+    // Material split. Metals tint F0 by albedo and have no diffuse lobe; dielectrics use a fixed
+    // 0.04 F0, sourced from the chit (LabPBR custom/metal F0, or the dielectric default it applies).
+    float rough = clamp(payloadRoughness(), 0.0, 1.0);
+    float metal = clamp(payloadMetalness(), 0.0, 1.0);
+    // Unresolvably tight lobes become exact delta mirrors; everything else keeps its authored value.
+    // Snapping to 0 also propagates into the guide buffers, which is what tells RR to hold the
+    // reflection sharp instead of accumulating it as a glossy lobe.
+    bool exactSpecular = isDeltaAlpha(rough);
+    rough = exactSpecular ? 0.0 : rough;
+    float3 diffAlb = albedo * (1.0 - metal);
+    float3 F0 = payload.f0;
+    // Probability of continuing along the specular lobe rather than the diffuse one. Hoisted above
+    // the NEE below, which needs it to know the density of the ray it is competing with — the
+    // continuation is sampled from this mixture, so the mixture is what MIS has to weight against.
+    float ps = exactSpecular && luminance(diffAlb) <= 1.0e-6
+                   ? 1.0
+                   : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
+    // One shading context for the whole vertex: the sun NEE, the emitter RIS and the continuation
+    // all have to agree on the specular frame, and rebuilding it three times was how they could
+    // quietly stop agreeing. It also carries the anisotropic tangent, decoded once here.
+    float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
+    // Hoisted above the NEE because the sun's MIS needs to know how much of the non-specular half
+    // the walk will take; the lobe itself is selected further down.
+    // LabPBR's subsurface byte is a mask with no length in it, and a walk needs a length, so a
+    // material that carries only the mask gets SSS_DEFAULT_RADIUS. Requiring an authored radius was
+    // tried for one commit — it was meant to explain diamond blocks rendering black, which turned
+    // out to be a NaN in the anisotropic lobe and nothing to do with subsurface at all. What the
+    // restriction actually did was leave every LabPBR pack with no volumetric subsurface, since
+    // none of them can express a radius.
+    float3 sssRadius = ext.subsurface.xyz;
+    if (max(sssRadius.x, max(sssRadius.y, sssRadius.z)) <= 0.0) {
+        sssRadius = float3(SSS_DEFAULT_RADIUS, SSS_DEFAULT_RADIUS, SSS_DEFAULT_RADIUS);
+    }
+    float walkSssShare = 0.0;
+    if (sssMode == 2u && sssMaxEvents > 0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
+        float authoredSss = ext.specular.z;
+        // Clamped away from 1 for the same reason ps is clamped away from 0 and 1 a few lines up:
+        // a lobe whose selection probability collapses still has to be divided by that probability,
+        // so the rare time it IS chosen it carries the reciprocal. At the 0.995 SPBR writes, the
+        // diffuse lobe would be picked 0.4% of the time and weighted 250x — a firefly generator,
+        // and one that a denoiser turns into a blown-out patch rather than a speckle.
+        walkSssShare = clamp(authoredSss > 0.0 ? authoredSss : sss, 0.0, MAX_WALK_LOBE_SHARE);
+    }
+    BsdfContext bc = makeBsdfContextAniso(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
+                                          ext, payload.flags);
+    bc.rain = rain;
+    // Third continuation lobe: the top water film. Its selection tracks view Fresnel so it becomes
+    // common at grazing angles, where the layer actually carries the energy, without wasting half
+    // the paths on a two-percent normal-incidence reflection.
+    float filmEnergy = rain.film * rainFilmFresnel(bc.ndv);
+    float baseEnergy = (1.0 - filmEnergy) * (luminance(F0) + luminance(diffAlb));
+    float pf = rain.film > 1.0e-4
+            ? clamp(filmEnergy / (filmEnergy + baseEnergy + 1.0e-4), 0.02, 0.90) : 0.0;
+
+    o.albedo = albedo;
+    o.sss = sss;
+    o.v = v;
+    o.ext = ext;
+    o.rain = rain;
+    o.n = n;
+    o.impactFootprint = impactFootprint;
+    o.p = p;
+    o.rough = rough;
+    o.metal = metal;
+    o.exactSpecular = exactSpecular;
+    o.diffAlb = diffAlb;
+    o.F0 = F0;
+    o.ps = ps;
+    o.activeSss = activeSss;
+    o.sssRadius = sssRadius;
+    o.walkSssShare = walkSssShare;
+    o.bc = bc;
+    o.pf = pf;
+    return o;
+}
+
+/**
+ * Sample an opaque vertex's continuation from its lobe mixture: the film, specular, walk or diffuse
+ * lobe, the new ray, the throughput weight, the density the sun's MIS weighs against, and the cone.
+ * False when the path ends here (a microfacet reflected below the surface, or the walk absorbed it).
+ * {@code walked} reports the walk lobe, whose exit direction has no analytic density.
+ */
+bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sssMaxEvents,
+                             inout float3 ro, inout float3 rd, inout float3 throughput,
+                             inout float bsdfPdf, inout float rayConeSpread, inout bool showCelestial,
+                             inout uint stream, out bool walked) {
+    walked = false;
+    float3 n = vtx.n;
+    float3 v = vtx.v;
+    float3 p = vtx.p;
+    RainSurface rain = vtx.rain;
+    BsdfContext bc = vtx.bc;
+    float3 F0 = vtx.F0;
+    float3 diffAlb = vtx.diffAlb;
+    float pf = vtx.pf;
+    float ps = vtx.ps;
+    bool exactSpecular = vtx.exactSpecular;
+
+    // Indirect continuation: importance-sample the diffuse OR the GGX specular lobe, chosen by their
+    // relative reflectance (ps, hoisted above the NEE that had to weigh against it).
+    // How much of the non-specular half goes to the walk. The JSON weight, when a pack authored one,
+    // overrides the LabPBR mask outright rather than scaling it — same precedence as every other
+    // authored channel, and it means a rule that mentions only sheen leaves the texel mask alone
+    // instead of silently zeroing subsurface (weight 0 falls through to sss).
+    float walkSss = vtx.walkSssShare;
+
+    float lobeChoice = rndf(stream);
+    if (lobeChoice < pf) {
+        float alpha = rain.filmAlpha;
+        float3 h = sampleGGXVNDF(n, v, alpha, stream);
+        float3 l = reflect(rd, h);
+        float ndl2 = dot(n, l);
+        if (ndl2 <= 0.0) {
+            return false;
+        }
+        float3 F = fresnelSchlick(max(0.0, dot(v, h)),
+                float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0));
+        throughput *= rain.film * F * ggxG1(ndl2, alpha) / pf;
+        rayConeSpread = max(rayConeSpread, alpha * RAY_CONE_GLOSSY_SPREAD_SCALE);
+        bsdfPdf = pf * ggxReflectPdf(max(0.0, dot(n, h)), bc.ndv, alpha,
+                ggxG1(bc.ndv, alpha));
+        ro = p;
+        rd = l;
+        showCelestial = true;
+    } else if ((lobeChoice - pf) / max(1.0 - pf, 1.0e-6) < ps) {
+        float3 l;
+        if (exactSpecular) {
+            // Authored zero is a delta distribution, not a narrow finite GGX lobe. This avoids the
+            // degenerate VNDF at alpha=0 and preserves a genuinely sharp reflection without a floor.
+            l = reflect(rd, n);
+            throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0)
+                    * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
+            bsdfPdf = -1.0;
+        } else {
+            float3 h = sampleGGXVNDFAniso(n, bc.t, bc.b, v, bc.alphaX, bc.alphaY, stream);
+            l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
+            float ndl2 = dot(n, l);
+            if (ndl2 <= 0.0) {
+                return false; // microfacet reflects below the surface: terminate this path
+            }
+            // VNDF + separable Smith ⇒ weight = F · G2/G1(v) = F · G1(l); divide by the lobe pdf ps.
+            float3 F = fresnelSchlick(max(0.0, dot(v, h)), F0);
+            throughput *= F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY)
+                    * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
+            // The cone grows by the wider axis: it bounds the texture footprint, and taking the
+            // narrower one would sharpen mip selection along the stretched direction, which is
+            // exactly where it should blur.
+            rayConeSpread = max(rayConeSpread,
+                    max(bc.alphaX, bc.alphaY) * RAY_CONE_GLOSSY_SPREAD_SCALE);
+            bsdfPdf = (1.0 - pf) * ps * ggxReflectPdfAniso(
+                                              dot(h, bc.t), dot(h, bc.b), max(0.0, dot(n, h)),
+                                              bc.ndv, bc.alphaX, bc.alphaY, bc.g1v);
+        }
+        ro = p;
+        rd = l;
+        showCelestial = true; // specular lobe: this ray is a (glossy) mirror — show the disc
+    } else if (walkSss > 0.0 && rndf(stream) < walkSss) {
+        // The subsurface lobe. Everything about it happens inside this one shading vertex — the
+        // walk enters, scatters and leaves before the path continues — so nothing here reaches the
+        // continuation record or the pass boundary.
+        walked = true; // the walk's exit direction has no analytic density to reconnect on
+        float lobeProb = (1.0 - pf) * (1.0 - ps) * walkSss;
+        WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, vtx.sssRadius, vtx.ext.specular.w,
+                                               sssMaxEvents, stream);
+        if (walk.absorbed) {
+            return false; // roulette inside the walk: an unbiased stop, so this path is simply over
+        }
+        if (walk.escaped) {
+            throughput *= walk.weight * rainBaseTransmission(bc, walk.dir) / lobeProb;
+            ro = walk.origin;
+            rd = walk.dir;
+        } else {
+            // Ran out of events. Fall back to the cheap lobe rather than dropping the energy —
+            // truncating here would darken the thickest parts of a material, which reads as dirt
+            // rather than as a budget. This is the knob SUBSURFACE_MAX_EVENTS turns.
+            throughput *= diffAlb * rainBaseTransmission(bc, n) / lobeProb;
+            ro = p;
+            rd = cosineDir(n, stream);
+        }
+        // The exit direction has no analytic density — it depends on where inside the material the
+        // photon happened to turn around — so there is nothing for the sun's MIS to weigh against
+        // and this path takes the drawn sprite rather than the light.
+        bsdfPdf = -1.0;
+        rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
+        showCelestial = false;
+    } else {
+        float lobeProb = (1.0 - pf) * (1.0 - ps) * (1.0 - walkSss);
+        float3 l = cosineDir(n, stream);
+        throughput *= diffAlb * rainBaseTransmission(bc, l) / lobeProb;
+        ro = p;
+        rd = l;
+        bsdfPdf = lobeProb * max(0.0, dot(n, rd)) * INV_PI;
+        rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
+        showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
+    }
+    return true;
+}
 
 public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         uint2 pix, uint sampleIndex, uint2 renderSize,
@@ -277,95 +627,12 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             if (bounce >= maxBounces) {
                 break;
             }
-            bool isWater = material == MATERIAL_WATER;
-            bool entering = payloadDielectricEntering();
-            float3 tint = payload.albedo;
-            float transmission = clamp(payloadTransmission(), 0.0, 1.0);
-
-            // Ripple the (near-flat) surface normal before any Fresnel/guide use → glints, broken
-            // reflections, wobbling refraction. The wave domain is world-stable: rebased hit XZ plus the
-            // pushed anchor (terrain origin mod 4096) survives the per-move terrain rebase.
-            float3 geometricNormal = n; // unrippled; ray origins offset along this
-            if (isWater && waterWaves) {
-                // The hit's own y rides along: the field is two-dimensional and has to be told which
-                // surface it belongs to, or every water in this column ripples together.
-                float3 waterDomain = float3(hitPos.x + worldPush.waterAnchor.x, hitPos.y,
-                                            hitPos.z + worldPush.waterAnchor.y);
-                float waterFootprint = rayConeWidth / max(abs(dot(-rd, geometricNormal)), 0.12);
-                n = applyWaterWaves(geometricNormal, waterDomain,
-                                    worldPush.waterParams.w, waterFootprint);
-            }
-            if (isWater) {
-                float impactFootprint = surfaceFootprint(rayConeWidth, rd, geometricNormal);
-                n = applyRainImpactRipples(hitPos, n, openWaterRainImpact(hitPos), impactFootprint);
-            }
-
-            // The medium this face opens into, and the one it returns to on the way out — which is what
-            // the stack remembers.
-            float enteredIor = max(payloadIor(), 1.0);
-            float3 enteredExtinction = dielectricMediumExtinction(isWater, tint, transmission);
-            uint enteredFlags = dielectricMediumFlags(isWater);
-            float etaI = currentIor;
-            float etaT = entering ? enteredIor : outerIor;
-
-            // The normal the interface refracts about. A smooth dielectric uses its own surface normal
-            // and stays an exact delta — which is water, glass and ice, everything vanilla ships. A
-            // rough one draws a microfacet from the GGX visible-normal distribution instead, and that
-            // is the whole of what turns a pane into frosted glass: same Fresnel, same medium push and
-            // pop, same bias choice, one different normal.
-            //
-            // Resolving both here rather than as two materials is what keeps the medium bookkeeping
-            // singular. A second code path would be a second place for a push to go missing.
-            float interfaceAlpha = clamp(payloadRoughness(), 0.0, 1.0);
-            bool deltaInterface = isDeltaTransmission(interfaceAlpha);
-            float3 m = deltaInterface ? n : sampleGGXVNDF(n, -rd, interfaceAlpha, seed);
-
-            float cosI = clamp(dot(-rd, m), 0.0, 1.0);
-            float F = fresnelDielectric(cosI, etaI, etaT);
-            float3 transmittedDir = refract(rd, m, etaI / etaT);
-            // The translucent terrain layer is recessed by TRANSLUCENT_INSET (RtTerrainMesher), so a
-            // glass/ice face touching a slab or stair sits a hair behind that neighbour's surface. A full
-            // SURF_BIAS would restart the transmitted ray past the neighbour and see through it. Water
-            // comes from the fluid mesher, which applies no inset, so it takes the ordinary bias.
-            float transmitBias = isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS;
-
-            bool chooseReflection = rndf(seed) < F;
-            if (chooseReflection) {
-                rd = reflect(rd, m);
-                // A microfacet can reflect back into the surface it sits on. The delta case cannot, so
-                // this only ever fires for a rough interface.
-                if (!deltaInterface && dot(rd, geometricNormal) <= 0.0) {
-                    break;
-                }
-                ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, SURF_BIAS);
-            } else {
-                if (dot(transmittedDir, transmittedDir) <= 0.0) break; // TIR with F < 1 cannot happen
-                rd = normalize(transmittedDir);
-                ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, transmitBias);
-                // Crossing into or out of the volume. Absorption is the medium's job from here, so the
-                // tint is NOT also multiplied into the throughput — that would double-count it.
-                if (entering) {
-                    outerIor = currentIor;
-                    outerExtinction = currentExtinction;
-                    currentIor = enteredIor;
-                    currentExtinction = enteredExtinction;
-                    activeMediumFlags = enterActiveMediumFlags(activeMediumFlags, enteredFlags);
-                } else {
-                    currentIor = outerIor;
-                    currentExtinction = outerExtinction;
-                    outerIor = 1.0;
-                    outerExtinction = float3(0.0, 0.0, 0.0);
-                    activeMediumFlags = exitActiveMediumFlags(activeMediumFlags);
-                }
-            }
-            if (!deltaInterface) {
-                // VNDF weight. The Fresnel split is already paid by the stochastic branch above, and
-                // the sampling density cancels the distribution, leaving Smith's shadowing on the
-                // outgoing direction — the same reduction the opaque specular lobe gets, and it holds
-                // for the refracted branch too under the separable Smith approximation. abs() because
-                // the transmitted direction is on the far side of the normal.
-                throughput *= ggxG1(abs(dot(n, rd)), interfaceAlpha);
-                rayConeSpread = max(rayConeSpread, interfaceAlpha * RAY_CONE_GLOSSY_SPREAD_SCALE);
+            // The interface itself -- normal, Fresnel choice, new ray, medium stack -- is the shared
+            // vertex decision the replay re-drives (reuseResolveDielectric, above).
+            if (!reuseResolveDielectric(material, hitPos, n, rayConeWidth, waterWaves, ro, rd, throughput,
+                                        currentIor, currentExtinction, outerIor, outerExtinction,
+                                        activeMediumFlags, rayConeSpread, seed)) {
+                break;
             }
             showCelestial = true; // specular interface: the continuation ray may see the sun/moon disc
             // A dielectric runs no NEE at all, so there is no second estimate of the light for MIS to
@@ -455,27 +722,20 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             continue;
         }
 
-        float3 albedo = payload.albedo;
-        float sss = payloadSss(); // LabPBR SSS strength (0 when absent)
-        float3 v = -rd; // view direction (toward the camera / incoming ray)
-        MaterialExtension ext = materialExtension(payload.flags);
-        RainSurface rain = evaluateRainSurface(hitPos, ext,
-                payloadRainFilmReceiver(), payloadRainTopFace(), payloadRainPlant());
-        n = applyRainLayerNormal(n, rain, payloadRainTopFace(), payloadRainPlant());
-        float impactFootprint = surfaceFootprint(rayConeWidth, rd, n);
-        n = applyRainImpactRipples(hitPos, n, rain.puddle, impactFootprint);
-        albedo *= 1.0 - rain.darkening;
-        float3 p = hitPos + n * SURF_BIAS;
-
-        // Material split. Metals tint F0 by albedo and have no diffuse lobe; dielectrics use a fixed
-        // 0.04 F0, sourced from the chit (LabPBR custom/metal F0, or the dielectric default it applies).
-        float rough = clamp(payloadRoughness(), 0.0, 1.0);
-        float metal = clamp(payloadMetalness(), 0.0, 1.0);
-        // Unresolvably tight lobes become exact delta mirrors; everything else keeps its authored value.
-        // Snapping to 0 also propagates into the guide buffers, which is what tells RR to hold the
-        // reflection sharp instead of accumulating it as a glossy lobe.
-        bool exactSpecular = isDeltaAlpha(rough);
-        rough = exactSpecular ? 0.0 : rough;
+        // The material decode is the shared vertex decision the replay re-drives (reuseOpaqueVertex,
+        // above); the names below are the ones the shading that follows has always used.
+        ReuseOpaqueVertex vtx = reuseOpaqueVertex(hitPos, n, rd, rayConeWidth, hitDepth, sssMode, sssMaxEvents);
+        float3 albedo = vtx.albedo;
+        float sss = vtx.sss;
+        float3 v = vtx.v;
+        MaterialExtension ext = vtx.ext;
+        RainSurface rain = vtx.rain;
+        n = vtx.n;
+        float impactFootprint = vtx.impactFootprint;
+        float3 p = vtx.p;
+        float rough = vtx.rough;
+        float metal = vtx.metal;
+        bool exactSpecular = vtx.exactSpecular;
         // This vertex reconnects if it survives to trace a continuation: a delta lobe has no sampling
         // density for a shift's Jacobian to weigh, so only finite lobes qualify. Nothing between here
         // and the lobe selection below touches throughput, so the pre-selection value snapshots here.
@@ -489,50 +749,14 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         }
         // This vertex is x_{k-1} for the next one.
         prevVertexRough = rough;
-        float3 diffAlb = albedo * (1.0 - metal);
-        float3 F0 = payload.f0;
-        // Probability of continuing along the specular lobe rather than the diffuse one. Hoisted above
-        // the NEE below, which needs it to know the density of the ray it is competing with — the
-        // continuation is sampled from this mixture, so the mixture is what MIS has to weight against.
-        float ps = exactSpecular && luminance(diffAlb) <= 1.0e-6
-                       ? 1.0
-                       : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
-        // One shading context for the whole vertex: the sun NEE, the emitter RIS and the continuation
-        // all have to agree on the specular frame, and rebuilding it three times was how they could
-        // quietly stop agreeing. It also carries the anisotropic tangent, decoded once here.
-        float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
-        // Hoisted above the NEE because the sun's MIS needs to know how much of the non-specular half
-        // the walk will take; the lobe itself is selected further down.
-        // LabPBR's subsurface byte is a mask with no length in it, and a walk needs a length, so a
-        // material that carries only the mask gets SSS_DEFAULT_RADIUS. Requiring an authored radius was
-        // tried for one commit — it was meant to explain diamond blocks rendering black, which turned
-        // out to be a NaN in the anisotropic lobe and nothing to do with subsurface at all. What the
-        // restriction actually did was leave every LabPBR pack with no volumetric subsurface, since
-        // none of them can express a radius.
-        float3 sssRadius = ext.subsurface.xyz;
-        if (max(sssRadius.x, max(sssRadius.y, sssRadius.z)) <= 0.0) {
-            sssRadius = float3(SSS_DEFAULT_RADIUS, SSS_DEFAULT_RADIUS, SSS_DEFAULT_RADIUS);
-        }
-        float walkSssShare = 0.0;
-        if (sssMode == 2u && sssMaxEvents > 0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
-            float authoredSss = ext.specular.z;
-            // Clamped away from 1 for the same reason ps is clamped away from 0 and 1 a few lines up:
-            // a lobe whose selection probability collapses still has to be divided by that probability,
-            // so the rare time it IS chosen it carries the reciprocal. At the 0.995 SPBR writes, the
-            // diffuse lobe would be picked 0.4% of the time and weighted 250x — a firefly generator,
-            // and one that a denoiser turns into a blown-out patch rather than a speckle.
-            walkSssShare = clamp(authoredSss > 0.0 ? authoredSss : sss, 0.0, MAX_WALK_LOBE_SHARE);
-        }
-        BsdfContext bc = makeBsdfContextAniso(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
-                                              ext, payload.flags);
-        bc.rain = rain;
-        // Third continuation lobe: the top water film. Its selection tracks view Fresnel so it becomes
-        // common at grazing angles, where the layer actually carries the energy, without wasting half
-        // the paths on a two-percent normal-incidence reflection.
-        float filmEnergy = rain.film * rainFilmFresnel(bc.ndv);
-        float baseEnergy = (1.0 - filmEnergy) * (luminance(F0) + luminance(diffAlb));
-        float pf = rain.film > 1.0e-4
-                ? clamp(filmEnergy / (filmEnergy + baseEnergy + 1.0e-4), 0.02, 0.90) : 0.0;
+        float3 diffAlb = vtx.diffAlb;
+        float3 F0 = vtx.F0;
+        float ps = vtx.ps;
+        float activeSss = vtx.activeSss;
+        float3 sssRadius = vtx.sssRadius;
+        float walkSssShare = vtx.walkSssShare;
+        BsdfContext bc = vtx.bc;
+        float pf = vtx.pf;
 
         // Same D78A floor as particles. Diffuse only: inventing an all-direction specular environment
         // response would be a second, stronger approximation and was not approved. Metals therefore
@@ -753,103 +977,15 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             break;
         }
 
-        // Indirect continuation: importance-sample the diffuse OR the GGX specular lobe, chosen by their
-        // relative reflectance (ps, hoisted above the NEE that had to weigh against it).
-        // How much of the non-specular half goes to the walk. The JSON weight, when a pack authored one,
-        // overrides the LabPBR mask outright rather than scaling it — same precedence as every other
-        // authored channel, and it means a rule that mentions only sheen leaves the texel mask alone
-        // instead of silently zeroing subsurface (weight 0 falls through to sss).
-        float walkSss = walkSssShare;
-
-        float lobeChoice = rndf(seed);
-        if (lobeChoice < pf) {
-            float alpha = rain.filmAlpha;
-            float3 h = sampleGGXVNDF(n, v, alpha, seed);
-            float3 l = reflect(rd, h);
-            float ndl2 = dot(n, l);
-            if (ndl2 <= 0.0) {
-                break;
-            }
-            float3 F = fresnelSchlick(max(0.0, dot(v, h)),
-                    float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0));
-            throughput *= rain.film * F * ggxG1(ndl2, alpha) / pf;
-            rayConeSpread = max(rayConeSpread, alpha * RAY_CONE_GLOSSY_SPREAD_SCALE);
-            bsdfPdf = pf * ggxReflectPdf(max(0.0, dot(n, h)), bc.ndv, alpha,
-                    ggxG1(bc.ndv, alpha));
-            ro = p;
-            rd = l;
-            showCelestial = true;
-        } else if ((lobeChoice - pf) / max(1.0 - pf, 1.0e-6) < ps) {
-            float3 l;
-            if (exactSpecular) {
-                // Authored zero is a delta distribution, not a narrow finite GGX lobe. This avoids the
-                // degenerate VNDF at alpha=0 and preserves a genuinely sharp reflection without a floor.
-                l = reflect(rd, n);
-                throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0)
-                        * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
-                bsdfPdf = -1.0;
-            } else {
-                float3 h = sampleGGXVNDFAniso(n, bc.t, bc.b, v, bc.alphaX, bc.alphaY, seed);
-                l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
-                float ndl2 = dot(n, l);
-                if (ndl2 <= 0.0) {
-                    break; // microfacet reflects below the surface: terminate this path
-                }
-                // VNDF + separable Smith ⇒ weight = F · G2/G1(v) = F · G1(l); divide by the lobe pdf ps.
-                float3 F = fresnelSchlick(max(0.0, dot(v, h)), F0);
-                throughput *= F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY)
-                        * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
-                // The cone grows by the wider axis: it bounds the texture footprint, and taking the
-                // narrower one would sharpen mip selection along the stretched direction, which is
-                // exactly where it should blur.
-                rayConeSpread = max(rayConeSpread,
-                        max(bc.alphaX, bc.alphaY) * RAY_CONE_GLOSSY_SPREAD_SCALE);
-                bsdfPdf = (1.0 - pf) * ps * ggxReflectPdfAniso(
-                                                  dot(h, bc.t), dot(h, bc.b), max(0.0, dot(n, h)),
-                                                  bc.ndv, bc.alphaX, bc.alphaY, bc.g1v);
-            }
-            ro = p;
-            rd = l;
-            showCelestial = true; // specular lobe: this ray is a (glossy) mirror — show the disc
-        } else if (walkSss > 0.0 && rndf(seed) < walkSss) {
-            // The subsurface lobe. Everything about it happens inside this one shading vertex — the
-            // walk enters, scatters and leaves before the path continues — so nothing here reaches the
-            // continuation record or the pass boundary.
-            //
+        // The continuation is the shared vertex decision the replay re-drives
+        // (reuseSampleContinuation, above): lobe choice, direction, weight, density, cone.
+        bool walked;
+        if (!reuseSampleContinuation(vtx, hitPos, sssMaxEvents, ro, rd, throughput, bsdfPdf,
+                                     rayConeSpread, showCelestial, seed, walked)) {
+            break;
+        }
+        if (walked) {
             reconQualifies = false; // the walk's exit direction has no analytic density to reconnect on
-            float lobeProb = (1.0 - pf) * (1.0 - ps) * walkSss;
-            WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, sssRadius, ext.specular.w,
-                                                   sssMaxEvents, seed);
-            if (walk.absorbed) {
-                break; // roulette inside the walk: an unbiased stop, so this path is simply over
-            }
-            if (walk.escaped) {
-                throughput *= walk.weight * rainBaseTransmission(bc, walk.dir) / lobeProb;
-                ro = walk.origin;
-                rd = walk.dir;
-            } else {
-                // Ran out of events. Fall back to the cheap lobe rather than dropping the energy —
-                // truncating here would darken the thickest parts of a material, which reads as dirt
-                // rather than as a budget. This is the knob SUBSURFACE_MAX_EVENTS turns.
-                throughput *= diffAlb * rainBaseTransmission(bc, n) / lobeProb;
-                ro = p;
-                rd = cosineDir(n, seed);
-            }
-            // The exit direction has no analytic density — it depends on where inside the material the
-            // photon happened to turn around — so there is nothing for the sun's MIS to weigh against
-            // and this path takes the drawn sprite rather than the light.
-            bsdfPdf = -1.0;
-            rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
-            showCelestial = false;
-        } else {
-            float lobeProb = (1.0 - pf) * (1.0 - ps) * (1.0 - walkSss);
-            float3 l = cosineDir(n, seed);
-            throughput *= diffAlb * rainBaseTransmission(bc, l) / lobeProb;
-            ro = p;
-            rd = l;
-            bsdfPdf = lobeProb * max(0.0, dot(n, rd)) * INV_PI;
-            rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
-            showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
         }
 
         // The continuation committed: this is the reconnection vertex. Snapshot what the suffix needs

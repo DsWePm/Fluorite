@@ -199,22 +199,56 @@ final class RtPathReplayContractTest {
     }
 
     @Test
-    void theReuseTracerIsTheShippedTracerPlusThePathReservoir() throws IOException {
-        // Until R1 restructures the copy, the reuse tracer must be the shipped tracePath with the path
-        // reservoir ADDED and nothing else changed: every line of the shipped body appears in the reuse
-        // body, in order. A line edited in one copy only is exactly what this catches -- the switch would
-        // then compare two different tracers instead of reuse against no reuse.
+    void theReuseTracerKeepsTheShippedTracerLineForLine() throws IOException {
+        // The reuse tracer must be the shipped tracePath with the path reservoir ADDED: the switch has to
+        // compare reuse against no reuse, not two different tracers. R1b moved the vertex decisions into
+        // shared functions (so the replay decides exactly as the loop did), which is why two checks
+        // replace the old in-order one:
         java.util.List<String> shipped = body(source("shaders/world/world.rgen.slang"),
                 "public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,");
-        java.util.List<String> reuse = body(source("shaders/world/path_reuse_trace.slang"),
-                "public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,");
-        int at = 0;
-        for (String line : shipped) {
-            while (at < reuse.size() && !reuse.get(at).equals(line)) {
+        String reuseFile = source("shaders/world/path_reuse_trace.slang");
+
+        // 1. Every shared vertex function is a verbatim, in-order excerpt of the shipped loop, with
+        //    only its random stream renamed and its exits turned into returns.
+        String[][] functions = {
+            {"bool reuseResolveDielectric(", "return true;"},
+            {"ReuseOpaqueVertex reuseOpaqueVertex(", "ReuseOpaqueVertex o;|o\\.\\w+ = \\w+;|return o;"},
+            {"bool reuseSampleContinuation(", "return true;|walked = (false|true);.*"
+                    + "|float3 (n|v|p|F0|diffAlb) = vtx\\.\\w+;|(RainSurface rain|BsdfContext bc) = vtx\\.\\w+;"
+                    + "|float (pf|ps) = vtx\\.\\w+;|bool exactSpecular = vtx\\.exactSpecular;"},
+        };
+        for (String[] f : functions) {
+            java.util.List<String> lines = new java.util.ArrayList<>();
+            for (String line : body(reuseFile, f[0])) {
+                String l = line.replace("stream", "seed").replace("return false;", "break;")
+                        .replace("vtx.sssRadius", "sssRadius").replace("vtx.ext.specular.w", "ext.specular.w")
+                        .replace("vtx.walkSssShare", "walkSssShare");
+                if (!l.startsWith("//") && !l.matches(f[1])) {
+                    lines.add(l);
+                }
+            }
+            int at = 0;
+            for (String line : lines) {
+                while (at < shipped.size() && !shipped.get(at).equals(line)) {
+                    at++;
+                }
+                assertTrue(at < shipped.size(), f[0] + " departs from the shipped loop at: " + line);
                 at++;
             }
-            assertTrue(at < reuse.size(), "shipped line missing from the reuse tracer (or out of order): " + line);
-            at++;
+        }
+
+        // 2. No line of the shipped body is lost: each one is in the reuse file, as written or with the
+        //    same stream/exit rename the shared functions apply.
+        for (String line : shipped) {
+            if (line.startsWith("//")) {
+                continue; // prose may be reworded; the code may not
+            }
+            String renamed = line.replace("seed", "stream").replace("break;", "return false;");
+            // ...and the three reads the continuation takes from the decoded vertex rather than a local.
+            String fromVertex = renamed.replace("walkSssShare", "vtx.walkSssShare")
+                    .replace("sssRadius,", "vtx.sssRadius,").replace("ext.specular.w", "vtx.ext.specular.w");
+            assertTrue(reuseFile.contains(line) || reuseFile.contains(renamed) || reuseFile.contains(fromVertex),
+                    "shipped line missing from the reuse tracer: " + line);
         }
     }
 
@@ -228,7 +262,9 @@ final class RtPathReplayContractTest {
         }
         assertTrue(end > start, "unterminated: " + signature);
         java.util.List<String> lines = new java.util.ArrayList<>();
-        for (String line : source.substring(source.indexOf('\n', start) + 1, end).split("\n")) {
+        // From the line after the signature's opening brace: signatures span several lines here.
+        int open = source.indexOf('{', start);
+        for (String line : source.substring(source.indexOf('\n', open) + 1, end).split("\n")) {
             String t = line.trim();
             if (!t.isEmpty() && !t.equals("return L;")) {
                 lines.add(t);
