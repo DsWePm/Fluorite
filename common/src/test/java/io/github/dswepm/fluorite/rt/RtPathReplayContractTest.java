@@ -10,9 +10,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * M28 path reservoir layout and the seed contract for future random replay. The current tracer does
- * not replay the seed; D229 suspends the invalid reconnected shift until the full path density can be
- * evaluated. A future replay implementation must preserve this stream contract.
+ * M28 path reservoir layout and the seed contract for random replay. D229 suspended the invalid
+ * reconnected shift; the D231 rebuild replays a recorded path from its stored seed through per-vertex
+ * streams and shared vertex functions (R1b), and so far uses that replay only for the prefix identity
+ * self-check (R1b-3) -- the hybrid shift that needs it arrives with R3.
  *
  * <p>So the contract is pinned at the source level, in three parts: the seed travels with the record
  * (segment.slang), the stream is derived deterministically from it (world.rgen's loop idiom), and the
@@ -225,6 +226,60 @@ final class RtPathReplayContractTest {
             assertTrue(body.contains("inout uint stream"), fn + " takes its stream as a parameter");
             assertFalse(body.matches("(?s).*\\bseed\\b.*"), fn + " must not reach for the path's seed");
         }
+    }
+
+    @Test
+    void thePrefixReplayReDrivesARecordedPathAndSaysSo() throws IOException {
+        // D231 R1b-3: the replay every later shift stands on, and the diagnostic that proves it lands.
+        String reuse = source("shaders/world/path_reuse_trace.slang");
+        java.util.List<String> replay = body(reuse, "int reuseReplayPrefix(");
+        String joined = String.join("\n", replay);
+        // Same rays as the loop: the trace call and the cone update are the loop's own lines.
+        java.util.List<String> loop = body(reuse, "public float3 tracePathReuse(");
+        for (String line : new String[] {
+                "traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,",
+                "rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);",
+                "int hitDepth = indirectDepth++;"}) {
+            assertTrue(replay.contains(line), "the replay traces as the loop does: " + line);
+            assertTrue(loop.contains(line), "the loop still traces this way: " + line);
+        }
+        // Same decisions: the shared vertex functions, each vertex drawing from its own stream.
+        assertTrue(joined.contains("uint vertexSeed = vertexStream(pathSeed, uint(hitDepth));"));
+        assertTrue(joined.contains("reuseResolveDielectric("));
+        assertTrue(joined.contains("reuseOpaqueVertex("));
+        assertTrue(joined.contains("reuseSampleContinuation("));
+        // Nothing else: no draw from the path's sequential stream -- which is where roulette, NEE and the
+        // particle's continuation live -- and no roulette at all (Enhanced section 6.2.4).
+        assertFalse(joined.matches("(?s).*\\bseed\\b.*"), "the replay must not touch the sequential stream");
+        assertFalse(joined.contains("rrStart") || joined.contains("throughput /= q"), "no roulette in a replay");
+        assertTrue(joined.contains("if (material == MATERIAL_PARTICLE) {\nbreak;"),
+                "a billboard continues from the sequential stream: the replay stops there");
+        String loopJoined = String.join("\n", loop);
+        assertTrue(loopJoined.contains("identityParticle = true;"),
+                "and the check skips a path that crossed one");
+        // It restarts from what the loop started from, with the seed the record stores.
+        assertTrue(loopJoined.contains("uint entryMediumFlags = activeMediumFlags;"));
+        assertTrue(loopJoined.contains("reuseReplayPrefix(seg, entryMediumFlags, pathSeedBase, identityVertices,"));
+        assertTrue(loopJoined.contains("identityVertices >= 2"), "a one-vertex replay decides nothing");
+
+        // Diagnostics only: switch word bit 0, the stats buffer, off by default; the Java packer and the
+        // Slang reader spell the same bit, clear of the neighbour count.
+        assertTrue(loopJoined.contains("(worldPush.pathReplayEnabled & PATH_REUSE_IDENTITY_BIT) != 0u"));
+        assertTrue(loopJoined.contains("&& worldPush.pathReservoirStatsAddr != 0u"));
+        assertTrue(source("shaders/world/restir_pt.slang").contains(
+                "PATH_REUSE_IDENTITY_BIT = " + RtComposite.PATH_REUSE_IDENTITY_BIT + "u;"));
+        assertEquals(0, RtComposite.PATH_REUSE_IDENTITY_BIT
+                & (RtComposite.PATH_REUSE_NEIGHBOURS_MASK << RtComposite.PATH_REUSE_NEIGHBOURS_SHIFT));
+        assertTrue(source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java")
+                .contains("word |= PATH_REUSE_IDENTITY_BIT;"));
+        assertFalse(FluoriteConfig.Rt.Diagnostics.PATH_REUSE_IDENTITY_CHECK.defaultValue());
+
+        // Lanes 6 and 7: attempted and passed, read back where the shader writes them.
+        assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[6], 1u)"));
+        assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[7], 1u)"));
+        assertEquals(8, RtPathReservoirStats.LANES);
+        String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
+        assertTrue(stats.contains("src.mapped + 24L") && stats.contains("src.mapped + 28L"));
     }
 
     @Test

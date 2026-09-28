@@ -54,6 +54,8 @@
   "fluorite.options.rt.lightPoolDepth": "光源池深度",
   "fluorite.options.rt.lightPoolDepth.tooltip": "每個有光源的格每幀抽多少個槽，每槽 48 位元組。一個格是 16 格見方，格內所有像素共用這些槽，而且每幀重抽 —— 所以該格這一幀的亮度是這麼多個單樣本估計的平均，逐幀擺動只按深度的平方根倒數下降。深度 8 在多光源房間加濃霧時會明顯閃爍，整塊 16 格區域一起明暗；32 能壓住，且實測在時間上是零，代價是算繪距離 16 下約 24 MiB。太深就裝不進快取，而快取正是這個特性賴以成立的東西。",
   "fluorite.options.rt.restirStats.tooltip": "每秒將各層深度的 ReSTIR 時間重用接受率寫入 latest.log。用它判斷某一層深度是否配得上那 265 MB，還是每個影格都在為被拒絕的資料付出代價。僅用於診斷；ReSTIR 重用深度為 0 時不做任何事。",
+  "fluorite.options.rt.pathReuseIdentityCheck": "路徑重用恆等自檢",
+  "fluorite.options.rt.pathReuseIdentityCheck.tooltip": "診斷用（M28 R1）。每 16 個像素抽 1 個，用它自己存下的路徑種子從第一個頂點重放前幾跳，檢查能否一模一樣地落回記錄下的頂點——這證明路徑重用能重新驅動一條路徑，後面所有的重用步驟都建立在這一點上。結果附在 latest.log 裡「ReSTIR 重用統計」那一行的末尾，形如「identity N (比例)」，比例應當接近 100%。需要同時開啟「Path Reservoir (M28 S2)」（此選項尚無繁中譯名）和「ReSTIR 重用統計」；每個被抽查的像素最多多追 3 條光線。",
   "fluorite.options.rt.sunSize": "太陽大小",
   "fluorite.options.rt.sunSize.tooltip": "太陽和月亮圓盤的角半徑。圓盤越大，投射的半影越柔和。",
   "fluorite.options.rt.entities": "光追實體",

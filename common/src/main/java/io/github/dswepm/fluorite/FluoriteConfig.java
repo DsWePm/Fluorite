@@ -3407,6 +3407,15 @@ public final class FluoriteConfig {
             public static final BooleanSetting RESTIR_STATS =
                     bool("fluorite.rt.restirStats", "diagnostics.restir-stats", false);
 
+            /** M28 D231 R1b: the path reuse's prefix identity self-check. One pixel in sixteen replays its
+             * own recorded path from its first vertex with its stored seed and must land exactly on the
+             * vertex it recorded -- the proof that the vertex streams and the shared vertex functions
+             * re-drive a path, which every later shift depends on. Up to three extra rays per checked
+             * pixel; reported through diagnostics.restir-stats. Does nothing unless the path reservoir is
+             * on. Bit 0 of the path reuse's switch word. */
+            public static final BooleanSetting PATH_REUSE_IDENTITY_CHECK =
+                    bool("fluorite.rt.pathReuseIdentityCheck", "diagnostics.path-reuse-identity-check", false);
+
             /** Heavy driver-side crash diagnostics: vendor diagnostics-config extensions (shader debug
              * info, resource tracking, automatic checkpoints, shader error reporting) and the
              * {@code deviceFaultVendorBinary} feature (vendor-format crash dump on device loss). Off by

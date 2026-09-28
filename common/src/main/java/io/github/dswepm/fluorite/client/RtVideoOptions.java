@@ -243,6 +243,8 @@ public final class RtVideoOptions {
                                 FluoriteConfig.Rt.Diagnostics.WATER_MEDIUM_TRACE),
                         bool("fluorite.options.rt.restirStats",
                                 FluoriteConfig.Rt.Diagnostics.RESTIR_STATS),
+                        bool("fluorite.options.rt.pathReuseIdentityCheck",
+                                FluoriteConfig.Rt.Diagnostics.PATH_REUSE_IDENTITY_CHECK),
                         bool("fluorite.options.rt.lightPool",
                                 FluoriteConfig.Rt.Composite.LIGHT_POOL),
                         bool("fluorite.options.rt.lightPoolSurface",

@@ -81,6 +81,8 @@ public float pathCompatibilityScore(float3 storedNrm, float3 n, float3 drift, fl
 // and mask; RtPathReplayContractTest pins the two spellings together.
 public static const uint PATH_REUSE_NEIGHBOURS_SHIFT = 8u;
 public static const uint PATH_REUSE_NEIGHBOURS_MASK = 15u;
+/** Bit 0: the prefix identity self-check (R1b-3, diagnostics; stats lanes 6-7). */
+public static const uint PATH_REUSE_IDENTITY_BIT = 1u;
 
 /** The path reuse's own spatial neighbour count -- no longer M24's restirSpatialNeighbours. */
 public uint pathReuseSpatialNeighbours() {

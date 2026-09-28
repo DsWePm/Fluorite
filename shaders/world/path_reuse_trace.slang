@@ -358,11 +358,92 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
     return true;
 }
 
+// ---- The hybrid shift's replay (R1b-3), and the self-check that proves it re-drives a path.
+//
+// A replay re-traces a recorded path from a pixel's first pass-B vertex with the record's seed: the same
+// rays as the bounce loop, the same shared vertex functions, each vertex's decisions drawn from
+// vertexStream(pathSeed, hitDepth). What it leaves out is everything that is not a vertex decision --
+// shading, NEE, the path reservoir -- and Russian roulette, which Enhanced section 6.2.4 removes from
+// replay because a roulette kill during a shift would reject a perfectly valid path.
+
+/** How many vertices the identity self-check replays: enough to cross a dielectric or a mirror into
+ * the vertex a reconnection would hang from, and no more -- every one is a traced ray. */
+public static const int PATH_REUSE_IDENTITY_DEPTH = 3;
+
+/**
+ * Replay a recorded path's first {@code vertices} vertices from {@code seg} with {@code pathSeed}.
+ * Returns how many it reached; {@code lastPos} is the last one's position. A particle vertex stops the
+ * replay: a billboard's continuation draws from the path's sequential stream, not a vertex stream.
+ */
+int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSeed, int vertices,
+                      out float3 lastPos) {
+    lastPos = float3(0.0, 0.0, 0.0);
+    float3 ro = seg.ro;
+    float3 rd = seg.rd;
+    float3 throughput = seg.throughput;
+    float rayConeWidth = seg.rayConeWidth;
+    float rayConeSpread = max(seg.rayConeSpread, RAY_CONE_MIN_SPREAD);
+    int maxBounces = int(worldPush.maxBounces);
+    float currentIor = seg.medium.current.ior;
+    float3 currentExtinction = seg.medium.current.extinction;
+    float outerIor = seg.medium.outer.ior;
+    float3 outerExtinction = seg.medium.outer.extinction;
+    uint secondaryCull = secondaryCullMask();
+    bool waterWaves = (worldPush.flags & 16u) != 0u;
+    bool showCelestial = seg.showCelestial;
+    float bsdfPdf = -1.0;
+    uint sssMode = (worldPush.flags >> 7u) & 3u;
+    int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
+    int indirectDepth = 0;
+    int reached = 0;
+    for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
+        traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
+                      showCelestial, bounce == 0, rayConeWidth, rayConeSpread);
+        if (payload.hitT < 0.0) {
+            break;
+        }
+        float3 n = payload.normal;
+        float3 hitPos = ro + rd * payload.hitT;
+        rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
+        uint material = payloadMaterial();
+        int hitDepth = indirectDepth++;
+        lastPos = hitPos;
+        reached = hitDepth + 1;
+        if (reached >= vertices || bounce >= maxBounces) {
+            break;
+        }
+        uint vertexSeed = vertexStream(pathSeed, uint(hitDepth));
+        if (material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC) {
+            if (!reuseResolveDielectric(material, hitPos, n, rayConeWidth, waterWaves, ro, rd, throughput,
+                                        currentIor, currentExtinction, outerIor, outerExtinction,
+                                        activeMediumFlags, rayConeSpread, vertexSeed)) {
+                break;
+            }
+            showCelestial = true;
+            bsdfPdf = -1.0;
+            continue;
+        }
+        if (material == MATERIAL_PARTICLE) {
+            break;
+        }
+        ReuseOpaqueVertex vtx = reuseOpaqueVertex(hitPos, n, rd, rayConeWidth, hitDepth, sssMode, sssMaxEvents);
+        bool walked;
+        if (!reuseSampleContinuation(vtx, hitPos, sssMaxEvents, ro, rd, throughput, bsdfPdf,
+                                     rayConeSpread, showCelestial, vertexSeed, walked)) {
+            break;
+        }
+    }
+    return reached;
+}
+
 public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         uint2 pix, uint sampleIndex, uint2 renderSize,
                         bool captureFirst, out FirstSegmentTrace firstTrace,
                         inout uint4 reuseCounts) {
     firstTrace = emptyFirstSegmentTrace(seg, activeMediumFlags);
+    // The medium word this path entered pass B with: the loop pushes and pops it, the replay
+    // (identity self-check, R1b-3) starts again from here.
+    uint entryMediumFlags = activeMediumFlags;
     float3 L = float3(0.0, 0.0, 0.0);
     float3 ro = seg.ro;
     float3 rd = seg.rd;
@@ -448,6 +529,15 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     // the loop by snapshot subtraction, so the radiance accumulation sites stay untouched and the
     // switch-off state (no buffer published) dead-codes every line this block adds.
     bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;
+    // R1b-3, the prefix identity self-check: one pixel in sixteen replays its own recorded path from
+    // its first vertex and must land exactly on the vertex it recorded -- the proof that the vertex
+    // streams and the shared vertex functions re-drive a path. Diagnostics only (switch word bit 0).
+    bool identityCheck = recordPath && (worldPush.pathReplayEnabled & PATH_REUSE_IDENTITY_BIT) != 0u
+            && worldPush.pathReservoirStatsAddr != 0u
+            && (((pix.y * renderSize.x + pix.x) ^ worldPush.frameIndex) & 15u) == 0u;
+    float3 identityPos = float3(0.0, 0.0, 0.0);
+    int identityVertices = 0;
+    bool identityParticle = false;
     bool reconFound = false;
     bool reconQualifies = false;
     float3 reconPos = float3(0.0, 0.0, 0.0);
@@ -609,6 +699,10 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
         uint material = payloadMaterial();
         int hitDepth = indirectDepth++;
+        if (identityCheck && hitDepth < PATH_REUSE_IDENTITY_DEPTH) {
+            identityPos = hitPos;
+            identityVertices = hitDepth + 1;
+        }
 
         // ---- Dielectric interface: water, stained glass, ice. ONE handler and one behaviour — every
         // dielectric is a volume. Fresnel from the relative index across the face, then reflect or
@@ -661,6 +755,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         // off secondary rays, so this only fires at bounce 0; they receive direct light and one diffuse
         // path continuation into the scene, but never appear in shadows/reflections/GI or emit radiance.
         if (material == MATERIAL_PARTICLE) {
+            identityParticle = true; // a billboard draws its continuation from `seed`: not replayable
             float3 albedo = payload.albedo;
 
             // D78A's explicit non-physical readability floor. A constant isotropic radiance reflected
@@ -1243,6 +1338,21 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
         store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,
                                 worldPush.frameIndex & 1u)] = emptyPathReservoir();
+    }
+    // Two vertices at least: the first one is the segment's own ray and involves no decision, so a
+    // one-vertex replay would pass whatever the streams did and only dilute the rate.
+    if (identityCheck && identityVertices >= 2 && !identityParticle) {
+        float3 replayedPos;
+        int replayed = reuseReplayPrefix(seg, entryMediumFlags, pathSeedBase, identityVertices, replayedPos);
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[6], 1u);
+        // A decision replayed differently lands on another surface; the same decisions land on the same
+        // point up to the arithmetic of a second inlined copy -- a few ulps per bounce, some 1e-6 of the
+        // position, where this tolerance is 1e-4 of it.
+        float3 miss = replayedPos - identityPos;
+        if (replayed == identityVertices
+                && dot(miss, miss) <= 1.0e-8 * (1.0 + dot(identityPos, identityPos))) {
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[7], 1u);
+        }
     }
     return L;
 }

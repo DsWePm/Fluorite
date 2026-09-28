@@ -476,3 +476,15 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 - DLSS-RR 前的相关性问题（D219/D221）。
 - 80 B 记录与 M24 并存时的 8 GB 峰值。
 - Slang 的已知误编（R24）。
+
+### 落地进度（2026-09-28，`feat/m28-s3-rework`）
+
+每片一个提交，推送到 origin。G15 之后关档管线不含任何复用代码；R1a 起每片都把关档管线（pass A `world_primary.rgen`、pass B `world.rgen`/`world_ser.rgen`）的 SPIR-V 做规整化比对（去调试信息与死常量、ID 重编号），与前一片等价。
+
+- **R0**：`1d57f90` 开关字 + 独立邻居数 + UI + `pathReuseSwitches` 列，`composite.path-replay` 退役（G14）；`78ebba1` 变体管线（G15）；`f2b80ed` `RtPathReuseMathTest`。
+- **R1a** `41024a0`：复用 tracer 挪进 `path_reuse_trace.slang`，只在变体里 include；`world.rgen` 的 `tracePath` 回到 S2 之前的发布版。
+- **R1b-1** `15e88b4`：三个顶点决策函数（`reuseResolveDielectric`、`reuseOpaqueVertex`、`reuseSampleContinuation`）逐行抽出，契约测试逐行对照发布版循环。
+- **R1b-2** `cd7fe7a`：被记录路径的顶点决策改走 `vertexStream(pathSeed, hitDepth)`，未记录路径把流交还给 `seed`、逐次抽样与发布版一致；复用自己的抽样走 `reuseStream`。
+- **R1b-3**：前缀重放 `reuseReplayPrefix`（与循环同一条追踪调用、同一套顶点函数、逐顶点流、不做 RR，遇粒子即停）和恒等自检：诊断分区「路径复用恒等自检」（`diagnostics.path-reuse-identity-check`，开关字 bit 0），每 16 像素抽 1 个，把自己的路径从 pass B 第一个顶点重放 2–3 个顶点，落点与记录偏差在位置量级 1e-4 以内即通过；统计 lane 6/7（尝试/通过），追加在「ReSTIR 复用统计」日志行末尾 `identity N (比例)`。只含一个顶点（不涉及任何决策）的路径与经过粒子的路径不计入。
+- **与设计的差异**：`traceClouds`、`integrateSegment` 仍按值取 `seed`（不推进流，不影响路径几何）。它们只在移位要重新求值连接边或重放段的透射时才需要确定性种子，所以挪到消费它的 R3 一起做，届时与 G10（连接边介质）同一请示。
+- **待游戏内验证**（R2 开工前）：关档画面与帧时间不变；拨开主开关后日志出现 `RT path reuse pass B pipeline built`，frame.csv 的 `pathReuseSwitches` 列跟随开关字；恒等自检比例 ≥ 99.9%。

@@ -33,7 +33,7 @@ import java.util.Locale;
  * ({@code PUSH_RING} frames later, no fence of its own -- the RtRestirStats arrangement verbatim).
  */
 public final class RtPathReservoirStats {
-    /** Temporal read/usable, spatial attempted/usable, applied, deep-recon; lanes 6-7 are free (D231). */
+    /** Temporal read/usable, spatial attempted/usable, applied, deep-recon, identity attempted/passed. */
     public static final int LANES = 8;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
@@ -132,7 +132,9 @@ public final class RtPathReservoirStats {
         long sUsable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 12L));
         long applied = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 16L));
         long deepRecon = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 20L));
-        if (tRead == 0L && sAttempt == 0L) {
+        long identityAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 24L));
+        long identityPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 28L));
+        if (tRead == 0L && sAttempt == 0L && identityAttempt == 0L) {
             return; // nothing attempted: a sky view or a menu carries no information either way
         }
         long now = System.nanoTime();
@@ -143,13 +145,23 @@ public final class RtPathReservoirStats {
         // Attempts travel with the rates (RtRestirStats's reasoning); the two rates are reported
         // apart because the shifts answer different questions. Applied is the D221 gate's counter --
         // zero while no history carries enough independent candidates, which is the honest reading.
-        // deep-recon counts accepted candidates whose receiver reconDepth is above zero. Lanes 6-7
-        // held composite.path-replay's counts and are free since it retired (D231): the rebuild's
-        // slices claim lanes as they add the counters that fill them, never ahead of them.
-        FluoriteMod.LOGGER.info(
-                "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, "
-                        + "deep-recon {}",
-                tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon);
+        // deep-recon counts accepted candidates whose receiver reconDepth is above zero. Lanes 6-7 are
+        // the prefix identity self-check (D231 R1b-3, diagnostics.path-reuse-identity-check): replays
+        // attempted, and replays that landed on the recorded vertex. Anything below ~100% means the
+        // vertex streams or the shared vertex functions no longer re-drive a path -- every shift built
+        // on them would then weigh the wrong paths. Printed only while the check runs.
+        if (identityAttempt > 0L) {
+            FluoriteMod.LOGGER.info(
+                    "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, "
+                            + "deep-recon {}, identity {} ({})",
+                    tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon,
+                    identityAttempt, rate(identityPass, identityAttempt));
+        } else {
+            FluoriteMod.LOGGER.info(
+                    "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, "
+                            + "deep-recon {}",
+                    tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon);
+        }
     }
 
     private static String rate(long part, long total) {

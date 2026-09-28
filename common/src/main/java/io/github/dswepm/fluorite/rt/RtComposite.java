@@ -1521,16 +1521,23 @@ public final class RtComposite {
     /** Bit position and width of the path reuse's spatial neighbour count in its switch word. */
     static final int PATH_REUSE_NEIGHBOURS_SHIFT = 8;
     static final int PATH_REUSE_NEIGHBOURS_MASK = 0xF;
+    /** Bit 0: the prefix identity self-check (R1b-3). */
+    static final int PATH_REUSE_IDENTITY_BIT = 1;
 
     /**
      * The path reuse's switch word (D231, G14): one uint at WorldPush offset 1296, a bitfield whose
      * fields arrive with the slices that consume them, so no sub-switch exists before it does anything
-     * (D211's lesson). Today: bits 8-11 = the spatial neighbour count. restir_pt.slang spells the same
-     * shift and mask; RtPathReplayContractTest pins the two spellings together.
+     * (D211's lesson). Today: bit 0 = the prefix identity self-check, bits 8-11 = the spatial neighbour
+     * count. restir_pt.slang spells the same bits; RtPathReplayContractTest pins the two spellings
+     * together.
      */
     static int pathReuseSwitchWord() {
         int neighbours = FluoriteConfig.Rt.Composite.PATH_REUSE_SPATIAL_NEIGHBOURS.value();
-        return (neighbours & PATH_REUSE_NEIGHBOURS_MASK) << PATH_REUSE_NEIGHBOURS_SHIFT;
+        int word = (neighbours & PATH_REUSE_NEIGHBOURS_MASK) << PATH_REUSE_NEIGHBOURS_SHIFT;
+        if (FluoriteConfig.Rt.Diagnostics.PATH_REUSE_IDENTITY_CHECK.value()) {
+            word |= PATH_REUSE_IDENTITY_BIT;
+        }
+        return word;
     }
     /** Smallest patch an entity disturbs, in BLOCKS — so the size of a splash does not follow the grid. */
     private static final double WATER_IMPULSE_MIN_RADIUS = 0.5;
