@@ -1051,12 +1051,14 @@ public static const uint PATH_RESERVOIR_BYTES = 48u;
 //   li         -- incident radiance arriving at x_s from beyond it, Rgb9e5, RELATIVE (no prefix
 //                 throughput folded in -- the consumer re-weights with its own prefix).
 //   wi         -- the suffix direction, oct16x2.
-//   m          -- effective sample count for GRIS weights (1 in every record written today; D219
-//                 keeps histories single-sample so nothing static outlives the denoiser's window).
+//   m          -- effective sample count (confidence) for GRIS weights: 1 for a fresh record, 1 plus
+//                 the capped counts of the accepted candidates for a merged write (S3a), 0 for the
+//                 empty record a pixel writes when it found no reconnection vertex (D230).
 //   targetSum  -- this record's home-vertex contribution luminance (the target a merge weighs).
 //   reconIndex -- which path vertex x_s was (the in-place temporal shift requires a match).
-//   W          -- bitcast float merge weight; 1.0 in every record written today. Zero reads as
-//                 "no usable history" alongside m == 0.
+//   W          -- bitcast float merge weight: the multiplier on the re-evaluating vertex's own
+//                 f*cos/pdf, 1.0 for a fresh record; a merged write divides by the winner's target
+//                 WITHOUT its old W (D230). Zero reads as "no usable history" alongside m == 0.
 public struct PackedPathReservoir {
     public float3 reconPos;
     public uint   pathSeed;
@@ -1080,3 +1082,19 @@ public uint pathReservoirSlot(uint pixelIndex, uint pixelCount, uint parity) {
 /** An unwritten or unusable record. `m` counts the candidates a reservoir merged; cleared/stale
  * memory reads as 0 -- the same emptiness test the M24 store uses. */
 public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }
+
+/** The record a pixel writes when this frame found no reconnection vertex: all zero, exactly what the
+ * allocation's clear leaves, so it reads as empty through the same test (D230). */
+public PackedPathReservoir emptyPathReservoir() {
+    PackedPathReservoir r;
+    r.reconPos = float3(0.0, 0.0, 0.0);
+    r.pathSeed = 0u;
+    r.reconNrm = 0u;
+    r.li = 0u;
+    r.wi = 0u;
+    r.m = 0.0;
+    r.targetSum = 0.0;
+    r.reconIndex = 0u;
+    r.W = 0u;
+    return r;
+}

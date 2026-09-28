@@ -1083,7 +1083,12 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
     // direction), so the reservoir keeps one representative drawn target-proportionally, with
     // W = targetSum / (m * t_chosen). That W is what keeps W * target(y') unbiased wherever the record
     // is re-evaluated -- the standard RIS identity, and the reason the count m can grow while the
-    // weight stays O(1). D219's fresh-single-sample rule still governs the INERT regime: with fewer
+    // weight stays O(1). t_chosen is the chosen sample's target WITHOUT its own stored W: the stored W
+    // multiplies whatever this vertex's re-evaluation gives next frame, so a winner's receiver-domain
+    // luminance(candValue) -- which already carries its old W -- has that W multiplied back out below
+    // (D230, audit B03: leaving it in divided every carried history by its previous W, and a static
+    // chain in the merged regime came out +16% to +5600% bright depending on the lighting's range).
+    // D219's fresh-single-sample rule still governs the INERT regime: with fewer
     // candidates than the gate, nothing is applied and the record is written fresh, so no stale
     // single sample ever gets re-broadcast through the temporal link.
     if (recordPath && reconFound) {
@@ -1127,20 +1132,25 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                     renderSize.x * renderSize.y, prevParity)];
             float writtenM = 1.0 + extraCount;
             float chosenTarget = temporalSum / temporalCount;
+            // chosenTarget is luminance(candValue), which already carries prev's W -- multiply it back
+            // out (see the banner above: the stored W must not be divided by itself).
             store[writeSlot] = packPathReservoir(prev.pathSeed, prev.reconPos,
                     octDecode(unpackUnorm16x2(prev.reconNrm)),
                     unpackUnorm16x2(prev.wi), unpackRgb9e5(prev.li),
                     writtenM, totalTarget,
-                    chosenTarget > 0.0 ? totalTarget / (writtenM * chosenTarget) : 0.0,
+                    chosenTarget > 0.0
+                            ? asfloat(prev.W) * totalTarget / (writtenM * chosenTarget) : 0.0,
                     prev.reconIndex);
         } else if (spatialWins) {
             PackedPathReservoir prev = store[spatialWinSlot];
             float writtenM = 1.0 + extraCount;
+            // Same correction as the temporal winner: spatialWinTarget carries the neighbour's W.
             store[writeSlot] = packPathReservoir(prev.pathSeed, prev.reconPos,
                     octDecode(unpackUnorm16x2(prev.reconNrm)),
                     unpackUnorm16x2(prev.wi), unpackRgb9e5(prev.li),
                     writtenM, totalTarget,
-                    spatialWinTarget > 0.0 ? totalTarget / (writtenM * spatialWinTarget) : 0.0,
+                    spatialWinTarget > 0.0
+                            ? asfloat(prev.W) * totalTarget / (writtenM * spatialWinTarget) : 0.0,
                     prev.reconIndex);
         } else {
             // Own survives, or nothing merged: a fresh single-sample record (D219), except that a
@@ -1153,6 +1163,16 @@ public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,
                     writtenTarget > 0.0 ? writtenTarget / (writtenM * ownTarget) : 0.0,
                     reconDepth);
         }
+    } else if (recordPath) {
+        // No reconnection vertex this frame -- sky, a mirror to the sky, the bounce cap, the walk lobe,
+        // a microfacet reflected below the surface. Write an EMPTY record rather than leave the slot
+        // alone: unlike M24's DI store, whose reuse re-traces visibility, a path record carries radiance,
+        // and a slot this frame does not reach would hand its neighbours and the temporal link a suffix
+        // of arbitrary age (D230, audit B05). Only leaf 0 / sample 0 ever gets here, once per frame.
+        DevicePtr<PackedPathReservoir> store =
+                DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
+        store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,
+                                worldPush.frameIndex & 1u)] = emptyPathReservoir();
     }
         return L;
 }
