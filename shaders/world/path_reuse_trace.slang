@@ -371,10 +371,12 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     // produces independent lighting/BSDF paths from the shared terminal continuation.
     uint seed = seg.seed ^ sampleIndex * 2246822519u;
     seed = pcg(seed);
-    // M28 S2: this state is what the path reservoir stores -- the whole bounce loop's decision stream
-    // derives from it deterministically (see the REPLAY CONTRACT in segment.slang), so a replay starts
-    // from here. Snapshotted before the first draw mutates `seed`.
+    // M28: the seed the path reservoir stores. A RECORDED path's vertex decisions are drawn from
+    // vertexStream(pathSeedBase, hitDepth), addressable per vertex, so a replay needs only this and the
+    // vertex index (REPLAY CONTRACT, segment.slang). Snapshotted before the first draw mutates `seed`.
     uint pathSeedBase = seed;
+    // And the path reuse's own draws come from a stream of their own, never from a vertex decision's.
+    uint reuseSeed = reuseStream(pathSeedBase);
     float rayConeWidth = seg.rayConeWidth;
     float rayConeSpread = max(seg.rayConeSpread, RAY_CONE_MIN_SPREAD);
     int maxBounces = int(worldPush.maxBounces);
@@ -629,10 +631,16 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             }
             // The interface itself -- normal, Fresnel choice, new ray, medium stack -- is the shared
             // vertex decision the replay re-drives (reuseResolveDielectric, above).
+            // R1b: a recorded path draws this vertex's decisions from its addressable vertex stream;
+            // any other path keeps the shipped sequential stream, draw for draw.
+            uint vertexSeed = recordPath ? vertexStream(pathSeedBase, uint(hitDepth)) : seed;
             if (!reuseResolveDielectric(material, hitPos, n, rayConeWidth, waterWaves, ro, rd, throughput,
                                         currentIor, currentExtinction, outerIor, outerExtinction,
-                                        activeMediumFlags, rayConeSpread, seed)) {
+                                        activeMediumFlags, rayConeSpread, vertexSeed)) {
                 break;
+            }
+            if (!recordPath) {
+                seed = vertexSeed;
             }
             showCelestial = true; // specular interface: the continuation ray may see the sun/moon disc
             // A dielectric runs no NEE at all, so there is no second estimate of the light for MIS to
@@ -979,10 +987,16 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
 
         // The continuation is the shared vertex decision the replay re-drives
         // (reuseSampleContinuation, above): lobe choice, direction, weight, density, cone.
+        // R1b: the same vertex-stream rule as the dielectric branch. Everything above this point at the
+        // vertex (NEE, emitter RIS, M24's reuse) keeps drawing from `seed`: none of it is a vertex decision.
+        uint vertexSeed = recordPath ? vertexStream(pathSeedBase, uint(hitDepth)) : seed;
         bool walked;
         if (!reuseSampleContinuation(vtx, hitPos, sssMaxEvents, ro, rd, throughput, bsdfPdf,
-                                     rayConeSpread, showCelestial, seed, walked)) {
+                                     rayConeSpread, showCelestial, vertexSeed, walked)) {
             break;
+        }
+        if (!recordPath) {
+            seed = vertexSeed;
         }
         if (walked) {
             reconQualifies = false; // the walk's exit direction has no analytic density to reconnect on
@@ -1050,7 +1064,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 float candMeanTarget;
                 if (evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
                                             hitPos, n, reconTpre, footprint, reconDepth, false,
-                                            seed, stored, candValue, candCount, candMeanTarget)) {
+                                            reuseSeed, stored, candValue, candCount, candMeanTarget)) {
                     temporalValue = candValue;
                     temporalCount = candCount;
                     // A-02b: selection weights live in the RECEIVER domain (this vertex's
@@ -1076,7 +1090,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             for (uint i = 0u; i < pathReuseSpatialNeighbours()
                               && temporalCount + spatialCount < PATH_RESERVOIR_M_CAP; i++) {
                 int2 centre = int2(int(readPixel % renderSize.x), int(readPixel / renderSize.x));
-                int2 q = centre + spatialNeighbourOffset(seed);
+                int2 q = centre + spatialNeighbourOffset(reuseSeed);
                 if (any(q < int2(0, 0)) || any(q >= int2(renderSize))) {
                     continue;
                 }
@@ -1097,7 +1111,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 // is the in-place evaluation its off state always ran, until R2 retires that too.
                 bool accepted = evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
                         hitPos, n, reconTpre, footprint, reconDepth, true,
-                        seed, candidate, candValue, candCount, candMeanTarget);
+                        reuseSeed, candidate, candValue, candCount, candMeanTarget);
                 if (!accepted) {
                     continue;
                 }
@@ -1112,7 +1126,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 spatialValue += candCount * candValue;
                 spatialCount += candCount;
                 spatialTargetSum += candWeight;
-                if (rndf(seed) * spatialTargetSum < candWeight) {
+                if (rndf(reuseSeed) * spatialTargetSum < candWeight) {
                     spatialWinSlot = neighbourSlot;
                     spatialWinTarget = luminance(candValue);
                 }
@@ -1172,7 +1186,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         bool temporalWins = false;
         bool spatialWins = false;
         if (merged) {
-            float draw = rndf(seed) * totalTarget;
+            float draw = rndf(reuseSeed) * totalTarget;
             temporalWins = temporalSum > 0.0 && draw >= ownTarget
                     && draw < ownTarget + temporalSum;
             spatialWins = !temporalWins && spatialTargetSum > 0.0

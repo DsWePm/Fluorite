@@ -100,14 +100,39 @@ public float3 unpackRgb9e5(uint p) {
     return float3(p & 0x1ffu, (p >> 9u) & 0x1ffu, (p >> 18u) & 0x1ffu) * scale;
 }
 
-// REPLAY CONTRACT (M28 S2): the path's `seed` is the WHOLE record of the random decisions made along
-// it -- every rndf/pcg draw in the bounce loop advances that one state deterministically. The ReSTIR PT
-// path reservoir stores this seed so a neighbor pixel can re-drive the same decision stream on shifted
-// geometry. If you change the draw ORDER, the number of draws per vertex, or the seed-derivation idiom
-// (the `seed ^ const -> pcg` pattern the loops open with), stored seeds from frames before the change
-// replay into different decisions -- silently, no error, just wrong reuse weights. Change the tracer and
-// the RtPathReplayContractTest pins in the same commit, and bump the reservoir's build flag so old
-// histories are discarded.
+// REPLAY CONTRACT (M28 D231, R1). What a stored path seed means, and what it does NOT mean.
+//
+// The bounce loop's ordinary `seed` is ONE sequential stream shared by everything that draws: the
+// vertex decisions, but also the sun NEE, the emitter RIS, M24's reuse, the volume emitter NEE, the SSS
+// walk -- and several of those consume a number of draws that depends on geometry or on acceptance.
+// That stream cannot be replayed on another pixel's geometry, and never could (D227, audit D230 B07).
+//
+// So in the path reuse's tracer (path_reuse_trace.slang, variant pipeline only) a RECORDED path takes
+// its vertex-defining draws from vertexStream(pathSeed, vertexIndex) instead: a stream addressed by
+// the path seed and the vertex's hitDepth, and consumed only by the shared vertex functions
+// (reuseResolveDielectric, reuseSampleContinuation) in their fixed order. Nothing else touches it, so
+// how much NEE or reuse drew at a vertex cannot shift the next vertex's decisions. What a replay needs
+// from a record is therefore (pathSeed, vertex index), not a mid-stream state.
+//
+// Changing the salts, the derivation below, or the ORDER of draws inside the shared vertex functions
+// changes every stored seed's meaning: stored histories then replay into different decisions --
+// silently, as wrong weights. Change them only together with RtPathReplayContractTest's pins, and let the
+// store be cleared (toggling the path reservoir reallocates and zeroes it).
+public static const uint PATH_VERTEX_SALT = 0x9E3779B9u;
+public static const uint PATH_REUSE_SALT = 0x85EBCA6Bu;
+
+/** The random stream of path vertex {@code vertex} (hitDepth) of the path recorded under {@code pathSeed}. */
+public uint vertexStream(uint pathSeed, uint vertex) {
+    uint s = pathSeed ^ ((vertex + 1u) * PATH_VERTEX_SALT);
+    return pcg(s);
+}
+
+/** The path reuse's own stream (neighbour picks, soft gates, survivor draws): never a vertex decision's. */
+public uint reuseStream(uint pathSeed) {
+    uint s = pathSeed ^ PATH_REUSE_SALT;
+    return pcg(s);
+}
+
 public PackedPathSegment packPathSegment(PathSegment seg, bool hasNext) {
     PackedPathSegment p;
     p.ro = seg.ro;

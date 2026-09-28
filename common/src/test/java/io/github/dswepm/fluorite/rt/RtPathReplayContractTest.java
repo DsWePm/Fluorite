@@ -106,7 +106,7 @@ final class RtPathReplayContractTest {
         // is the whole of Enhanced §6.3; either half regressing to the other's domain is what this
         // pin catches.
         assertTrue(world.contains("temporalCount * temporalValue + spatialValue"));
-        assertTrue(world.contains("rndf(seed) * totalTarget"));
+        assertTrue(world.contains("rndf(reuseSeed) * totalTarget"));
         // The per-candidate selection weight stays a scalar multiplication (A-02b moved it to the
         // receiver domain; scalar-vs-vector is the invariant this test guards, not the domain).
         assertTrue(world.contains("candCount * luminance(candValue)"));
@@ -196,6 +196,35 @@ final class RtPathReplayContractTest {
         String pipeline = source("common/src/main/java/io/github/dswepm/fluorite/rt/pipeline/RtPipeline.java");
         assertTrue(pipeline.contains("buildPipeline(ctx, stack, pipelineLayout, rgen, missShaders, closestHitShader,"),
                 "a variant is built over the SAME layout, so the base pipeline's descriptor sets bind to it");
+    }
+
+    @Test
+    void aRecordedPathDrawsItsVertexDecisionsFromAddressableStreams() throws IOException {
+        // D231 R1b, the REPLAY CONTRACT: a recorded path's vertex decisions must not share a stream with
+        // anything whose draw count depends on geometry or acceptance (NEE, RIS, M24's reuse, the walk),
+        // or a replay on another pixel cannot land on the same decisions (D227, audit B07).
+        String segment = source("shaders/world/segment.slang");
+        assertTrue(segment.contains("uint s = pathSeed ^ ((vertex + 1u) * PATH_VERTEX_SALT);"));
+        assertTrue(segment.contains("uint s = pathSeed ^ PATH_REUSE_SALT;"));
+        String reuse = source("shaders/world/path_reuse_trace.slang");
+        String rule = "uint vertexSeed = recordPath ? vertexStream(pathSeedBase, uint(hitDepth)) : seed;";
+        assertEquals(2, reuse.split(java.util.regex.Pattern.quote(rule), -1).length - 1,
+                "both vertex kinds -- dielectric and opaque -- draw their decisions from the vertex stream");
+        assertEquals(2, reuse.split("seed = vertexSeed;", -1).length - 1,
+                "an unrecorded path hands the stream back: it must draw exactly as the shipped tracer does");
+        assertEquals(2, reuse.split("if \\(!recordPath\\) \\{\\s*seed = vertexSeed;", -1).length - 1,
+                "and only an unrecorded one");
+        // The reuse's own picks never borrow the vertex stream or the path's sequential one.
+        assertTrue(reuse.contains("uint reuseSeed = reuseStream(pathSeedBase);"));
+        assertTrue(reuse.contains("spatialNeighbourOffset(reuseSeed)"));
+        assertTrue(reuse.contains("rndf(reuseSeed) * spatialTargetSum"));
+        assertFalse(reuse.contains("spatialNeighbourOffset(seed)"));
+        // The shared vertex functions draw only from the stream they are handed.
+        for (String fn : new String[] {"bool reuseResolveDielectric(", "bool reuseSampleContinuation("}) {
+            String body = reuse.substring(reuse.indexOf(fn), reuse.indexOf("\n}\n", reuse.indexOf(fn)));
+            assertTrue(body.contains("inout uint stream"), fn + " takes its stream as a parameter");
+            assertFalse(body.matches("(?s).*\\bseed\\b.*"), fn + " must not reach for the path's seed");
+        }
     }
 
     @Test
