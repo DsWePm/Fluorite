@@ -384,3 +384,95 @@ D229 修掉的是索引与重复合并；**当前唯一在跑的估计量本身�
 ### 下一步
 
 M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史前请示）→ 重建 R0–R6（设计记录 D231）。M28 号段剩 D232–D233，之后需申请新号段。
+
+## D231（重建设计）：S3 按论文完整 hybrid shift + 随机重放重建——估计量、记录、随机流、开关与切片
+
+分支 `feat/m28-s3-rework`（从 `23d3015` 拉出）。用户裁决见 D230；本条是重建的设计基线，切片内细节以对应提交与后续 D 条为准。标为「请示项」的内容到该切片前按铁律 1 请示。
+
+### 估计量
+
+- **样本**：path tree 单事件，对应 Enhanced §2.3/§6.1。在源路径的重连点 x_k，每个事件都是一个带技术标签的候选：
+  - **L**：x_k 自发光与环境底；
+  - **S**：太阳 NEE；
+  - **R**：发光体 RIS NEE；
+  - **T**：薄壳 SSS；
+  - **H**：x_{k+1} 处 MIS 加权的 BSDF 命中；
+  - **D**：更深的其余部分。
+
+  WRS 选一个存入记录，得到 W_tree。**R** 在 S4 统一 DI 之前是具名近似。暂不支持的事件不进复用，留在本像素自己的路径里——积分拆分无偏，所以技术可以分期落地：D、S 先，L/H/T 随后，R 最后。
+- **重连顶点**：源路径上第一对满足判据的 (x_{k−1}, x_k)，k ≥ 2；接收端的 y₁ 是 pass B 的 hitDepth-0 顶点。判据有三条：Eq. 5 前向足迹、x_k 非漫反射时加逆向足迹、x_{k−1} 的单顶点 α 门（α_min 取值待核，见 D230 B08）。
+- **移位**：k ≥ 3 时，从接收端 hitDepth-0 顶点用逐顶点随机流重放到 y_{k−1}，重放不做 RR。然后用**最近命中**连接射线连到 x_k：命中距离相同、同侧、法线一致才算通过，同时借 payload 取回 x_k 的材质（G3 请示项）。在 x_k 按新入射方向重评技术与 MIS。雅可比按 Eq. 2 计算，其中 G 的余弦取在 x_k（论文印刷的注记见 D230）；源路径的分母 D 存在记录里。
+- **合并**：pairwise MIS 沿用 M24 形式；「反向移位是否追可见性」是隔离开关（Q2）。着色按 §6.3 做 RGB 累积；没有可用域时回退到路径追踪的完整和，所以开档移动时约等于关档。
+- **置信度**：每个上帧候选各自取 min(Cap, c)；空间循环不受时域计数限制（修 B02）。Cap 取值是请示项 G6。
+
+### 记录（80 B，std430，float3 领头以防 D220 式填充）
+
+| 偏移 | 字段 |
+| --- | --- |
+| 0 | `float3 reconPos`（x_k）、`uint pathSeed` |
+| 16 | `float3 primaryPos`（记录自身像素的 y₁）、`uint primaryNrm`（oct16×2） |
+| 32 | `uint reconNrm`、`uint dirK`（ω_k 或光源方向）、`uint radiance`（rgb9e5，技术的相对入射项）、`float W` |
+| 48 | `float jacDenom`（D）、`float targetOwn`、`uint confPdf`（置信度与竞争 pdf 各占半精度）、`uint bits`（k/技术/lobe/介质/主命中类型/valid） |
+| 64 | `uint objectId`、`uint primaryUv`、两个备用 uint（决策 7 的 LoD 钩子，编码在 R2 定） |
+
+1080p 渲染分辨率下约 331 MB；DLSS 质量档更小。结构、`PATH_RESERVOIR_BYTES`、生成记录与 `RtPathReservoirLayoutTest` 在 R2 同一提交内更新。
+
+### 随机流（R1）
+
+- 新增 `vertexStream(pathSeed, hitDepth)`，只接管**决定顶点**的抽样：电介质的 VNDF 与 Fresnel 选择，不透明面的 lobeChoice、水膜/高光 VNDF、SSS 游走选择与内部、漫反射余弦。
+- 留在原 `seed` 的：`sampleSquare`、`risInitial`、`restirReuse`、`volumeNee`、粒子余弦、两处 RR。
+- `traceClouds` 改用逐顶点流派生的种子，使连接边上的云透射是路径的确定函数。
+- 复用逻辑自己的抽样（邻居候选、A-ES、幸存者）改用独立的 `reuseSeed`，改复用逻辑不会改变追踪出的路径。
+- 这些改动只存在于复用变体管线中（G15），基础管线仍是已发布的 tracer。
+
+### 开关（G14，用户裁决）
+
+- **主开关**「路径 Reservoir（M28 S2）」（`composite.path-reservoir`）：打开时分配缓冲，并让 pass B 切到复用变体管线。
+- **WorldPush 1296 处的字改为位字段**。Slang 字段名 `pathReplayEnabled` 暂不改，因为 M30 的布局钉引用它（`RtSkyMediumLayoutTest` 1296/1300）；语义以横幅为准。
+  - bits 8–11：路径复用空间邻居数。
+  - 时域开关（R3）、反向可见性（R3）、允许 k≥3（R5）、恒等自检（R1）各占一位，**在消费它的切片才加 UI 与位**，不出现拨了没反应的开关（D211 的教训）。
+- **新旋钮**「路径复用空间邻居数」（`composite.path-reuse-spatial-neighbours`，路径追踪分区，默认 0，范围 0–8）。M24 的「ReSTIR 空间邻居数」从此只管光源 reservoir。
+- **`composite.path-replay` 退役**：普通 `fluorite.toml` 里残留的键会被忽略；严格导入的预设若含该键会被拒绝——这个键在 main 上只存在了数小时。
+- **frame.csv 新列** `pathReuseSwitches`：记录打包后的字，与 `pathReservoir` 同源（D211）。
+
+### 编译期变体（G15，用户裁决）
+
+- `build.gradle` 对 `world.rgen` 再编两份带 `-DFLUORITE_PATH_REUSE` 的：`world_reuse.rgen.spv`、`world_ser_reuse.rgen.spv`。
+- `RtPipeline` 增加**变体管线**：共享同一管线布局、描述符集和 miss/hit 表，只换 raygen。它必须是另一条 `VkPipeline`，不能做成同一管线里的第三个 raygen 组，因为光追管线的寄存器分配按整条管线计，放在一起会把关档一起拖慢。
+- 主开关第一次打开时懒创建变体，此后常驻；pass B 只在路径 store 存在时绑定变体。
+- 基础管线里 `recordPath` 是编译期常量 `false`，路径复用代码整体被消除。
+
+### 验证基建
+
+- **Java 数值参考**：`RtPathReuseMathTest`（R0），覆盖：
+  - pairwise 在目标与雅可比都不相等时仍单位分解；
+  - 反向可见性关掉时的偏暗量；
+  - flatland GRIS 链无偏，含 Cap、§6.3 与 B03 回归；
+  - J(identity) = 1、J·J⁻¹ = 1、D′ = 分子；
+  - 置信度有界；
+  - path-tree RIS 边际化与 RR 外置。
+
+  之后各片的 shader 公式都要钉到对应的 Java 镜像上。
+- **GPU 统计 lane**：由用到它的切片自己加，不预留空 lane；原计划 R0 扩到 16 lanes 的做法改为此。
+- **恒等 lane**：R1 做前缀恒等，R2 做完整恒等（按 k=2 / k≥3 分档）。
+
+### 切片
+
+| 切片 | 内容 | 关键验证 |
+| --- | --- | --- |
+| R0 | 本条；G14 开关与 frame.csv 列；G15 变体管线；`RtPathReuseMathTest` | 构建与测试全绿；关档管线不含复用代码 |
+| R1 | 逐顶点随机流、顶点函数抽取、REPLAY CONTRACT 重写、前缀恒等 lane | 恒等 lane ≥ 99.9% |
+| R2 | 80 B 记录、记录端判据、path-tree 单事件、退役 in-place 估计量 | 完整恒等 lane ≈ 100%；331 MB 日志；仅记录的 A→B→A |
+| R3 | 时域 hybrid shift（k=2） | 关「DLSS 光线重建」固定机位 N 帧平均开≈关（2σ），且方差更低 |
+| R4 | 空间复用：Junkins Alg. 1、逐候选 Cap | RR 开下的静止视觉 GO/NO-GO；按邻居数的 A→B→A |
+| R5 | k ≥ 3 深链重放 | k≥3 恒等 lane；光泽地面与水边收敛 |
+| R6 | 实测后裁决反向可见性、α_min、c、Cap、半径、duplication map | — |
+
+**切片级请示项**：G3 x_k 材质、G4 空间域反向 y₁ 材质、G6 Cap、G10 连接边介质、G11 半透明连接、G12 发光体 RIS 技术、G16 特殊主命中、G18 SSS 游走前缀、G22 x₁ 天空 DI。
+
+**风险**：
+- 每像素约 +4–10 条射线（M=2 时的估计，未实测）。
+- 单个 raygen 做不了 stream compaction。
+- DLSS-RR 前的相关性问题（D219/D221）。
+- 80 B 记录与 M24 并存时的 8 GB 峰值。
+- Slang 的已知误编（R24）。
