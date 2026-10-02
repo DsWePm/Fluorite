@@ -1030,73 +1030,68 @@ public struct PackedPathSegment {
 
 /** Must match the RtComposite allocation, which takes the size from the generated record -- so this
  * declaration and the allocation cannot drift. */
-public static const uint PATH_RESERVOIR_BYTES = 48u;
+public static const uint PATH_RESERVOIR_BYTES = 80u;
 
-// The M28 S2 path reservoir: one record per render pixel per frame half, the reusable INDIRECT suffix
-// the temporal merge reconnects. Declared here beside PackedPathSegment for the same reason that
-// record is: its true std430 stride has to be reflected into the generated Java record, and the pack
-// side (restir_pt.slang) imports world_core through segment.slang, whose set-0 bindings collide with
-// the probe.
-//
-// D220: THE FIELD ORDER IS THE ALLOCATION. The first draft declared pathSeed (a uint) before
-// reconPos (a float3); std430 gives float3 a 16-byte alignment, the four bytes of padding that
-// follow pushed the true stride to 64, and the shading indexed a 48-bytes-per-slot allocation at
-// 64-byte stride -- every access past the first slots landed outside the buffer, and the first
-// session that ran at full render resolution walked far enough to fault the GPU (READ_INVALID past
-// the store, then an IP fault in whatever the clobbered neighbour fed the TLAS build). reconPos
-// leads, exactly like ro in PackedPathSegment: sixteen bytes plus eight uints is 48 on the nose.
-//
-// Field semantics (what a temporal merge needs and why -- see restir_pt.slang for the packer):
-//   reconPos   -- x_s, the reconnection vertex this suffix hangs from; also the drift test's anchor.
-//   pathSeed   -- the RNG state the path was traced with (REPLAY CONTRACT, see segment.slang).
-//   reconNrm   -- x_s's shading normal, oct16x2.
-//   li         -- incident radiance arriving at x_s from beyond it, Rgb9e5, RELATIVE (no prefix
-//                 throughput folded in -- the consumer re-weights with its own prefix).
-//   wi         -- the suffix direction, oct16x2.
-//   m          -- effective sample count (confidence) for GRIS weights: 1 for a fresh record, 1 plus
-//                 the capped counts of the accepted candidates for a merged write (S3a), 0 for the
-//                 empty record a pixel writes when it found no reconnection vertex (D230).
-//   targetSum  -- this record's home-vertex contribution luminance (the target a merge weighs).
-//   reconIndex -- which path vertex x_s was (the in-place temporal shift requires a match).
-//   W          -- bitcast float merge weight: the multiplier on the re-evaluating vertex's own
-//                 f*cos/pdf, 1.0 for a fresh record; a merged write divides by the winner's target
-//                 WITHOUT its old W (D230). Zero reads as "no usable history" alongside m == 0.
+// D231: a tagged path-tree event for the hybrid shift, one record per pixel and parity.
+// The two float3 lanes lead their 16-byte groups: the Slang reflection probe owns the true
+// std430 stride, and RtComposite allocates from that generated record (D220).
+// radiance is relative incident radiance, without prefix throughput or reconnection scattering.
+// W includes initial tree resampling and external roulette; jacDenom stores the Eq. 2 denominator.
+// confPdf packs confidence (low half) and the competing technique's PDF (high half).
+// bits carries validity and the event's discrete path parameters; zero is always empty.
+// LoD hooks are reserved here. objectId == 0xffffffff means unavailable, not object zero;
+// primaryUv must not be interpreted without a valid object hook. No payload growth is implied.
+public static const uint PATH_RECORD_VALID = 1u;
+public static const uint PATH_OBJECT_UNAVAILABLE = 0xffffffffu;
+
 public struct PackedPathReservoir {
     public float3 reconPos;
     public uint   pathSeed;
-    public uint   reconNrm;      // oct16x2 packed
-    public uint   li;            // Rgb9e5
-    public uint   wi;            // oct16x2 packed
-    public float  m;
-    public float  targetSum;
-    public uint   reconIndex;
-    public uint   W;             // bitcast float
+    public float3 primaryPos;
+    public uint   primaryNrm;
+    public uint   reconNrm;
+    public uint   dirK;
+    public uint   radiance;
+    public float  W;
+    public float  jacDenom;
+    public float  targetOwn;
+    public uint   confPdf;
+    public uint   bits;
+    public uint   objectId;
+    public uint   primaryUv;
+    public uint   reserved0;
+    public uint   reserved1;
 };
 
-/** Slot address: one reservoir per pixel per parity. S2 is temporal-only, so no depth or path planes --
- * the pixel is the whole key. With spp > 1 the samples of a pixel share the slot and the last write
- * wins; the published SPP is 1, and per-path planes would quadruple a buffer the switch already has to
- * justify. Revisit only if an spp A/B ever shows the sharing mattering. */
+/** Slot address: one reservoir per pixel per parity. No depth or path planes --
+ * the pixel is the whole key. Only sample 0 of leaf 0 writes a slot; additional samples and leaves retain their own path values. */
 public uint pathReservoirSlot(uint pixelIndex, uint pixelCount, uint parity) {
     return pixelIndex + parity * pixelCount;
 }
 
-/** An unwritten or unusable record. `m` counts the candidates a reservoir merged; cleared/stale
- * memory reads as 0 -- the same emptiness test the M24 store uses. */
-public bool pathReservoirEmpty(PackedPathReservoir p) { return !(p.m > 0.0); }
+/** Zero-filled storage and unsupported paths are empty regardless of their other lanes. */
+public bool pathReservoirEmpty(PackedPathReservoir p) {
+    return (p.bits & PATH_RECORD_VALID) == 0u;
+}
 
-/** The record a pixel writes when this frame found no reconnection vertex: all zero, exactly what the
- * allocation's clear leaves, so it reads as empty through the same test (D230). */
+/** Every sample-0 path writes this when no supported event exists, so stale slots cannot survive. */
 public PackedPathReservoir emptyPathReservoir() {
     PackedPathReservoir r;
     r.reconPos = float3(0.0, 0.0, 0.0);
     r.pathSeed = 0u;
+    r.primaryPos = float3(0.0, 0.0, 0.0);
+    r.primaryNrm = 0u;
     r.reconNrm = 0u;
-    r.li = 0u;
-    r.wi = 0u;
-    r.m = 0.0;
-    r.targetSum = 0.0;
-    r.reconIndex = 0u;
-    r.W = 0u;
+    r.dirK = 0u;
+    r.radiance = 0u;
+    r.W = 0.0;
+    r.jacDenom = 0.0;
+    r.targetOwn = 0.0;
+    r.confPdf = 0u;
+    r.bits = 0u;
+    r.objectId = PATH_OBJECT_UNAVAILABLE;
+    r.primaryUv = 0u;
+    r.reserved0 = 0u;
+    r.reserved1 = 0u;
     return r;
 }

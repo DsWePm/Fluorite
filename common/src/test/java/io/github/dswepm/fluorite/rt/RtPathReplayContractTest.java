@@ -50,7 +50,7 @@ final class RtPathReplayContractTest {
         // RtPathReservoirLayoutTest against the generated record, and RtComposite takes its
         // allocation stride from that same generated constant -- the D220 hand-copy lesson.
         assertTrue(worldCommon.contains("public struct PackedPathReservoir"));
-        assertTrue(worldCommon.contains("PATH_RESERVOIR_BYTES = 48u"));
+        assertTrue(worldCommon.contains("PATH_RESERVOIR_BYTES = 80u"));
         assertTrue(worldCommon.contains("pathReservoirSlot"));
         // The float3 MUST lead: std430 gives float3 a 16-byte alignment, and a uint before it pads
         // the stride to 64 against the 48-byte allocation (the D220 GPU fault, verbatim).
@@ -60,8 +60,8 @@ final class RtPathReplayContractTest {
                         + "stride grows to 64 and every slot access walks off the allocation");
         String restirPt = source("shaders/world/restir_pt.slang");
         // The estimator side stays in restir_pt: the packer and the merge constants.
-        assertTrue(restirPt.contains("packPathReservoir("));
-        assertTrue(restirPt.contains("PATH_RESERVOIR_M_CAP"));
+        assertFalse(restirPt.contains("evalPathSuffixCandidate("));
+        assertFalse(restirPt.contains("PATH_RESERVOIR_M_CAP"));
     }
 
     @Test
@@ -73,44 +73,26 @@ final class RtPathReplayContractTest {
         // The write is gated on the store's address, not a separate flag: no buffer means no record
         // and no branch left behind (the switch's whole shader-side off state).
         assertTrue(world.contains("worldPush.pathReservoirAddr != 0"));
-        assertTrue(world.contains("packPathReservoir("));
+        assertTrue(world.contains("= emptyPathReservoir();"));
     }
 
     @Test
-    void theTemporalMergeReprojectsAndCarriesAMergeWeight() throws IOException {
+    void theInvalidInPlaceEstimatorIsRetired() throws IOException {
         String world = source("shaders/world/path_reuse_trace.slang");
-        // The temporal read goes through M24's d0 reprojection at the primary hit -- without it a
-        // moving camera reads a history that was never this point's.
-        assertTrue(world.contains("restirPreviousPixel(hitPos, renderSize, readPixel)"));
-        // The merged pixel value and the survivor write are the estimator; losing either silently
-        // turns the switch into "record and never reuse" or "reuse and never re-record". S3a: the
-        // survivor is a three-way draw (own / temporal representative / spatial representative).
-        assertTrue(world.contains("temporalValue"));
-        assertTrue(world.contains("temporalWins"));
-        assertTrue(world.contains("spatialWins"));
-        assertTrue(world.contains("evalPathSuffixCandidate("));
-        String restirPt = source("shaders/world/restir_pt.slang");
-        // The RIS W normalization alone does not prove the cross-pixel estimator unbiased; the m cap
-        // bounds how long the past outvotes the present.
-        assertTrue(restirPt.contains("PATH_RESERVOIR_M_CAP"));
-        // W is a lane of the record, which lives in world_common beside PackedPathSegment (D220).
-        String worldCommon = source("shaders/world/world_common.slang");
-        assertTrue(worldCommon.contains("bitcast float merge weight"));
+        String module = source("shaders/world/restir_pt.slang");
+        for (String old : new String[] {"evalPathSuffixCandidate(", "temporalWins", "spatialWins",
+                "temporalValue", "spatialTargetSum", "reconLpre", "PATH_RESERVOIR_APPLY_MIN_M"}) {
+            assertFalse(world.contains(old) || module.contains(old), "retired estimator returned: " + old);
+        }
+        assertFalse(module.contains("cosHere / cosStored"));
     }
 
     @Test
-    void theAppliedEstimateAccumulatesInRgbAndSelectsByScalar() throws IOException {
+    void theRecordOnlySliceReturnsTheWholeOwnPath() throws IOException {
         String world = source("shaders/world/path_reuse_trace.slang");
-        // Decision 6's RGB vector weights, pinned in its shipped form (A-②a): the APPLIED estimate
-        // accumulates candidates as RGB (vector weights reach the picture -- chroma noise averages),
-        // while the survivor SELECTION is driven by the scalar luminance target. Decoupling those two
-        // is the whole of Enhanced §6.3; either half regressing to the other's domain is what this
-        // pin catches.
-        assertTrue(world.contains("temporalCount * temporalValue + spatialValue"));
-        assertTrue(world.contains("rndf(reuseSeed) * totalTarget"));
-        // The per-candidate selection weight stays a scalar multiplication (A-02b moved it to the
-        // receiver domain; scalar-vs-vector is the invariant this test guards, not the domain).
-        assertTrue(world.contains("candCount * luminance(candValue)"));
+        assertFalse(world.contains("L = reconLpre + applied"));
+        assertFalse(world.contains("prevParity"));
+        assertTrue(world.contains("return L;"));
     }
 
     @Test
@@ -130,8 +112,6 @@ final class RtPathReplayContractTest {
     @Test
     void spatialPixelCoordinatesRoundTripAtNonSquareResolution() throws IOException {
         String world = source("shaders/world/path_reuse_trace.slang");
-        assertTrue(world.contains("int(readPixel / renderSize.x)"));
-        assertFalse(world.contains("int(readPixel / renderSize.y)"));
         int width = 1920;
         int height = 1080;
         for (int y : new int[] {0, 500, 800, height - 1}) {
@@ -144,16 +124,11 @@ final class RtPathReplayContractTest {
     }
 
     @Test
-    void historyIsEvaluatedOnlyAtTheFirstReconnectionBounce() throws IOException {
+    void theRecordOnlySliceDoesNotReadHistory() throws IOException {
         String world = source("shaders/world/path_reuse_trace.slang");
-        int snapshot = world.indexOf("bool firstReconThisBounce = reconQualifies;");
-        int reset = world.indexOf("reconQualifies = false;", snapshot);
-        int history = world.indexOf("if (recordPath && firstReconThisBounce) {", reset);
-        int temporal = world.indexOf("evalPathSuffixCandidate(", history);
-        int roulette = world.indexOf("// Russian roulette on deeper bounces", temporal);
-        assertTrue(snapshot >= 0 && snapshot < reset && reset < history
-                && history < temporal && temporal < roulette);
-        assertFalse(world.substring(history, roulette).contains("if (recordPath && reconFound)"));
+        assertFalse(world.contains("restirPreviousPixel("));
+        assertFalse(world.contains("stored.reconIndex"));
+        assertFalse(world.contains("neighbourSlot"));
     }
 
     @Test
@@ -217,8 +192,6 @@ final class RtPathReplayContractTest {
                 "and only an unrecorded one");
         // The reuse's own picks never borrow the vertex stream or the path's sequential one.
         assertTrue(reuse.contains("uint reuseSeed = reuseStream(pathSeedBase);"));
-        assertTrue(reuse.contains("spatialNeighbourOffset(reuseSeed)"));
-        assertTrue(reuse.contains("rndf(reuseSeed) * spatialTargetSum"));
         assertFalse(reuse.contains("spatialNeighbourOffset(seed)"));
         // The shared vertex functions draw only from the stream they are handed.
         for (String fn : new String[] {"bool reuseResolveDielectric(", "bool reuseSampleContinuation("}) {
@@ -274,12 +247,14 @@ final class RtPathReplayContractTest {
                 .contains("word |= PATH_REUSE_IDENTITY_BIT;"));
         assertFalse(FluoriteConfig.Rt.Diagnostics.PATH_REUSE_IDENTITY_CHECK.defaultValue());
 
-        // Lanes 6 and 7: attempted and passed, read back where the shader writes them.
-        assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[6], 1u)"));
-        assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[7], 1u)"));
-        assertEquals(8, RtPathReservoirStats.LANES);
+        // R2a removed the unused merge lanes: identity now occupies lanes 0 and 1.
+        assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u)"));
+        assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u)"));
+        assertEquals(2, RtPathReservoirStats.LANES);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
-        assertTrue(stats.contains("src.mapped + 24L") && stats.contains("src.mapped + 28L"));
+        assertTrue(stats.contains("memGetInt(src.mapped)") && stats.contains("src.mapped + 4L"));
+        assertTrue(stats.contains("identityPass, identityAttempt"));
+        assertTrue(stats.contains("%.3f%%"));
     }
 
     @Test
@@ -379,8 +354,8 @@ final class RtPathReplayContractTest {
                 "the field must hold the dial's whole range");
 
         String world = source("shaders/world/path_reuse_trace.slang");
-        assertTrue(world.contains("i < pathReuseSpatialNeighbours()"),
-                "the path reuse's spatial loop reads its own count");
+        assertFalse(world.contains("i < pathReuseSpatialNeighbours()"),
+                "R2 is record-only; the spatial loop arrives with R4");
         String composite = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtComposite.java");
         assertFalse(composite.contains("reservoirStore != null || pathReservoirStore != null"),
                 "M24's restirSpatialNeighbours lane serves the light reservoirs only");
@@ -392,32 +367,18 @@ final class RtPathReplayContractTest {
     }
 
     @Test
-    void theSelectionTargetStaysInOneDomain() throws IOException {
-        String world = source("shaders/world/path_reuse_trace.slang");
-        // A-02b: selection moved to the RECEIVER domain (Enhanced §6.3 survivor representativeness).
-        // Unbiasedness does not care which positive function selects, but it DOES care that the
-        // draw, the sums and t_chosen stay in one domain -- so all three spellings are pinned.
-        assertTrue(world.contains("candCount * luminance(candValue)"));
-        assertTrue(world.contains("spatialWinTarget = luminance(candValue)"));
-        assertTrue(world.contains("temporalSum = candCount * luminance(candValue)"));
-        // The applied estimate stays RGB accumulation, untouched by the domain switch.
-        assertTrue(world.contains("temporalCount * temporalValue + spatialValue"));
+    void theHybridRecordReservesPrimaryAndSourceDensityState() throws IOException {
+        String common = source("shaders/world/world_common.slang");
+        for (String field : new String[] {"primaryPos", "primaryNrm", "jacDenom", "confPdf", "bits"}) {
+            assertTrue(common.contains(field));
+        }
+        assertTrue(common.contains("PATH_OBJECT_UNAVAILABLE = 0xffffffffu"));
     }
 
     @Test
-    void theReconnectionGateLooksAtThePredecessorRoughness() throws IOException {
-        String world = source("shaders/world/path_reuse_trace.slang");
-        // A-01a: Enhanced §4.2's single-vertex roughness gate. The qualification reads the PREVIOUS
-        // opaque vertex's alpha (a mirror behind the reconnection kills the suffix transfer; this
-        // vertex's own rough continuation is what makes it reconnectable), and the state rides the
-        // tracePath locals. Dielectric interfaces must clear this eligibility before continuing.
-        assertTrue(world.contains("float prevVertexRough = 1.0;"));
-        assertTrue(world.contains("prevVertexRough >= PATH_RECONNECT_MIN_ALPHA"));
-        assertTrue(world.contains("prevVertexRough = 0.0;"));
-        String restirPt = source("shaders/world/restir_pt.slang");
-        // 0.04 is the paper's rho_min = 0.2 converted from Falcor perceptual roughness to this
-        // repository's GGX-alpha storage (iron law 2): a one-time unit conversion, not a square.
-        assertTrue(restirPt.contains("PATH_RECONNECT_MIN_ALPHA = 0.04"));
+    void theUnprovenPerceptualRoughnessConversionStaysGone() throws IOException {
+        String module = source("shaders/world/restir_pt.slang");
+        assertFalse(module.contains("PATH_RECONNECT_MIN_ALPHA = 0.04"));
     }
 
     @Test

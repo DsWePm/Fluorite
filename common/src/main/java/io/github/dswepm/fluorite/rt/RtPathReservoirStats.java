@@ -12,29 +12,14 @@ import org.lwjgl.vulkan.VkCommandBuffer;
 import java.util.Locale;
 
 /**
- * How often the M28 S2 path reservoir's temporal candidate actually survives validation, and how
- * often it reaches the pixel.
- *
- * <p>The same reason {@link RtRestirStats} exists, one store over: the merge can silently never fire
- * -- the reprojection can miss, the drift test can reject every record, the depth gate can sit at a
- * depth nothing reaches -- and the picture then shows nothing but "the switch did nothing", which is
- * indistinguishable from a broken merge without this counter. The D211 lesson, applied before the
- * acceptance run rather than after it: a capture must carry its own attribution.
- *
- * <p>Five lanes, one per frame: temporal records READ and USABLE, spatial records ATTEMPTED and
- * USABLE, merges APPLIED. The shift rates answer the two different questions M24's split already
- * named -- "was this the same point" against "is this the same surface" -- and the applied lane is
- * the D221 gate: how many pixels actually took a merged value (zero until a history carries
- * PATH_RESERVOIR_APPLY_MIN_M independent candidates). The shader samples one pixel in sixteen, so
- * the rates are ratios over a sampled population -- the same convention as RtRestirStats.
- *
- * <p>The counters live in device-local memory and are copied into a per-ring-slot host-visible buffer
- * at the end of the frame that wrote them; reading happens once the slot comes back around
- * ({@code PUSH_RING} frames later, no fence of its own -- the RtRestirStats arrangement verbatim).
+ * Diagnostics for the D231 path reuse rebuild. R2a removes the legacy merge lanes;
+ * only the prefix identity attempted/passed counters are currently consumed.
+ * The shader samples one pixel in sixteen. Readback follows the frame ring,
+ * with no additional fence (the same ownership as RtRestirStats).
  */
 public final class RtPathReservoirStats {
-    /** Temporal read/usable, spatial attempted/usable, applied, deep-recon, identity attempted/passed. */
-    public static final int LANES = 8;
+    /** Prefix identity attempted/passed. Add lanes only when a slice consumes them. */
+    public static final int LANES = 2;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -126,46 +111,20 @@ public final class RtPathReservoirStats {
     private void report(int slot) {
         RtBuffer src = readback[slot];
         src.invalidate(0L, BYTE_SIZE);
-        long tRead = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped));
-        long tUsable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 4L));
-        long sAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 8L));
-        long sUsable = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 12L));
-        long applied = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 16L));
-        long deepRecon = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 20L));
-        long identityAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 24L));
-        long identityPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 28L));
-        if (tRead == 0L && sAttempt == 0L && identityAttempt == 0L) {
-            return; // nothing attempted: a sky view or a menu carries no information either way
+        long identityAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped));
+        long identityPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 4L));
+        if (identityAttempt == 0L) {
+            return;
         }
         long now = System.nanoTime();
         if (loggedAt != Long.MIN_VALUE && now - loggedAt < LOG_INTERVAL_NS) {
             return;
         }
         loggedAt = now;
-        // Attempts travel with the rates (RtRestirStats's reasoning); the two rates are reported
-        // apart because the shifts answer different questions. Applied is the D221 gate's counter --
-        // zero while no history carries enough independent candidates, which is the honest reading.
-        // deep-recon counts accepted candidates whose receiver reconDepth is above zero. Lanes 6-7 are
-        // the prefix identity self-check (D231 R1b-3, diagnostics.path-reuse-identity-check): replays
-        // attempted, and replays that landed on the recorded vertex. Anything below ~100% means the
-        // vertex streams or the shared vertex functions no longer re-drive a path -- every shift built
-        // on them would then weigh the wrong paths. Printed only while the check runs.
-        if (identityAttempt > 0L) {
-            FluoriteMod.LOGGER.info(
-                    "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, "
-                            + "deep-recon {}, identity {} ({})",
-                    tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon,
-                    identityAttempt, rate(identityPass, identityAttempt));
-        } else {
-            FluoriteMod.LOGGER.info(
-                    "RT path reservoir reuse (1/16 pixel sample): t={} ({}), s={} ({}), applied {}, "
-                            + "deep-recon {}",
-                    tRead, rate(tUsable, tRead), sAttempt, rate(sUsable, sAttempt), applied, deepRecon);
-        }
-    }
-
-    private static String rate(long part, long total) {
-        return total == 0L ? "--" : String.format(Locale.ROOT, "%.1f%%", 100.0 * part / total);
+        // Raw counts avoid rounding a failing 99.9% gate into a passing log rate.
+        FluoriteMod.LOGGER.info("RT path replay identity (1/16 pixel sample): {}/{} ({})",
+                identityPass, identityAttempt,
+                String.format(Locale.ROOT, "%.3f%%", 100.0 * identityPass / identityAttempt));
     }
 
     public void destroy() {

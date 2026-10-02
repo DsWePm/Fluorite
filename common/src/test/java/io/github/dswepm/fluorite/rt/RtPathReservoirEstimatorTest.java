@@ -20,8 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>So the survivor write is mirrored here and run as a static single-pixel chain in the regime B02
  * drives every still pixel into -- the temporal record saturates the candidate count and the spatial
  * loop reads nothing -- with a Lambertian receiver, J = 1, and incident radiance drawn from a known
- * two-level distribution. The chain's long-run mean has to land on the integral. The shader spelling
- * is pinned to the mirror, so neither can move without the other.
+ * two-level distribution. The chain's long-run mean has to land on the integral. This historical numerical regression remains after R2 retires the in-place shader;
+ * the replacement estimator is mirrored in RtPathReuseMathTest.
  */
 final class RtPathReservoirEstimatorTest {
 
@@ -30,32 +30,23 @@ final class RtPathReservoirEstimatorTest {
     private static final int BURN_IN = 2_000;
 
     @Test
-    void theWinnersStoredWeightIsMultipliedBackOutOfItsReceiverLuminance() throws IOException {
+    void theInPlaceSurvivorWriteIsRetired() throws IOException {
         String rgen = code(source("shaders/world/path_reuse_trace.slang"));
-        assertTrue(rgen.contains("? asfloat(prev.W) * totalTarget / (writtenM * chosenTarget) : 0.0,"),
-                "temporal winner: chosenTarget carries prev's W, which must be multiplied back out");
-        assertTrue(rgen.contains("? asfloat(prev.W) * totalTarget / (writtenM * spatialWinTarget) : 0.0,"),
-                "spatial winner: spatialWinTarget carries the neighbour's W, same correction");
-        // Own's receiver luminance carries no stored W (a fresh sample's is 1), so its spelling stays.
-        assertTrue(rgen.contains("writtenTarget > 0.0 ? writtenTarget / (writtenM * ownTarget) : 0.0,"));
-        // And the selection itself is still the receiver-domain one the correction assumes (A-02b).
-        assertTrue(rgen.contains("temporalSum = candCount * luminance(candValue);"));
-        assertTrue(rgen.contains("spatialWinTarget = luminance(candValue);"));
+        assertTrue(!rgen.contains("asfloat(prev.W)"));
+        assertTrue(!rgen.contains("writtenM * chosenTarget"));
     }
 
     @Test
     void aPixelWithoutAReconnectionVertexWritesAnEmptyRecord() throws IOException {
         String rgen = code(source("shaders/world/path_reuse_trace.slang"));
-        int found = rgen.indexOf("if (recordPath && reconFound) {");
-        int empty = rgen.indexOf("} else if (recordPath) {", found);
-        int write = rgen.indexOf("= emptyPathReservoir();", empty);
-        assertTrue(found >= 0 && empty > found && write > empty,
-                "a slot this frame does not reach must not keep a suffix of arbitrary age (B05)");
+        assertTrue(rgen.contains("if (recordPath) {"));
+        assertTrue(rgen.contains("= emptyPathReservoir();"),
+                "every owned slot must be overwritten this frame (B05)");
         String common = code(source("shaders/world/world_common.slang"));
         String body = common.substring(common.indexOf("public PackedPathReservoir emptyPathReservoir()"));
         body = body.substring(0, body.indexOf("\n}"));
-        assertTrue(body.contains("r.m = 0.0;"), "empty is m == 0, the test pathReservoirEmpty applies");
-        assertTrue(body.contains("r.W = 0u;"));
+        assertTrue(body.contains("r.bits = 0u;"), "empty has no validity bit");
+        assertTrue(body.contains("r.W = 0.0;"));
     }
 
     @Test

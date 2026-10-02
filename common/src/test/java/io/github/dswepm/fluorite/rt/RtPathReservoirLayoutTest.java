@@ -1,27 +1,31 @@
 package io.github.dswepm.fluorite.rt;
 
 import io.github.dswepm.fluorite.rt.gen.PackedPathReservoirData;
-
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+/** D231: the user approved 80 B, including source density and the primary/LoD hooks. */
 final class RtPathReservoirLayoutTest {
-    /**
-     * Pins the path reservoir record at 48 bytes -- the number the store's slot arithmetic assumes.
-     *
-     * <p>{@code BYTE_SIZE} is generated from the shader's own std430 layout, and RtComposite now takes
-     * its allocation stride from the same generated constant, so a drift is impossible by construction.
-     * This test pins the VALUE because the value is a decision: 48 is the queue record's cache line, a
-     * per-frame read/write buffer must not straddle one. Nine fields take 44 bytes and std430 pads the
-     * tail to 48, so one uint lane is free -- not more ({@code reconPos} leads because std430 gives
-     * float3 a 16-byte alignment;
-     * any uint declared before it pads the stride to 64, which is what D220's GPU fault was made of).
-     * A larger record is a decision about ~35% more VRAM per switch-on at 1080p, made here or nowhere.
-     */
     @Test
-    void pathReservoirRecordStaysAt48Bytes() {
-        assertEquals(48, PackedPathReservoirData.BYTE_SIZE,
-                "PackedPathReservoir changed stride; see this test for what that costs before re-pinning it");
+    void theHybridRecordHasTheApprovedStrideAndOffsets() {
+        assertEquals(80, PackedPathReservoirData.BYTE_SIZE);
+        assertEquals(0, PackedPathReservoirData.RECON_POS_OFFSET);
+        assertEquals(12, PackedPathReservoirData.PATH_SEED_OFFSET);
+        assertEquals(16, PackedPathReservoirData.PRIMARY_POS_OFFSET);
+        assertEquals(28, PackedPathReservoirData.PRIMARY_NRM_OFFSET);
+        assertEquals(32, PackedPathReservoirData.RECON_NRM_OFFSET);
+        assertEquals(36, PackedPathReservoirData.DIR_K_OFFSET);
+        assertEquals(40, PackedPathReservoirData.RADIANCE_OFFSET);
+        assertEquals(44, PackedPathReservoirData.W_OFFSET);
+        assertEquals(48, PackedPathReservoirData.JAC_DENOM_OFFSET);
+        assertEquals(52, PackedPathReservoirData.TARGET_OWN_OFFSET);
+        assertEquals(56, PackedPathReservoirData.CONF_PDF_OFFSET);
+        assertEquals(60, PackedPathReservoirData.BITS_OFFSET);
+        assertEquals(64, PackedPathReservoirData.OBJECT_ID_OFFSET);
+        assertEquals(68, PackedPathReservoirData.PRIMARY_UV_OFFSET);
+        assertEquals(72, PackedPathReservoirData.RESERVED0_OFFSET);
+        assertEquals(76, PackedPathReservoirData.RESERVED1_OFFSET);
+        assertEquals(331_776_000L, 1920L * 1080 * 2 * PackedPathReservoirData.BYTE_SIZE);
     }
 }

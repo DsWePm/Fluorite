@@ -3,7 +3,7 @@
 // the pipeline the path reservoir switch binds. The shipped pass B (world.rgen's tracePath) carries none
 // of this file and stays byte-for-byte the tracer that shipped before S2; a switch-off frame binds it.
 //
-// This is tracePath with the path reservoir recorded and reused. Everything that is NOT the path
+// This is tracePath with addressable vertex streams and record-only bookkeeping. Everything outside
 // reservoir must stay identical to tracePath: RtPathReplayContractTest checks the shipped body survives here
 // and a divergence would make the switch compare two different tracers rather than reuse against none.
 // The rebuild's slices (R1+) restructure this copy only.
@@ -523,11 +523,8 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     // remains active with its full configured candidate count at every hit. Pass A's primary/interface
     // prefix is outside this SSS quality budget.
     int indirectDepth = 0;
-    // M28 S2 initial candidate: this pixel's own path, recorded for next frame's experimental
-    // suffix reuse. The reconnection vertex is the FIRST opaque vertex whose continuation has a
-    // finite density -- dielectric chains and exact mirrors stay prefix. The suffix is recovered after
-    // the loop by snapshot subtraction, so the radiance accumulation sites stay untouched and the
-    // switch-off state (no buffer published) dead-codes every line this block adds.
+    // Sample 0 of leaf 0 owns the record. R2a retires the invalid in-place estimator;
+    // supported path-tree events arrive in R2b, and the pixel keeps its full traced radiance.
     bool recordPath = worldPush.pathReservoirAddr != 0 && sampleIndex == 0u;
     // R1b-3, the prefix identity self-check: one pixel in sixteen replays its own recorded path from
     // its first vertex and must land exactly on the vertex it recorded -- the proof that the vertex
@@ -538,35 +535,6 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     float3 identityPos = float3(0.0, 0.0, 0.0);
     int identityVertices = 0;
     bool identityParticle = false;
-    bool reconFound = false;
-    bool reconQualifies = false;
-    float3 reconPos = float3(0.0, 0.0, 0.0);
-    float3 reconNrm = float3(0.0, 0.0, 1.0);
-    float2 reconWi = float2(0.5, 0.5);
-    uint reconDepth = 0u;
-    float3 reconLpre = float3(0.0, 0.0, 0.0);
-    float3 reconTpre = float3(0.0, 0.0, 0.0);
-    float3 reconTpost = float3(0.0, 0.0, 0.0);
-    // The temporal candidate (S2), evaluated at the reconnection vertex and carried out for the
-    // post-loop merge: the re-weighted history sample, its target sum (m_n * mean home target), its
-    // count, and where its record was read from -- the write re-reads that slot if the history wins
-    // the survivor draw, rather than keeping twelve lanes of its identity live through the loop.
-    float3 temporalValue = float3(0.0, 0.0, 0.0);
-    float temporalSum = 0.0;
-    float temporalCount = 0.0;
-    uint temporalReadPixel = 0u;
-    // A-01a: the roughness of the previous shading vertex, for the reconnection gate.
-    // 1.0 means the camera prefix is treated as unconditionally rough -- reconIndex == 0 has no
-    // x_{k-1} surface (the paper's diffuse-case footnote), so the gate only ever bites a specular
-    // chain. Dielectric interfaces set this to zero because their density is not represented.
-    float prevVertexRough = 1.0;
-    // The spatial candidates (S3a): accumulated values/counts/targets across accepted neighbours,
-    // plus the streaming survivor's slot and home target for the post-loop write.
-    float3 spatialValue = float3(0.0, 0.0, 0.0);
-    float spatialCount = 0.0;
-    float spatialTargetSum = 0.0;
-    uint spatialWinSlot = 0u;
-    float spatialWinTarget = 0.0;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
@@ -715,9 +683,6 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         // (payloadDielectricEntering), so a stray or missing face cannot desync the medium for the rest
         // of the path.
         if (material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC) {
-            // A dielectric predecessor is outside the opaque reconnection density model.
-            // Keep the next opaque hit from treating this edge as the camera prefix.
-            prevVertexRough = 0.0;
             // A dielectric has no local shading term. At the path cap its continuation cannot be traced,
             // so avoid computing an unused Fresnel choice, medium update, and roulette step.
             if (bounce >= maxBounces) {
@@ -839,19 +804,6 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         float rough = vtx.rough;
         float metal = vtx.metal;
         bool exactSpecular = vtx.exactSpecular;
-        // This vertex reconnects if it survives to trace a continuation: a delta lobe has no sampling
-        // density for a shift's Jacobian to weigh, so only finite lobes qualify. Nothing between here
-        // and the lobe selection below touches throughput, so the pre-selection value snapshots here.
-        // A-01a: the gate looks at x_{k-1}'s roughness (below), never this vertex's -- a rough
-        // continuation is exactly what makes this vertex reconnectable; it is a mirror BEHIND the
-        // reconnection that the suffix transfer cannot survive.
-        reconQualifies = recordPath && !reconFound && !exactSpecular
-                && prevVertexRough >= PATH_RECONNECT_MIN_ALPHA;
-        if (reconQualifies) {
-            reconTpre = throughput;
-        }
-        // This vertex is x_{k-1} for the next one.
-        prevVertexRough = rough;
         float3 diffAlb = vtx.diffAlb;
         float3 F0 = vtx.F0;
         float ps = vtx.ps;
@@ -1093,141 +1045,6 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         if (!recordPath) {
             seed = vertexSeed;
         }
-        if (walked) {
-            reconQualifies = false; // the walk's exit direction has no analytic density to reconnect on
-        }
-
-        // The continuation committed: this is the reconnection vertex. Snapshot what the suffix needs
-        // -- everything L holds NOW is prefix, everything added AFTER this point is the suffix; the
-        // post-selection throughput is what divides that tail into an incident-radiance estimate.
-        bool firstReconThisBounce = reconQualifies;
-        if (firstReconThisBounce) {
-            reconFound = true;
-            reconQualifies = false;
-            reconPos = hitPos;
-            reconNrm = n;
-            reconWi = octEncode(rd);
-            reconDepth = uint(hitDepth);
-            reconLpre = L;
-            reconTpost = throughput;
-        }
-
-        // ---- M28 S2/S3 candidates: last frame's record at this point (temporal shift) and K
-        // neighbours' records (spatial shift), re-weighted by THIS vertex. Validation and evaluation
-        // are ONE spelling -- restir_pt.slang's evalPathSuffixCandidate -- with only the surface
-        // predicate differing between the two shifts. Values accumulate; the pixel takes the weighted
-        // average once the history carries PATH_RESERVOIR_APPLY_MIN_M independent candidates (D221),
-        // and the survivor write happens after the loop, where the own suffix finally exists.
-        //
-        // The temporal read is reprojected exactly like M24's d0 -- but only where that is
-        // meaningful: the reprojection answers "where was THIS point on screen", which is the
-        // primary hit's question. A deeper reconnection vertex is off the camera ray, so it reads its
-        // own pixel, which is the arrangement M24's bounce vertices already live under. Spatial
-        // neighbours are searched around that same reprojected centre, from the same (previous) half,
-        // for the reason restir.slang's spatial loop gives: there is no seam in this dispatch where
-        // every record is written and nothing is shaded yet.
-        //
-        // Evaluate history only at the vertex whose prefix/suffix state was snapshotted above.
-        // Later bounces belong to the same suffix and must not merge that history a second time.
-        if (recordPath && firstReconThisBounce) {
-            uint pixelIndex = pix.y * renderSize.x + pix.x;
-            uint readPixel = pixelIndex;
-            bool haveHistory = true;
-            if (reconDepth == 0u) {
-                haveHistory = restirPreviousPixel(hitPos, renderSize, readPixel);
-            }
-            // Acceptance attribution (the D211 rule): one pixel in sixteen reports its outcome, so
-            // "the switch did nothing" can never mean "the merge silently never fired".
-            bool sampled = worldPush.pathReservoirStatsAddr != 0u
-                    && ((pixelIndex ^ worldPush.frameIndex) & 15u) == 0u;
-            if (sampled && haveHistory) {
-                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u);
-            }
-            DevicePtr<PackedPathReservoir> store =
-                    DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
-            uint prevParity = (worldPush.frameIndex & 1u) ^ 1u;
-            // The footprint one pixel covers at this vertex, in world units -- the spatial lateral
-            // bound is measured in these, for the same reason M24's is.
-            float footprint = surfaceFootprint(rayConeWidth, -v, n);
-
-            // ---- temporal candidate: last frame's record at the reprojected pixel.
-            if (haveHistory) {
-                PackedPathReservoir stored = store[pathReservoirSlot(readPixel,
-                        renderSize.x * renderSize.y, prevParity)];
-                float3 candValue;
-                float candCount;
-                float candMeanTarget;
-                if (evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
-                                            hitPos, n, reconTpre, footprint, reconDepth, false,
-                                            reuseSeed, stored, candValue, candCount, candMeanTarget)) {
-                    temporalValue = candValue;
-                    temporalCount = candCount;
-                    // A-02b: selection weights live in the RECEIVER domain (this vertex's
-                    // re-evaluated luminance), matching Enhanced §6.3's survivor-representativeness.
-                    // Unbiasedness needs draw/sums/t_chosen in ONE domain -- all three switched
-                    // together below; the record's home-domain targetSum/m stays a next-frame hint.
-                    temporalSum = candCount * luminance(candValue);
-                    temporalReadPixel = readPixel;
-                    if (sampled) {
-                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u);
-                        // A-01a's plate: how many accepted candidates sit behind a specular chain.
-                        // Decides whether the replay sub-loop has an estimator role here at all.
-                        if (reconDepth > 0u) {
-                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[5], 1u);
-                        }
-                    }
-                }
-            }
-
-            // ---- spatial candidates (S3a): the independent samples that push a history past the
-            // application gate. Accumulate values, counts and target sums; stream a survivor draw
-            // among the accepted neighbours (target-proportional) for the post-loop write.
-            for (uint i = 0u; i < pathReuseSpatialNeighbours()
-                              && temporalCount + spatialCount < PATH_RESERVOIR_M_CAP; i++) {
-                int2 centre = int2(int(readPixel % renderSize.x), int(readPixel / renderSize.x));
-                int2 q = centre + spatialNeighbourOffset(reuseSeed);
-                if (any(q < int2(0, 0)) || any(q >= int2(renderSize))) {
-                    continue;
-                }
-                uint neighbourPixel = uint(q.y) * renderSize.x + uint(q.x);
-                if (neighbourPixel == readPixel) {
-                    continue; // that is the temporal candidate; counting it twice would double its say
-                }
-                if (sampled) {
-                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[2], 1u);
-                }
-                uint neighbourSlot = pathReservoirSlot(neighbourPixel,
-                        renderSize.x * renderSize.y, prevParity);
-                PackedPathReservoir candidate = store[neighbourSlot];
-                float3 candValue;
-                float candCount;
-                float candMeanTarget;
-                // composite.path-replay's reject branch retired with the switch (D231): what remains
-                // is the in-place evaluation its off state always ran, until R2 retires that too.
-                bool accepted = evalPathSuffixCandidate(bc, diffAlb, F0, pf, ps, walkSssShare, v,
-                        hitPos, n, reconTpre, footprint, reconDepth, true,
-                        reuseSeed, candidate, candValue, candCount, candMeanTarget);
-                if (!accepted) {
-                    continue;
-                }
-                if (sampled) {
-                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[3], 1u);
-                    if (reconDepth > 0u) {
-                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[5], 1u);
-                    }
-                }
-                // A-02b: same receiver-domain switch as the temporal candidate above -- one spelling.
-                float candWeight = candCount * luminance(candValue);
-                spatialValue += candCount * candValue;
-                spatialCount += candCount;
-                spatialTargetSum += candWeight;
-                if (rndf(reuseSeed) * spatialTargetSum < candWeight) {
-                    spatialWinSlot = neighbourSlot;
-                    spatialWinTarget = luminance(candValue);
-                }
-            }
-        }
-
         // Russian roulette on deeper bounces: survive with prob = max channel, rescale survivors.
         if (bounce >= rrStart) {
             float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
@@ -1237,103 +1054,9 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             throughput /= q;
         }
     }
-    // The path reservoir post-loop (M28 S2/S3): the suffix is this path's tail past the reconnection
-    // vertex, recovered exactly by subtraction -- the adds into L never changed. Then the merge: the
-    // pixel takes the weighted average of its own sample and every accepted candidate, once the
-    // candidates carry PATH_RESERVOIR_APPLY_MIN_M independent samples in total (D221: under RR a
-    // single-sample history is strictly worse than no merge). The surviving representative is then
-    // written for next frame.
-    //
-    // SURVIVOR, NOT SUM, goes to storage: a path suffix cannot be averaged (two directions are not one
-    // direction), so the reservoir keeps one representative drawn target-proportionally, with
-    // W = targetSum / (m * t_chosen). That W is what keeps W * target(y') unbiased wherever the record
-    // is re-evaluated -- the standard RIS identity, and the reason the count m can grow while the
-    // weight stays O(1). t_chosen is the chosen sample's target WITHOUT its own stored W: the stored W
-    // multiplies whatever this vertex's re-evaluation gives next frame, so a winner's receiver-domain
-    // luminance(candValue) -- which already carries its old W -- has that W multiplied back out below
-    // (D230, audit B03: leaving it in divided every carried history by its previous W, and a static
-    // chain in the merged regime came out +16% to +5600% bright depending on the lighting's range).
-    // D219's fresh-single-sample rule still governs the INERT regime: with fewer
-    // candidates than the gate, nothing is applied and the record is written fresh, so no stale
-    // single sample ever gets re-broadcast through the temporal link.
-    if (recordPath && reconFound) {
-        float3 ownSuffix = max(L - reconLpre, float3(0.0, 0.0, 0.0));
-        float3 tRel = max(reconTpost, float3(1.0e-6, 1.0e-6, 1.0e-6));
-        float ownTarget = luminance(ownSuffix);
-        float extraCount = temporalCount + spatialCount;
-        bool merged = extraCount >= PATH_RESERVOIR_APPLY_MIN_M;
-        // The applied lane lives here, not in the candidate loop: the gate is what it counts. D223
-        // note -- S3a's restructure dropped this increment and the acceptance log then read applied
-        // zero while the merge was quietly crossing the gate on a few percent of pixels.
-        if (merged && worldPush.pathReservoirStatsAddr != 0u
-                && (((pix.y * renderSize.x + pix.x) ^ worldPush.frameIndex) & 15u) == 0u) {
-            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[4], 1u);
-        }
-        if (merged) {
-            // The pixel sees the candidate-weighted average (each candidate standing for its count);
-            // own luminance above stays the fresh sample's own target, unbias either way.
-            float3 applied = (ownSuffix + temporalCount * temporalValue + spatialValue)
-                    / (1.0 + extraCount);
-            L = reconLpre + applied;
-        }
-        // Survivor: target-proportional over own and the two shift representatives.
-        float totalTarget = ownTarget + temporalSum + spatialTargetSum;
-        bool temporalWins = false;
-        bool spatialWins = false;
-        if (merged) {
-            float draw = rndf(reuseSeed) * totalTarget;
-            temporalWins = temporalSum > 0.0 && draw >= ownTarget
-                    && draw < ownTarget + temporalSum;
-            spatialWins = !temporalWins && spatialTargetSum > 0.0
-                    && draw >= ownTarget + temporalSum;
-        }
-        DevicePtr<PackedPathReservoir> store =
-                DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
-        uint writeSlot = pathReservoirSlot(pix.y * renderSize.x + pix.x,
-                                           renderSize.x * renderSize.y, worldPush.frameIndex & 1u);
-        uint prevParity = (worldPush.frameIndex & 1u) ^ 1u;
-        if (temporalWins) {
-            PackedPathReservoir prev = store[pathReservoirSlot(temporalReadPixel,
-                    renderSize.x * renderSize.y, prevParity)];
-            float writtenM = 1.0 + extraCount;
-            float chosenTarget = temporalSum / temporalCount;
-            // chosenTarget is luminance(candValue), which already carries prev's W -- multiply it back
-            // out (see the banner above: the stored W must not be divided by itself).
-            store[writeSlot] = packPathReservoir(prev.pathSeed, prev.reconPos,
-                    octDecode(unpackUnorm16x2(prev.reconNrm)),
-                    unpackUnorm16x2(prev.wi), unpackRgb9e5(prev.li),
-                    writtenM, totalTarget,
-                    chosenTarget > 0.0
-                            ? asfloat(prev.W) * totalTarget / (writtenM * chosenTarget) : 0.0,
-                    prev.reconIndex);
-        } else if (spatialWins) {
-            PackedPathReservoir prev = store[spatialWinSlot];
-            float writtenM = 1.0 + extraCount;
-            // Same correction as the temporal winner: spatialWinTarget carries the neighbour's W.
-            store[writeSlot] = packPathReservoir(prev.pathSeed, prev.reconPos,
-                    octDecode(unpackUnorm16x2(prev.reconNrm)),
-                    unpackUnorm16x2(prev.wi), unpackRgb9e5(prev.li),
-                    writtenM, totalTarget,
-                    spatialWinTarget > 0.0
-                            ? asfloat(prev.W) * totalTarget / (writtenM * spatialWinTarget) : 0.0,
-                    prev.reconIndex);
-        } else {
-            // Own survives, or nothing merged: a fresh single-sample record (D219), except that a
-            // merged write carries the accepted candidates' counts in m and their targets in
-            // targetSum -- the accumulation the application gate and next frame's weights read.
-            float writtenM = merged ? 1.0 + extraCount : 1.0;
-            float writtenTarget = merged ? totalTarget : ownTarget;
-            store[writeSlot] = packPathReservoir(pathSeedBase, reconPos, reconNrm, reconWi,
-                    ownSuffix / tRel, writtenM, writtenTarget,
-                    writtenTarget > 0.0 ? writtenTarget / (writtenM * ownTarget) : 0.0,
-                    reconDepth);
-        }
-    } else if (recordPath) {
-        // No reconnection vertex this frame -- sky, a mirror to the sky, the bounce cap, the walk lobe,
-        // a microfacet reflected below the surface. Write an EMPTY record rather than leave the slot
-        // alone: unlike M24's DI store, whose reuse re-traces visibility, a path record carries radiance,
-        // and a slot this frame does not reach would hand its neighbours and the temporal link a suffix
-        // of arbitrary age (D230, audit B05). Only leaf 0 / sample 0 ever gets here, once per frame.
+    // Record-only rebuild: no temporal/spatial reads and no change to L. Until the tagged event
+    // producer is installed, explicitly clear every owned slot rather than publish an old suffix.
+    if (recordPath) {
         DevicePtr<PackedPathReservoir> store =
                 DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
         store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,
@@ -1344,14 +1067,14 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     if (identityCheck && identityVertices >= 2 && !identityParticle) {
         float3 replayedPos;
         int replayed = reuseReplayPrefix(seg, entryMediumFlags, pathSeedBase, identityVertices, replayedPos);
-        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[6], 1u);
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u);
         // A decision replayed differently lands on another surface; the same decisions land on the same
         // point up to the arithmetic of a second inlined copy -- a few ulps per bounce, some 1e-6 of the
         // position, where this tolerance is 1e-4 of it.
         float3 miss = replayedPos - identityPos;
         if (replayed == identityVertices
                 && dot(miss, miss) <= 1.0e-8 * (1.0 + dot(identityPos, identityPos))) {
-            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[7], 1u);
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u);
         }
     }
     return L;

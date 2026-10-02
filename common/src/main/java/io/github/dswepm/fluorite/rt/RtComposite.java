@@ -1756,7 +1756,7 @@ public final class RtComposite {
      */
     private boolean reservoirStoreNeedsClear;
     /**
-     * M28 S2's path reservoir: one 48-byte record per render pixel per frame half, the reusable indirect
+     * D231 path tree: one 80-byte record per render pixel per frame half, the reusable indirect
      * suffix a temporal shift reconnects. Null whenever composite.path-reservoir is off, so the off state
      * costs no VRAM and the WorldPush address reads 0 — the shading checks the address, not a flag, which
      * is the same absent-buffer spelling of "off" the M24 store and the M26 pool use.
@@ -2718,7 +2718,7 @@ public final class RtComposite {
                     wantReservoirDepth, renderW, renderH, wantReservoirPaths, reservoirDepth,
                     RESERVOIR_STORE_MAX_BYTES / (1024L * 1024L));
         }
-        // M28 S2's path reservoir, only under its switch: one record per pixel per parity, 48 B each.
+        // D231 path tree, only under its switch: one record per pixel per parity, 80 B each.
         // Unlike the M24 store there is no depth or path plane — temporal path reuse keys on the pixel
         // alone — so the size is linear in the pixels and nothing else.
         if (wantPathReservoir) {
@@ -3772,8 +3772,8 @@ public final class RtComposite {
                 reservoirStoreNeedsClear = false;
             }
             if (pathReservoirStore != null && pathReservoirStoreNeedsClear) {
-                // Same reasoning, smaller buffer: `m` is the emptiness test, and a garbage record with a
-                // plausible nonzero m would seed a temporal merge with a suffix that never existed.
+                // Same reasoning: the validity bit is the emptiness test, and a garbage record with a
+                // set validity bit would publish a path event that never existed.
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "path reservoir clear")) {
                     VK10.vkCmdFillBuffer(cmd, pathReservoirStore.handle, 0L, pathReservoirStore.size, 0);
                 }

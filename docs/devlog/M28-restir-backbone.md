@@ -504,3 +504,33 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
   - 未选：把游走近似成漫反射参与移位（有偏）。
 - **G22 x₁ 直接光 → 留到 S4/S5。** x₁ 的发光体 DI 继续走 M24，太阳 NEE 仍每像素计算；路径 reservoir 的重连点 k ≥ 2，本就不含 x₁ 直接光。R2–R5 不为此增加任何内容。
   - 未选：现在把 x₁ 太阳 NEE 作为 k=1 事件加进 path tree（太阳 DI 方差本就小，收益有限）。
+
+
+## D232（2026-10-02）：R1 实际冒烟，R2a 80 B ABI 与 in-place 退役
+
+分支 `feat/m28-s3-rework`，从 `929be42` 接手。用户随后要求：**今后每次启动游戏测试前，先说明检查/实验内容并取得用户同意；未同意不启动。** CLI 构建、数值测试与 SPIR-V 比对照常推进。
+
+### R1 冒烟证据
+
+在独立工作树中复制基准存档为 `restir-r1-smoke`；原存档与主工作区配置未修改。RTX 2080 / NVIDIA 617.14，SER hint NONE，实际渲染尺寸533×300，DLSS-RR 开，空间邻居0。12:39:16 日志确认 `RT path reuse pass B pipeline built (world_reuse.rgen.spv)`；69批日志中的431,023次前缀重放尝试全部打印100.0%。旧格式只有一位小数，严格能证明的是每批通过率≥99.95%，满足R1 ≥99.9%的门槛，不能声称零失败。CSV的1274个开档帧均有 `pathReservoir=1`、`pathReuseSwitches=1`，旧 applied=0。客户端正常保存并退出。
+
+归档：`F:\MC\Shader\evidence\restir-rework-2026-10-02\` 的 `r1-runtime.log`、`r1-frame.csv`、`r1-config.toml`、`r1-summary.json`。**这次只有前缀恒等冒烟**，没有同会话A→B→A，没有视觉/性能验收。启动参数1920×1080未成为实际渲染尺寸，不能写成1080p测量。
+
+### R2a 落地
+
+- `PackedPathReservoir`、`PATH_RESERVOIR_BYTES`与生成Java记录同步改为80 B。布局测试逐字段钉住D231表中的17个偏移，1080p双份331,776,000 B（316.41 MiB）。
+- 删除旧时域/空间 in-place 候选、整段后缀归一化/幸存者写入、余弦比钳制、旧footprint启发式、未经证实的0.04粗糙度转换、Mcap与apply gate。
+- **当前只写空记录并返回完整的自己的路径。** 这是重建中间态；path-tree事件、Eq.5记录判据与完整恒等检查尚未实现，R2未完成，R3/R4也未启动。保留的空间旋钮到R4才重新消费。
+- LoD字段只保留布局；`objectId=0xffffffff`明确表示钩子不可用，不能把未取得的object/UV写成实现完成。
+- GPU统计删去已无消费者的旧merge lane，仅保留prefix identity的尝试/通过2 lanes（shader与Java同步0/1）。输出原始通过/尝试数和3位小数，避免门槛判断被舍入遮蔽。
+- `tools/normalize-spirv.py`在进入SPIRV-Tools前去除核心调试与 `NonSemantic.Shader.DebugInfo` 指令，再删除死常量、重编号ID并验证结果；Windows SPIRV-Tools2026.2直接strip-debug大型Slang raygen会访问异常，此流程已通过三份关档shader验证。
+- 关档 `world.rgen`、`world_ser.rgen`、`world_primary.rgen`规整化后二进制与R1基线逐字节相同；测试261项通过，全部shader编译与spirv-val通过。
+
+### 记录端的数据缺口（待裁决）
+
+现有 `world.rchit` 把 `evaluateMaterial` 的**着色法线**写入唯一normal lane；法线贴图会改变它，`reuseOpaqueVertex`又可叠加雨膜扰动。Enhanced Eq.2/Eq.5的几何项需要**几何法线**，不能把这个normal直接代入当作论文公式；InstanceID与UV也没有回传到raygen。R2b要在有效记录前补齐数据通路：
+
+1. 独立ray query取实际三角形几何信息与object/UV，维持基础hit/payload不变；k=2成功记录通常额外2次查询，深链至少3次，若足迹判据连续失败查询数随深度增长。成本未经GPU测量。
+2. 复用专用hit/SBT变体直接带回信息，不增加几何查询，但需扩展D231原定共享hit表的结构、冻结payload契约与构建管线；新增payload状态的寄存器成本也未测量。
+
+按CLAUDE.md铁律1，方向与成本须由用户裁决后实施。G3的最近命中材质回取、G10/G11连接介质/半透明处理仍按D231在消费片请示；不以近似法线或不可用钩子绕过。
