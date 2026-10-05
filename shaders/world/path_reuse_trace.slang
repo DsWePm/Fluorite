@@ -8,6 +8,8 @@
 // and a divergence would make the switch compare two different tracers rather than reuse against none.
 // The rebuild's slices (R1+) restructure this copy only.
 
+#include "path_reuse_geometry.slang"
+
 // ---- Vertex decisions, ONE spelling for the bounce loop below and the hybrid shift's replay (R1b).
 //
 // A replay re-drives a path's decisions on another pixel's geometry, so it has to decide exactly as the
@@ -376,8 +378,11 @@ public static const int PATH_REUSE_IDENTITY_DEPTH = 3;
  * replay: a billboard's continuation draws from the path's sequential stream, not a vertex stream.
  */
 int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSeed, int vertices,
-                      out float3 lastPos) {
+                      out float3 lastPos, bool queryGeometry, out ReuseHitGeometry lastGeometry,
+                      out uint geometryStatus) {
     lastPos = float3(0.0, 0.0, 0.0);
+    lastGeometry = emptyReuseHitGeometry();
+    geometryStatus = REUSE_GEOMETRY_MISSING;
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -410,6 +415,10 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
         lastPos = hitPos;
         reached = hitDepth + 1;
         if (reached >= vertices || bounce >= maxBounces) {
+            if (queryGeometry && reached == vertices) {
+                geometryStatus = reuseQueryHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,
+                                                       ro, rd, payload.hitT, lastGeometry);
+            }
             break;
         }
         uint vertexSeed = vertexStream(pathSeed, uint(hitDepth));
@@ -535,6 +544,8 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     float3 identityPos = float3(0.0, 0.0, 0.0);
     int identityVertices = 0;
     bool identityParticle = false;
+    ReuseHitGeometry identityGeometry = emptyReuseHitGeometry();
+    uint identityGeometryStatus = REUSE_GEOMETRY_MISSING;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
@@ -552,6 +563,18 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
                       showCelestial, bounce == 0, rayConeWidth, rayConeSpread);
 #endif
+
+        // R2b geometry diagnostic: capture metadata for this actual radiance hit before any lighting
+        // trace can touch the payload. No query when the diagnostic is off; full records remain empty
+        // until path-tree selection consumes this helper. Query calls draw no random numbers.
+        if (identityCheck && indirectDepth < PATH_REUSE_IDENTITY_DEPTH && payload.hitT >= 0.0) {
+            identityGeometryStatus = REUSE_GEOMETRY_MISSING;
+            if (payloadMaterial() != MATERIAL_PARTICLE) {
+                identityGeometryStatus = reuseQueryHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,
+                                                               ro, rd, payload.hitT, identityGeometry);
+                reuseCountSourceGeometry(identityGeometryStatus);
+            }
+        }
 
         // Beer-Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
         // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
@@ -1066,8 +1089,19 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     // one-vertex replay would pass whatever the streams did and only dilute the rate.
     if (identityCheck && identityVertices >= 2 && !identityParticle) {
         float3 replayedPos;
-        int replayed = reuseReplayPrefix(seg, entryMediumFlags, pathSeedBase, identityVertices, replayedPos);
+        ReuseHitGeometry replayedGeometry;
+        uint replayGeometryStatus;
+        bool queryGeometry = identityGeometryStatus == REUSE_GEOMETRY_OK;
+        int replayed = reuseReplayPrefix(seg, entryMediumFlags, pathSeedBase, identityVertices, replayedPos,
+                                        queryGeometry, replayedGeometry, replayGeometryStatus);
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u);
+        if (queryGeometry) {
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[7], 1u);
+            if (replayed == identityVertices && replayGeometryStatus == REUSE_GEOMETRY_OK
+                    && reuseSameHitGeometry(identityGeometry, replayedGeometry)) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[8], 1u);
+            }
+        }
         // A decision replayed differently lands on another surface; the same decisions land on the same
         // point up to the arithmetic of a second inlined copy -- a few ulps per bounce, some 1e-6 of the
         // position, where this tolerance is 1e-4 of it.

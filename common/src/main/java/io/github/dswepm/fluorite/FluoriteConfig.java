@@ -3407,12 +3407,10 @@ public final class FluoriteConfig {
             public static final BooleanSetting RESTIR_STATS =
                     bool("fluorite.rt.restirStats", "diagnostics.restir-stats", false);
 
-            /** M28 D231 R1b: the path reuse's prefix identity self-check. One pixel in sixteen replays its
-             * own recorded path from its first vertex with its stored seed and must land exactly on the
-             * vertex it recorded -- the proof that the vertex streams and the shared vertex functions
-             * re-drive a path, which every later shift depends on. Up to three extra rays per checked
-             * pixel; reported through diagnostics.restir-stats. Does nothing unless the path reservoir is
-             * on. Bit 0 of the path reuse's switch word. */
+            /** M28 D231/D233: one pixel in sixteen replays its own prefix and compares independently
+             * queried surface geometry (position, normal, object/UV) at its final checked vertex.
+             * At most three replay traces plus four metadata queries per checked pixel; reported
+             * through diagnostics.restir-stats. Requires the path reservoir. Bit 0 of its switch word. */
             public static final BooleanSetting PATH_REUSE_IDENTITY_CHECK =
                     bool("fluorite.rt.pathReuseIdentityCheck", "diagnostics.path-reuse-identity-check", false);
 

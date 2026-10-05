@@ -526,11 +526,37 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 - `tools/normalize-spirv.py`在进入SPIRV-Tools前去除核心调试与 `NonSemantic.Shader.DebugInfo` 指令，再删除死常量、重编号ID并验证结果；Windows SPIRV-Tools2026.2直接strip-debug大型Slang raygen会访问异常，此流程已通过三份关档shader验证。
 - 关档 `world.rgen`、`world_ser.rgen`、`world_primary.rgen`规整化后二进制与R1基线逐字节相同；测试261项通过，全部shader编译与spirv-val通过。
 
-### 记录端的数据缺口（待裁决）
+### 记录端的数据缺口（2026-10-05 已裁决）
 
 现有 `world.rchit` 把 `evaluateMaterial` 的**着色法线**写入唯一normal lane；法线贴图会改变它，`reuseOpaqueVertex`又可叠加雨膜扰动。Enhanced Eq.2/Eq.5的几何项需要**几何法线**，不能把这个normal直接代入当作论文公式；InstanceID与UV也没有回传到raygen。R2b要在有效记录前补齐数据通路：
 
 1. 独立ray query取实际三角形几何信息与object/UV，维持基础hit/payload不变；k=2成功记录通常额外2次查询，深链至少3次，若足迹判据连续失败查询数随深度增长。成本未经GPU测量。
 2. 复用专用hit/SBT变体直接带回信息，不增加几何查询，但需扩展D231原定共享hit表的结构、冻结payload契约与构建管线；新增payload状态的寄存器成本也未测量。
 
-按CLAUDE.md铁律1，方向与成本须由用户裁决后实施。G3的最近命中材质回取、G10/G11连接介质/半透明处理仍按D231在消费片请示；不以近似法线或不可用钩子绕过。
+用户已选择**独立 ray query**路线。该选择只授权实现取数通路，不是启动游戏的许可。G3的最近命中材质回取、G10/G11连接介质/半透明处理仍按D231在消费片请示；不以近似法线或不可用钩子绕过。
+
+## D233（2026-10-05）：R2b-1 独立几何取数与 metadata 恒等诊断
+
+落实用户选定的独立 ray query 路线。**本片是 R2 的数据通路前置片，R2 尚未完成，仍写空记录并返回本像素完整的路径追踪值。** path-tree 单事件、Eq.5 资格、完整 shift 恒等与记录阶段 A→B→A 均仍待后续消费片。
+
+### 实现与契约
+
+- 新增 `path_reuse_geometry.slang`，仅由 `FLUORITE_PATH_REUSE` 的 raygen 包含。radiance closest-hit、普通 tracer 与 payload ABI 不变。
+- 以原追踪的 ro/rd、cull mask、hitT 查询同一个命中。`FORCE_NON_OPAQUE` 暴露候选；只考虑已知 hitT 数值容差内的候选，不 commit、不取第一个最近候选，保证不被 traversal 顺序决定。命中距离容差为 `8×2^-23×(1+max(abs(ro))+abs(hitT))`；这是数值容差，未经 GPU 数据调参。
+- 从 position-fetch 的实际三角形顶点计算几何法线。顶点处于已应用 geometry transform、未应用 instance transform 的 object space；实例变换作用到两条边后再 cross，支持非均匀与镜像缩放；法线朝向入射射线。完整 3×4 变换用于命中位置，插值位置必须与 `ro+rd*hitT` 一致。
+- terrain UV 走 `PrimitiveIndex + Section.triBase[GeometryIndex]` 的连续三角形角点；entity UV 走 `EntityGeom.triBase` 与 indexed vertex UV。两种索引与 `world.rchit` 对齐。粒子或超出几何桶范围的候选不访问这些表。
+- 同一距离的不同 instance/geometry/primitive 判歧义，包含共享边和共面重叠；不猜 radiance shader 采用了哪个 primitive。重复报告同一个 key 可以接受。退化/非有限法线、位置或 UV 判 invalid。所有失败返回不可用 object sentinel。
+- `objectId` 取得的是**当前 TLAS custom index**，尚不是跨帧稳定 ID；当前 UV 也未编码到 `primaryUv`。这两点不作为 LoD 重投影完成的证据。
+- 当前消费者是现有恒等自检（bit 0）：每 16 像素抽 1 个，在原路径的前 3 个命中即时取数，先于其它 lighting trace；前缀重放仅对最后一个已成功取数的目标再查询，比较 position、geometric normal、object/geometry/primitive ID 与未打包 UV。取数不推进任何随机流、不改 L。关闭诊断时没有新增 query 调用。
+- 统计为 9 lanes：0/1 前缀尝试/通过；2 几何取数尝试；3/4/5/6 成功/未找到/歧义/无效（完整分割尝试）；7/8 metadata 重放尝试/通过。Java readback 同步 36 B，日志输出原始分子/分母与三位小数；零分母标 `n/a`。三个语言的 tooltip 同步新成本：每个抽查像素最多 3 次重放追踪 + 4 次几何查询，实际 GPU 成本尚未测量。
+
+API 依据：[Slang query position fetch](https://docs.shader-slang.org/en/latest/external/core-module-reference/types/rayquery-03/candidategetintersectiontrianglevertexpositions-09cow12.html)、[Khronos position-fetch 说明](https://www.khronos.org/blog/introducing-vulkan-ray-tracing-position-fetch-extension)。坐标空间以 Khronos 的 object-space 定义为准。设备原已启用 rayQuery/positionFetch，terrain/entity/refit 共用的 BLAS build flags 原已包含 `ALLOW_DATA_ACCESS`。
+
+### 验证与待办
+
+- 独立 API 探针已编译并通过 `spirv-val --target-env vulkan1.2`。
+- `RtPathReuseGeometryTest` 用数值验证非均匀/镜像变换、朝向、平移只应用一次、terrain/entity 分桶 UV、cutout 非目标距离、候选顺序、重复候选/共享边/重叠拒绝、失败状态与容差；源码契约绑定实际 shader 公式、即时 capture 和各统计 lane。
+- `generateShaderRecords :fabric:test` 全量构建成功；52 份 shader 编译与 `spirv-val` 通过；54 套/272 项测试全通过（0 failure/error/skipped，新增几何测试 11 项）。关档 `world.rgen`、`world_ser.rgen`、`world_primary.rgen` 规整化后二进制与 R2a `c240bb7` 逐字节一致。
+- 归档：`F:\MC\Shader\evidence\restir-rework-2026-10-05\` 中的 `r2b1-build.log`、`r2b1-summary.json`、三个关档规整化模块及 geometry/replay/layout 测试 XML。摘要脚本检查测试总数、失败计数和二进制等价，记录新增 shader/Java 源文件哈希。
+- **未启动游戏。** 下一步游戏实验需取得用户同意：隔离基准存档中检查 prefix ≥99.9%、geometry 的成功率/失败分类及 geometry replay 恒等，记录实际分辨率/配置与 validation/runtime 错误。此冒烟不替代 R2 完整恒等、视觉或 GPU 性能验收。
+- D233 是当前 M28 已授权号段的末号；新的 D 编号须另行申请。

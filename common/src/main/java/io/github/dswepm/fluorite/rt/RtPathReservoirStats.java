@@ -13,13 +13,13 @@ import java.util.Locale;
 
 /**
  * Diagnostics for the D231 path reuse rebuild. R2a removes the legacy merge lanes;
- * only the prefix identity attempted/passed counters are currently consumed.
+ * prefix identity and R2b source/replayed hit geometry are measured independently.
  * The shader samples one pixel in sixteen. Readback follows the frame ring,
  * with no additional fence (the same ownership as RtRestirStats).
  */
 public final class RtPathReservoirStats {
-    /** Prefix identity attempted/passed. Add lanes only when a slice consumes them. */
-    public static final int LANES = 2;
+    /** 0-1 prefix identity, 2-6 source query/status partition, 7-8 metadata identity. */
+    public static final int LANES = 9;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -113,7 +113,14 @@ public final class RtPathReservoirStats {
         src.invalidate(0L, BYTE_SIZE);
         long identityAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped));
         long identityPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 4L));
-        if (identityAttempt == 0L) {
+        long geometryAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 8L));
+        long geometryResolved = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 12L));
+        long geometryMissing = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 16L));
+        long geometryAmbiguous = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 20L));
+        long geometryInvalid = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 24L));
+        long geometryReplayAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 28L));
+        long geometryReplayPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 32L));
+        if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
         }
         long now = System.nanoTime();
@@ -122,9 +129,16 @@ public final class RtPathReservoirStats {
         }
         loggedAt = now;
         // Raw counts avoid rounding a failing 99.9% gate into a passing log rate.
-        FluoriteMod.LOGGER.info("RT path replay identity (1/16 pixel sample): {}/{} ({})",
-                identityPass, identityAttempt,
-                String.format(Locale.ROOT, "%.3f%%", 100.0 * identityPass / identityAttempt));
+        FluoriteMod.LOGGER.info("RT path reuse diagnostics (1/16 pixel sample): prefix {}/{} ({}); "
+                        + "geometry {}/{} ({}; missing {}, ambiguous {}, invalid {}); geometry replay {}/{} ({})",
+                identityPass, identityAttempt, percentage(identityPass, identityAttempt),
+                geometryResolved, geometryAttempt, percentage(geometryResolved, geometryAttempt),
+                geometryMissing, geometryAmbiguous, geometryInvalid,
+                geometryReplayPass, geometryReplayAttempt, percentage(geometryReplayPass, geometryReplayAttempt));
+    }
+
+    private static String percentage(long passed, long attempted) {
+        return attempted == 0L ? "n/a" : String.format(Locale.ROOT, "%.3f%%", 100.0 * passed / attempted);
     }
 
     public void destroy() {
