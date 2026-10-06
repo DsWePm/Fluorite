@@ -177,6 +177,15 @@ public final class RtDeviceBringup {
             VkPhysicalDeviceVulkan12Features.DESCRIPTORBINDINGSAMPLEDIMAGEUPDATEAFTERBIND);
     private static final VulkanFeature SHADER_INT64_FEATURE = new VulkanFeature(
             VulkanBackend.VK10_FEATURES_STRUCT, "shaderInt64", VkPhysicalDeviceFeatures.SHADERINT64);
+    // Slang's RWTexture declarations emit both unformatted-image capabilities, including the sky
+    // bake shaders. Negotiate their core feature booleans explicitly: the physical device's reported
+    // API version alone does not satisfy the shader-module creation contract.
+    private static final VulkanFeature STORAGE_IMAGE_READ_WITHOUT_FORMAT_FEATURE = new VulkanFeature(
+            VulkanBackend.VK10_FEATURES_STRUCT, "shaderStorageImageReadWithoutFormat",
+            VkPhysicalDeviceFeatures.SHADERSTORAGEIMAGEREADWITHOUTFORMAT);
+    private static final VulkanFeature STORAGE_IMAGE_WRITE_WITHOUT_FORMAT_FEATURE = new VulkanFeature(
+            VulkanBackend.VK10_FEATURES_STRUCT, "shaderStorageImageWriteWithoutFormat",
+            VkPhysicalDeviceFeatures.SHADERSTORAGEIMAGEWRITEWITHOUTFORMAT);
     private static final VulkanFeature ACCELERATION_STRUCTURE_FEATURE = new VulkanFeature(
             AS_FEATURES_STRUCT, "accelerationStructure",
             VkPhysicalDeviceAccelerationStructureFeaturesKHR.ACCELERATIONSTRUCTURE);
@@ -205,6 +214,8 @@ public final class RtDeviceBringup {
             DESCRIPTOR_PARTIALLY_BOUND_FEATURE,
             SAMPLED_IMAGE_UPDATE_AFTER_BIND_FEATURE,
             SHADER_INT64_FEATURE,
+            STORAGE_IMAGE_READ_WITHOUT_FORMAT_FEATURE,
+            STORAGE_IMAGE_WRITE_WITHOUT_FORMAT_FEATURE,
             ACCELERATION_STRUCTURE_FEATURE,
             RAY_TRACING_PIPELINE_FEATURE,
             POSITION_FETCH_FEATURE,

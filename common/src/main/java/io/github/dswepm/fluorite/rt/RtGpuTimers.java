@@ -31,6 +31,7 @@ public final class RtGpuTimers {
     private final double nanosPerTick;
     private final long validBitsMask;
     private boolean poolNeedsReset = true;
+    private final boolean[] recordedSlots;
 
     private RtGpuTimers(long pool, String[] zoneNames, int slots, double nanosPerTick, long validBitsMask) {
         this.pool = pool;
@@ -38,6 +39,7 @@ public final class RtGpuTimers {
         this.slots = slots;
         this.nanosPerTick = nanosPerTick;
         this.validBitsMask = validBitsMask;
+        this.recordedSlots = new boolean[slots];
     }
 
     /**
@@ -79,15 +81,16 @@ public final class RtGpuTimers {
      *
      * <p>The first call resets the whole pool, not just this slot: a query that has never been written is
      * in an undefined state, and reading one is undefined behaviour rather than simply an unavailable
-     * result. Slots the ring has not reached yet are read before they are first written.
+     * result. Unused slots are skipped by resolve until their own graphics-use token can be awaited.
      */
     public void beginFrame(VkCommandBuffer cmd, int slot) {
         if (poolNeedsReset) {
-            poolNeedsReset = false;
             VK10.vkCmdResetQueryPool(cmd, pool, 0, slots * zoneNames.length * STAMPS_PER_ZONE);
-            return;
+            poolNeedsReset = false;
+        } else {
+            VK10.vkCmdResetQueryPool(cmd, pool, base(slot, 0), zoneNames.length * STAMPS_PER_ZONE);
         }
-        VK10.vkCmdResetQueryPool(cmd, pool, base(slot, 0), zoneNames.length * STAMPS_PER_ZONE);
+        recordedSlots[slot] = true;
     }
 
     /** Timestamps the start of a zone: everything submitted after this point is inside it. */
@@ -107,7 +110,10 @@ public final class RtGpuTimers {
      * that to reuse the slot's buffers, so this costs no extra synchronisation.
      */
     public void resolve(RtContext ctx, int slot) {
-        if (!RtFrameStats.enabled()) {
+        // RtComposite resolves BEFORE beginFrame. A new pool's first read would therefore precede
+        // even the first queued reset. A reset queued by another slot is not proof of GPU completion;
+        // only this slot having recorded work gives the caller a graphics-use token to await.
+        if (!recordedSlots[slot] || !RtFrameStats.enabled()) {
             return;
         }
         int stamps = zoneNames.length * STAMPS_PER_ZONE;

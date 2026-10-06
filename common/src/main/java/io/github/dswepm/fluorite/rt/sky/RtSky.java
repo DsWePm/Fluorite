@@ -1790,6 +1790,10 @@ public final class RtSky {
         if (waterObstacleBake != null) {
             waterObstacleBake.destroy(vk);
         }
+        if (waterDeformBake != null) {
+            waterDeformBake.destroy(vk);
+            waterDeformBake = null;
+        }
         for (Bake visibility : visibilityBakes) {
             visibility.destroy(vk);
         }

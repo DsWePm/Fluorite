@@ -558,5 +558,33 @@ API 依据：[Slang query position fetch](https://docs.shader-slang.org/en/lates
 - `RtPathReuseGeometryTest` 用数值验证非均匀/镜像变换、朝向、平移只应用一次、terrain/entity 分桶 UV、cutout 非目标距离、候选顺序、重复候选/共享边/重叠拒绝、失败状态与容差；源码契约绑定实际 shader 公式、即时 capture 和各统计 lane。
 - `generateShaderRecords :fabric:test` 全量构建成功；52 份 shader 编译与 `spirv-val` 通过；54 套/272 项测试全通过（0 failure/error/skipped，新增几何测试 11 项）。关档 `world.rgen`、`world_ser.rgen`、`world_primary.rgen` 规整化后二进制与 R2a `c240bb7` 逐字节一致。
 - 归档：`F:\MC\Shader\evidence\restir-rework-2026-10-05\` 中的 `r2b1-build.log`、`r2b1-summary.json`、三个关档规整化模块及 geometry/replay/layout 测试 XML。摘要脚本检查测试总数、失败计数和二进制等价，记录新增 shader/Java 源文件哈希。
-- **未启动游戏。** 下一步游戏实验需取得用户同意：隔离基准存档中检查 prefix ≥99.9%、geometry 的成功率/失败分类及 geometry replay 恒等，记录实际分辨率/配置与 validation/runtime 错误。此冒烟不替代 R2 完整恒等、视觉或 GPU 性能验收。
+- **2026-10-05 提交时未启动游戏。** 当时等待逐次启动许可；2026-10-06 用户改为授权自主检查，游戏实验与发现的修复见下节。此冒烟不替代 R2 完整恒等、视觉或 GPU 性能验收。
 - D233 是当前 M28 已授权号段的末号；新的 D 编号须另行申请。
+
+### 2026-10-06：自主检查、运行错误修复与观感待验
+
+用户授权：本任务可自主启动游戏执行检查，涉及观感的验收集中留给用户。取代此前每次启动确认要求；方向性实现决策仍按铁律 1。运行全部使用 `line-a/run/saves/restir-r1-smoke` 隔离存档，验证层开启；主工作区配置与原基准存档未修改。
+
+**实际发现并修复的错误**：
+
+1. `sky_transmittance.comp.spv` 声明 `StorageImageReadWithoutFormat`，设备创建未满足能力要求，触发 `VUID-VkShaderModuleCreateInfo-pCode-08740`，渲染器回退到 vanilla，根本没有执行几何自检。新增核心 read/write-without-format 功能到同一份查询/启用清单；设备不支持时照常报告 RT 不可用。对应关系见 [Vulkan SPIR-V 能力表](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html)。实际编译的 sky module 的 capability 与启用清单契约测试先失败、修复后通过；无 shader 内容或 payload 改动。
+2. `RtGpuTimers.resolve` 先于该 slot 的 `beginFrame` 执行；首次 read 触发 `VUID-vkGetQueryPoolResults-None-09401`。全池 reset 已记录也不代表另一未用 slot 的 reset 已在 GPU 执行。新增每 slot 的 recorded 标记：只有此 slot 记录过命令、调用者能等待其 graphics-use token 时才读回。两个测试直接调用真实 resolve 的 native-read 边界，覆盖首次读取和另一 slot 只排队 reset；先失败、修复后通过，真实重启后该 VUID 消失。
+3. 正常退出报 `VUID-vkDestroyDevice-device-05137`，有 202 个活对象。关闭 DLSS-RR 仍报 202，RT 总开关关闭则没有该告警，范围缩到 RT 生命周期。`RtComposite` 创建了 `skyLuts` 却从未销毁整个资源图；`RtSky.destroy` 还漏了创建的 `waterDeformBake`。补齐两处释放及 sky 引用清空；保留 `FluoriteLifecycle` 最先等待 GPU idle、最后销毁 context 的顺序。所有权契约两项先失败后通过；原生 Vulkan 退出回归确认 202→0，最终会话正常保存/退出，三条 VUID 均 0。
+
+**几何运行证据**（修复前两项后的完整会话，日志每秒抽取一个 frame snapshot，每 frame 抽 1/16 像素；不是未打印帧的总计）：
+
+| 检查 | 原始计数 | 通过率 |
+| --- | --- | --- |
+| prefix | 4,318,538 / 4,318,553 | 99.99965% |
+| geometry | 11,572,856 / 11,578,986 | 99.94706% |
+| metadata replay | 4,311,444 / 4,312,689 | 99.97113% |
+
+共 627 个日志快照；geometry 失败全为 6,130 次 ambiguity，missing/invalid 均 0。prefix 有 15 次失败，metadata 有 1,245 次失败，不能写成零失败。metadata 失败尚未细分类，可能是再次查询歧义或字段比较失败；不得全部归因到共享边。CSV 的 10,169 个开档帧都记录开关字 1；实际 RT 533×300、输出 1600×900、DLSS-RR 开，80 B 双份实际 25,584,000 B（24.40 MiB）。显卡 RTX 2080、驱动 617.14、SER hint NONE，只验证普通 TraceRay 变体的运行。未做 GPU 时间戳同会话 A→B→A，不作性能结论。
+
+归档目录：`F:\MC\Shader\evidence\restir-rework-2026-10-06\`。包含初始失败与修复后日志/CSV、三类 red/green 测试证据、关闭 DLSS/关闭 RT 的资源对照、配置快照和 `r2b1-runtime-summary.json`。资源清理最终回归为 `sky-ownership-fixed.log` / `sky-ownership-fixed-console.log`。全部 57 套/277 项测试通过，0 failure/error/skipped；shader 源文件和生成的二进制未改，52 份已校验产物沿用。临时对照配置已恢复至检查前快照；全部客户端已退出。
+
+**观感集中待验清单**：
+
+- 当前 R2b-1 开档仍只返回自己的路径、写空记录；path-tree/Eq.5/完整 shift 恒等尚待后续，不能评价 temporal/spatial 复用效果。
+- 已保存 `visual-reference-record-only.png`（DLSS-RR，533×300→1600×900）与 `visual-reference-no-dlss.png`（原生 1600×900）。这是当前阶段参考帧；两者输入分辨率不同且不是 N 帧平均，不能用于证明能量守恒或性能差距。
+- 用户后续统一检查：记录阶段开/关的材质与高光观感；R3/R4 完成后再检查静止噪声、运动拖影、光泽地面/水边和特殊主命中的回退。当前没有视觉 GO/NO-GO 结论。

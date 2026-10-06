@@ -4342,6 +4342,12 @@ public final class RtComposite {
             worldPipeline = null;
             pathReuseVariant = null; // destroyed with its pipeline
         }
+        // The world pipeline borrows these views; the composite owns the full sky resource graph.
+        // Release it while its context is still alive, after the device-idle wait at shutdown.
+        if (skyLuts != null) {
+            skyLuts.destroy();
+            skyLuts = null;
+        }
         if (environmentTextures != null) {
             environmentTextures.destroy();
             environmentTextures = null;
