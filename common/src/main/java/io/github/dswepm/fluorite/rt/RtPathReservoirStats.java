@@ -18,8 +18,8 @@ import java.util.Locale;
  * with no additional fence (the same ownership as RtRestirStats).
  */
 public final class RtPathReservoirStats {
-    /** 0-1 prefix identity, 2-6 source query/status partition, 7-8 metadata identity. */
-    public static final int LANES = 9;
+    /** 0-1 prefix, 2-6 source geometry, 7-8 metadata identity, 9-12 D-continuation footprint probe. */
+    public static final int LANES = 13;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -120,6 +120,10 @@ public final class RtPathReservoirStats {
         long geometryInvalid = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 24L));
         long geometryReplayAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 28L));
         long geometryReplayPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 32L));
+        long footprintAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 36L));
+        long footprintAccepted = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 40L));
+        long footprintK2 = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 44L));
+        long footprintK3 = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 48L));
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
         }
@@ -130,11 +134,13 @@ public final class RtPathReservoirStats {
         loggedAt = now;
         // Raw counts avoid rounding a failing 99.9% gate into a passing log rate.
         FluoriteMod.LOGGER.info("RT path reuse diagnostics (1/16 pixel sample): prefix {}/{} ({}); "
-                        + "geometry {}/{} ({}; missing {}, ambiguous {}, invalid {}); geometry replay {}/{} ({})",
+                        + "geometry {}/{} ({}; missing {}, ambiguous {}, invalid {}); geometry replay {}/{} ({}); "
+                        + "D footprint {}/{} ({}; first k2 {}, k3 {})",
                 identityPass, identityAttempt, percentage(identityPass, identityAttempt),
                 geometryResolved, geometryAttempt, percentage(geometryResolved, geometryAttempt),
                 geometryMissing, geometryAmbiguous, geometryInvalid,
-                geometryReplayPass, geometryReplayAttempt, percentage(geometryReplayPass, geometryReplayAttempt));
+                geometryReplayPass, geometryReplayAttempt, percentage(geometryReplayPass, geometryReplayAttempt),
+                footprintAccepted, footprintAttempt, percentage(footprintAccepted, footprintAttempt), footprintK2, footprintK3);
     }
 
     private static String percentage(long passed, long attempted) {

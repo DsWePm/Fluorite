@@ -250,7 +250,7 @@ final class RtPathReplayContractTest {
         // R2a removed the unused merge lanes: identity now occupies lanes 0 and 1.
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u)"));
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u)"));
-        assertEquals(9, RtPathReservoirStats.LANES);
+        assertEquals(13, RtPathReservoirStats.LANES);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         assertTrue(stats.contains("memGetInt(src.mapped)") && stats.contains("src.mapped + 4L"));
         assertTrue(stats.contains("identityPass, identityAttempt, percentage(identityPass, identityAttempt)"));
@@ -274,7 +274,8 @@ final class RtPathReplayContractTest {
             {"ReuseOpaqueVertex reuseOpaqueVertex(", "ReuseOpaqueVertex o;|o\\.\\w+ = \\w+;|return o;"},
             {"bool reuseSampleContinuation(", "return true;|walked = (false|true);.*"
                     + "|float3 (n|v|p|F0|diffAlb) = vtx\\.\\w+;|(RainSurface rain|BsdfContext bc) = vtx\\.\\w+;"
-                    + "|float (pf|ps) = vtx\\.\\w+;|bool exactSpecular = vtx\\.exactSpecular;"},
+                    + "|float (pf|ps) = vtx\\.\\w+;|bool exactSpecular = vtx\\.exactSpecular;"
+                    + "|sampleInfo(?:\\.\\w+)? = .*;"},
         };
         for (String[] f : functions) {
             java.util.List<String> lines = new java.util.ArrayList<>();

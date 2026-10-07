@@ -400,7 +400,7 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
   - **D**：更深的其余部分。
 
   WRS 选一个存入记录，得到 W_tree。**R** 在 S4 统一 DI 之前是具名近似。暂不支持的事件不进复用，留在本像素自己的路径里——积分拆分无偏，所以技术可以分期落地：D、S 先，L/H/T 随后，R 最后。
-- **重连顶点**：源路径上第一对满足判据的 (x_{k−1}, x_k)，k ≥ 2；接收端的 y₁ 是 pass B 的 hitDepth-0 顶点。判据有三条：Eq. 5 前向足迹、x_k 非漫反射时加逆向足迹、x_{k−1} 的单顶点 α 门（α_min 取值待核，见 D230 B08）。
+- **重连顶点**：源路径上第一对满足判据的 (x_{k−1}, x_k)，k ≥ 2；接收端的 y₁ 是 pass B 的 hitDepth-0 顶点。判据有三条：Eq. 5 前向足迹、x_k 非漫反射时加逆向足迹、x_{k−1} 的 sampled-lobe 单顶点 α 门。**用户 2026-10-08 批准 R2 初始值 α_min=0.2（直接为本项目线性 GGX alpha，不平方）、c=0.02；R6 再实测校准**（D230 B08 的未证实 0.04 换算不恢复）。
 - **移位**：k ≥ 3 时，从接收端 hitDepth-0 顶点用逐顶点随机流重放到 y_{k−1}，重放不做 RR。然后用**最近命中**连接射线连到 x_k：命中距离相同、同侧、法线一致才算通过，同时借 payload 取回 x_k 的材质（G3 请示项）。在 x_k 按新入射方向重评技术与 MIS。雅可比按 Eq. 2 计算，其中 G 的余弦取在 x_k（论文印刷的注记见 D230）；源路径的分母 D 存在记录里。
 - **合并**：pairwise MIS 沿用 M24 形式；「反向移位是否追可见性」是隔离开关（Q2）。着色按 §6.3 做 RGB 累积；没有可用域时回退到路径追踪的完整和，所以开档移动时约等于关档。
 - **置信度**：每个上帧候选各自取 min(Cap, c)；空间循环不受时域计数限制（修 B02）。Cap 取值是请示项 G6。
@@ -588,3 +588,27 @@ API 依据：[Slang query position fetch](https://docs.shader-slang.org/en/lates
 - 当前 R2b-1 开档仍只返回自己的路径、写空记录；path-tree/Eq.5/完整 shift 恒等尚待后续，不能评价 temporal/spatial 复用效果。
 - 已保存 `visual-reference-record-only.png`（DLSS-RR，533×300→1600×900）与 `visual-reference-no-dlss.png`（原生 1600×900）。这是当前阶段参考帧；两者输入分辨率不同且不是 N 帧平均，不能用于证明能量守恒或性能差距。
 - 用户后续统一检查：记录阶段开/关的材质与高光观感；R3/R4 完成后再检查静止噪声、运动拖影、光泽地面/水边和特殊主命中的回退。当前没有视觉 GO/NO-GO 结论。
+
+## R2b-2（2026-10-08，D 编号待分配）：sampled-lobe 参数与 Eq.5 资格前置片
+
+用户批准 R2 初始值 α_min=0.2、c=0.02，直接使用本项目线性 GGX alpha，不平方；R6再校准。后续D号段问题仍待回复，本条只使用已存在的R2b-2切片名，未自行分配新D编号。
+
+### 已完成的前置数据与判据
+
+- `ReuseContinuationSample` 保存实际选中的 diffuse/base GGX/film/delta/walk 标签、该瓣的 scalar alpha、`bsdfPdf`（包含离散选择概率的 selected-lobe density）。不拿太阳 NEE 的全 mixture pdf 替换它。diffuse alpha=1，base为原线性rough参数、film为filmAlpha；delta/walk无解析密度，判失效。共享 sampler 的原方向、权重、pdf 和随机抽样逐行保留；只追加标签输出，契约测试钉住发布版逻辑。
+- `reuseFootprintEligible` 实现参数化Eq.5，使用实际采样 ray 的方向与hitT（包含原tracer的surface offset约定）。前向G的法线位于x_k，逆向G的法线位于x_{k−1}；都为cosine/distance²。阈值为 `(c/100)*4π*|camera-primary|²/cosPrimary`。以 `density*threshold <= 1` 等价检验面积足迹，包含等号，无世界距离启发式、无energy/pdf钳制。
+- current diffuse按论文脚注6跳过逆向项；current glossy/film检查逆向项，不再加x_k roughness门。source denominator为 `p_prev * G_forward * p_k`，非有限/非正值返回失败，不生成可用分母。
+- 当前消费者只验证**D延续分支的资格**：恒等自检抽样的前3个顶点中，寻找第一对k≥2的合格点。要求未拆分的opaque主命中、有效primary/前后几何、前后解析延续、前缀无SSSwalk；电介质延续不暴露解析pdf，不能直接作为此处前驱。delta、particle、pass A split primary不进入探针的可用域。
+- 在原ray命中后、其它lighting trace前捕获edge direction/T；在当前延续成功后、RR前检查。**因此这不是D事件已经存在的证明**：随后RR杀死或终端截断可能不给出任何D贡献。更深的event producer需要处理这一点。
+- 统计扩为13 lanes/52 B：9尝试边、10首对通过、11首对k2、12首对k3，10=11+12；没有有效记录写出，时域/空间仍未消费。
+
+### 验证
+
+- 58套/287项测试全通过，52份shader编译/spirv-val通过。新增10项数值/契约测试覆盖：目标余弦与反距离平方、逆向拒绝与diffuse例外、primary投影和/100、边界等号、场景单位缩放、线性sampled alpha、退化/非有限密度、联合源分母和实际调用/统计接线。
+- 关档 `world.rgen`、`world_ser.rgen`、`world_primary.rgen` 规整化后与R2a基线逐字节相同。
+- RTX2080/617.14，SER NONE，隔离存档 `restir-r1-smoke`，实际533×300→1600×900、DLSS-RR开、空间0、identity bit0，验证层开。147个日志frame snapshots：prefix 1,005,466/1,005,471（99.99950%）；geometry 2,695,788/2,697,191（99.94798%，missing/invalid=0、ambiguity=1,403）；metadata replay 1,003,835/1,004,134（99.97022%）。
+- D资格边456,712/1,293,979（35.29516%），首对k2=307,204、k3=149,508。分母是**尝试边**，一条路径可尝试两对，不能写成35.3%的像素产出事件。k3也只是资格，不是R5深链移位验收。
+- CSV开档2,357帧开关字均1。启动/退出VUID=0、正常保存退出、配置快照哈希不变。没有同会话A→B→A，不作GPU成本结论；观感仍在待用户清单。
+- 证据：`F:\MC\Shader\evidence\restir-rework-2026-10-08\` 中 `r2b2-build.log`、`r2b2-build-summary.json`、`r2b2-runtime.log`、`r2b2-runtime-summary.json`、CSV/配置/测试XML及三个关档规整化模块。公式原文核对Enhanced PDF第7–8页及第4页的sampled-lobe定义。
+
+**下一片**：path-tree 单事件的实际生成、RR外置和记录写出；Sun NEE/发光事件有自己的技术pdf与lobe语义，不能把本片D探针的输出直接当作这些事件的记录。R2仍未完成。

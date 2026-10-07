@@ -9,6 +9,7 @@
 // The rebuild's slices (R1+) restructure this copy only.
 
 #include "path_reuse_geometry.slang"
+#include "path_reuse_sampling.slang"
 
 // ---- Vertex decisions, ONE spelling for the bounce loop below and the hybrid shift's replay (R1b).
 //
@@ -247,8 +248,9 @@ ReuseOpaqueVertex reuseOpaqueVertex(float3 hitPos, float3 n, float3 rd, float ra
 bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sssMaxEvents,
                              inout float3 ro, inout float3 rd, inout float3 throughput,
                              inout float bsdfPdf, inout float rayConeSpread, inout bool showCelestial,
-                             inout uint stream, out bool walked) {
+                             inout uint stream, out bool walked, out ReuseContinuationSample sampleInfo) {
     walked = false;
+    sampleInfo = emptyReuseContinuationSample();
     float3 n = vtx.n;
     float3 v = vtx.v;
     float3 p = vtx.p;
@@ -271,6 +273,8 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
     float lobeChoice = rndf(stream);
     if (lobeChoice < pf) {
         float alpha = rain.filmAlpha;
+        sampleInfo.lobe = REUSE_LOBE_FILM;
+        sampleInfo.alpha = alpha;
         float3 h = sampleGGXVNDF(n, v, alpha, stream);
         float3 l = reflect(rd, h);
         float ndl2 = dot(n, l);
@@ -289,6 +293,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
     } else if ((lobeChoice - pf) / max(1.0 - pf, 1.0e-6) < ps) {
         float3 l;
         if (exactSpecular) {
+            sampleInfo.lobe = REUSE_LOBE_DELTA;
             // Authored zero is a delta distribution, not a narrow finite GGX lobe. This avoids the
             // degenerate VNDF at alpha=0 and preserves a genuinely sharp reflection without a floor.
             l = reflect(rd, n);
@@ -296,6 +301,8 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
                     * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
             bsdfPdf = -1.0;
         } else {
+            sampleInfo.lobe = REUSE_LOBE_SPECULAR;
+            sampleInfo.alpha = vtx.rough;
             float3 h = sampleGGXVNDFAniso(n, bc.t, bc.b, v, bc.alphaX, bc.alphaY, stream);
             l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
             float ndl2 = dot(n, l);
@@ -323,6 +330,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         // walk enters, scatters and leaves before the path continues — so nothing here reaches the
         // continuation record or the pass boundary.
         walked = true; // the walk's exit direction has no analytic density to reconnect on
+        sampleInfo.lobe = REUSE_LOBE_WALK;
         float lobeProb = (1.0 - pf) * (1.0 - ps) * walkSss;
         WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, vtx.sssRadius, vtx.ext.specular.w,
                                                sssMaxEvents, stream);
@@ -348,6 +356,8 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
         showCelestial = false;
     } else {
+        sampleInfo.lobe = REUSE_LOBE_DIFFUSE;
+        sampleInfo.alpha = 1.0;
         float lobeProb = (1.0 - pf) * (1.0 - ps) * (1.0 - walkSss);
         float3 l = cosineDir(n, stream);
         throughput *= diffAlb * rainBaseTransmission(bc, l) / lobeProb;
@@ -357,6 +367,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
         showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
     }
+    sampleInfo.pdf = bsdfPdf;
     return true;
 }
 
@@ -437,8 +448,9 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
         }
         ReuseOpaqueVertex vtx = reuseOpaqueVertex(hitPos, n, rd, rayConeWidth, hitDepth, sssMode, sssMaxEvents);
         bool walked;
+        ReuseContinuationSample continuation;
         if (!reuseSampleContinuation(vtx, hitPos, sssMaxEvents, ro, rd, throughput, bsdfPdf,
-                                     rayConeSpread, showCelestial, vertexSeed, walked)) {
+                                     rayConeSpread, showCelestial, vertexSeed, walked, continuation)) {
             break;
         }
     }
@@ -546,6 +558,13 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     bool identityParticle = false;
     ReuseHitGeometry identityGeometry = emptyReuseHitGeometry();
     uint identityGeometryStatus = REUSE_GEOMETRY_MISSING;
+    ReuseHitGeometry footprintPrimary = emptyReuseHitGeometry();
+    ReuseHitGeometry footprintPrevious = emptyReuseHitGeometry();
+    ReuseContinuationSample footprintPreviousSample = emptyReuseContinuationSample();
+    bool footprintPrimaryValid = false;
+    bool footprintPreviousValid = false;
+    bool footprintPrefixWalk = false;
+    bool footprintFound = false;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
@@ -564,6 +583,8 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                       showCelestial, bounce == 0, rayConeWidth, rayConeSpread);
 #endif
 
+        float footprintEdgeDistance = payload.hitT;
+        float3 footprintEdgeDirection = rd;
         // R2b geometry diagnostic: capture metadata for this actual radiance hit before any lighting
         // trace can touch the payload. No query when the diagnostic is off; full records remain empty
         // until path-tree selection consumes this helper. Query calls draw no random numbers.
@@ -573,6 +594,11 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 identityGeometryStatus = reuseQueryHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,
                                                                ro, rd, payload.hitT, identityGeometry);
                 reuseCountSourceGeometry(identityGeometryStatus);
+                if (indirectDepth == 0 && seg.bounce == 0 && payloadMaterial() == MATERIAL_OPAQUE
+                        && identityGeometryStatus == REUSE_GEOMETRY_OK) {
+                    footprintPrimary = identityGeometry;
+                    footprintPrimaryValid = true;
+                }
             }
         }
 
@@ -736,6 +762,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 }
                 throughput /= q;
             }
+            footprintPreviousValid = false; // no analytic dielectric continuation PDF is exposed
             continue;
         }
 
@@ -1061,9 +1088,38 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         // vertex (NEE, emitter RIS, M24's reuse) keeps drawing from `seed`: none of it is a vertex decision.
         uint vertexSeed = recordPath ? vertexStream(pathSeedBase, uint(hitDepth)) : seed;
         bool walked;
+        ReuseContinuationSample continuation;
         if (!reuseSampleContinuation(vtx, hitPos, sssMaxEvents, ro, rd, throughput, bsdfPdf,
-                                     rayConeSpread, showCelestial, vertexSeed, walked)) {
+                                     rayConeSpread, showCelestial, vertexSeed, walked, continuation)) {
             break;
+        }
+        // D-event qualification probe: evaluate the first analytic continuation pair before roulette.
+        // This is eligibility, not a produced path-tree event: a later RR kill may leave no D radiance.
+        if (identityCheck && hitDepth < PATH_REUSE_IDENTITY_DEPTH) {
+            if (!footprintFound && hitDepth >= 1 && footprintPrimaryValid && footprintPreviousValid
+                    && !footprintPrefixWalk && identityGeometryStatus == REUSE_GEOMETRY_OK
+                    && reuseAnalyticContinuation(footprintPreviousSample)
+                    && reuseAnalyticContinuation(continuation)) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[9], 1u);
+                float3 primaryToCamera = seg.ro - footprintPrimary.position;
+                float primaryDistanceSq = dot(primaryToCamera, primaryToCamera);
+                float primaryCosine = primaryDistanceSq > 0.0
+                        ? dot(footprintPrimary.normal, primaryToCamera * rsqrt(primaryDistanceSq)) : 0.0;
+                float jacDenom;
+                if (reuseFootprintEligible(footprintPreviousSample, continuation,
+                        footprintEdgeDirection, footprintEdgeDistance,
+                        footprintPrevious.normal, identityGeometry.normal,
+                        primaryDistanceSq, primaryCosine,
+                        REUSE_MIN_ALPHA, REUSE_FOOTPRINT_SCALE, jacDenom)) {
+                    footprintFound = true;
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[10], 1u);
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[hitDepth == 1 ? 11 : 12], 1u);
+                }
+            }
+            footprintPrefixWalk = footprintPrefixWalk || walked;
+            footprintPrevious = identityGeometry;
+            footprintPreviousSample = continuation;
+            footprintPreviousValid = identityGeometryStatus == REUSE_GEOMETRY_OK;
         }
         if (!recordPath) {
             seed = vertexSeed;
