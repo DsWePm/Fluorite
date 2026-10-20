@@ -207,8 +207,10 @@ class RtPathReuseGeometryTest {
         int capture = s.indexOf("// R2b geometry diagnostic:");
         assertTrue(capture > s.indexOf("traceRadianceReordered(", s.indexOf("public float3 tracePathReuse(")));
         assertTrue(capture < s.indexOf("SegmentIntegral segIntegral =", capture));
-        assertTrue(s.contains("if (identityCheck && indirectDepth < PATH_REUSE_IDENTITY_DEPTH && payload.hitT >= 0.0)"));
-        assertTrue(s.contains("ro, rd, payload.hitT, identityGeometry)"));
+        assertTrue(s.contains("bool queryIdentityGeometry = identityCheck && indirectDepth < PATH_REUSE_IDENTITY_DEPTH;"));
+        assertTrue(s.contains("if ((queryIdentityGeometry || queryRecordGeometry) && payload.hitT >= 0.0)"));
+        assertTrue(s.contains("ro, rd, payload.hitT, hitGeometry)"));
+        assertTrue(s.contains("identityGeometry = hitGeometry;"));
         assertTrue(s.contains("ro, rd, payload.hitT, lastGeometry)"));
         assertTrue(s.contains("if (queryGeometry && reached == vertices)"));
         assertTrue(s.contains("identityGeometryStatus == REUSE_GEOMETRY_OK"));
@@ -233,8 +235,8 @@ class RtPathReuseGeometryTest {
         String tracer = source("shaders/world/path_reuse_trace.slang");
         for (int lane : new int[] {7, 8}) assertTrue(tracer.contains("pathReservoirStatsAddr)[" + lane + "], 1u"));
         String java = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
-        assertEquals(13, RtPathReservoirStats.LANES);
-        assertEquals(52, RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(20, RtPathReservoirStats.LANES);
+        assertEquals(80, RtPathReservoirStats.BYTE_SIZE);
         for (int lane = 1; lane < 9; lane++) assertTrue(java.contains("memGetInt(src.mapped + " + (4 * lane) + "L)"));
         assertTrue(java.contains("geometryResolved, geometryAttempt"));
         assertTrue(java.contains("geometryMissing, geometryAmbiguous, geometryInvalid"));

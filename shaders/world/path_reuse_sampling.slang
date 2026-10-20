@@ -14,6 +14,8 @@ struct ReuseContinuationSample {
     uint lobe;
     float alpha;
     float pdf;
+    // Selected f*cos/pdf, independent of the caller's coloured prefix and external roulette.
+    float3 weight;
 };
 
 ReuseContinuationSample emptyReuseContinuationSample() {
@@ -21,6 +23,7 @@ ReuseContinuationSample emptyReuseContinuationSample() {
     sample.lobe = REUSE_LOBE_NONE;
     sample.alpha = 0.0;
     sample.pdf = 0.0;
+    sample.weight = float3(0.0, 0.0, 0.0);
     return sample;
 }
 

@@ -10,6 +10,7 @@
 
 #include "path_reuse_geometry.slang"
 #include "path_reuse_sampling.slang"
+#include "path_reuse_tree.slang"
 
 // ---- Vertex decisions, ONE spelling for the bounce loop below and the hybrid shift's replay (R1b).
 //
@@ -284,6 +285,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         float3 F = fresnelSchlick(max(0.0, dot(v, h)),
                 float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0));
         throughput *= rain.film * F * ggxG1(ndl2, alpha) / pf;
+        sampleInfo.weight = rain.film * F * ggxG1(ndl2, alpha) / pf;
         rayConeSpread = max(rayConeSpread, alpha * RAY_CONE_GLOSSY_SPREAD_SCALE);
         bsdfPdf = pf * ggxReflectPdf(max(0.0, dot(n, h)), bc.ndv, alpha,
                 ggxG1(bc.ndv, alpha));
@@ -313,6 +315,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
             float3 F = fresnelSchlick(max(0.0, dot(v, h)), F0);
             throughput *= F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY)
                     * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
+            sampleInfo.weight = F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY) * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
             // The cone grows by the wider axis: it bounds the texture footprint, and taking the
             // narrower one would sharpen mip selection along the stretched direction, which is
             // exactly where it should blur.
@@ -361,6 +364,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         float lobeProb = (1.0 - pf) * (1.0 - ps) * (1.0 - walkSss);
         float3 l = cosineDir(n, stream);
         throughput *= diffAlb * rainBaseTransmission(bc, l) / lobeProb;
+        sampleInfo.weight = diffAlb * rainBaseTransmission(bc, l) / lobeProb;
         ro = p;
         rd = l;
         bsdfPdf = lobeProb * max(0.0, dot(n, rd)) * INV_PI;
@@ -565,6 +569,15 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     bool footprintPreviousValid = false;
     bool footprintPrefixWalk = false;
     bool footprintFound = false;
+    // The first accepted D pair is independent of which later solar endpoint WRS selects.
+    // A separate unit-prefix tail preserves incident RGB even when the source prefix has zero channels.
+    PackedPathReservoir dRecord = emptyPathReservoir();
+    ReusePathTree dTree = emptyReusePathTree();
+    bool dReconChosen = false;
+    bool dTailActive = false;
+    float3 dSourceWeight = float3(0.0, 0.0, 0.0);
+    float3 dTailWeight = float3(1.0, 1.0, 1.0);
+    float rrSurvival = 1.0;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
@@ -585,20 +598,29 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
 
         float footprintEdgeDistance = payload.hitT;
         float3 footprintEdgeDirection = rd;
-        // R2b geometry diagnostic: capture metadata for this actual radiance hit before any lighting
-        // trace can touch the payload. No query when the diagnostic is off; full records remain empty
-        // until path-tree selection consumes this helper. Query calls draw no random numbers.
-        if (identityCheck && indirectDepth < PATH_REUSE_IDENTITY_DEPTH && payload.hitT >= 0.0) {
-            identityGeometryStatus = REUSE_GEOMETRY_MISSING;
+        // R2b geometry diagnostic: capture metadata before lighting can touch the radiance payload.
+        // Record production needs every source hit up to the first D pair, even with diagnostics off.
+        bool queryIdentityGeometry = identityCheck && indirectDepth < PATH_REUSE_IDENTITY_DEPTH;
+        bool queryRecordGeometry = recordPath && !dReconChosen && !footprintPrefixWalk
+                && (indirectDepth == 0 || footprintPrimaryValid);
+        ReuseHitGeometry hitGeometry = emptyReuseHitGeometry();
+        uint hitGeometryStatus = REUSE_GEOMETRY_MISSING;
+        if ((queryIdentityGeometry || queryRecordGeometry) && payload.hitT >= 0.0) {
             if (payloadMaterial() != MATERIAL_PARTICLE) {
-                identityGeometryStatus = reuseQueryHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,
-                                                               ro, rd, payload.hitT, identityGeometry);
-                reuseCountSourceGeometry(identityGeometryStatus);
+                hitGeometryStatus = reuseQueryHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,
+                                                          ro, rd, payload.hitT, hitGeometry);
+                if (queryIdentityGeometry) {
+                    reuseCountSourceGeometry(hitGeometryStatus);
+                }
                 if (indirectDepth == 0 && seg.bounce == 0 && payloadMaterial() == MATERIAL_OPAQUE
-                        && identityGeometryStatus == REUSE_GEOMETRY_OK) {
-                    footprintPrimary = identityGeometry;
+                        && hitGeometryStatus == REUSE_GEOMETRY_OK) {
+                    footprintPrimary = hitGeometry;
                     footprintPrimaryValid = true;
                 }
+            }
+            if (queryIdentityGeometry) {
+                identityGeometry = hitGeometry;
+                identityGeometryStatus = hitGeometryStatus;
             }
         }
 
@@ -658,6 +680,9 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                                 seed, proposalSeed);
         }
         throughput *= segIntegral.transmittance;
+        if (dTailActive) {
+            dTailWeight *= segIntegral.transmittance;
+        }
 
         // Clouds over the segment this ray ACTUALLY TRAVELLED, whether or not it ended on geometry
         // (M11, D33). This used to sit inside the escape-to-sky branch below, which quietly assumed the
@@ -681,6 +706,9 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             CloudResult clouds = traceClouds(ro, rd, cloudMaxT, seed, bounce > 0);
             L += throughput * clouds.inScatter;
             throughput *= clouds.transmittance;
+            if (dTailActive) {
+                dTailWeight *= clouds.transmittance;
+            }
         }
 
         if (payload.hitT < 0.0) {
@@ -732,6 +760,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         // (payloadDielectricEntering), so a stray or missing face cannot desync the medium for the rest
         // of the path.
         if (material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC) {
+            dTailActive = false; // this first D subset has no dielectric suffix weight contract
             // A dielectric has no local shading term. At the path cap its continuation cannot be traced,
             // so avoid computing an unused Fresnel choice, medium update, and roulette step.
             if (bounce >= maxBounces) {
@@ -761,6 +790,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                     break;
                 }
                 throughput /= q;
+                rrSurvival *= q;
             }
             footprintPreviousValid = false; // no analytic dielectric continuation PDF is exposed
             continue;
@@ -770,6 +800,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         // off secondary rays, so this only fires at bounce 0; they receive direct light and one diffuse
         // path continuation into the scene, but never appear in shadows/reflections/GI or emit radiance.
         if (material == MATERIAL_PARTICLE) {
+            dTailActive = false;
             identityParticle = true; // a billboard draws its continuation from `seed`: not replayable
             float3 albedo = payload.albedo;
 
@@ -1019,6 +1050,22 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 float3 brdf = sampled * wLight
                         + disneyLobes(bc, ext, lightDir) * rainBaseTransmission(bc, lightDir);
                 L += throughput * brdf * sampledLightIrradiance * ndl * vis;
+                // One deeper solar endpoint is one D path-tree candidate, not a sum of suffix terms.
+                // H (the immediate BSDF emitter/sky hit), RIS, SSS and volume sources are not included.
+                if (dTailActive) {
+                    float3 incident = dTailWeight * brdf * sampledLightIrradiance * ndl * vis;
+                    bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival, reuseSeed);
+                    if (identityCheck && candidate) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[13], 1u);
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[17], 1u);
+                        float3 factored = dSourceWeight * incident;
+                        float3 actual = throughput * brdf * sampledLightIrradiance * ndl * vis * rrSurvival;
+                        float scale = max(max(actual.r, actual.g), actual.b);
+                        if (all(abs(factored - actual) <= 2.0e-5 * max(scale, 1.0e-30))) {
+                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[18], 1u);
+                        }
+                    }
+                }
             }
         }
 
@@ -1093,11 +1140,45 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                                      rayConeSpread, showCelestial, vertexSeed, walked, continuation)) {
             break;
         }
+        if (dTailActive) {
+            // Unsupported suffixes stop new candidates; earlier supported endpoints remain valid.
+            dTailActive = reuseAnalyticContinuation(continuation);
+            dTailWeight *= continuation.weight;
+        }
+        if (recordPath && !dReconChosen && hitDepth >= 1 && footprintPrimaryValid
+                && footprintPreviousValid && !footprintPrefixWalk
+                && hitGeometryStatus == REUSE_GEOMETRY_OK) {
+            float3 primaryToCamera = seg.ro - footprintPrimary.position;
+            float primaryDistanceSq = dot(primaryToCamera, primaryToCamera);
+            float primaryCosine = primaryDistanceSq > 0.0
+                    ? dot(footprintPrimary.normal, primaryToCamera * rsqrt(primaryDistanceSq)) : 0.0;
+            float jacDenom;
+            if (reuseFootprintEligible(footprintPreviousSample, continuation,
+                    footprintEdgeDirection, footprintEdgeDistance,
+                    footprintPrevious.normal, hitGeometry.normal,
+                    primaryDistanceSq, primaryCosine,
+                    REUSE_MIN_ALPHA, REUSE_FOOTPRINT_SCALE, jacDenom)) {
+                dReconChosen = true;
+                dTailActive = true;
+                dTailWeight = float3(1.0, 1.0, 1.0);
+                dSourceWeight = throughput * rrSurvival;
+                dRecord.reconPos = hitGeometry.position;
+                dRecord.pathSeed = pathSeedBase;
+                dRecord.primaryPos = footprintPrimary.position;
+                dRecord.primaryNrm = packUnorm16x2(octEncode(footprintPrimary.normal));
+                dRecord.reconNrm = packUnorm16x2(octEncode(hitGeometry.normal));
+                dRecord.dirK = packUnorm16x2(octEncode(rd));
+                dRecord.jacDenom = jacDenom;
+                dRecord.bits = reuseDRecordBits(uint(hitDepth + 1), continuation.lobe, activeMediumFlags);
+                dRecord.objectId = footprintPrimary.objectId;
+                dRecord.primaryUv = packHalf2(footprintPrimary.uv);
+            }
+        }
         // D-event qualification probe: evaluate the first analytic continuation pair before roulette.
         // This is eligibility, not a produced path-tree event: a later RR kill may leave no D radiance.
         if (identityCheck && hitDepth < PATH_REUSE_IDENTITY_DEPTH) {
             if (!footprintFound && hitDepth >= 1 && footprintPrimaryValid && footprintPreviousValid
-                    && !footprintPrefixWalk && identityGeometryStatus == REUSE_GEOMETRY_OK
+                    && !footprintPrefixWalk && hitGeometryStatus == REUSE_GEOMETRY_OK
                     && reuseAnalyticContinuation(footprintPreviousSample)
                     && reuseAnalyticContinuation(continuation)) {
                 InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[9], 1u);
@@ -1108,7 +1189,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 float jacDenom;
                 if (reuseFootprintEligible(footprintPreviousSample, continuation,
                         footprintEdgeDirection, footprintEdgeDistance,
-                        footprintPrevious.normal, identityGeometry.normal,
+                        footprintPrevious.normal, hitGeometry.normal,
                         primaryDistanceSq, primaryCosine,
                         REUSE_MIN_ALPHA, REUSE_FOOTPRINT_SCALE, jacDenom)) {
                     footprintFound = true;
@@ -1116,11 +1197,11 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                     InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[hitDepth == 1 ? 11 : 12], 1u);
                 }
             }
-            footprintPrefixWalk = footprintPrefixWalk || walked;
-            footprintPrevious = identityGeometry;
-            footprintPreviousSample = continuation;
-            footprintPreviousValid = identityGeometryStatus == REUSE_GEOMETRY_OK;
         }
+        footprintPrefixWalk = footprintPrefixWalk || walked;
+        footprintPrevious = hitGeometry;
+        footprintPreviousSample = continuation;
+        footprintPreviousValid = hitGeometryStatus == REUSE_GEOMETRY_OK;
         if (!recordPath) {
             seed = vertexSeed;
         }
@@ -1131,15 +1212,24 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 break;
             }
             throughput /= q;
+            rrSurvival *= q;
         }
     }
-    // Record-only rebuild: no temporal/spatial reads and no change to L. Until the tagged event
-    // producer is installed, explicitly clear every owned slot rather than publish an old suffix.
+    // Record-only: no temporal/spatial reads and no change to L. Empty trees overwrite stale slots.
     if (recordPath) {
+        PackedPathReservoir produced = reuseFinishTree(dRecord, dTree);
         DevicePtr<PackedPathReservoir> store =
                 DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
         store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,
-                                worldPush.frameIndex & 1u)] = emptyPathReservoir();
+                                worldPush.frameIndex & 1u)] = produced;
+        if (identityCheck && !pathReservoirEmpty(produced)) {
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[14], 1u);
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[
+                    ((produced.bits >> REUSE_RECORD_DEPTH_SHIFT) & 15u) == 2u ? 15 : 16], 1u);
+        }
+        if (identityCheck && dTree.weightSum > 0.0 && pathReservoirEmpty(produced)) {
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[19], 1u);
+        }
     }
     // Two vertices at least: the first one is the segment's own ray and involves no decision, so a
     // one-vertex replay would pass whatever the streams did and only dilute the rate.

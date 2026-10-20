@@ -612,3 +612,29 @@ API 依据：[Slang query position fetch](https://docs.shader-slang.org/en/lates
 - 证据：`F:\MC\Shader\evidence\restir-rework-2026-10-08\` 中 `r2b2-build.log`、`r2b2-build-summary.json`、`r2b2-runtime.log`、`r2b2-runtime-summary.json`、CSV/配置/测试XML及三个关档规整化模块。公式原文核对Enhanced PDF第7–8页及第4页的sampled-lobe定义。
 
 **下一片**：path-tree 单事件的实际生成、RR外置和记录写出；Sun NEE/发光事件有自己的技术pdf与lobe语义，不能把本片D探针的输出直接当作这些事件的记录。R2仍未完成。
+
+## R2b-3（2026-10-20，D 编号待分配）：D 太阳端点事件、外置 RR 与有效记录
+
+沿 D231「技术可分期落地、未支持事件留本像素」的已批拆分推进。本片首次产出有效记录，但**只支持 D 的一个子域：在首对合格重连点 x_k 之后，经解析不透明延续，到更深不透明顶点的太阳 NEE 端点**。它是从 x_k 看过去的 D 事件，不是 x_k 当地的 S 事件；不套用 forced-NEE 的源分母。完整 R2 尚未完成。D 号段申请仍待用户回复，不自行分配。
+
+### 事件与权重
+
+- 在所有记录所属路径上查询实际命中几何，至首对合格 D 点为止；自检另有前3点需求时复用同一次查询。诊断关闭也能产出记录。G16 的不支持主命中、G18 的游走前缀继续排除；诊断快照不被后续深链查询覆盖。查询无新随机抽样，不扩 payload/48 B 段 ABI。
+- 解析 continuation 额外输出实际 `f*cos/pdf` 乘数（包含离散选瓣概率），原 sampler 抽样、方向、吞吐量、pdf 原句保留。独立 `dTailWeight` 从 x_k 出射后的单位 RGB 开始，逐段乘原介质/云透射、逐点乘解析延续乘数。绝不以 `suffix / colouredPrefix` 恢复辐亮度，源前缀为零的通道仍保留。
+- 每个更深太阳 NEE 是一个候选；只收该站原 `brdf * irradiance * ndl * vis`，保持原太阳 MIS 与 Disney 附加瓣。后缀的电介质、delta 或 SSS walk 停止新候选，已经生成的较短事件继续保留。立即 BSDF 命中的 emitter/sky（H）、ambient floor、RIS、薄壳 SSS、体积/云 in-scatter 均未混入 D 太阳端点；这些项与所有未支持事件继续由本像素原路径承担。
+- 设 `Q_e` 为到端点 e 的所有实际外层 RR 存活概率之积，`B_k` 为源前缀与 x_k 散射的无 RR 乘数，`I_e` 为独立尾部得到的相对入射项，`F_e=B_k*I_e`。WRS 候选权重 `w_e=luminance(F_e)/Q_e`，存活者概率 `w_e/sum(w)`；写出 `W=sum(w)/luminance(F_selected)`，即 `W_tree/Q_selected`。不同深度的 Q 不同，不能用最终 Q 统一补偿。RR 杀死更深路径也不能删除之前的候选。RR 及原路径的随机流、终止与补偿保持原样；WRS 仅用独立 reuseSeed。
+- 80 B 写出：实际 primary/recon 位置及几何法线、重放基 seed、出射方向、RGB9E5 相对入射、W、正有限源分母、own target、confidence=1/竞争pdf=0（D）、primary 的本帧 objectId 和 half2 UV。`targetOwn` 与源分母保留打包前精度；方向/辐亮度是既定有损格式，完整打包后源端重评与误差验收仍待 R2 后续，不能把本片因式分解检查称为完整 shift 恒等。
+- bits 定义：bit0 valid；1–4 k；5–7 technique（1=D）；8–10 selected lobe；12–13 current medium 的已有两位 trait；14–15 outer medium；16–17 primary type（1=opaque）。其余位0；未知介质 trait、非解析 lobe、越界深度拒绝，不静默截断。两个 reserved uint 继续为0；objectId 仍不是跨帧稳定身份。
+- 数值非法/溢出、RGB9E5 超范围或完全下溢、half UV 非有限、没有正 target 时写空记录，不钳制出一个有效高能样本。每个所属 slot 每帧必写，失败无陈旧残留。当前仍返回完整自己的 L，未读历史/空间，不能把记录贡献再次加回画面。
+
+### 验证与边界
+
+- 新数值回归精确枚举 WRS 索引及所有 RR 截止结局，覆盖不同端点存活概率、单事件恰好一次 RR 补偿、零 target、零前缀 RGB 通道、前后 RR 因式分解和 bit 字段往返；shader 契约钉住实际乘数、调用与写入。
+- 统计增加13–19：D太阳候选、有效写出、k2、k≥3、源因式分解尝试/通过、非空树写出拒绝。有效写出=k2+k≥3；源因式分解比较 `B_k*I_e` 与原追踪该太阳项乘 Q，**不是完整 shift 身份检查**。所有统计仍按恒等诊断的1/16像素采样。
+- 59套/297项测试全通过（failure/error/skipped均0），52份shader编译与spirv-val通过；构建4分17秒。补齐位编码与实际shader常量的绑定后，再跑完整Java测试（shader未变且任务UP-TO-DATE），27秒仍全通过。三份关档模块经 `tools/normalize-spirv.py` 规整化、验证并与R2a基线逐字节比较一致。
+- RTX2080/617.42、普通TraceRay（SER NONE）、隔离存档 `restir-r1-smoke`、533×300→1600×900、DLSS-RR开、1 spp、max-bounces=3、空间0、identity bit0、验证层开。共56个日志frame snapshots：prefix 378,512/378,514；geometry 1,014,934/1,015,440（missing/invalid=0、ambiguous=506）；metadata replay 377,908/378,028。前缀不是零失败，不能四舍五入称作100%。
+- D资格171,530/486,776（首对k2=115,582、k3=55,948）；D太阳候选38,638、有效记录写出36,669（k2=23,418、k≥3=13,251）、非空树拒绝0；因式分解38,638/38,638。以上是**日志抽样帧内的1/16像素计数**，不是全会话全部像素/帧数，深链记录不代表R5移位已验收。CSV开档774帧、switch word均1。配置前后快照逐字节相同。
+- 正常保存/退出，Gradle `BUILD SUCCESSFUL in 6m 48s`、exit0；VUID=0、无device lost/composite failed/退出对象泄漏。开发账号401和OSHI进程信息异常在启动时有日志，但未阻断本地存档、光追或正常退出，未改账号/系统设置。未做同会话A→B→A，不报告GPU成本；观感留给用户。当前驱动版本与上片不同，不拿旧片绝对帧时间作对比。
+- 证据：`F:\MC\Shader\evidence\restir-rework-2026-10-20\` 的构建/最终测试日志、源测试XML、三个关档规整化模块、运行日志/CSV/配置、`r2b3-build-summary.json`、`r2b3-runtime-summary.json` 及可复算脚本。核对原论文完整PDF第10–11页的§6.1/§6.2.4；未复制reference代码或常数。
+
+**仍待 R2 后续**：扩齐 D 端点与 x_k 的 S/L/H/T（R 为已标近似），完整源端重评/打包误差与完整恒等 lane、仅记录同会话 A→B→A。R3 消费前还须显式保留本像素被复用子域的和及其余项，按计划做积分拆分，不能把复用估计直接叠加完整 L。R3–R6 未因此获得完成状态。

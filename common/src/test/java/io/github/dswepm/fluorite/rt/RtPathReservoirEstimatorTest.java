@@ -40,8 +40,9 @@ final class RtPathReservoirEstimatorTest {
     void aPixelWithoutAReconnectionVertexWritesAnEmptyRecord() throws IOException {
         String rgen = code(source("shaders/world/path_reuse_trace.slang"));
         assertTrue(rgen.contains("if (recordPath) {"));
-        assertTrue(rgen.contains("= emptyPathReservoir();"),
-                "every owned slot must be overwritten this frame (B05)");
+        assertTrue(rgen.contains("= produced;"), "every owned slot must be overwritten this frame (B05)");
+        assertTrue(rgen.contains("reuseFinishTree(dRecord, dTree)"));
+        assertTrue(code(source("shaders/world/path_reuse_tree.slang")).contains("return emptyPathReservoir();"));
         String common = code(source("shaders/world/world_common.slang"));
         String body = common.substring(common.indexOf("public PackedPathReservoir emptyPathReservoir()"));
         body = body.substring(0, body.indexOf("\n}"));

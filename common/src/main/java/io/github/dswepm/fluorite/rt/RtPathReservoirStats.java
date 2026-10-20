@@ -18,8 +18,8 @@ import java.util.Locale;
  * with no additional fence (the same ownership as RtRestirStats).
  */
 public final class RtPathReservoirStats {
-    /** 0-1 prefix, 2-6 source geometry, 7-8 metadata identity, 9-12 D-continuation footprint probe. */
-    public static final int LANES = 13;
+    /** 0-12 existing probes; 13-16 D solar candidates/records/depths; 17-18 source factors; 19 rejected trees. */
+    public static final int LANES = 20;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -124,6 +124,13 @@ public final class RtPathReservoirStats {
         long footprintAccepted = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 40L));
         long footprintK2 = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 44L));
         long footprintK3 = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 48L));
+        long eventCandidates = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 52L));
+        long eventRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 56L));
+        long eventK2 = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 60L));
+        long eventDeep = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 64L));
+        long sourceFactorAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 68L));
+        long sourceFactorPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 72L));
+        long eventRejected = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 76L));
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
         }
@@ -135,12 +142,15 @@ public final class RtPathReservoirStats {
         // Raw counts avoid rounding a failing 99.9% gate into a passing log rate.
         FluoriteMod.LOGGER.info("RT path reuse diagnostics (1/16 pixel sample): prefix {}/{} ({}); "
                         + "geometry {}/{} ({}; missing {}, ambiguous {}, invalid {}); geometry replay {}/{} ({}); "
-                        + "D footprint {}/{} ({}; first k2 {}, k3 {})",
+                        + "D footprint {}/{} ({}; first k2 {}, k3 {}); "
+                        + "D solar events {} -> records {} (k2 {}, deep {}, rejected {}); source factors {}/{} ({})",
                 identityPass, identityAttempt, percentage(identityPass, identityAttempt),
                 geometryResolved, geometryAttempt, percentage(geometryResolved, geometryAttempt),
                 geometryMissing, geometryAmbiguous, geometryInvalid,
                 geometryReplayPass, geometryReplayAttempt, percentage(geometryReplayPass, geometryReplayAttempt),
-                footprintAccepted, footprintAttempt, percentage(footprintAccepted, footprintAttempt), footprintK2, footprintK3);
+                footprintAccepted, footprintAttempt, percentage(footprintAccepted, footprintAttempt), footprintK2, footprintK3,
+                eventCandidates, eventRecords, eventK2, eventDeep, eventRejected,
+                sourceFactorPass, sourceFactorAttempt, percentage(sourceFactorPass, sourceFactorAttempt));
     }
 
     private static String percentage(long passed, long attempted) {
