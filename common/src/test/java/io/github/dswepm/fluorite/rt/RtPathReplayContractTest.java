@@ -267,6 +267,12 @@ final class RtPathReplayContractTest {
                 "public float3 tracePath(__ref PathSegment seg, uint activeMediumFlags,");
         String reuseFile = source("shaders/world/path_reuse_trace.slang");
 
+        // R2b-8: the user approved this one algebraically equivalent Schlick substitution. Keep the
+        // remainder of the strict shipped-line proof, including RNG, ray directions, PDF and weights.
+        String approvedFresnelPrefix = "reuseFresnelSchlickDirections(v, l,";
+        assertEquals(2, reuseFile.split(java.util.regex.Pattern.quote(approvedFresnelPrefix), -1).length - 1);
+        reuseFile = reuseFile.replace(approvedFresnelPrefix, "fresnelSchlick(max(0.0, dot(v, h)),");
+
         // 1. Every shared vertex function is a verbatim, in-order excerpt of the shipped loop, with
         //    only its random stream renamed and its exits turned into returns.
         String[][] functions = {

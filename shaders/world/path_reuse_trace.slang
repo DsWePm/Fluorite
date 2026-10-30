@@ -11,6 +11,7 @@
 #include "path_reuse_geometry.slang"
 #include "path_reuse_sampling.slang"
 #include "path_reuse_tree.slang"
+#include "path_reuse_fresnel.slang"
 #include "path_reuse_eval.slang"
 
 // ---- Vertex decisions, ONE spelling for the bounce loop below and the hybrid shift's replay (R1b).
@@ -283,7 +284,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         if (ndl2 <= 0.0) {
             return false;
         }
-        float3 F = fresnelSchlick(max(0.0, dot(v, h)),
+        float3 F = reuseFresnelSchlickDirections(v, l,
                 float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0));
         throughput *= rain.film * F * ggxG1(ndl2, alpha) / pf;
         sampleInfo.weight = rain.film * F * ggxG1(ndl2, alpha) / pf;
@@ -313,7 +314,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
                 return false; // microfacet reflects below the surface: terminate this path
             }
             // VNDF + separable Smith ⇒ weight = F · G2/G1(v) = F · G1(l); divide by the lobe pdf ps.
-            float3 F = fresnelSchlick(max(0.0, dot(v, h)), F0);
+            float3 F = reuseFresnelSchlickDirections(v, l, F0);
             throughput *= F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY)
                     * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
             sampleInfo.weight = F * ggxG1Aniso(dot(l, bc.t), dot(l, bc.b), ndl2, bc.alphaX, bc.alphaY) * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);

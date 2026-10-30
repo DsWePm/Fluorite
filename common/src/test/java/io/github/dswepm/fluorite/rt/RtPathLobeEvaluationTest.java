@@ -230,7 +230,8 @@ final class RtPathLobeEvaluationTest {
                 "ggxReflectPdfAniso(dot(h, c.t), dot(h, c.b), ndh,", "c.ndv, c.alphaX, c.alphaY, c.g1v)",
                 "ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, c.alphaX, c.alphaY)",
                 "result.pdf = pf * ggxReflectPdf(ndh, c.ndv, alpha, ggxG1(c.ndv, alpha));",
-                "c.rain.film * fresnelSchlick(vdh,", "ggxG1(ndl, alpha) / pf", "any(result.weight < 0.0)"})
+                "reuseFresnelSchlickDirections(c.v, wi, c.F0)",
+                "c.rain.film * reuseFresnelSchlickDirections(c.v, wi,", "ggxG1(ndl, alpha) / pf", "any(result.weight < 0.0)"})
             assertTrue(eval.contains(term), term);
         assertFalse(eval.contains("rndf(") || eval.contains("traceRadiance(") || eval.contains("bsdfContinuationPdf("));
         String loop = source("shaders/world/path_reuse_trace.slang");

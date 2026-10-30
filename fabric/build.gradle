@@ -26,6 +26,7 @@ sourceSets {
 	}
 	test {
 		java.srcDir rootProject.file("common/src/test/java")
+		resources.srcDir rootProject.file("common/src/test/resources")
 	}
 }
 

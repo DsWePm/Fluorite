@@ -744,3 +744,27 @@ F = F0 + (1-F0) m⁵
 - 成本与兼容性已向用户说明：局部两次方向归一化、向量和/差及平方长度、sqrt和除法；不增加射线或显存。数学BSDF和线性roughness不改，但开档原采样的浮点weight和自己的L会微调，需明确允许共享sampler与已发布源码逐行证明中的这一处数学等价替换；关档仍须与基线逐字节相同。因此按CLAUDE.md铁律1请求用户裁决「接入稳定公式」或「保留原采样浮点行为并继续记录此误差」，**当前待回复，未将未答复视为批准**。
 
 **清理与状态**：所有临时111-lane探针、字段、日志与临时test尺寸修改已移除，生产源码恢复为 `975217e` 的44-lane/96 B版本。证据目录 `F:\MC\Shader\evidence\restir-rework-2026-10-31\` 保存原始patch/shader/SPIR-V、逐位样本/分析、游戏日志/CSV/配置、CPU原型与独立Vulkan回放器及输入/输出/摘要。当前提交仅归档诊断与待裁决方案；没有把源重评标作修复或宣告R2完成。
+
+## R2b-8（2026-10-31，D 编号待分配）：共享稳定Schlick方向公式
+
+用户询问「保留原采样浮点行为」的含义，明确解释原式、舍入差异、稳定公式及成本后，回复「按你说的推进」，采用R2b-7的稳定公式路线。由此结案前片的待裁决项；允许ReSTIR开档的原采样权重及自己的L出现数学等价改写引起的浮点微调，关档仍必须与基线逐字节相同。没有新增roughness、能量下限、误差门限或采样策略。
+
+- 新增纯函数 `path_reuse_fresnel.slang`，局部normalize view/outgoing，以方向差的平方长度和方向和的长度计算 `m=||v̂-ŵ||²/(4+2||v̂+ŵ||)`，再算原Schlick `F0+(1-F0)m⁵`。该clamp仍是原Schlick的[0,1]定义域保护，没有加入epsilon/F0 floor。局部归一化不回写任何追踪射线；half-vector依然用于原GGX PDF。
+- `reuseSampleContinuation`的非delta base anisotropic GGX与film瓣，以及 `reuseEvaluateContinuation`的对应两瓣调用同一helper。delta、diffuse、walk及其它材质/光照的Fresnel保持原实现；随机数调用、射线生成公式、selected-lobe PDF、GGX G1、离散选瓣概率和外置RR处理不变。原目标和WRS继续使用实际采样的source weight，不以重评值覆盖原采样来制造恒等。
+- 共享sampler的严格逐行证明仅为两处批准的helper调用前缀作精确映射，钉住出现次数为2，其余证明完整保留；另以独立数值回归和实际shader调用契约约束helper。开关OFF的三模块仍另做规整后逐字节比较。record为96 B、stats为44 lanes/176 B、segment为48 B，WorldPush/阴影payload无增长。
+
+**回归先行**：将R2b-7的25个GPU原始view/outgoing/cosHalf保存为float32位可往返的CSV fixture。新增5项测试：复现旧19.168%误差、全部真实方向的独立angle/double oracle、同向/反向极限、5,000组方向与零/非零F0、生产调用及OFF隔离。接入前5项中4项数值测试通过、生产调用因helper缺失而失败；接入后全量63套/323项通过（failure/error/skipped=0）。52份shader编译与spirv-val通过，完整构建3分7秒，三个关档模块与R2a基线逐字节一致。
+
+共享CSV通过Fabric test resources注册并从测试classpath读取，使增量测试能追踪fixture变化；该配置只影响测试资源。最终重跑63套/323项仍全部通过（13秒，shader UP-TO-DATE，生产shader没有再改），最终XML及构建摘要已更新归档。
+
+**实际helper的独立GPU验证**：新的compute入口直接include生产 `path_reuse_fresnel.slang`，不再复制候选函数；RTX2080无窗口Vulkan回放25个真实样本加20,000组方向/混合F0，和double oracle比较，最大RGB相对误差0.0187834%、绝对差8.79136e-7，均有限非负。该GPU oracle以double计算方向和/差；单元测试另外使用atan2叉积角度和sin构造独立oracle。它验证真实helper本身，不替代原路径loop里的source PDF/weight、RR-free前缀组合或完整shift。无GPU时间戳，不报告成本比值。
+
+**原场景闭环**：继续使用原有0.1%源PDF/weight分档及>1%前缀组合异常计数；断言脚本先在R2b-6实际摘要上失败（625,437次中21次weight越界，最大19.1681%），修复后实际游戏测量通过。未放松原阈值、改变日志采样率或屏蔽极小权重样本。
+
+- RTX2080/617.42、普通TraceRay、533×300→1600×900、DLSS-RR开、1 spp、max-bounces=3、独立存档 `restir-r1-smoke`、空间0、恒等诊断与验证层开，240个日志frame snapshots。源求值861,119次，invalid=0，**PDF及weight全部≤0.1%**，最大PDF误差0.00510916%、weight误差0.0281716%。前缀组合最大0.0281723%，>1%或invalid=0；只声称本轮测量阈值通过，不声称所有浮点残差为0。
+- D候选209,558、有效记录198,035（k2=137,910、深链=60,125），源因式分解209,558/209,558、非空树拒绝0。所有有效记录的组合贡献误差≤0.1%，最大0.000500353%；packed PDF最大0.00312302%，>1%计数0。独立方向codec的861,119次位模式/PDF/weight误差全0，入射codec误差也为0。
+- prefix 1,683,118/1,683,119；geometry 4,525,854/4,528,012（missing/invalid=0，ambiguity=2,158）；metadata replay 1,680,749/1,681,059。这些通道的残余差异没有因selected-lobe修复而被标作完整shift恒等通过。
+- 会话6分46秒、Gradle exit0/BUILD SUCCESSFUL，助手通过本轮绑定窗口的关闭快捷键自行结束，日志确认保存所有维度及Stopping。VUID=0、无device lost，前后配置逐字节相同；CSV开档3,568帧、switch word均1。未再操作视角或设置；机位固定性未作验收，跨会话数据仅作数值回归，不作性能、噪声或通过率改善的比较。
+- 证据目录 `F:\MC\Shader\evidence\restir-rework-2026-10-31\`：`r2b8-build.log`、测试XML/规整化模块/构建摘要、实际生产helper的无窗口GPU probe及输入/输出/摘要、unit red与原数据source red、运行日志/CSV/配置/摘要、source/direction/incident green与复算脚本。25例fixture同时纳入仓库；没有遗留临时见证探针或新增stats字段。
+
+**状态与防复发**：本片解决已取证的零F0消减误差放大，并通过原场景selected-lobe回归。依旧没有从新视角重新取packed材质/前缀/完整几何或重追连接边，因此不是完整源端/shift恒等。其它D/S/L/H/T事件、完整shift、仅记录A→B→A与R3–R6继续开放；新增数学运算的实际GPU成本仍待时间戳同会话测试，观感由用户集中验收。后续改写继续同时检查零F0真实样本、独立double oracle和原生产loop阈值，不能仅以数学等价或RGB看似相同作为通过依据。

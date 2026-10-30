@@ -28,7 +28,6 @@ ReuseContinuationSample reuseEvaluateContinuation(BsdfContext c, float pf, float
         }
         float3 h = sum * rsqrt(sumSq);
         float ndh = max(0.0, dot(c.n, h));
-        float vdh = max(0.0, dot(c.v, h));
         if (lobe == REUSE_LOBE_SPECULAR) {
             float probability = (1.0 - pf) * ps;
             if (!(probability > 0.0) || !(c.alphaX > 0.0) || !(c.alphaY > 0.0)) {
@@ -37,7 +36,7 @@ ReuseContinuationSample reuseEvaluateContinuation(BsdfContext c, float pf, float
             result.alpha = c.rough;
             result.pdf = probability * ggxReflectPdfAniso(dot(h, c.t), dot(h, c.b), ndh,
                     c.ndv, c.alphaX, c.alphaY, c.g1v);
-            result.weight = fresnelSchlick(vdh, c.F0)
+            result.weight = reuseFresnelSchlickDirections(c.v, wi, c.F0)
                     * ggxG1Aniso(dot(wi, c.t), dot(wi, c.b), ndl, c.alphaX, c.alphaY)
                     * rainBaseTransmission(c, wi) / probability;
         } else {
@@ -47,7 +46,7 @@ ReuseContinuationSample reuseEvaluateContinuation(BsdfContext c, float pf, float
             float alpha = c.rain.filmAlpha;
             result.alpha = alpha;
             result.pdf = pf * ggxReflectPdf(ndh, c.ndv, alpha, ggxG1(c.ndv, alpha));
-            result.weight = c.rain.film * fresnelSchlick(vdh,
+            result.weight = c.rain.film * reuseFresnelSchlickDirections(c.v, wi,
                     float3(WATER_FILM_F0, WATER_FILM_F0, WATER_FILM_F0)) * ggxG1(ndl, alpha) / pf;
         }
     } else {
