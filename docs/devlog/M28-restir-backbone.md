@@ -793,3 +793,24 @@ F = F0 + (1-F0) m⁵
 - 证据目录 `F:\MC\Shader\evidence\restir-rework-2026-10-31\` 保存论文抽取、unit red、完整构建/测试XML/规整化模块、真实helper的headless probe及输入输出/摘要、运行日志/CSV/配置/摘要和endpoints/source/direction/incident回归结果。旧R2b-8摘要在新端点覆盖断言上失败，新摘要通过；解析器显式检查三类候选/记录分区和实际来源因式分解。
 
 **剩余**：D其余贡献、x_k的S/L/H/T（R为已标近似）、完整源端/shift恒等和记录阶段A→B→A。R2未完成，R3–R6未启动消费；本片没有复用效果、GPU成本或用户观感结论。
+
+## R2b-10（2026-10-31，D 编号待分配）：源材质与散射前缀的独立重放诊断
+
+从同一个source segment与record.pathSeed重新TraceRay到x_k，使用新payload重建材质、法线、ray-cone与selected-lobe context，以记录中的完整方向重评散射权重/PDF，并以重放的前驱PDF、距离和目的顶点几何法线重算源雅可比分母。这里没有改为从其它像素追连接射线，也没有替用户选择G3的nearest-hit/material策略。
+
+- 原路径另记不含介质/云透射和外部RR的散射ledger，逐次乘原continuation.weight，选择x_k时保存作独立ground truth；重评计算不读这些参考值。delta分支只导出其已有质量权重，不改变原throughput公式。禁止从实际RGB除以透射来反推散射，零透射/零通道仍可测。
+- 新重放只验证opaque解析前缀（含其delta质量）；原前缀遇电介质/particle/walk则单列scope，不拒绝生产记录。原前缀受支持而重放材质/命中不同则列miss；geometry、invalid与numeric分别计数。k2与深链各有attempt/pass，所有attempt都进入一个结果桶，未通过的没有从分母剔除。
+- 散射误差同时检查未加权RGB及乘选中incident后的RGB，防止很弱的前缀通道恰是该事件唯一有效通道。scatter、selected PDF和源denominator保持原0.1%诊断门限；统计48–59共12个新lane，合计60 lanes/240 B。仅诊断开时执行，额外重放不参与WRS/原L，也不改生产record96 B、segment48 B、WorldPush或阴影payload。
+- D231已将段/云确定性种子留给R3/G10；本片没有重放transport、连接可见性、透明层或跨帧packed材质身份，不能称完整源端/shift恒等。此界限在开工时已向用户说明。
+
+**构建**：新增7项回归覆盖零透射ledger、几何分母、独立fresh payload、record seed/lobe/direction输入、无未批准transport种子、分类计数与弱通道incident投影。接入前6项中4项失败/2项数值通过，最终65套/337项全通过（failure/error/skipped=0）；52份shader编译与spirv-val通过，完整构建3分19秒。严格tracer/sampler证明继续通过，关档三个模块规整后与R2a逐字节一致。
+
+**实际运行发现残差，未判通过**：RTX2080/617.42、普通TraceRay、533×300→1600×900、DLSS-RR、1 spp、max-bounces=3、既有独立存档、空间0、恒等诊断及验证层开。270个日志frame snapshots：
+
+- 有效记录227,864（k2=159,749、deep=68,115）。新源散射重放k2通过159,743、deep通过68,106；**geometry不匹配11、numeric越界4**，scope/miss/invalid均0。最大scatter误差0.0821044%、PDF误差1.3294%、源denominator误差1.32994%。这些计数来自1 Hz日志帧，不是全会话所有帧的总发生率，尚无原始失败样本，不能先归因于几何舍入或材质错配。
+- 旧cached-context selected-lobe求值969,321次，PDF全部≤0.1%（最大0.0106224%），**weight仍有1条越界，最大0.148851%**；前缀组合最大0.148849%、>1%或invalid=0。R2b-8/9的本轮全通过不构成未来样本的保证，本片暴露的残差保持开放，未放松原门限。
+- D候选253,867、因式分解全部通过、非空树拒绝0；记录solar=214,500、sky=13,363、emitter=1。全部记录packed贡献≤0.1%，最大0.000189079%，packed PDF最大0.00312302%；969,321次方向codec位/PDF/weight误差及incident codec误差仍0。
+- prefix 1,893,275/1,893,278；geometry 5,090,843/5,093,306（ambiguous=2,463、missing/invalid=0）；metadata replay 1,890,611/1,890,944。以上不同检查覆盖范围不同，不合并解释其失败原因。
+- 游戏7分20秒、Gradle exit0/BUILD SUCCESSFUL，助手自行关闭并正常保存所有维度，VUID=0、无device lost；前后配置逐字节相同，CSV开档3,755帧、switch均1。无性能比值或观感结论。
+
+证据在 `F:\MC\Shader\evidence\restir-rework-2026-10-31\` 的r2b10构建/测试XML/关档模块、unit red、运行日志/CSV/配置及摘要。下一片优先捕获新重放的numeric/geometry失败与旧权重残差，分别验证材质/context、射线几何及GGX PDF数值假设；当前仅交付新增可执行诊断，**R2仍未完成**。

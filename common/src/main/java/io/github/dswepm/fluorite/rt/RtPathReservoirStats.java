@@ -23,7 +23,8 @@ public final class RtPathReservoirStats {
     // 34-39 prefix composition, direction-plus-source-evaluation and incident contributions.
     // 40-43 isolate the direction codec: attempts, bit changes, PDF error and weight error.
     // 44-47 sky/emitter candidates and actual written sky/emitter records; solar is the remainder.
-    public static final int LANES = 48;
+    // 48-59 fresh source scattering replay: depth attempts/passes, classified failures and maxima.
+    public static final int LANES = 60;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -163,6 +164,18 @@ public final class RtPathReservoirStats {
         long emitterCandidates = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 180L));
         long skyRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 184L));
         long emitterRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 188L));
+        long sourceReplayK2 = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 192L));
+        long sourceReplayDeep = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 196L));
+        long sourceReplayScope = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 200L));
+        long sourceReplayMiss = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 204L));
+        long sourceReplayGeometry = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 208L));
+        long sourceReplayInvalid = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 212L));
+        long sourceReplayK2Pass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 216L));
+        long sourceReplayDeepPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 220L));
+        float sourceReplayScatterMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 224L));
+        float sourceReplayPdfMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 228L));
+        float sourceReplayJacMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 232L));
+        long sourceReplayNumeric = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 236L));
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
         }
@@ -180,7 +193,9 @@ public final class RtPathReservoirStats {
                         + "packed source {} (invalid {}, <=0.1% {}, <=1% {}, >1% {}, max {}, pdf>1% {}, max pdf {}); "
                         + "source composition max {} (>1% or invalid {}); packing isolation max dir {} (>1% {}), incident {} (>1% {}); "
                         + "direction codec {} (bits changed {}, max pdf {}, weight {}); "
-                        + "D endpoints candidates sky {} emitter {}, records sky {} emitter {}",
+                        + "D endpoints candidates sky {} emitter {}, records sky {} emitter {}; "
+                        + "source scatter replay k2 {}/{} deep {}/{} (scope {}, miss {}, geometry {}, invalid {}, numeric {}); "
+                        + "max scatter {}, pdf {}, jac {}",
                 identityPass, identityAttempt, percentage(identityPass, identityAttempt),
                 geometryResolved, geometryAttempt, percentage(geometryResolved, geometryAttempt),
                 geometryMissing, geometryAmbiguous, geometryInvalid,
@@ -194,7 +209,11 @@ public final class RtPathReservoirStats {
                 relativePercentage(directionMax), directionHigh, relativePercentage(incidentMax), incidentHigh,
                 directionCodecAttempt, directionCodecBitChanges,
                 relativePercentage(directionCodecPdfMax), relativePercentage(directionCodecWeightMax),
-                skyCandidates, emitterCandidates, skyRecords, emitterRecords);
+                skyCandidates, emitterCandidates, skyRecords, emitterRecords,
+                sourceReplayK2Pass, sourceReplayK2, sourceReplayDeepPass, sourceReplayDeep,
+                sourceReplayScope, sourceReplayMiss, sourceReplayGeometry, sourceReplayInvalid, sourceReplayNumeric,
+                relativePercentage(sourceReplayScatterMax), relativePercentage(sourceReplayPdfMax),
+                relativePercentage(sourceReplayJacMax));
     }
 
     private static String percentage(long passed, long attempted) {
