@@ -814,3 +814,23 @@ F = F0 + (1-F0) m⁵
 - 游戏7分20秒、Gradle exit0/BUILD SUCCESSFUL，助手自行关闭并正常保存所有维度，VUID=0、无device lost；前后配置逐字节相同，CSV开档3,755帧、switch均1。无性能比值或观感结论。
 
 证据在 `F:\MC\Shader\evidence\restir-rework-2026-10-31\` 的r2b10构建/测试XML/关档模块、unit red、运行日志/CSV/配置及摘要。下一片优先捕获新重放的numeric/geometry失败与旧权重残差，分别验证材质/context、射线几何及GGX PDF数值假设；当前仅交付新增可执行诊断，**R2仍未完成**。
+
+## R2b-11（2026-10-31，D 编号待分配）：源重放材质分叉的逐位现场
+
+R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证伪假设取证：射线/位置舍入经材质纹理放大；材质/法线/cone或payload重建不一致；相同context内的selected-lobe公式仍有较大残差。几何query状态与位置偏差独立记录，不混作PDF失败。本片没有改变物理或采样策略，也没有提交临时探针。
+
+**临时见证**：保留60个正式stats lane；临时扩到233 lanes/932 B，以两个独立CAS分别保存每帧首个fresh numeric/geometry失败及旧cached-context PDF/weight越界。原路径保存实际x_k的context、入射射线/距离/cone/前驱PDF/几何法线/selected weight；与重放对照的原始uint位模式在1 Hz汇总限流前回读。不改变原L、选中记录或门限，不是每帧所有异常或全局最大值捕获。取证构建65套/337项测试、52份shader校验通过。
+
+- 全帧见证共31条numeric（k2=16、deep=15），31条的入射方向和目的几何法线均逐位一致，但射线起点均有差异（最大欧氏距离2.13248e-5）。31条着色n、t、F0与ndv改变，18条rough/alphaX/alphaY改变；pf/ps/walk/film与diffAlb均相同。31条几何位置偏差都仍在原容差内（最大为容差的0.47713倍），**位置相近不足以证明材质重放一致**。
+- 最大现场selected PDF为189.70529175与2.13997793，相对误差98.871940%，源分母误差98.871946%；该条源散射误差1.522524%。源/重放入射相同、起点X差一个float ULP，着色normal和F0已明显不同。另一条selected PDF从5.48227到233.70897，相对误差97.654235%。不能把这种残差判为可忽略，或用放宽几何容差/筛掉小贡献来消除计数。
+- 独立double以两份已捕获context重算各自GGX PDF，预测PDF比值与实际比值的最大残差2.22540e-6。另建无窗口compute直接import生产bsdf并include真实selected-lobe evaluator，RTX2080回放31对/62个context：对捕获PDF的最大相对误差2.46198e-6、对selected weight为2.27144e-7，均有限非负。这支持**这批较大差值发生于材质/context输入分叉**，不是把同一context交给公式就出现近99%误差；不构成所有求值器残差或完整路径恒等的证明。
+- 31条原context的F0均可由half精确表示，而31条重放context的F0均不满足这一点。Payload.f0声明为half3、closest-hit SPIR-V也含16位lane，因此**还须直接捕获TraceRay返回时的原始payload、cone及逐顶点状态，核对实际半精度转换与context构建**。当前缺少这层原始快照，不能把全部分叉先归因于UV/位置舍入、FMA或某个编译器缺陷，也没有足够依据直接改采样器/材质精度。
+- 全帧几何见证116条：115条query成功但重放/缓存位置差超过原容差，1条query ambiguous；与numeric是互斥分类。旧cached-context见证为0，**未复现R2b-10的0.148851%残差，仍开放**；探针会改变生成代码，不能因本片没复现便宣布修复。
+
+**运行汇总与采样边界**：同既有配置和存档，验证层开。244个1 Hz日志frame snapshots中205,502条记录（k2=144,560、deep=60,942），fresh pass分别144,559/60,938，geometry=4、numeric=1，其余失败桶0；该集合的最大PDF误差0.222471%、源分母0.219461%、scatter0.0702174%。这些日志帧与上面的全帧见证不是同一个采样集合，**不能用205,502作147条见证的发生率分母**。873,250次cached-context求值在本次汇总中全部≤0.1%，最大PDF0.00352664%、weight0.00266246%；D候选228,916个因式分解全过、非空树拒绝0，codec位/PDF/weight及incident codec误差0。仍不替其它会话未捕获样本背书。
+
+游戏7分37秒、Gradle exit0/BUILD SUCCESSFUL，助手自行关闭，保存所有维度/Stopping正常；VUID=0、无device lost，前后配置逐字节一致，CSV开档2,681帧。没有移动视角、改设置或做视觉/性能验收，不跨会话比较通过率或帧时间。
+
+**清理**：见证shader/patch/SPIR-V、逐位JSON、double与真实生产evaluator的GPU输入输出/摘要、构建测试XML及日志/CSV/配置均保存在 `F:\MC\Shader\evidence\restir-rework-2026-10-31\` 的r2b11文件中。源码、stats及临时尺寸断言按备份逐字节恢复到 `bace2bd`，临时include/辅助文件移除，正式stats仍60 lanes/240 B。本片只归档诊断，**材质分叉根因及修复、旧0.148851%残差、完整源端/shift与其余R2任务继续开放**。下一次取证应在每个TraceRay刚返回、几何query及材质重建前后保存payload/packed-cone/ro/rd/hitT，定位第一个不一致边界。
+
+清理后重新完整构建4分13秒，65套/337项测试与52份shader校验通过；关档三个规整化模块再次与R2a逐字节一致。仓库内搜索临时tag/helper/include与233-lane尺寸无残留，代码及测试相对 `bace2bd` 无差异，仅本片文档更新；未因清理再启动游戏。
