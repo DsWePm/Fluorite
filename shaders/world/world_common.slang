@@ -1036,6 +1036,8 @@ public static const uint PATH_RESERVOIR_BYTES = 80u;
 // The two float3 lanes lead their 16-byte groups: the Slang reflection probe owns the true
 // std430 stride, and RtComposite allocates from that generated record (D220).
 // radiance is relative incident radiance, without prefix throughput or reconnection scattering.
+// R2b-5: radiance/reserved0/reserved1 hold R/G/B float32 bits. The ABI names and 80 B stride stay fixed;
+// the former spare lanes are occupied. Primary objectId/UV remain the independent LoD hooks.
 // W includes initial tree resampling and external roulette; jacDenom stores the Eq. 2 denominator.
 // confPdf packs confidence (low half) and the competing technique's PDF (high half).
 // bits carries validity and the event's discrete path parameters; zero is always empty.

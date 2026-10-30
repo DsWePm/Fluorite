@@ -1274,16 +1274,16 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[14], 1u);
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[
                     ((produced.bits >> REUSE_RECORD_DEPTH_SHIFT) & 15u) == 2u ? 15 : 16], 1u);
-            // Compare the represented source contribution, including oct16 direction + RGB9E5 error.
+            // Compare the represented source contribution, including oct16 direction and stored RGB.
             // Positions/normals/UV, prefix replay and connection visibility are not reevaluated here.
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[26], 1u);
             if (!dPackedSourceValid) {
                 InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[27], 1u);
             } else {
                 float3 original = dSourceWeight * dTree.selectedIncident;
-                float3 represented = dPackedSourceWeight * unpackRgb9e5(produced.radiance);
+                float3 represented = dPackedSourceWeight * reuseLoadIncident(produced);
                 float3 directionOnly = dPackedSourceWeight * dTree.selectedIncident;
-                float3 incidentOnly = dSourceWeight * unpackRgb9e5(produced.radiance);
+                float3 incidentOnly = dSourceWeight * reuseLoadIncident(produced);
                 if (!reuseNonnegativeFinite(original) || !reuseNonnegativeFinite(represented)
                         || !reuseNonnegativeFinite(directionOnly) || !reuseNonnegativeFinite(incidentOnly)) {
                     InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[27], 1u);

@@ -149,7 +149,7 @@ final class RtPathTreeTest {
         for (String term : new String[]{"float weight = target / survival;", "float total = tree.weightSum + weight;",
                 "rndf(stream) * total < weight", "tree.selectedIncident = incident;",
                 "record.W = tree.weightSum / tree.selectedTarget;", "record.targetOwn = tree.selectedTarget;",
-                "record.radiance = packRgb9e5(tree.selectedIncident);", "any(tree.selectedIncident > 65408.0)",
+                "record = reuseStoreIncident(record, tree.selectedIncident);", "!reuseNonnegativeFinite(tree.selectedIncident)",
                 "(mediumFlags & ~0x00030003u) != 0u", "!all(isfinite(unpackHalf2(record.primaryUv)))"})
             assertTrue(tree.contains(term), term);
         assertFalse(tree.contains("clamp("));

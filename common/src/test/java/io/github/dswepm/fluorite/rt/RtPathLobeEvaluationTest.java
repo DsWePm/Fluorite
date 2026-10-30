@@ -237,7 +237,7 @@ final class RtPathLobeEvaluationTest {
         assertTrue(loop.contains("bc, pf, ps, walkSssShare, continuation.lobe, rd)"));
         assertTrue(loop.contains("bc, pf, ps, walkSssShare, continuation.lobe, packedDirection)"));
         assertTrue(loop.contains("dPackedSourceWeight = sourceEvalPrefix * packedEval.weight;"));
-        assertTrue(loop.contains("dPackedSourceWeight * unpackRgb9e5(produced.radiance)"));
+        assertTrue(loop.contains("dPackedSourceWeight * reuseLoadIncident(produced)"));
         assertTrue(loop.contains("reuseRelativeScalarError(continuation.pdf, packedEval.pdf)"));
         assertTrue(loop.indexOf("float3 sourceEvalPrefix =") < loop.lastIndexOf("if (!reuseSampleContinuation(vtx"));
         assertFalse(source("shaders/world/world.rgen.slang").contains("path_reuse_eval.slang"));
@@ -255,7 +255,7 @@ final class RtPathLobeEvaluationTest {
         for (int i : new int[]{24, 25, 31, 32, 34, 36, 38}) assertTrue(loop.contains("pathReservoirStatsAddr)[" + i + "], asuint("));
         assertTrue(loop.contains("sourceEvalPrefix * evaluated.weight;"));
         assertTrue(loop.contains("float3 directionOnly = dPackedSourceWeight * dTree.selectedIncident;"));
-        assertTrue(loop.contains("float3 incidentOnly = dSourceWeight * unpackRgb9e5(produced.radiance);"));
+        assertTrue(loop.contains("float3 incidentOnly = dSourceWeight * reuseLoadIncident(produced);"));
         assertTrue(loop.contains("error <= 0.001 ? 28 : (error <= 0.01 ? 29 : 30)"));
         assertTrue(stats.contains("Float.intBitsToFloat"));
         for (double e : new double[]{0, .00099, .001, .00101, .01, .01001, 1}) {

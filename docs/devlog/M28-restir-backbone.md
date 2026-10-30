@@ -411,11 +411,13 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 | --- | --- |
 | 0 | `float3 reconPos`（x_k）、`uint pathSeed` |
 | 16 | `float3 primaryPos`（记录自身像素的 y₁）、`uint primaryNrm`（oct16×2） |
-| 32 | `uint reconNrm`、`uint dirK`（ω_k 或光源方向）、`uint radiance`（rgb9e5，技术的相对入射项）、`float W` |
+| 32 | `uint reconNrm`、`uint dirK`（oct16方向）、`uint radiance`（float32入射R位模式，R2b-5起）、`float W` |
 | 48 | `float jacDenom`（D）、`float targetOwn`、`uint confPdf`（置信度与竞争 pdf 各占半精度）、`uint bits`（k/技术/lobe/介质/主命中类型/valid） |
-| 64 | `uint objectId`、`uint primaryUv`、两个备用 uint（决策 7 的 LoD 钩子，编码在 R2 定） |
+| 64 | `uint objectId`、`uint primaryUv`（决策7的LoD钩子）；`reserved0/1`在R2b-5起存float32入射G/B位模式，不再空闲 |
 
 1080p 渲染分辨率下约 331 MB；DLSS 质量档更小。结构、`PATH_RESERVOIR_BYTES`、生成记录与 `RtPathReservoirLayoutTest` 在 R2 同一提交内更新。
+
+入射编码原定RGB9E5，2026-10-30经R2b-4 GPU隔离发现大量弱通道/低量级损失，R2b-5在80 B内改为float32 RGB；上表保留实际字段名与偏移，变更依据见对应小节。
 
 ### 随机流（R1）
 
@@ -662,3 +664,26 @@ API 依据：[Slang query position fetch](https://docs.shader-slang.org/en/lates
 - 证据目录 `F:\MC\Shader\evidence\restir-rework-2026-10-30\`：initial/final构建与运行日志、CSV/配置/测试XML、规整化模块、`r2b4-initial-runtime-summary.json`、`r2b4-runtime-summary.json`、复算脚本及float3编码候选。
 
 **界限**：仍使用实际源点原始材质/法线/位置，未重新取packed primary/recon法线、UV材质或回放前缀，也未重追连接边可见性、介质。它是源端selected-lobe及方向/入射编码诊断，**不是完整shift恒等**。完整R2、其它事件和记录阶段A→B→A仍未完成。
+
+## R2b-5（2026-10-30，D 编号待分配）：80 B 内保留完整float32入射RGB
+
+R2b-4已隔离RGB9E5为主要损失来源。会话中展示了「利用现有两条备用lane、记录仍80 B、保留object/UV」的float32 RGB原型和20,003组CPU位往返证据；用户回复「ok继续吧」后沿此方案落地。本片只更换入射编码，方向仍为oct16，未扩充事件域或启用时域/空间复用。
+
+- `radiance`（offset40）存R的float32位模式，原 `reserved0`（72）/`reserved1`（76）存G/B，由 `reuseStoreIncident`/`reuseLoadIncident` 统一读写。保持字段名、顺序、80 B std430 stride和既有reflection生成器；primary objectId/UV钩子独立保留。两条原备用lane从此已占用，不能再当作空闲字段。1080p双缓冲仍331,776,000 B，未增加射线或随机抽样；GPU时间成本仍待同会话A→B→A，不以代码变简单推断速度。
+- 移除RGB9E5专属的65408范围限制与全打包字零判断；原有非有限/负值、无正target、非有限W/UV检查继续生效。有效性检查读取三个通道，允许R=0而G/B贡献非零。空记录仍以valid bit=0判空，所有lane清零。
+- WRS选择、原相对入射值、目标、W、源分母和所有原路径L保持原式，不以压缩后的luminance反推W，也不加误差放行门。量化诊断改由同一getter读取实际float32分量。`PackedPathSegment`的48 B和它自己的RGB9E5编码没有改变。
+- 新测试直接使用Slang reflection生成的真实80 B Java serializer，覆盖弱通道、低量级、R=0/G>0、20,000组有限float32位模式（含边界/次正规）、其它字段与object/UV不被覆盖，并钉住实际shader读写与诊断调用。CPU字节往返不能替代GPU闭环：验收脚本先对R2b-4实际运行摘要执行，因入射误差最大100%而失败；修复后必须重新检查GPU仅入射编码误差为0。
+
+**验证**：
+
+- 61套/314项测试全通过（failure/error/skipped=0，新增6项），52份shader编译与spirv-val通过，完整构建4分15秒。关档三模块经现有规整化工具验证后，与R2a基线逐字节一致；80 B实际反射stride和所有既有offset不变。
+- RTX2080/617.42、普通TraceRay、独立存档 `restir-r1-smoke`、533×300→1600×900、DLSS-RR开、1 spp、max-bounces=3、空间0、恒等诊断与验证层开。78个日志frame snapshots：prefix 548,159/548,161；geometry 1,475,597/1,476,299（missing/invalid=0、ambiguity=702）；metadata replay 547,305/547,495；D候选71,901，有效记录67,859（k2=47,989、深链19,870），非空树拒绝0；源因式分解71,901/71,901。
+- **67,859次非空记录的仅入射编码误差最大值=0，>1%计数=0，invalid=0。** GPU回归脚本从旧摘要的100%误差失败，变为新摘要通过；实际shader的codec闭环消除了这项损失。这里验证的是生产shader内的编码/解码及源贡献，不是独立dispatch的全局slot读回或完整shift。
+- 组合贡献误差：67,852次≤0.1%、7次在0.1%–1%、>1%计数0，最大0.249969%；与仅方向贡献误差最大值一致。方向pdf仍有7次>1%，最大1.991%。未打包源求值289,204次，invalid=0，pdf全部≤0.1%（最大0.00388695%），weight有13次>0.1%、最大0.762771%；前缀组合最大0.762773%、>1%或invalid计数0。保留这些剩余误差，不以本次编码修复掩盖。
+- 以上是日志抽样帧内1/16像素的计数。CSV开档1,092帧、switch word均1，配置前后快照逐字节相同；与R2b-4是不同会话/不同样本集合，不拿比例或绝对帧时间作性能、收敛或固定机位画面对照。
+- 助手通过绑定本轮游戏窗口的关闭快捷键自行结束客户端；日志确认保存所有维度并正常退出，Gradle `BUILD SUCCESSFUL in 6m 10s`、exit0，后续窗口清单无Minecraft。启动/退出VUID=0，无device lost。窗口AX读取不可用，关闭结果由实际日志与窗口清单复核，没有假定快捷键调用即为完成。
+- 证据仍在 `F:\MC\Shader\evidence\restir-rework-2026-10-30\`：`r2b5-build.log`、构建摘要/三模块、实际serializer测试XML、运行日志/CSV/配置/摘要、`r2b5-incident-red.log` 与 `r2b5-incident-green.log`、复算和断言脚本。CPU候选保留为有标记的历史验证材料，没有作为额外运行代码接入。
+
+**防复发**：记录编码的验收必须同时看彩色sourceWeight下的RGB贡献和方向pdf。仅看非空/有限标记、incident本身的相对误差或ABI对齐，不能发现弱通道丢失；今后的编码变更继续沿用这条GPU隔离闭环。
+
+**剩余**：方向编码pdf误差、少量未打包源重评异常、其它事件、完整源端/shift恒等及记录阶段A→B→A仍待完成。本片不宣称整个R2完成，也没有观感或复用降噪验收结论。

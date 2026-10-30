@@ -76,20 +76,32 @@ uint reuseDRecordBits(uint depth, uint lobe, uint mediumFlags) {
             | (REUSE_PRIMARY_OPAQUE << REUSE_RECORD_PRIMARY_SHIFT);
 }
 
+// Full float32 incident RGB in the existing 80 B record. The ABI keeps its original field names:
+// radiance stores R, and the former spare lanes store G/B. Primary object/UV hooks are independent.
+PackedPathReservoir reuseStoreIncident(PackedPathReservoir record, float3 incident) {
+    record.radiance = asuint(incident.r);
+    record.reserved0 = asuint(incident.g);
+    record.reserved1 = asuint(incident.b);
+    return record;
+}
+
+float3 reuseLoadIncident(PackedPathReservoir record) {
+    return float3(asfloat(record.radiance), asfloat(record.reserved0), asfloat(record.reserved1));
+}
+
 PackedPathReservoir reuseFinishTree(PackedPathReservoir record, ReusePathTree tree) {
     if (pathReservoirEmpty(record) || !tree.valid || !(tree.selectedTarget > 0.0)
             || !(tree.weightSum > 0.0) || !isfinite(tree.weightSum)
-            || !reuseNonnegativeFinite(tree.selectedIncident)
-            || any(tree.selectedIncident > 65408.0)) {
+            || !reuseNonnegativeFinite(tree.selectedIncident)) {
         return emptyPathReservoir();
     }
     // P(e) = (target_e/Q_e)/sum. W_tree/Q_e = sum/target_e: no RR in the stored incident.
     record.W = tree.weightSum / tree.selectedTarget;
     record.targetOwn = tree.selectedTarget;
-    record.radiance = packRgb9e5(tree.selectedIncident);
+    record = reuseStoreIncident(record, tree.selectedIncident);
     // Fresh source confidence 1; D has no competing local NEE technique at x_k.
     record.confPdf = packHalf2(float2(1.0, 0.0));
-    if (!(record.W > 0.0) || !isfinite(record.W) || record.radiance == 0u
+    if (!(record.W > 0.0) || !isfinite(record.W) || !any(reuseLoadIncident(record) > 0.0)
             || !all(isfinite(unpackHalf2(record.primaryUv)))) {
         return emptyPathReservoir();
     }
