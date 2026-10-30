@@ -19,7 +19,9 @@ import java.util.Locale;
  */
 public final class RtPathReservoirStats {
     /** 0-12 existing probes; 13-16 D solar candidates/records/depths; 17-18 source factors; 19 rejected trees. */
-    public static final int LANES = 20;
+    // 20-25 selected-lobe source evaluation, 26-33 represented contribution/PDF error measurements.
+    // 34-39 isolate prefix composition, oct16 direction and RGB9E5 incident contributions.
+    public static final int LANES = 40;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -131,6 +133,26 @@ public final class RtPathReservoirStats {
         long sourceFactorAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 68L));
         long sourceFactorPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 72L));
         long eventRejected = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 76L));
+        long lobeAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 80L));
+        long lobeInvalid = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 84L));
+        long lobePdfLow = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 88L));
+        long lobeWeightLow = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 92L));
+        float lobePdfMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 96L));
+        float lobeWeightMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 100L));
+        long packedAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 104L));
+        long packedInvalid = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 108L));
+        long packedLow = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 112L));
+        long packedMedium = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 116L));
+        long packedHigh = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 120L));
+        float packedMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 124L));
+        float packedPdfMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 128L));
+        long packedPdfHigh = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 132L));
+        float compositionMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 136L));
+        long compositionAnomalous = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 140L));
+        float directionMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 144L));
+        long directionHigh = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 148L));
+        float incidentMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 152L));
+        long incidentHigh = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 156L));
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
         }
@@ -143,18 +165,29 @@ public final class RtPathReservoirStats {
         FluoriteMod.LOGGER.info("RT path reuse diagnostics (1/16 pixel sample): prefix {}/{} ({}); "
                         + "geometry {}/{} ({}; missing {}, ambiguous {}, invalid {}); geometry replay {}/{} ({}); "
                         + "D footprint {}/{} ({}; first k2 {}, k3 {}); "
-                        + "D solar events {} -> records {} (k2 {}, deep {}, rejected {}); source factors {}/{} ({})",
+                        + "D solar events {} -> records {} (k2 {}, deep {}, rejected {}); source factors {}/{} ({}); "
+                        + "lobe eval {} (invalid {}, pdf<=0.1% {}, weight<=0.1% {}, max pdf {}, weight {}); "
+                        + "packed source {} (invalid {}, <=0.1% {}, <=1% {}, >1% {}, max {}, pdf>1% {}, max pdf {}); "
+                        + "source composition max {} (>1% or invalid {}); packing isolation max dir {} (>1% {}), incident {} (>1% {})",
                 identityPass, identityAttempt, percentage(identityPass, identityAttempt),
                 geometryResolved, geometryAttempt, percentage(geometryResolved, geometryAttempt),
                 geometryMissing, geometryAmbiguous, geometryInvalid,
                 geometryReplayPass, geometryReplayAttempt, percentage(geometryReplayPass, geometryReplayAttempt),
                 footprintAccepted, footprintAttempt, percentage(footprintAccepted, footprintAttempt), footprintK2, footprintK3,
                 eventCandidates, eventRecords, eventK2, eventDeep, eventRejected,
-                sourceFactorPass, sourceFactorAttempt, percentage(sourceFactorPass, sourceFactorAttempt));
+                sourceFactorPass, sourceFactorAttempt, percentage(sourceFactorPass, sourceFactorAttempt),
+                lobeAttempt, lobeInvalid, lobePdfLow, lobeWeightLow, relativePercentage(lobePdfMax), relativePercentage(lobeWeightMax),
+                packedAttempt, packedInvalid, packedLow, packedMedium, packedHigh, relativePercentage(packedMax),
+                packedPdfHigh, relativePercentage(packedPdfMax), relativePercentage(compositionMax), compositionAnomalous,
+                relativePercentage(directionMax), directionHigh, relativePercentage(incidentMax), incidentHigh);
     }
 
     private static String percentage(long passed, long attempted) {
         return attempted == 0L ? "n/a" : String.format(Locale.ROOT, "%.3f%%", 100.0 * passed / attempted);
+    }
+
+    private static String relativePercentage(float error) {
+        return String.format(Locale.ROOT, "%.6g%%", error * 100.0);
     }
 
     public void destroy() {

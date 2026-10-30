@@ -638,3 +638,27 @@ API 依据：[Slang query position fetch](https://docs.shader-slang.org/en/lates
 - 证据：`F:\MC\Shader\evidence\restir-rework-2026-10-20\` 的构建/最终测试日志、源测试XML、三个关档规整化模块、运行日志/CSV/配置、`r2b3-build-summary.json`、`r2b3-runtime-summary.json` 及可复算脚本。核对原论文完整PDF第10–11页的§6.1/§6.2.4；未复制reference代码或常数。
 
 **仍待 R2 后续**：扩齐 D 端点与 x_k 的 S/L/H/T（R 为已标近似），完整源端重评/打包误差与完整恒等 lane、仅记录同会话 A→B→A。R3 消费前还须显式保留本像素被复用子域的和及其余项，按计划做积分拆分，不能把复用估计直接叠加完整 L。R3–R6 未因此获得完成状态。
+
+## R2b-4（2026-10-30，D 编号待分配）：selected-lobe 解析重评与打包误差测量
+
+补 R2 的源端重评前置函数，尚不扩充事件域或消费历史/空间。不自行分配新 D 编号；既有号段申请仍待回复。
+
+- `reuseEvaluateContinuation` 以现有 `BsdfContext`、pf/ps/walk share、selected lobe 和指定出射方向为输入，重建 diffuse/base anisotropic GGX/film 的 selected-lobe solid-angle pdf 与 `f*cos/pdf`。GGX 使用与原 sampler 相同的 VNDF 约简权重（F×G1(l)/离散概率）及现有数值保护；线性alpha不平方、不采用太阳NEE的mixture pdf、不重抽随机数、不追新射线。delta、walk、零选瓣概率、非有限/退化方向不伪造解析密度。以后从新视角重建的context可调用同一求值函数，但本片只在实际源context上验证。
+- 首对 D 重连成立时，在恒等诊断的1/16像素上，把原采样的pdf/weight与解析重评比较；再把实际写入的oct16方向解码、重新求值。独立保留采样前的RR-free RGB前缀，避免以彩色乘数作除法。最终非空记录上比较 `原sourceWeight×原incident` 与 `解析packedSourceWeight×解码RGB9E5 incident`，并单独统计packed方向导致的selected pdf误差；RGB近似相等不能证明pdf/雅可比源分母也相等。
+- 测量使用对称相对误差：scalar为 `|a-b|/max(|a|,|b|)`；RGB为 `maxAbs(a-b)/max(maxAbs(a),maxAbs(b))`，两边同时为0时误差为0。0.1%/1%只是日志分档，**不参与资格、记录拒绝、目标函数、W或画面**。保留每帧最大误差的float位模式，正有限数经uint `InterlockedMax`比较，CPU按float解码；跨日志快照取最大，不能把最大误差求和。
+- 统计20–25为解析求值尝试、invalid、pdf≤0.1%、weight≤0.1%、最大pdf误差、最大weight误差；26–33为非空记录打包测量尝试、invalid、RGB误差≤0.1%/0.1%–1%/>1%三个互斥桶、最大RGB误差、最大packed pdf误差、packed pdf>1%计数。34–39进一步隔离未打包前缀组合误差、仅方向编码误差、仅入射RGB编码误差，各记最大值和>1%异常计数（组合异常也计非有限输入）。共40 lanes/160 B；26=27+28+29+30，且26=有效记录写出14。诊断关时不执行求值，原生产逻辑仍可正常记录。
+- 新数值回归以原采样微表面法线为独立依据，验证反射方向重建半向量、selected pdf及BRDF/pdf，覆盖各向异性轴互换、新入射视角、雨膜双界面与独立film瓣、离散选瓣概率、零色通道、delta/walk/无效输入。另保留两个可复现的表示风险：薄光泽瓣的oct16 pdf误差可大于RGB权重误差；RGB9E5可抹去一个弱入射通道，而该通道恰是彩色接收者唯一响应的通道。没有据此擅改80 B编码或增加能量保护。
+
+**构建验证**：60套/308项测试全部通过（failure/error/skipped=0），新增11项；52份shader编译与spirv-val通过。初始构建3分44秒；加入隔离测量后的最终构建4分15秒仍全通过。关档 `world.rgen`、`world_ser.rgen`、`world_primary.rgen` 经现有规整化工具验证，与R2a基线逐字节一致。
+
+**真实GPU隔离结果**（RTX2080/617.42、TraceRay、533×300→1600×900、DLSS-RR开、1 spp、max-bounces=3、独立存档 `restir-r1-smoke`、验证层开）：
+
+- 初始289个日志frame snapshots：196,182次有效记录中，62,840次打包后源贡献误差>1%，最大100%。未打包重评911,434次，pdf全部≤0.1%，weight有23次>0.1%、最大1.01728%。据此继续拆分测量，不能把全部异常先归因于压缩。
+- 最终347个日志frame snapshots：prefix 2,383,660/2,383,668；geometry 6,402,868/6,406,564（missing/invalid=0、ambiguity=3,696）；metadata replay 2,379,350/2,380,189；D候选313,283、有效记录294,999（k2=209,324、深链85,675）、非空树拒绝0；源因式分解313,283/313,283。
+- 未打包selected-lobe重评1,257,276次，invalid=0，pdf全部≤0.1%（最大0.00861584%）；weight有41次>0.1%，最大3.23598%。未打包前缀组合有4次>1%或非有限异常，最大有限误差3.23598%；这些少量异常仍待细分，不能称作完整恒等通过。
+- 294,999次非空记录的打包组合误差：≤0.1%为6,951，0.1%–1%为189,972，>1%为98,076（33.2462%），最大100%，invalid=0。仅方向变化的贡献误差最大0.999809%，>1%计数0；仅RGB9E5入射编码造成98,065次>1%、最大100%，确认主因。packed selected pdf有37次>1%，最大4.35335%，是另一项尚未解决的方向表示误差。
+- 以上均为每秒抽样日志frame内1/16像素的计数，不是所有渲染帧或像素。用户报告移动过鼠标，已标为机位有移动；同一条记录内的分解仍有效，不作固定机位或GPU性能对比。
+- 两次会话均正常保存退出、Gradle exit0/BUILD SUCCESSFUL，最终会话9分13秒；VUID=0，配置快照逐字节相同。首轮由用户协助退出；复测中电脑控制被物理Esc停止，恢复工作时已验证没有Minecraft窗口，保存/退出由实际日志确认。未绕过停止控制的限制。CPU编码原型20,003组float32往返无新增丢失，仅作为下一片的修复依据，尚未混入本片生产编码。
+- 证据目录 `F:\MC\Shader\evidence\restir-rework-2026-10-30\`：initial/final构建与运行日志、CSV/配置/测试XML、规整化模块、`r2b4-initial-runtime-summary.json`、`r2b4-runtime-summary.json`、复算脚本及float3编码候选。
+
+**界限**：仍使用实际源点原始材质/法线/位置，未重新取packed primary/recon法线、UV材质或回放前缀，也未重追连接边可见性、介质。它是源端selected-lobe及方向/入射编码诊断，**不是完整shift恒等**。完整R2、其它事件和记录阶段A→B→A仍未完成。

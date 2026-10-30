@@ -11,6 +11,7 @@
 #include "path_reuse_geometry.slang"
 #include "path_reuse_sampling.slang"
 #include "path_reuse_tree.slang"
+#include "path_reuse_eval.slang"
 
 // ---- Vertex decisions, ONE spelling for the bounce loop below and the hybrid shift's replay (R1b).
 //
@@ -577,6 +578,9 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     bool dTailActive = false;
     float3 dSourceWeight = float3(0.0, 0.0, 0.0);
     float3 dTailWeight = float3(1.0, 1.0, 1.0);
+    float3 dPackedSourceWeight = float3(0.0, 0.0, 0.0);
+    float dPackedPdfError = 0.0;
+    bool dPackedSourceValid = false;
     float rrSurvival = 1.0;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
@@ -1129,6 +1133,9 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             break;
         }
 
+        // Capture an RR-free prefix BEFORE sampling: dividing by the sampled RGB weight would lose
+        // zero channels. Only diagnostics consume this copy; it does not change the tracer or record.
+        float3 sourceEvalPrefix = identityCheck ? throughput * rrSurvival : float3(0.0, 0.0, 0.0);
         // The continuation is the shared vertex decision the replay re-drives
         // (reuseSampleContinuation, above): lobe choice, direction, weight, density, cone.
         // R1b: the same vertex-stream rule as the dielectric branch. Everything above this point at the
@@ -1172,6 +1179,47 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 dRecord.bits = reuseDRecordBits(uint(hitDepth + 1), continuation.lobe, activeMediumFlags);
                 dRecord.objectId = footprintPrimary.objectId;
                 dRecord.primaryUv = packHalf2(footprintPrimary.uv);
+                if (identityCheck) {
+                    ReuseContinuationSample evaluated = reuseEvaluateContinuation(
+                            bc, pf, ps, walkSssShare, continuation.lobe, rd);
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[20], 1u);
+                    bool sourceCompositionValid = false;
+                    if (!reuseAnalyticContinuation(evaluated)) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[21], 1u);
+                    } else {
+                        float pdfError = reuseRelativeScalarError(continuation.pdf, evaluated.pdf);
+                        float weightError = reuseRelativeRgbError(continuation.weight, evaluated.weight);
+                        if (pdfError <= 0.001) {
+                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[22], 1u);
+                        }
+                        if (weightError <= 0.001) {
+                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[23], 1u);
+                        }
+                        InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[24], asuint(pdfError));
+                        InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[25], asuint(weightError));
+                        float3 composed = sourceEvalPrefix * evaluated.weight;
+                        sourceCompositionValid = reuseNonnegativeFinite(composed)
+                                && reuseNonnegativeFinite(dSourceWeight);
+                        if (sourceCompositionValid) {
+                            float compositionError = reuseRelativeRgbError(dSourceWeight, composed);
+                            InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[34], asuint(compositionError));
+                            if (compositionError > 0.01) {
+                                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[35], 1u);
+                            }
+                        } else {
+                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[35], 1u);
+                        }
+                    }
+                    float3 packedDirection = octDecode(unpackUnorm16x2(dRecord.dirK));
+                    ReuseContinuationSample packedEval = reuseEvaluateContinuation(
+                            bc, pf, ps, walkSssShare, continuation.lobe, packedDirection);
+                    dPackedSourceWeight = sourceEvalPrefix * packedEval.weight;
+                    dPackedPdfError = reuseRelativeScalarError(continuation.pdf, packedEval.pdf);
+                    dPackedSourceValid = reuseAnalyticContinuation(evaluated)
+                            && reuseAnalyticContinuation(packedEval)
+                            && sourceCompositionValid
+                            && reuseNonnegativeFinite(dPackedSourceWeight);
+                }
             }
         }
         // D-event qualification probe: evaluate the first analytic continuation pair before roulette.
@@ -1226,6 +1274,40 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[14], 1u);
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[
                     ((produced.bits >> REUSE_RECORD_DEPTH_SHIFT) & 15u) == 2u ? 15 : 16], 1u);
+            // Compare the represented source contribution, including oct16 direction + RGB9E5 error.
+            // Positions/normals/UV, prefix replay and connection visibility are not reevaluated here.
+            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[26], 1u);
+            if (!dPackedSourceValid) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[27], 1u);
+            } else {
+                float3 original = dSourceWeight * dTree.selectedIncident;
+                float3 represented = dPackedSourceWeight * unpackRgb9e5(produced.radiance);
+                float3 directionOnly = dPackedSourceWeight * dTree.selectedIncident;
+                float3 incidentOnly = dSourceWeight * unpackRgb9e5(produced.radiance);
+                if (!reuseNonnegativeFinite(original) || !reuseNonnegativeFinite(represented)
+                        || !reuseNonnegativeFinite(directionOnly) || !reuseNonnegativeFinite(incidentOnly)) {
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[27], 1u);
+                } else {
+                    float error = reuseRelativeRgbError(original, represented);
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[
+                            error <= 0.001 ? 28 : (error <= 0.01 ? 29 : 30)], 1u);
+                    InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[31], asuint(error));
+                    InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[32], asuint(dPackedPdfError));
+                    if (dPackedPdfError > 0.01) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[33], 1u);
+                    }
+                    float directionError = reuseRelativeRgbError(original, directionOnly);
+                    float incidentError = reuseRelativeRgbError(original, incidentOnly);
+                    InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[36], asuint(directionError));
+                    InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[38], asuint(incidentError));
+                    if (directionError > 0.01) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[37], 1u);
+                    }
+                    if (incidentError > 0.01) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[39], 1u);
+                    }
+                }
+            }
         }
         if (identityCheck && dTree.weightSum > 0.0 && pathReservoirEmpty(produced)) {
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[19], 1u);
