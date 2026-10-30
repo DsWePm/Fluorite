@@ -1030,14 +1030,16 @@ public struct PackedPathSegment {
 
 /** Must match the RtComposite allocation, which takes the size from the generated record -- so this
  * declaration and the allocation cannot drift. */
-public static const uint PATH_RESERVOIR_BYTES = 80u;
+public static const uint PATH_RESERVOIR_BYTES = 96u;
 
 // D231: a tagged path-tree event for the hybrid shift, one record per pixel and parity.
 // The two float3 lanes lead their 16-byte groups: the Slang reflection probe owns the true
 // std430 stride, and RtComposite allocates from that generated record (D220).
 // radiance is relative incident radiance, without prefix throughput or reconnection scattering.
-// R2b-5: radiance/reserved0/reserved1 hold R/G/B float32 bits. The ABI names and 80 B stride stay fixed;
+// R2b-5: radiance/reserved0/reserved1 hold R/G/B float32 bits. Their original offsets stay fixed;
 // the former spare lanes are occupied. Primary objectId/UV remain the independent LoD hooks.
+// R2b-6 (user-approved): dirK/dirY/dirZ hold the full float32 outgoing direction, without oct encoding.
+// Appended Y/Z occupy offsets 80/84; the std430 array stride is 96 B, including tail padding.
 // W includes initial tree resampling and external roulette; jacDenom stores the Eq. 2 denominator.
 // confPdf packs confidence (low half) and the competing technique's PDF (high half).
 // bits carries validity and the event's discrete path parameters; zero is always empty.
@@ -1063,6 +1065,8 @@ public struct PackedPathReservoir {
     public uint   primaryUv;
     public uint   reserved0;
     public uint   reserved1;
+    public uint   dirY;
+    public uint   dirZ;
 };
 
 /** Slot address: one reservoir per pixel per parity. No depth or path planes --
@@ -1095,5 +1099,7 @@ public PackedPathReservoir emptyPathReservoir() {
     r.primaryUv = 0u;
     r.reserved0 = 0u;
     r.reserved1 = 0u;
+    r.dirY = 0u;
+    r.dirZ = 0u;
     return r;
 }

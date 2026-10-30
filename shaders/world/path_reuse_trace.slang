@@ -1174,7 +1174,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 dRecord.primaryPos = footprintPrimary.position;
                 dRecord.primaryNrm = packUnorm16x2(octEncode(footprintPrimary.normal));
                 dRecord.reconNrm = packUnorm16x2(octEncode(hitGeometry.normal));
-                dRecord.dirK = packUnorm16x2(octEncode(rd));
+                dRecord = reuseStoreDirection(dRecord, rd);
                 dRecord.jacDenom = jacDenom;
                 dRecord.bits = reuseDRecordBits(uint(hitDepth + 1), continuation.lobe, activeMediumFlags);
                 dRecord.objectId = footprintPrimary.objectId;
@@ -1210,9 +1210,21 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[35], 1u);
                         }
                     }
-                    float3 packedDirection = octDecode(unpackUnorm16x2(dRecord.dirK));
+                    float3 packedDirection = reuseLoadDirection(dRecord);
                     ReuseContinuationSample packedEval = reuseEvaluateContinuation(
                             bc, pf, ps, walkSssShare, continuation.lobe, packedDirection);
+                    // Isolate serialization from sampled-vs-reconstructed half-vector roundoff.
+                    // The older represented-contribution lanes below intentionally retain both.
+                    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[40], 1u);
+                    if (any(asuint(rd) != asuint(packedDirection))) {
+                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[41], 1u);
+                    }
+                    if (reuseAnalyticContinuation(evaluated) && reuseAnalyticContinuation(packedEval)) {
+                        float codecPdfError = reuseRelativeScalarError(evaluated.pdf, packedEval.pdf);
+                        float codecWeightError = reuseRelativeRgbError(evaluated.weight, packedEval.weight);
+                        InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[42], asuint(codecPdfError));
+                        InterlockedMax(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[43], asuint(codecWeightError));
+                    }
                     dPackedSourceWeight = sourceEvalPrefix * packedEval.weight;
                     dPackedPdfError = reuseRelativeScalarError(continuation.pdf, packedEval.pdf);
                     dPackedSourceValid = reuseAnalyticContinuation(evaluated)

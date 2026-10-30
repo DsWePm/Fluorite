@@ -20,8 +20,9 @@ import java.util.Locale;
 public final class RtPathReservoirStats {
     /** 0-12 existing probes; 13-16 D solar candidates/records/depths; 17-18 source factors; 19 rejected trees. */
     // 20-25 selected-lobe source evaluation, 26-33 represented contribution/PDF error measurements.
-    // 34-39 isolate prefix composition, oct16 direction and RGB9E5 incident contributions.
-    public static final int LANES = 40;
+    // 34-39 prefix composition, direction-plus-source-evaluation and incident contributions.
+    // 40-43 isolate the direction codec: attempts, bit changes, PDF error and weight error.
+    public static final int LANES = 44;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -153,6 +154,10 @@ public final class RtPathReservoirStats {
         long directionHigh = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 148L));
         float incidentMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 152L));
         long incidentHigh = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 156L));
+        long directionCodecAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 160L));
+        long directionCodecBitChanges = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 164L));
+        float directionCodecPdfMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 168L));
+        float directionCodecWeightMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 172L));
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
         }
@@ -168,7 +173,8 @@ public final class RtPathReservoirStats {
                         + "D solar events {} -> records {} (k2 {}, deep {}, rejected {}); source factors {}/{} ({}); "
                         + "lobe eval {} (invalid {}, pdf<=0.1% {}, weight<=0.1% {}, max pdf {}, weight {}); "
                         + "packed source {} (invalid {}, <=0.1% {}, <=1% {}, >1% {}, max {}, pdf>1% {}, max pdf {}); "
-                        + "source composition max {} (>1% or invalid {}); packing isolation max dir {} (>1% {}), incident {} (>1% {})",
+                        + "source composition max {} (>1% or invalid {}); packing isolation max dir {} (>1% {}), incident {} (>1% {}); "
+                        + "direction codec {} (bits changed {}, max pdf {}, weight {})",
                 identityPass, identityAttempt, percentage(identityPass, identityAttempt),
                 geometryResolved, geometryAttempt, percentage(geometryResolved, geometryAttempt),
                 geometryMissing, geometryAmbiguous, geometryInvalid,
@@ -179,7 +185,9 @@ public final class RtPathReservoirStats {
                 lobeAttempt, lobeInvalid, lobePdfLow, lobeWeightLow, relativePercentage(lobePdfMax), relativePercentage(lobeWeightMax),
                 packedAttempt, packedInvalid, packedLow, packedMedium, packedHigh, relativePercentage(packedMax),
                 packedPdfHigh, relativePercentage(packedPdfMax), relativePercentage(compositionMax), compositionAnomalous,
-                relativePercentage(directionMax), directionHigh, relativePercentage(incidentMax), incidentHigh);
+                relativePercentage(directionMax), directionHigh, relativePercentage(incidentMax), incidentHigh,
+                directionCodecAttempt, directionCodecBitChanges,
+                relativePercentage(directionCodecPdfMax), relativePercentage(directionCodecWeightMax));
     }
 
     private static String percentage(long passed, long attempted) {

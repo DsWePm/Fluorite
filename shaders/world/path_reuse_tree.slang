@@ -76,7 +76,19 @@ uint reuseDRecordBits(uint depth, uint lobe, uint mediumFlags) {
             | (REUSE_PRIMARY_OPAQUE << REUSE_RECORD_PRIMARY_SHIFT);
 }
 
-// Full float32 incident RGB in the existing 80 B record. The ABI keeps its original field names:
+// Full float32 direction: decoding must not normalize or otherwise perturb the sampled vector.
+PackedPathReservoir reuseStoreDirection(PackedPathReservoir record, float3 direction) {
+    record.dirK = asuint(direction.x);
+    record.dirY = asuint(direction.y);
+    record.dirZ = asuint(direction.z);
+    return record;
+}
+
+float3 reuseLoadDirection(PackedPathReservoir record) {
+    return float3(asfloat(record.dirK), asfloat(record.dirY), asfloat(record.dirZ));
+}
+
+// Full float32 incident RGB in the record. The ABI keeps its original field names:
 // radiance stores R, and the former spare lanes store G/B. Primary object/UV hooks are independent.
 PackedPathReservoir reuseStoreIncident(PackedPathReservoir record, float3 incident) {
     record.radiance = asuint(incident.r);

@@ -245,9 +245,25 @@ final class RtPathLobeEvaluationTest {
     }
 
     @Test
+    void codecIsolationDoesNotAttributeSourceEvaluationRoundoffToDirectionStorage() throws Exception {
+        V sampled = new V(1e-19, 1e-19, 1e-19), evaluated = sampled.mul(1.002);
+        assertTrue(error(sampled, evaluated) > .001);
+        assertEquals(0, error(evaluated, evaluated));
+        String loop = source("shaders/world/path_reuse_trace.slang");
+        assertTrue(loop.contains("reuseRelativeScalarError(evaluated.pdf, packedEval.pdf)"));
+        assertTrue(loop.contains("reuseRelativeRgbError(evaluated.weight, packedEval.weight)"));
+        assertTrue(loop.contains("any(asuint(rd) != asuint(packedDirection))"));
+        for (int i : new int[]{40, 41}) assertTrue(loop.contains("pathReservoirStatsAddr)[" + i + "], 1u"));
+        for (int i : new int[]{42, 43}) assertTrue(loop.contains("pathReservoirStatsAddr)[" + i + "], asuint("));
+        String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
+        for (int i = 40; i < 44; i++) assertTrue(stats.contains("memGetInt(src.mapped + " + 4 * i + "L)"));
+        assertTrue(stats.contains("direction codec {} (bits changed {}, max pdf {}, weight {})"));
+    }
+
+    @Test
     void allDiagnosticLanesHaveAConsumerAndPackedErrorBinsAreDisjoint() throws Exception {
-        assertEquals(40, RtPathReservoirStats.LANES);
-        assertEquals(160, RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(44, RtPathReservoirStats.LANES);
+        assertEquals(176, RtPathReservoirStats.BYTE_SIZE);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         for (int i = 20; i < 40; i++) assertTrue(stats.contains("memGetInt(src.mapped + " + 4 * i + "L)"));
         String loop = source("shaders/world/path_reuse_trace.slang");

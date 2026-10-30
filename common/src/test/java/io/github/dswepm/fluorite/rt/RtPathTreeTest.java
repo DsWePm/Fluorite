@@ -159,7 +159,7 @@ final class RtPathTreeTest {
                 "dTailWeight *= continuation.weight;", "float3 incident = dTailWeight * brdf * sampledLightIrradiance * ndl * vis;",
                 "reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival, reuseSeed)",
                 "dRecord.pathSeed = pathSeedBase;", "dRecord.objectId = footprintPrimary.objectId;",
-                "dRecord.primaryUv = packHalf2(footprintPrimary.uv);", "dRecord.dirK = packUnorm16x2(octEncode(rd));",
+                "dRecord.primaryUv = packHalf2(footprintPrimary.uv);", "dRecord = reuseStoreDirection(dRecord, rd);",
                 "dRecord.jacDenom = jacDenom;", "reuseDRecordBits(uint(hitDepth + 1), continuation.lobe, activeMediumFlags)",
                 "PackedPathReservoir produced = reuseFinishTree(dRecord, dTree);", "worldPush.frameIndex & 1u)] = produced;"})
             assertTrue(tracer.contains(term), term);
@@ -184,7 +184,7 @@ final class RtPathTreeTest {
 
     @Test
     void everyNewDiagnosticLaneIsWrittenAndReadWithRecordDepthsPartitioned() throws Exception {
-        assertEquals(40, RtPathReservoirStats.LANES);
+        assertEquals(44, RtPathReservoirStats.LANES);
         String tracer = source("shaders/world/path_reuse_trace.slang");
         for (int i : new int[]{13, 14, 17, 18, 19})
             assertTrue(tracer.contains("pathReservoirStatsAddr)[" + i + "], 1u"));

@@ -50,7 +50,7 @@ final class RtPathReplayContractTest {
         // RtPathReservoirLayoutTest against the generated record, and RtComposite takes its
         // allocation stride from that same generated constant -- the D220 hand-copy lesson.
         assertTrue(worldCommon.contains("public struct PackedPathReservoir"));
-        assertTrue(worldCommon.contains("PATH_RESERVOIR_BYTES = 80u"));
+        assertTrue(worldCommon.contains("PATH_RESERVOIR_BYTES = 96u"));
         assertTrue(worldCommon.contains("pathReservoirSlot"));
         // The float3 MUST lead: std430 gives float3 a 16-byte alignment, and a uint before it pads
         // the stride to 64 against the 48-byte allocation (the D220 GPU fault, verbatim).
@@ -250,7 +250,7 @@ final class RtPathReplayContractTest {
         // R2a removed the unused merge lanes: identity now occupies lanes 0 and 1.
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u)"));
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u)"));
-        assertEquals(40, RtPathReservoirStats.LANES);
+        assertEquals(44, RtPathReservoirStats.LANES);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         assertTrue(stats.contains("memGetInt(src.mapped)") && stats.contains("src.mapped + 4L"));
         assertTrue(stats.contains("identityPass, identityAttempt, percentage(identityPass, identityAttempt)"));

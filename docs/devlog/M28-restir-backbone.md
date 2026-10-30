@@ -687,3 +687,34 @@ R2b-4已隔离RGB9E5为主要损失来源。会话中展示了「利用现有两
 **防复发**：记录编码的验收必须同时看彩色sourceWeight下的RGB贡献和方向pdf。仅看非空/有限标记、incident本身的相对误差或ABI对齐，不能发现弱通道丢失；今后的编码变更继续沿用这条GPU隔离闭环。
 
 **剩余**：方向编码pdf误差、少量未打包源重评异常、其它事件、完整源端/shift恒等及记录阶段A→B→A仍待完成。本片不宣称整个R2完成，也没有观感或复用降噪验收结论。
+
+## R2b-6（2026-10-30，D 编号待分配）：完整float32方向与源重评异常取证
+
+用户在本轮明确批准「采用96 B：保留完整float32方向」。已先以独立Slang reflection原型核实原80 B整体保留、追加Y/Z后std430 stride为96 B，并给出1080p双缓冲增加66,355,200 B（63.28125 MiB、20%）及GPU耗时尚未实测；没有以此扩大48 B segment或阴影payload。
+
+- `dirK`（offset36）改为方向X的float32位模式，追加 `dirY`/`dirZ`（80/84）；88–95为std430尾部padding。由 `reuseStoreDirection` / `reuseLoadDirection`读写，**不重新normalize**，保留原采样向量的float32值与长度。原R/G/B、objectId/UV、W/target/jacDenom等字段offset不动。Java分配继续只认Slang reflection生成的BYTE_SIZE，shader指针步长同为96 B；没有手写第二份分配尺寸。
+- 原路径采样、随机流、目标、WRS、源分母和本像素完整L不改，不以重评值回写原采样权重来制造恒等。记录仍只生产既有D太阳NEE子域，没有历史/邻居消费。新增实际serializer的有限正负float位往返、负零/次正规、非方向字段、相邻记录和尾padding检查；原入射codec回归继续保留。
+
+**未打包源重评诊断**：先展示并检验掠射N·L、半向量/Fresnel、材质/法线状态不一致三个假设。临时探针只在weight相对误差>0.1%时，每帧以CAS保留一个见证；95 lanes只存在于诊断构建，不是最终ABI。捕获后保存原shader、patch、SPIR-V、日志、CSV、配置及逐uint位模式，再清除临时字段/文件/Java日志。
+
+- 104个日志frame snapshots中捕获17个见证（每个日志帧至多一个，不是所有失败样本）：全为base specular、F0=(0,0,0)，源/重评法线、视角、F0逐float一致。半向量余弦相差1–3 ULP；相对weight误差最大0.648512%，最大绝对weight差4.33575e-19，样本中最大weight为3.80493e-16。
+- F0=0时Schlick精确化为 `(1-v·h)^5`。用捕获的两个余弦独立预测权重比，除去该比后残差最大2.573e-7，解释了这17个异常；N·L没有对应量级的变化，未发现不同context。**结论仅限捕获样本**，不能据此把所有现有/未来源重评异常标通过，未放松0.1%/1%诊断分档或添加F0/能量下限。
+- 同时验证本地Slang 2026.8的局部precise与全局fp-mode precise最小原型，均没有输出NoContraction；本轮因此没有把未验证的precise当修复，也未更换工具链或全局浮点模式。上游相关说明见 [Slang #12285](https://github.com/shader-slang/slang/issues/12285)，本地SPIR-V证据才是当前编译器结论的依据。
+- 诊断会话正常保存退出、Gradle exit0/BUILD SUCCESSFUL，助手自行关闭并核实Minecraft窗口清单为空，VUID=0、无device lost、前后配置相同。机位未主动移动；不作同会话性能或画面验收。
+
+**历史指标勘误**：R2b-4/5 lanes36/37所谓「仅方向」实际比较原采样sourceWeight与解码方向的解析重评，仍包含未打包半向量/Fresnel误差；该数值是「方向表示加源重评」的合并误差，不能单独归因于oct16。lanes32/33的packed PDF同样含原采样与解析重评误差。保留原始数字与原指标以便追溯；本片另加同context、同解析函数、原方向对解码方向的独立codec测量。
+
+**独立编码诊断**：最终stats为44 lanes/176 B。40计编码尝试、41计编码前后任一方向分量位模式变化，42/43分别记 `reuseEvaluateContinuation(原方向)` 与同context同函数的 `解码方向` 的最大PDF/weight相对误差。21的invalid及原始源/组合误差照常保留，不能用新的0值替代它们。两组求值均在原生产shader、相同源点执行；这是codec闭环，尚非后续dispatch从全局slot读取后完成的完整shift。
+
+**构建验证**：62套/318项测试全通过（failure/error/skipped=0，新增4项），52份shader编译与spirv-val通过，最终构建3分38秒；初始96 B构建3分49秒也通过。三个关档模块规整后与R2a基线逐字节一致；实际生成BYTE_SIZE=96、DIR_Y_OFFSET=80、DIR_Z_OFFSET=84。48 B segment与其它ABI测试继续通过。
+
+**GPU最终验证（2026-10-30运行，2026-10-31收尾）**：RTX2080/617.42、普通TraceRay、533×300→1600×900、DLSS-RR开、1 spp、max-bounces=3、独立存档 `restir-r1-smoke`、空间0、恒等诊断及验证层开。169个日志frame snapshots：
+
+- 独立方向codec 625,437次，方向分量位模式变化=0，独立PDF/weight误差最大值均为0；入射codec误差也为0。原采样与packed求值仍独立比较，145,029次非空记录（k2=101,819、深链=43,210）的组合误差全部≤0.1%，最大0.0280282%；packed PDF >1%计数0，最大0.00355132%。方向回归脚本在旧R2b-5实测1.991%数据上失败，在本片数据上通过；入射codec回归继续通过。
+- D候选153,544，源因式分解153,544/153,544，非空树拒绝0。prefix 1,182,947/1,182,951；geometry 3,181,431/3,183,038（missing/invalid=0、ambiguity=1,607）；metadata replay 1,180,997/1,181,418。编码闭环通过不代表这些其它恒等通道全部通过。
+- **源重评仍开放**：625,437次未打包求值，invalid=0，PDF全部≤0.1%（最大0.00687628%）；weight有21次>0.1%，最大19.1681%。前缀组合有2次>1%或invalid，最大有限误差19.1681%。此最终构建没有临时见证探针，不能用之前17个F0=0样本直接解释本轮较大异常，也不把其绝对影响判为可忽略；下一片优先捕获>1%的原始样本。
+- CSV开档2,406帧，switch word均1；前后配置逐字节相同，VUID=0、无device lost。会话7分36秒、Gradle exit0/BUILD SUCCESSFUL，日志确认保存所有维度及Stopping。助手尝试正常关闭时Windows拒绝交互访问，用户明确接手关闭；随后电脑控制被物理Esc停止，未继续调用或绕过。正常退出由日志确认，没有将失败的快捷键当成关闭成功，也不声称最终窗口清单已核实。
+- 以上是日志抽样帧内1/16像素的统计，机位未经固定性验收；不比较不同会话的绝对帧时间、噪声或通过率来推断性能/收敛。未做A→B→A或用户观感验收。
+- 证据目录 `F:\MC\Shader\evidence\restir-rework-2026-10-30\`：`r2b6-build.log`、测试XML/构建摘要/规整化模块、实际生成serializer、witness原始patch/shader/SPIR-V及逐位分析、运行日志/CSV/配置/摘要、direction red/green和incident green脚本结果。
+
+**剩余**：较大源重评异常取证、其它D/S/L/H/T事件、完整源端/shift恒等及仅记录A→B→A。R2和R3–R6继续保持未完成；本片不改变原完整L，没有启用时间/空间复用。

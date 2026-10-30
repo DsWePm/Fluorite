@@ -11,14 +11,15 @@ import java.util.SplittableRandom;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Uses the generated real 80 B serializer; the GPU isolation loop verifies the shader itself. */
+/** Uses the generated real serializer; the GPU isolation loop verifies the shader itself. */
 final class RtPathIncidentEncodingTest {
     private static ByteBuffer write(float r, float g, float b) {
         ByteBuffer bytes = ByteBuffer.allocate(PackedPathReservoirData.BYTE_SIZE).order(ByteOrder.LITTLE_ENDIAN);
         new PackedPathReservoirData(new PackedPathReservoirData.Float3(1, 2, 3), 0x12345678,
                 new PackedPathReservoirData.Float3(4, 5, 6), 0x31415926, 0x27182818, 0x43214321,
                 Float.floatToRawIntBits(r), 2.5f, .2f, 1e-4f, 0x00003c00, 0x0001a125,
-                0x123, 0x34567890, Float.floatToRawIntBits(g), Float.floatToRawIntBits(b)).write(bytes);
+                0x123, 0x34567890, Float.floatToRawIntBits(g), Float.floatToRawIntBits(b),
+                0xabcdef01, 0x12345678).write(bytes);
         return bytes;
     }
     private static void roundtrip(float r, float g, float b) {
@@ -26,7 +27,7 @@ final class RtPathIncidentEncodingTest {
         assertEquals(Float.floatToRawIntBits(r), bytes.getInt(PackedPathReservoirData.RADIANCE_OFFSET));
         assertEquals(Float.floatToRawIntBits(g), bytes.getInt(PackedPathReservoirData.RESERVED0_OFFSET));
         assertEquals(Float.floatToRawIntBits(b), bytes.getInt(PackedPathReservoirData.RESERVED1_OFFSET));
-        assertEquals(80, bytes.capacity());
+        assertEquals(96, bytes.capacity());
     }
 
     @Test
@@ -59,14 +60,14 @@ final class RtPathIncidentEncodingTest {
     @Test
     void changingIncidentLeavesThePrimaryHooksDirectionWeightsAndTagsUntouched() {
         ByteBuffer a = write(0, 0, 0), b = write(.7f, 1e-10f, 1e10f);
-        for (int i = 0; i < 80; i++) {
-            if (i >= 40 && i < 44 || i >= 72) continue;
+        for (int i = 0; i < PackedPathReservoirData.BYTE_SIZE; i++) {
+            if (i >= 40 && i < 44 || i >= 72 && i < 80) continue;
             assertEquals(a.get(i), b.get(i), "unrelated byte " + i);
         }
         assertEquals(0x123, b.getInt(64));
         assertEquals(0x34567890, b.getInt(68));
         assertEquals(0x43214321, b.getInt(36));
-        assertEquals(331_776_000L, 1920L * 1080 * 2 * b.capacity());
+        assertEquals(398_131_200L, 1920L * 1080 * 2 * b.capacity());
     }
 
     @Test

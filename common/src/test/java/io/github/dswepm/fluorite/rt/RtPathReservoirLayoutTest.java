@@ -5,11 +5,11 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** D231: the user approved 80 B, including source density and the primary/LoD hooks. */
+/** R2b-6: the user approved 96 B to preserve float32 direction and the primary/LoD hooks. */
 final class RtPathReservoirLayoutTest {
     @Test
     void theHybridRecordHasTheApprovedStrideAndOffsets() {
-        assertEquals(80, PackedPathReservoirData.BYTE_SIZE);
+        assertEquals(96, PackedPathReservoirData.BYTE_SIZE);
         assertEquals(0, PackedPathReservoirData.RECON_POS_OFFSET);
         assertEquals(12, PackedPathReservoirData.PATH_SEED_OFFSET);
         assertEquals(16, PackedPathReservoirData.PRIMARY_POS_OFFSET);
@@ -26,6 +26,8 @@ final class RtPathReservoirLayoutTest {
         assertEquals(68, PackedPathReservoirData.PRIMARY_UV_OFFSET);
         assertEquals(72, PackedPathReservoirData.RESERVED0_OFFSET);
         assertEquals(76, PackedPathReservoirData.RESERVED1_OFFSET);
-        assertEquals(331_776_000L, 1920L * 1080 * 2 * PackedPathReservoirData.BYTE_SIZE);
+        assertEquals(80, PackedPathReservoirData.DIR_Y_OFFSET);
+        assertEquals(84, PackedPathReservoirData.DIR_Z_OFFSET);
+        assertEquals(398_131_200L, 1920L * 1080 * 2 * PackedPathReservoirData.BYTE_SIZE);
     }
 }
