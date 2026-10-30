@@ -1,10 +1,15 @@
 // Record-only initial path-tree resampling. Included only by the reuse raygen variant.
 // Each candidate is ONE terminal lighting event after an already chosen D reconnection.
 // Its incident value excludes the prefix, scattering at x_k, and ALL external RR factors.
+static const uint REUSE_D_ENDPOINT_SOLAR = 0u;
+static const uint REUSE_D_ENDPOINT_SKY = 1u;
+static const uint REUSE_D_ENDPOINT_EMITTER = 2u;
 struct ReusePathTree {
     float weightSum;
     float selectedTarget;
     float3 selectedIncident;
+    // Diagnostic provenance only. All these endpoints share D's stored incident and source density.
+    uint selectedEndpoint;
     bool valid;
 };
 
@@ -13,6 +18,7 @@ ReusePathTree emptyReusePathTree() {
     tree.weightSum = 0.0;
     tree.selectedTarget = 0.0;
     tree.selectedIncident = float3(0.0, 0.0, 0.0);
+    tree.selectedEndpoint = REUSE_D_ENDPOINT_SOLAR;
     tree.valid = true;
     return tree;
 }
@@ -25,9 +31,10 @@ bool reuseNonnegativeFinite(float3 value) {
 // including survivals after x_k. It may differ between candidates in the same path tree.
 // An invalid numeric candidate invalidates this record, never silently drops energy from its tree.
 bool reuseTreeUpdate(inout ReusePathTree tree, float3 sourceWeight, float3 incident,
-                     float survival, inout uint stream) {
+                     float survival, uint endpoint, inout uint stream) {
     float target = luminance(sourceWeight * incident);
-    if (!reuseNonnegativeFinite(sourceWeight) || !reuseNonnegativeFinite(incident)
+    if (endpoint > REUSE_D_ENDPOINT_EMITTER
+            || !reuseNonnegativeFinite(sourceWeight) || !reuseNonnegativeFinite(incident)
             || !(survival > 0.0) || survival > 1.0 || !isfinite(survival)
             || !isfinite(target)) {
         tree.valid = false;
@@ -45,13 +52,14 @@ bool reuseTreeUpdate(inout ReusePathTree tree, float3 sourceWeight, float3 incid
     if (rndf(stream) * total < weight) {
         tree.selectedTarget = target;
         tree.selectedIncident = incident;
+        tree.selectedEndpoint = endpoint;
     }
     tree.weightSum = total;
     return true;
 }
 
-// R2's first produced subset: D events ending at a deeper opaque vertex's solar NEE.
-// Other D endpoints and S/L/H/T/R at x_k remain in the pixel's own traced sum.
+// Produced D subset: deeper solar NEE, and emitter/sky hits after an intermediate analytic vertex.
+// The immediate emitter/sky hit is H; other endpoints and S/L/H/T/R remain in the own traced sum.
 static const uint REUSE_TECHNIQUE_D = 1u;
 static const uint REUSE_RECORD_DEPTH_SHIFT = 1u;
 static const uint REUSE_RECORD_TECHNIQUE_SHIFT = 5u;

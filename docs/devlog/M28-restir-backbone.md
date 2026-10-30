@@ -405,17 +405,18 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 - **合并**：pairwise MIS 沿用 M24 形式；「反向移位是否追可见性」是隔离开关（Q2）。着色按 §6.3 做 RGB 累积；没有可用域时回退到路径追踪的完整和，所以开档移动时约等于关档。
 - **置信度**：每个上帧候选各自取 min(Cap, c)；空间循环不受时域计数限制（修 B02）。Cap 取值是请示项 G6。
 
-### 记录（80 B，std430，float3 领头以防 D220 式填充）
+### 记录（原定80 B，R2b-6经用户批准为96 B；std430）
 
 | 偏移 | 字段 |
 | --- | --- |
 | 0 | `float3 reconPos`（x_k）、`uint pathSeed` |
 | 16 | `float3 primaryPos`（记录自身像素的 y₁）、`uint primaryNrm`（oct16×2） |
-| 32 | `uint reconNrm`、`uint dirK`（oct16方向）、`uint radiance`（float32入射R位模式，R2b-5起）、`float W` |
+| 32 | `uint reconNrm`、`uint dirK`（R2b-6起为方向X的float32位模式）、`uint radiance`（float32入射R位模式，R2b-5起）、`float W` |
 | 48 | `float jacDenom`（D）、`float targetOwn`、`uint confPdf`（置信度与竞争 pdf 各占半精度）、`uint bits`（k/技术/lobe/介质/主命中类型/valid） |
 | 64 | `uint objectId`、`uint primaryUv`（决策7的LoD钩子）；`reserved0/1`在R2b-5起存float32入射G/B位模式，不再空闲 |
+| 80 | `uint dirY/dirZ`（R2b-6追加的方向Y/Z float32位模式）；88–95为std430尾padding |
 
-1080p 渲染分辨率下约 331 MB；DLSS 质量档更小。结构、`PATH_RESERVOIR_BYTES`、生成记录与 `RtPathReservoirLayoutTest` 在 R2 同一提交内更新。
+1080p渲染分辨率下双份398,131,200 B（379.6875 MiB）；DLSS内部分辨率更小。原80 B的331,776,000 B预算已由R2b-6的用户裁决更新。结构、`PATH_RESERVOIR_BYTES`、生成记录与 `RtPathReservoirLayoutTest` 同步维护。
 
 入射编码原定RGB9E5，2026-10-30经R2b-4 GPU隔离发现大量弱通道/低量级损失，R2b-5在80 B内改为float32 RGB；上表保留实际字段名与偏移，变更依据见对应小节。
 
@@ -464,7 +465,7 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 | --- | --- | --- |
 | R0 | 本条；G14 开关与 frame.csv 列；G15 变体管线；`RtPathReuseMathTest` | 构建与测试全绿；关档管线不含复用代码 |
 | R1 | 逐顶点随机流、顶点函数抽取、REPLAY CONTRACT 重写、前缀恒等 lane | 恒等 lane ≥ 99.9% |
-| R2 | 80 B 记录、记录端判据、path-tree 单事件、退役 in-place 估计量 | 完整恒等 lane ≈ 100%；331 MB 日志；仅记录的 A→B→A |
+| R2 | 96 B记录（R2b-6用户已批扩容）、记录端判据、path-tree单事件、退役in-place估计量 | 完整恒等lane≈100%；约398 MB日志；仅记录的A→B→A |
 | R3 | 时域 hybrid shift（k=2） | 关「DLSS 光线重建」固定机位 N 帧平均开≈关（2σ），且方差更低 |
 | R4 | 空间复用：Junkins Alg. 1、逐候选 Cap | RR 开下的静止视觉 GO/NO-GO；按邻居数的 A→B→A |
 | R5 | k ≥ 3 深链重放 | k≥3 恒等 lane；光泽地面与水边收敛 |
@@ -768,3 +769,27 @@ F = F0 + (1-F0) m⁵
 - 证据目录 `F:\MC\Shader\evidence\restir-rework-2026-10-31\`：`r2b8-build.log`、测试XML/规整化模块/构建摘要、实际生产helper的无窗口GPU probe及输入/输出/摘要、unit red与原数据source red、运行日志/CSV/配置/摘要、source/direction/incident green与复算脚本。25例fixture同时纳入仓库；没有遗留临时见证探针或新增stats字段。
 
 **状态与防复发**：本片解决已取证的零F0消减误差放大，并通过原场景selected-lobe回归。依旧没有从新视角重新取packed材质/前缀/完整几何或重追连接边，因此不是完整源端/shift恒等。其它D/S/L/H/T事件、完整shift、仅记录A→B→A与R3–R6继续开放；新增数学运算的实际GPU成本仍待时间戳同会话测试，观感由用户集中验收。后续改写继续同时检查零F0真实样本、独立double oracle和原生产loop阈值，不能仅以数学等价或RGB看似相同作为通过依据。
+
+## R2b-9（2026-10-31，D 编号待分配）：D 的更深天空与发光命中端点
+
+按D231已批准的分域落地继续扩充D。核对原始 `lin2026restirptenhanced.pdf` §2.3、§6.1及§6.2.4：path-tree选择一个NEE/BSDF终端事件，技术区分需保留MIS，初始RR外置；原文没有要求把全部后缀合并成一个候选。没有恢复退役的in-place估计量。
+
+- `dTailIndirect`在选择x_k时为false，只有后续顶点成功采样一次解析延续后才为true。x_{k+1}的直接BSDF emitter/sky命中继续属于H，**不进入此D树**；x_{k+2}及以后的终端命中在尾部仍受支持时才成为D候选。太阳NEE仍可从x_{k+1}起加入D，它已有额外的NEE终端边。delta/电介质/walk/粒子继续停止新候选，已有较短事件不被抹去。
+- 天空端点取原trace中已经合成的sky（含该provider原有的analytical-light MIS）；发光端点取原 `albedo*emission*emitterTint*emitterShare*rainBaseExitTransmission`。保留原proxed-emitter门和面积MIS，不重新采光、不追新可见性、不另乘一次MIS。与尾部单位前缀相乘即相对incident，所有介质/云透射沿用已有dTailWeight；云/体积in-scatter、RIS、SSS及ambient floor仍不混入本片。
+- 每个端点单独执行WRS，使用到该端点为止的rrSurvival；相对incident不含prefix、x_k散射或外部RR，原W_tree计算不变。原路径L的每一条着色语句保持原样，所有新增随机数只消费reuseSeed；仍返回完整自己的L，不消费历史/邻居。
+- 在D中保留的这些MIS项都来自固定后缀，重连只改变x_k的入射视角，故继续使用同一个D标签、源分母和缓存incident；无需把端点类别加入PackedPathReservoir。`selectedEndpoint`仅是本地tree的诊断来源。记录仍96 B、segment仍48 B，WorldPush/阴影payload不增长。
+- 原lane13由“D太阳候选”改为“全部D候选”，17/18因式分解也覆盖全部三类；新44/45计深层sky/emitter候选，46/47计实际非空写出中WRS选中了这两类的记录，solar由总数减两类得到。stats为48 lanes/192 B，没有预留空lane或增大每像素记录。日志使用D events，并单列D endpoints；不能用候选出现替代实际记录覆盖。
+
+**回归**：新增7项，包括混合端点的WRS精确边际化、同顶点多个贡献的相同存活率、枚举RR停止、MIS只计一次、H/D边界、记录ABI不增长及分类计数。先4项数值通过/3项生产接入失败，接入后64套/330项全部通过（failure/error/skipped=0）；52份shader编译与spirv-val通过，完整构建3分5秒。关档三个模块规整后与R2a基线逐字节一致，严格tracer/sampler证明继续通过。
+
+**无窗口GPU回放**：compute入口直接include实际生产tree helper，RTX2080执行20,003组含变长RR存活率/彩色零通道的混合事件，验证sum、selected target、W和端点来源；选中incident逐位保持，三类各自单独非零的强制选择也通过。最大相对误差：weightSum=2.528e-7、target=1.828e-7、W=2.694e-7。20,000个随机树的solar/sky/emitter选择数4,654/6,396/8,950，分别落在独立CDF期望4,678.07/6,448.28/8,873.65的6σ范围内；这不是性能测量。独立诊断harness显式使用Vulkan1.2，probe的SPIR-V仅需Shader能力。
+
+**真实渲染验证**：RTX2080/617.42、普通TraceRay、533×300→1600×900、DLSS-RR开、1 spp、max-bounces=3、独立存档 `restir-r1-smoke`、空间0、恒等诊断与验证层开，334个日志frame snapshots：
+
+- D候选318,804，源因式分解318,804/318,804，非空树拒绝0。有效记录285,641（k2=201,067、深链=84,574）。候选分类solar=295,761、sky=23,039、emitter=4；实际写出分类solar=268,462、sky=17,177、emitter=2。**两种新增端点均实际写出**；该场景深发光命中覆盖较少，仅4候选/2记录，数值回放不能替代其它材质、灯光或场景下的渲染验证。
+- 源求值1,196,141次，invalid=0，PDF/weight全部≤0.1%，最大分别0.00606094%/0.0760649%；前缀组合最大0.0760699%，>1%或invalid=0。所有有效记录的组合贡献误差≤0.1%，最大0.000161232%，packed PDF最大0.00466234%、>1%计数0；独立方向codec的位/PDF/weight误差与入射codec误差均0。前片源重评原阈值回归继续通过，没有屏蔽小权重样本。
+- prefix 2,336,196/2,336,200；geometry 6,286,792/6,289,936（missing/invalid=0、ambiguity=3,144）；metadata replay 2,332,794/2,333,209。完整shift恒等仍未因此获得通过状态。
+- CSV开档4,802帧、switch word均1，配置前后逐字节相同；VUID=0，无device lost。会话8分20秒、exit0/BUILD SUCCESSFUL，助手自行正常关闭，日志确认保存所有维度及Stopping。未移动机位或更改设置，固定性未独立验收；不拿跨会话计数/帧时间作性能或噪声对比。
+- 证据目录 `F:\MC\Shader\evidence\restir-rework-2026-10-31\` 保存论文抽取、unit red、完整构建/测试XML/规整化模块、真实helper的headless probe及输入输出/摘要、运行日志/CSV/配置/摘要和endpoints/source/direction/incident回归结果。旧R2b-8摘要在新端点覆盖断言上失败，新摘要通过；解析器显式检查三类候选/记录分区和实际来源因式分解。
+
+**剩余**：D其余贡献、x_k的S/L/H/T（R为已标近似）、完整源端/shift恒等和记录阶段A→B→A。R2未完成，R3–R6未启动消费；本片没有复用效果、GPU成本或用户观感结论。

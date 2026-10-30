@@ -18,11 +18,12 @@ import java.util.Locale;
  * with no additional fence (the same ownership as RtRestirStats).
  */
 public final class RtPathReservoirStats {
-    /** 0-12 existing probes; 13-16 D solar candidates/records/depths; 17-18 source factors; 19 rejected trees. */
+    /** 0-12 existing probes; 13-16 D candidates/records/depths; 17-18 source factors; 19 rejected trees. */
     // 20-25 selected-lobe source evaluation, 26-33 represented contribution/PDF error measurements.
     // 34-39 prefix composition, direction-plus-source-evaluation and incident contributions.
     // 40-43 isolate the direction codec: attempts, bit changes, PDF error and weight error.
-    public static final int LANES = 44;
+    // 44-47 sky/emitter candidates and actual written sky/emitter records; solar is the remainder.
+    public static final int LANES = 48;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -158,6 +159,10 @@ public final class RtPathReservoirStats {
         long directionCodecBitChanges = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 164L));
         float directionCodecPdfMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 168L));
         float directionCodecWeightMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 172L));
+        long skyCandidates = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 176L));
+        long emitterCandidates = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 180L));
+        long skyRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 184L));
+        long emitterRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 188L));
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
         }
@@ -170,11 +175,12 @@ public final class RtPathReservoirStats {
         FluoriteMod.LOGGER.info("RT path reuse diagnostics (1/16 pixel sample): prefix {}/{} ({}); "
                         + "geometry {}/{} ({}; missing {}, ambiguous {}, invalid {}); geometry replay {}/{} ({}); "
                         + "D footprint {}/{} ({}; first k2 {}, k3 {}); "
-                        + "D solar events {} -> records {} (k2 {}, deep {}, rejected {}); source factors {}/{} ({}); "
+                        + "D events {} -> records {} (k2 {}, deep {}, rejected {}); source factors {}/{} ({}); "
                         + "lobe eval {} (invalid {}, pdf<=0.1% {}, weight<=0.1% {}, max pdf {}, weight {}); "
                         + "packed source {} (invalid {}, <=0.1% {}, <=1% {}, >1% {}, max {}, pdf>1% {}, max pdf {}); "
                         + "source composition max {} (>1% or invalid {}); packing isolation max dir {} (>1% {}), incident {} (>1% {}); "
-                        + "direction codec {} (bits changed {}, max pdf {}, weight {})",
+                        + "direction codec {} (bits changed {}, max pdf {}, weight {}); "
+                        + "D endpoints candidates sky {} emitter {}, records sky {} emitter {}",
                 identityPass, identityAttempt, percentage(identityPass, identityAttempt),
                 geometryResolved, geometryAttempt, percentage(geometryResolved, geometryAttempt),
                 geometryMissing, geometryAmbiguous, geometryInvalid,
@@ -187,7 +193,8 @@ public final class RtPathReservoirStats {
                 packedPdfHigh, relativePercentage(packedPdfMax), relativePercentage(compositionMax), compositionAnomalous,
                 relativePercentage(directionMax), directionHigh, relativePercentage(incidentMax), incidentHigh,
                 directionCodecAttempt, directionCodecBitChanges,
-                relativePercentage(directionCodecPdfMax), relativePercentage(directionCodecWeightMax));
+                relativePercentage(directionCodecPdfMax), relativePercentage(directionCodecWeightMax),
+                skyCandidates, emitterCandidates, skyRecords, emitterRecords);
     }
 
     private static String percentage(long passed, long attempted) {

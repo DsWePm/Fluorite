@@ -463,6 +463,22 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
     return reached;
 }
 
+// Diagnostics compare each accepted event to its original traced term with external RR removed.
+void reuseDiagnoseDEvent(float3 sourceWeight, float3 incident, float3 actual, uint endpoint) {
+    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[13], 1u);
+    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[17], 1u);
+    if (endpoint == REUSE_D_ENDPOINT_SKY) {
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[44], 1u);
+    } else if (endpoint == REUSE_D_ENDPOINT_EMITTER) {
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[45], 1u);
+    }
+    float3 factored = sourceWeight * incident;
+    float scale = max(max(actual.r, actual.g), actual.b);
+    if (all(abs(factored - actual) <= 2.0e-5 * max(scale, 1.0e-30))) {
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[18], 1u);
+    }
+}
+
 public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         uint2 pix, uint sampleIndex, uint2 renderSize,
                         bool captureFirst, out FirstSegmentTrace firstTrace,
@@ -577,6 +593,8 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     ReusePathTree dTree = emptyReusePathTree();
     bool dReconChosen = false;
     bool dTailActive = false;
+    // H owns the first BSDF hit after x_k; D terminal hits need another analytic continuation.
+    bool dTailIndirect = false;
     float3 dSourceWeight = float3(0.0, 0.0, 0.0);
     float3 dTailWeight = float3(1.0, 1.0, 1.0);
     float3 dPackedSourceWeight = float3(0.0, 0.0, 0.0);
@@ -741,6 +759,15 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             }
             // The throughput already carries what the clouds let through.
             L += throughput * sky; // escaped to sky
+            if (dTailActive && dTailIndirect) {
+                float3 incident = dTailWeight * sky;
+                bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival,
+                        REUSE_D_ENDPOINT_SKY, reuseSeed);
+                if (identityCheck && candidate) {
+                    reuseDiagnoseDEvent(dSourceWeight, incident, throughput * sky * rrSurvival,
+                            REUSE_D_ENDPOINT_SKY);
+                }
+            }
             break;
         }
 
@@ -953,6 +980,17 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         if (emission > 0.0 && emitterShare > 0.0) {
             L += throughput * albedo * emission * worldPush.emitterTint.xyz * emitterShare
                     * rainBaseExitTransmission(bc);
+            if (dTailActive && dTailIndirect) {
+                float3 incident = dTailWeight * albedo * emission * worldPush.emitterTint.xyz * emitterShare
+                        * rainBaseExitTransmission(bc);
+                bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival,
+                        REUSE_D_ENDPOINT_EMITTER, reuseSeed);
+                if (identityCheck && candidate) {
+                    float3 actual = throughput * albedo * emission * worldPush.emitterTint.xyz * emitterShare
+                            * rainBaseExitTransmission(bc) * rrSurvival;
+                    reuseDiagnoseDEvent(dSourceWeight, incident, actual, REUSE_D_ENDPOINT_EMITTER);
+                }
+            }
         }
 
         // NEE: direct light from the dominant celestial body (sun by day, moon by night) — Lambert
@@ -1056,19 +1094,13 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         + disneyLobes(bc, ext, lightDir) * rainBaseTransmission(bc, lightDir);
                 L += throughput * brdf * sampledLightIrradiance * ndl * vis;
                 // One deeper solar endpoint is one D path-tree candidate, not a sum of suffix terms.
-                // H (the immediate BSDF emitter/sky hit), RIS, SSS and volume sources are not included.
+                // The immediate BSDF emitter/sky hit is H; deeper terminal hits are added separately.
                 if (dTailActive) {
                     float3 incident = dTailWeight * brdf * sampledLightIrradiance * ndl * vis;
-                    bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival, reuseSeed);
+                    bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival, REUSE_D_ENDPOINT_SOLAR, reuseSeed);
                     if (identityCheck && candidate) {
-                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[13], 1u);
-                        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[17], 1u);
-                        float3 factored = dSourceWeight * incident;
                         float3 actual = throughput * brdf * sampledLightIrradiance * ndl * vis * rrSurvival;
-                        float scale = max(max(actual.r, actual.g), actual.b);
-                        if (all(abs(factored - actual) <= 2.0e-5 * max(scale, 1.0e-30))) {
-                            InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[18], 1u);
-                        }
+                        reuseDiagnoseDEvent(dSourceWeight, incident, actual, REUSE_D_ENDPOINT_SOLAR);
                     }
                 }
             }
@@ -1152,6 +1184,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             // Unsupported suffixes stop new candidates; earlier supported endpoints remain valid.
             dTailActive = reuseAnalyticContinuation(continuation);
             dTailWeight *= continuation.weight;
+            dTailIndirect = true;
         }
         if (recordPath && !dReconChosen && hitDepth >= 1 && footprintPrimaryValid
                 && footprintPreviousValid && !footprintPrefixWalk
@@ -1168,6 +1201,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                     REUSE_MIN_ALPHA, REUSE_FOOTPRINT_SCALE, jacDenom)) {
                 dReconChosen = true;
                 dTailActive = true;
+                dTailIndirect = false;
                 dTailWeight = float3(1.0, 1.0, 1.0);
                 dSourceWeight = throughput * rrSurvival;
                 dRecord.reconPos = hitGeometry.position;
@@ -1285,9 +1319,14 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                                 worldPush.frameIndex & 1u)] = produced;
         if (identityCheck && !pathReservoirEmpty(produced)) {
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[14], 1u);
+            if (dTree.selectedEndpoint == REUSE_D_ENDPOINT_SKY) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[46], 1u);
+            } else if (dTree.selectedEndpoint == REUSE_D_ENDPOINT_EMITTER) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[47], 1u);
+            }
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[
                     ((produced.bits >> REUSE_RECORD_DEPTH_SHIFT) & 15u) == 2u ? 15 : 16], 1u);
-            // Compare the represented source contribution, including oct16 direction and stored RGB.
+            // Compare the represented source contribution, including float32 direction and stored RGB.
             // Positions/normals/UV, prefix replay and connection visibility are not reevaluated here.
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[26], 1u);
             if (!dPackedSourceValid) {
