@@ -936,3 +936,13 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 2,609个已完成readback帧中，环境底色候选2,524,942个、实际写出1,235,215条；薄壳候选/记录均0，**本机位未覆盖薄壳runtime，仍需专门夹具，不把零计数判通过**。9,360,766次cached PDF/weight全部≤0.1%，最大0.0131068%/0.00135193%；2,576,046条fresh source（k2=1,771,310、deep=804,736）全部通过，scope/miss/geometry/invalid/numeric均0，最大scatter/PDF/denominator为0.000397617%/0.00592501%/0.00592368%。codec位/PDF/weight及incident误差0，逐帧失败报警0。夹具配置前后逐字节一致，随后恢复原配置；没有做视觉/性能验收。
 
 清理后全量测试再通过（shader任务up-to-date），无临时ambient标志残留。证据在 `F:\MC\Shader\evidence\restir-r2-r3-2026-11-05\` 的r2b15构建/red/关档对照、临时CPU夹具备份、日志/CSV/配置/累计与surface摘要。**R2未完成**：下一步是局部L/S/H/T各自源求值及记录、完整源端/shift恒等、薄壳专项覆盖和记录A→B→A；R3的G3/G6/G10/G11已列具体接法并向用户请示，未将等待答复当作批准。
+
+## R2b-16（2026-11-05，D 编号待分配）：局部事件的共享表面求值
+
+为后续S/T/L/H源求值建立共享数学入口。将原opaque太阳BRDF的52行计算原样抽到reuse专属 `path_reuse_local.slang`，源tracer直接调用；原L累加、能量floor启停、线性alpha、continuation竞争PDF、仅sampled部分MIS及未采样Disney瓣保持原语句。严格shipped-line契约把该helper实际源码纳入逐行证明，原三个顶点函数的次序证明和两项已批数值例外继续成立，未跳过太阳公式。另有局部ambient/thin response及BSDF-hit MIS小函数；没有把它们说成各技术的记录生产已齐。
+
+新增3项测试，接入前两项生产挂接失败、独立MIS分区数值通过；接入后69套/354项测试全通过，52份shader编译/校验通过，完整构建3分47秒。三个OFF模块与R2a规整化字节相同；两个reuse模块与R2b-15规整化字节不同，**没有声称ON字节相同或以此替代后续实际场景回归**。
+
+独立Vulkan compute直接include正式helper，20,003组各向异性、湿膜、MIS开/关和正反面上下文，与独立double参考比较：太阳/ambient/thin最大相对误差5.355e-5/4.005e-6/5.259e-6，竞争PDF最大5.622e-5；10,020组薄壳结果实际非零，全部有限非负。参考模型初次误写水膜F0为0.02、遗漏MIS关闭时水膜alpha floor，被GPU对照检出；按生产已存在的0.020373和0.02 floor纠正参考后通过，没有修改生产常数去迎合参考。此synthetic context验证不冒充R2b-15缺失的真实SSS材质/光路覆盖。
+
+依据补查的[官方补充材料](https://research.nvidia.com/labs/rtr/publication/lin2026restirptenhanced/lin2026restirptenhanced_supplemental.pdf) §1 Eq.4与§8：连接端需要保持瓣标签，路径MIS用的NEE PDF与雅可比乘积是不同量。局部记录生产、瓣/技术元数据、完整源端与shift恒等仍在后续实现，R2/R3未判完成。原始PDF/文字/page2目视截图、GPU源/输入输出/摘要、unit red/构建/三OFF对照均存同一11-05证据目录；本片未再启动游戏，实际场景回归与后续事件生产一起做。
