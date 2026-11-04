@@ -4,6 +4,8 @@
 static const uint REUSE_D_ENDPOINT_SOLAR = 0u;
 static const uint REUSE_D_ENDPOINT_SKY = 1u;
 static const uint REUSE_D_ENDPOINT_EMITTER = 2u;
+static const uint REUSE_D_ENDPOINT_AMBIENT = 3u;
+static const uint REUSE_D_ENDPOINT_THIN = 4u;
 struct ReusePathTree {
     float weightSum;
     float selectedTarget;
@@ -33,7 +35,7 @@ bool reuseNonnegativeFinite(float3 value) {
 bool reuseTreeUpdate(inout ReusePathTree tree, float3 sourceWeight, float3 incident,
                      float survival, uint endpoint, inout uint stream) {
     float target = luminance(sourceWeight * incident);
-    if (endpoint > REUSE_D_ENDPOINT_EMITTER
+    if (endpoint > REUSE_D_ENDPOINT_THIN
             || !reuseNonnegativeFinite(sourceWeight) || !reuseNonnegativeFinite(incident)
             || !(survival > 0.0) || survival > 1.0 || !isfinite(survival)
             || !isfinite(target)) {
@@ -58,7 +60,7 @@ bool reuseTreeUpdate(inout ReusePathTree tree, float3 sourceWeight, float3 incid
     return true;
 }
 
-// Produced D subset: deeper solar NEE, and emitter/sky hits after an intermediate analytic vertex.
+// Produced D subset: deeper solar/ambient/thin shading, and emitter/sky hits after an analytic vertex.
 // The immediate emitter/sky hit is H; other endpoints and S/L/H/T/R remain in the own traced sum.
 static const uint REUSE_TECHNIQUE_D = 1u;
 static const uint REUSE_RECORD_DEPTH_SHIFT = 1u;

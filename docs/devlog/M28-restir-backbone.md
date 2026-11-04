@@ -924,3 +924,15 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 会话7分4秒，助手通过正常关闭流程退出，日志确认保存全部维度，Gradle exit0/BUILD SUCCESSFUL；无device lost，前后TOML逐字节一致，CSV开档3,570帧、switch word均1。CSV与readback的统计边界不同，验收明确使用上表3,564个已回读帧。没有移动机位、做用户视觉验收或报告跨会话性能比值。
 
 证据归档在 `F:\MC\Shader\evidence\restir-rework-2026-11-04\` 的r2b14文件：unit red、68套测试XML/构建及三OFF模块、真实生产helper/evaluator的GPU输入输出/摘要、运行日志/CSV/TOML、原门槛red/green及累计解析器与摘要。没有重新引入临时见证字段、helper或125/127-lane缓冲。**已修复本次捕获的点积残差，R2仍未完成**：其余D贡献、S/L/H/T、完整源端/shift恒等、记录阶段A→B→A继续开放；transport种子仍按计划留给R3/G10，历史/邻居尚未消费，仍返回完整自己的L。GPU成本和观感按原计划后续验收。
+
+## R2b-15（2026-11-05，D 编号待分配）：深层环境底色与薄壳表面项
+
+按既有分域计划扩充D：更深顶点的环境底色、太阳薄壳SSS分别成为独立WRS候选，保留原色彩、雨层透射及各端点RR存活率。每条原L着色语句保留，仍只记录，不消费历史/邻居。环境/薄壳 provenance使用局部tree标签3/4，记录继续使用D技术，不增加96 B record字段、segment或payload。诊断增加60–63四个实际使用的candidate/record lane，合计64 lanes/256 B；CPU累计器沿用按lane类型累加/取最大值，增加的四lane都是计数。
+
+新增2项回归覆盖真实生产挂接、与RR和零前缀通道的WRS边际化；接入前9项terminal测试中2项失败，最终68套/351项全通过，52份shader编译/校验及三个OFF模块对R2a的规整化字节对照通过。完整构建3分38秒。没有把RIS/体积光源或非解析后缀静默归入新D事件；其余技术与完整移位继续待做。
+
+**定向夹具验证**：临时仅在CPU WorldPush组装处置起已有环境底色bit，既有隔离存档临时启用thin档；没有改shader函数、SSS材质或可见性来让事件通过。采集后RtComposite和TOML按备份逐字节恢复，thin档开启本身不等于材质/光线实际覆盖该事件。6分1秒会话，助手正常关闭并保存全部维度，exit0/BUILD SUCCESSFUL，VUID=0、无device lost。
+
+2,609个已完成readback帧中，环境底色候选2,524,942个、实际写出1,235,215条；薄壳候选/记录均0，**本机位未覆盖薄壳runtime，仍需专门夹具，不把零计数判通过**。9,360,766次cached PDF/weight全部≤0.1%，最大0.0131068%/0.00135193%；2,576,046条fresh source（k2=1,771,310、deep=804,736）全部通过，scope/miss/geometry/invalid/numeric均0，最大scatter/PDF/denominator为0.000397617%/0.00592501%/0.00592368%。codec位/PDF/weight及incident误差0，逐帧失败报警0。夹具配置前后逐字节一致，随后恢复原配置；没有做视觉/性能验收。
+
+清理后全量测试再通过（shader任务up-to-date），无临时ambient标志残留。证据在 `F:\MC\Shader\evidence\restir-r2-r3-2026-11-05\` 的r2b15构建/red/关档对照、临时CPU夹具备份、日志/CSV/配置/累计与surface摘要。**R2未完成**：下一步是局部L/S/H/T各自源求值及记录、完整源端/shift恒等、薄壳专项覆盖和记录A→B→A；R3的G3/G6/G10/G11已列具体接法并向用户请示，未将等待答复当作批准。

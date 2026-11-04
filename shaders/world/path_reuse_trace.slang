@@ -571,6 +571,10 @@ void reuseDiagnoseDEvent(float3 sourceWeight, float3 incident, float3 actual, ui
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[44], 1u);
     } else if (endpoint == REUSE_D_ENDPOINT_EMITTER) {
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[45], 1u);
+    } else if (endpoint == REUSE_D_ENDPOINT_AMBIENT) {
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[60], 1u);
+    } else if (endpoint == REUSE_D_ENDPOINT_THIN) {
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[61], 1u);
     }
     float3 factored = sourceWeight * incident;
     float scale = max(max(actual.r, actual.g), actual.b);
@@ -1040,6 +1044,17 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         if ((worldPush.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u) {
             L += throughput * diffAlb * rainBaseTransmission(bc, n)
                     * worldPush.mediumSkyRadiance.xyz;
+            if (dTailActive) {
+                float3 incident = dTailWeight * diffAlb * rainBaseTransmission(bc, n)
+                        * worldPush.mediumSkyRadiance.xyz;
+                bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival,
+                        REUSE_D_ENDPOINT_AMBIENT, reuseSeed);
+                if (identityCheck && candidate) {
+                    float3 actual = throughput * diffAlb * rainBaseTransmission(bc, n)
+                            * worldPush.mediumSkyRadiance.xyz * rrSurvival;
+                    reuseDiagnoseDEvent(dSourceWeight, incident, actual, REUSE_D_ENDPOINT_AMBIENT);
+                }
+            }
         }
 
         // Emissive surfaces (lava, glowstone, torches, ...) add radiance directly, colored by albedo.
@@ -1264,6 +1279,17 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                     L += throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
                             * rainBaseExitTransmission(bc)
                             * sampledLightIrradiance * visB;
+                    if (dTailActive) {
+                        float3 incident = dTailWeight * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
+                                * rainBaseExitTransmission(bc) * sampledLightIrradiance * visB;
+                        bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival,
+                                REUSE_D_ENDPOINT_THIN, reuseSeed);
+                        if (identityCheck && candidate) {
+                            float3 actual = throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
+                                    * rainBaseExitTransmission(bc) * sampledLightIrradiance * visB * rrSurvival;
+                            reuseDiagnoseDEvent(dSourceWeight, incident, actual, REUSE_D_ENDPOINT_THIN);
+                        }
+                    }
                 }
             }
         }
@@ -1440,6 +1466,10 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[46], 1u);
             } else if (dTree.selectedEndpoint == REUSE_D_ENDPOINT_EMITTER) {
                 InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[47], 1u);
+            } else if (dTree.selectedEndpoint == REUSE_D_ENDPOINT_AMBIENT) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[62], 1u);
+            } else if (dTree.selectedEndpoint == REUSE_D_ENDPOINT_THIN) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[63], 1u);
             }
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[
                     ((produced.bits >> REUSE_RECORD_DEPTH_SHIFT) & 15u) == 2u ? 15 : 16], 1u);

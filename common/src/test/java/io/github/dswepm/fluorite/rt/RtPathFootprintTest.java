@@ -140,7 +140,7 @@ class RtPathFootprintTest {
         assertTrue(loop.contains("pathReservoirStatsAddr)[10], 1u"));
         assertTrue(loop.contains("pathReservoirStatsAddr)[hitDepth == 1 ? 11 : 12], 1u"));
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
-        assertEquals(60, RtPathReservoirStats.LANES);
+        assertEquals(64, RtPathReservoirStats.LANES);
         for (int i = 9; i < 13; i++) assertTrue(stats.contains("memGetInt(src.mapped + " + i * 4 + "L)"));
         assertTrue(stats.contains("footprintAccepted, footprintAttempt"));
         assertTrue(stats.contains("footprintK2, footprintK3"));

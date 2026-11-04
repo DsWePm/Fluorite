@@ -72,20 +72,42 @@ final class RtPathDTerminalEventTest {
         String tree=source("shaders/world/path_reuse_tree.slang");
         assertTrue(tree.contains("uint selectedEndpoint;"));
         assertTrue(tree.contains("tree.selectedEndpoint = endpoint;"));
-        assertTrue(tree.contains("endpoint > REUSE_D_ENDPOINT_EMITTER"));
+        assertTrue(tree.contains("endpoint > REUSE_D_ENDPOINT_THIN"));
         String common=source("shaders/world/world_common.slang");
         String record=common.substring(common.indexOf("public struct PackedPathReservoir"),common.indexOf("/** Slot address:"));
         assertFalse(record.contains("selectedEndpoint"));
         assertTrue(common.contains("PATH_RESERVOIR_BYTES = 96u"));
     }
     @Test void newCountersDistinguishCandidatesFromActualWrittenRecords() throws Exception {
-        assertEquals(60,RtPathReservoirStats.LANES); assertEquals(240,RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(64,RtPathReservoirStats.LANES); assertEquals(256,RtPathReservoirStats.BYTE_SIZE);
         String trace=source("shaders/world/path_reuse_trace.slang");
         for(int i:new int[]{44,45,46,47}) assertTrue(trace.contains("pathReservoirStatsAddr)["+i+"], 1u"));
         assertTrue(trace.contains("dTree.selectedEndpoint == REUSE_D_ENDPOINT_SKY"));
         assertTrue(trace.contains("dTree.selectedEndpoint == REUSE_D_ENDPOINT_EMITTER"));
         String stats=source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         for(int i=44;i<48;i++) assertTrue(stats.contains("memGetInt(src.mapped + "+4*i+"L)"));
+    }
+    @Test void deeperAmbientAndThinTransmissionReuseTheExistingTracedTerms() throws Exception {
+        String trace=source("shaders/world/path_reuse_trace.slang");
+        for(String term:new String[]{"dTailWeight * diffAlb * rainBaseTransmission(bc, n)",
+                "REUSE_D_ENDPOINT_AMBIENT, reuseSeed)",
+                "dTailWeight * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl",
+                "REUSE_D_ENDPOINT_THIN, reuseSeed)"}) assertTrue(trace.contains(term),term);
+        String tree=source("shaders/world/path_reuse_tree.slang");
+        assertTrue(tree.contains("REUSE_D_ENDPOINT_AMBIENT = 3u"));
+        assertTrue(tree.contains("REUSE_D_ENDPOINT_THIN = 4u"));
+        assertTrue(trace.contains("throughput * diffAlb * rainBaseTransmission(bc, n)"));
+        assertTrue(trace.contains("throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl"));
+    }
+    @Test void addedSurfaceEndpointsMarginaliseWithTheirOwnRouletteAndKeepDarkPrefixChannels() {
+        double[] prefix={.3,0,.7},tail={.8,.4,.2},albedo={.2,.6,.9};
+        double[] ambient=mul(mul(tail,albedo),new double[]{.4,.8,1.2});
+        double[] thin=scale(mul(mul(tail,albedo),new double[]{4,2,1}),.35*.8*.27);
+        double[][] f={mul(prefix,ambient),mul(prefix,thin)};double[] q={.21,.21};
+        double[] expected=new double[3];for(int i=0;i<2;i++)for(int c=0;c<3;c++)expected[c]+=f[i][c]/q[i];
+        same(expected,marginal(f,q,2));
+        assertTrue(ambient[1]>0 && thin[1]>0);
+        assertEquals(0,f[0][1]);assertEquals(0,f[1][1]);
     }
     private static String source(String relative) throws Exception {
         Path root=Path.of(System.getProperty("user.dir")).toAbsolutePath();

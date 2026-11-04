@@ -24,7 +24,8 @@ public final class RtPathReservoirStats {
     // 40-43 isolate the direction codec: attempts, bit changes, PDF error and weight error.
     // 44-47 sky/emitter candidates and actual written sky/emitter records; solar is the remainder.
     // 48-59 fresh source scattering replay: depth attempts/passes, classified failures and maxima.
-    public static final int LANES = 60;
+    // 60-63 deeper ambient/thin candidates and actual selected records.
+    public static final int LANES = 64;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -203,6 +204,10 @@ public final class RtPathReservoirStats {
         float sourceReplayPdfMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 228L));
         float sourceReplayJacMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 232L));
         long sourceReplayNumeric = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 236L));
+        long ambientCandidates = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 240L));
+        long thinCandidates = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 244L));
+        long ambientRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 248L));
+        long thinRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 252L));
         allFrames.add(src.mapped);
         if (lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
                 || sourceReplayScope + sourceReplayMiss + sourceReplayGeometry + sourceReplayInvalid + sourceReplayNumeric != 0L) {
@@ -230,6 +235,7 @@ public final class RtPathReservoirStats {
                         + "source composition max {} (>1% or invalid {}); packing isolation max dir {} (>1% {}), incident {} (>1% {}); "
                         + "direction codec {} (bits changed {}, max pdf {}, weight {}); "
                         + "D endpoints candidates sky {} emitter {}, records sky {} emitter {}; "
+                        + "D surface candidates ambient {} thin {}, records ambient {} thin {}; "
                         + "source scatter replay k2 {}/{} deep {}/{} (scope {}, miss {}, geometry {}, invalid {}, numeric {}); "
                         + "max scatter {}, pdf {}, jac {}",
                 identityPass, identityAttempt, percentage(identityPass, identityAttempt),
@@ -246,6 +252,7 @@ public final class RtPathReservoirStats {
                 directionCodecAttempt, directionCodecBitChanges,
                 relativePercentage(directionCodecPdfMax), relativePercentage(directionCodecWeightMax),
                 skyCandidates, emitterCandidates, skyRecords, emitterRecords,
+                ambientCandidates, thinCandidates, ambientRecords, thinRecords,
                 sourceReplayK2Pass, sourceReplayK2, sourceReplayDeepPass, sourceReplayDeep,
                 sourceReplayScope, sourceReplayMiss, sourceReplayGeometry, sourceReplayInvalid, sourceReplayNumeric,
                 relativePercentage(sourceReplayScatterMax), relativePercentage(sourceReplayPdfMax),
@@ -258,7 +265,8 @@ public final class RtPathReservoirStats {
         FluoriteMod.LOGGER.info("RT path reuse cumulative: readback frames {}, lobe {} (invalid {}, pdf<=0.1% {}, "
                         + "weight<=0.1% {}, max pdf {}, weight {}); fresh k2 {}/{} deep {}/{} "
                         + "(scope {}, miss {}, geometry {}, invalid {}, numeric {}); max scatter {}, pdf {}, jac {}; "
-                        + "direction codec {} (bits changed {}, max pdf {}, weight {}); incident max {}",
+                        + "direction codec {} (bits changed {}, max pdf {}, weight {}); incident max {}; "
+                        + "D surface candidates ambient {} thin {}, records ambient {} thin {}",
                 allFrames.frames, allFrames.count(20), allFrames.count(21), allFrames.count(22), allFrames.count(23),
                 relativePercentage(allFrames.maximum(24)), relativePercentage(allFrames.maximum(25)),
                 allFrames.count(54), allFrames.count(48), allFrames.count(55), allFrames.count(49),
@@ -266,7 +274,8 @@ public final class RtPathReservoirStats {
                 relativePercentage(allFrames.maximum(56)), relativePercentage(allFrames.maximum(57)),
                 relativePercentage(allFrames.maximum(58)), allFrames.count(40), allFrames.count(41),
                 relativePercentage(allFrames.maximum(42)), relativePercentage(allFrames.maximum(43)),
-                relativePercentage(allFrames.maximum(38)));
+                relativePercentage(allFrames.maximum(38)), allFrames.count(60), allFrames.count(61),
+                allFrames.count(62), allFrames.count(63));
     }
 
     private static String percentage(long passed, long attempted) {

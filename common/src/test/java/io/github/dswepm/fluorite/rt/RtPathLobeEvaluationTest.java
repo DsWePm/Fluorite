@@ -263,8 +263,8 @@ final class RtPathLobeEvaluationTest {
 
     @Test
     void allDiagnosticLanesHaveAConsumerAndPackedErrorBinsAreDisjoint() throws Exception {
-        assertEquals(60, RtPathReservoirStats.LANES);
-        assertEquals(240, RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(64, RtPathReservoirStats.LANES);
+        assertEquals(256, RtPathReservoirStats.BYTE_SIZE);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         for (int i = 20; i < 40; i++) assertTrue(stats.contains("memGetInt(src.mapped + " + 4 * i + "L)"));
         String loop = source("shaders/world/path_reuse_trace.slang");
