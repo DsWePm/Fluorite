@@ -10,6 +10,9 @@ struct ReusePathTree {
     float weightSum;
     float selectedTarget;
     float3 selectedIncident;
+    float3 selectedValue;
+    float3 sourceSum;
+    bool lastSelected;
     // Diagnostic provenance only. All these endpoints share D's stored incident and source density.
     uint selectedEndpoint;
     bool valid;
@@ -20,6 +23,9 @@ ReusePathTree emptyReusePathTree() {
     tree.weightSum = 0.0;
     tree.selectedTarget = 0.0;
     tree.selectedIncident = float3(0.0, 0.0, 0.0);
+    tree.selectedValue = float3(0.0, 0.0, 0.0);
+    tree.sourceSum = float3(0.0, 0.0, 0.0);
+    tree.lastSelected = false;
     tree.selectedEndpoint = REUSE_D_ENDPOINT_SOLAR;
     tree.valid = true;
     return tree;
@@ -34,7 +40,9 @@ bool reuseNonnegativeFinite(float3 value) {
 // An invalid numeric candidate invalidates this record, never silently drops energy from its tree.
 bool reuseTreeUpdate(inout ReusePathTree tree, float3 sourceWeight, float3 incident,
                      float survival, uint endpoint, inout uint stream) {
-    float target = luminance(sourceWeight * incident);
+    tree.lastSelected = false;
+    float3 value = sourceWeight * incident;
+    float target = luminance(value);
     if (endpoint > REUSE_D_ENDPOINT_THIN
             || !reuseNonnegativeFinite(sourceWeight) || !reuseNonnegativeFinite(incident)
             || !(survival > 0.0) || survival > 1.0 || !isfinite(survival)
@@ -52,12 +60,26 @@ bool reuseTreeUpdate(inout ReusePathTree tree, float3 sourceWeight, float3 incid
         return false;
     }
     if (rndf(stream) * total < weight) {
+        tree.lastSelected = true;
         tree.selectedTarget = target;
         tree.selectedIncident = incident;
+        tree.selectedValue = value;
         tree.selectedEndpoint = endpoint;
     }
     tree.weightSum = total;
+    tree.sourceSum += value / survival;
+    if (!reuseNonnegativeFinite(tree.sourceSum)) tree.valid = false;
     return true;
+}
+
+// The discrete event may reconnect at another vertex. Carry its own record with the same WRS draw.
+bool reuseTreeUpdateRecord(inout ReusePathTree tree, inout PackedPathReservoir selected,
+                           PackedPathReservoir candidate, float3 sourceWeight, float3 incident,
+                           float survival, uint endpoint, inout uint stream) {
+    if (pathReservoirEmpty(candidate)) return false;
+    bool accepted = reuseTreeUpdate(tree, sourceWeight, incident, survival, endpoint, stream);
+    if (tree.lastSelected) selected = candidate;
+    return accepted;
 }
 
 // Produced D subset: deeper solar/ambient/thin shading, and emitter/sky hits after an analytic vertex.
@@ -69,6 +91,8 @@ static const uint REUSE_RECORD_LOBE_SHIFT = 8u;
 static const uint REUSE_RECORD_CURRENT_MEDIUM_SHIFT = 12u;
 static const uint REUSE_RECORD_OUTER_MEDIUM_SHIFT = 14u;
 static const uint REUSE_RECORD_PRIMARY_SHIFT = 16u;
+static const uint REUSE_RECORD_PREVIOUS_LOBE_SHIFT = 19u;
+static const uint REUSE_RECORD_EVENT_KIND_SHIFT = 22u;
 static const uint REUSE_PRIMARY_OPAQUE = 1u;
 
 uint reuseDRecordBits(uint depth, uint lobe, uint mediumFlags) {
@@ -84,6 +108,18 @@ uint reuseDRecordBits(uint depth, uint lobe, uint mediumFlags) {
             | (activeCurrentMediumFlags(mediumFlags) << REUSE_RECORD_CURRENT_MEDIUM_SHIFT)
             | (activeOuterMediumFlags(mediumFlags) << REUSE_RECORD_OUTER_MEDIUM_SHIFT)
             | (REUSE_PRIMARY_OPAQUE << REUSE_RECORD_PRIMARY_SHIFT);
+}
+
+PackedPathReservoir reuseRecordSampling(PackedPathReservoir record, uint previousLobe, uint kind,
+                                       float currentPdf, float competingPdf) {
+    if (pathReservoirEmpty(record) || previousLobe < REUSE_LOBE_DIFFUSE || previousLobe > REUSE_LOBE_FILM
+            || kind > 15u || !(currentPdf > 0.0) || !isfinite(currentPdf)
+            || competingPdf < 0.0 || !isfinite(competingPdf)) return emptyPathReservoir();
+    record.bits &= ~((7u << REUSE_RECORD_PREVIOUS_LOBE_SHIFT) | (15u << REUSE_RECORD_EVENT_KIND_SHIFT));
+    record.bits |= (previousLobe << REUSE_RECORD_PREVIOUS_LOBE_SHIFT) | (kind << REUSE_RECORD_EVENT_KIND_SHIFT);
+    record.sourcePdf = currentPdf;
+    record.neePdf = competingPdf;
+    return record;
 }
 
 // Full float32 direction: decoding must not normalize or otherwise perturb the sampled vector.

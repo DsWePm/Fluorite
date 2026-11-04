@@ -1039,9 +1039,9 @@ public static const uint PATH_RESERVOIR_BYTES = 96u;
 // R2b-5: radiance/reserved0/reserved1 hold R/G/B float32 bits. Their original offsets stay fixed;
 // the former spare lanes are occupied. Primary objectId/UV remain the independent LoD hooks.
 // R2b-6 (user-approved): dirK/dirY/dirZ hold the full float32 outgoing direction, without oct encoding.
-// Appended Y/Z occupy offsets 80/84; the std430 array stride is 96 B, including tail padding.
+// Appended Y/Z occupy offsets 80/84; R2b-17 uses the existing tail padding for PDFs at 88/92.
 // W includes initial tree resampling and external roulette; jacDenom stores the Eq. 2 denominator.
-// confPdf packs confidence (low half) and the competing technique's PDF (high half).
+// confPdf stores confidence in its low half; the high half stays zero. Competing PDF is full FP32.
 // bits carries validity and the event's discrete path parameters; zero is always empty.
 // LoD hooks are reserved here. objectId == 0xffffffff means unavailable, not object zero;
 // primaryUv must not be interpreted without a valid object hook. No payload growth is implied.
@@ -1067,6 +1067,8 @@ public struct PackedPathReservoir {
     public uint   reserved1;
     public uint   dirY;
     public uint   dirZ;
+    public float  neePdf;
+    public float  sourcePdf;
 };
 
 /** Slot address: one reservoir per pixel per parity. No depth or path planes --
@@ -1101,5 +1103,7 @@ public PackedPathReservoir emptyPathReservoir() {
     r.reserved1 = 0u;
     r.dirY = 0u;
     r.dirZ = 0u;
+    r.neePdf = 0.0;
+    r.sourcePdf = 0.0;
     return r;
 }

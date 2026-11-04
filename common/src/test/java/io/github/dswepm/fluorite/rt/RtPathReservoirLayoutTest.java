@@ -28,6 +28,8 @@ final class RtPathReservoirLayoutTest {
         assertEquals(76, PackedPathReservoirData.RESERVED1_OFFSET);
         assertEquals(80, PackedPathReservoirData.DIR_Y_OFFSET);
         assertEquals(84, PackedPathReservoirData.DIR_Z_OFFSET);
+        assertEquals(88, PackedPathReservoirData.NEE_PDF_OFFSET);
+        assertEquals(92, PackedPathReservoirData.SOURCE_PDF_OFFSET);
         assertEquals(398_131_200L, 1920L * 1080 * 2 * PackedPathReservoirData.BYTE_SIZE);
     }
 }

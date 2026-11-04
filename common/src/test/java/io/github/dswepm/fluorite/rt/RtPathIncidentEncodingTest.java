@@ -19,7 +19,7 @@ final class RtPathIncidentEncodingTest {
                 new PackedPathReservoirData.Float3(4, 5, 6), 0x31415926, 0x27182818, 0x43214321,
                 Float.floatToRawIntBits(r), 2.5f, .2f, 1e-4f, 0x00003c00, 0x0001a125,
                 0x123, 0x34567890, Float.floatToRawIntBits(g), Float.floatToRawIntBits(b),
-                0xabcdef01, 0x12345678).write(bytes);
+                0xabcdef01, 0x12345678, 0f, 0f).write(bytes);
         return bytes;
     }
     private static void roundtrip(float r, float g, float b) {

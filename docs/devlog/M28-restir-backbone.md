@@ -412,9 +412,9 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 | 0 | `float3 reconPos`（x_k）、`uint pathSeed` |
 | 16 | `float3 primaryPos`（记录自身像素的 y₁）、`uint primaryNrm`（oct16×2） |
 | 32 | `uint reconNrm`、`uint dirK`（R2b-6起为方向X的float32位模式）、`uint radiance`（float32入射R位模式，R2b-5起）、`float W` |
-| 48 | `float jacDenom`（D）、`float targetOwn`、`uint confPdf`（置信度与竞争 pdf 各占半精度）、`uint bits`（k/技术/lobe/介质/主命中类型/valid） |
+| 48 | `float jacDenom`、`float targetOwn`、`uint confPdf`（低半精度置信度，高半字保留零）、`uint bits`（k/技术/lobe/介质/主命中类型/valid；R2b-17增加前驱瓣与事件子类） |
 | 64 | `uint objectId`、`uint primaryUv`（决策7的LoD钩子）；`reserved0/1`在R2b-5起存float32入射G/B位模式，不再空闲 |
-| 80 | `uint dirY/dirZ`（R2b-6追加的方向Y/Z float32位模式）；88–95为std430尾padding |
+| 80 | `uint dirY/dirZ`（方向Y/Z float32位模式）；R2b-17将原88–95尾padding用于`float neePdf/sourcePdf`，分别存独立竞争NEE PDF与源当前事件PDF；stride仍96 B |
 
 1080p渲染分辨率下双份398,131,200 B（379.6875 MiB）；DLSS内部分辨率更小。原80 B的331,776,000 B预算已由R2b-6的用户裁决更新。结构、`PATH_RESERVOIR_BYTES`、生成记录与 `RtPathReservoirLayoutTest` 同步维护。
 
@@ -946,3 +946,11 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 独立Vulkan compute直接include正式helper，20,003组各向异性、湿膜、MIS开/关和正反面上下文，与独立double参考比较：太阳/ambient/thin最大相对误差5.355e-5/4.005e-6/5.259e-6，竞争PDF最大5.622e-5；10,020组薄壳结果实际非零，全部有限非负。参考模型初次误写水膜F0为0.02、遗漏MIS关闭时水膜alpha floor，被GPU对照检出；按生产已存在的0.020373和0.02 floor纠正参考后通过，没有修改生产常数去迎合参考。此synthetic context验证不冒充R2b-15缺失的真实SSS材质/光路覆盖。
 
 依据补查的[官方补充材料](https://research.nvidia.com/labs/rtr/publication/lin2026restirptenhanced/lin2026restirptenhanced_supplemental.pdf) §1 Eq.4与§8：连接端需要保持瓣标签，路径MIS用的NEE PDF与雅可比乘积是不同量。局部记录生产、瓣/技术元数据、完整源端与shift恒等仍在后续实现，R2/R3未判完成。原始PDF/文字/page2目视截图、GPU源/输入输出/摘要、unit red/构建/三OFF对照均存同一11-05证据目录；本片未再启动游戏，实际场景回归与后续事件生产一起做。
+
+## R2b-17（2026-11-05，D 编号待分配）：事件元数据与对应记录的单次 WRS
+
+局部事件可能连接不同顶点，不能沿用全局D记录模板。新增`reuseTreeUpdateRecord`，沿用原来唯一一次WRS随机数，在该事件中选时同步保存其完整record；树另存selectedValue与直接累加的RR补偿sourceSum，为后续自身覆盖积分拆分建立依据，不从RGB前缀相除。当前仍只挂接已有D生产者，本片不声称局部事件或时域已经接入。
+
+96 B记录的原尾padding 88/92分别存完整float32 NEE竞争PDF和源当前事件PDF；既有字段offset及stride不变，confPdf高半字现保留零。bits19–21存实际前驱采样瓣，22–25存事件子类；非法PDF/瓣返回空记录。Slang reflection生成Java ABI，布局/serializer同步更新，无额外显存、射线或随机数。
+
+70套/357项测试、52份shader构建/校验通过（3分23秒）；三OFF模块规整化字节与R2a相同。独立Vulkan直接include正式tree/record helper，20,003组不同记录位置/种子/PDF候选中，选中元数据与incident位模式错误0；weightSum/覆盖RGB/W/选中RGB最大相对误差分别2.582e-7/2.255e-7/2.636e-7/5.911e-8，零target与非法前驱瓣保持空。证据为同一11-05目录r2b17-*。本片未启动游戏，后续局部事件集成后一起做真实源检查；R2完整恒等/A→B→A、R3与待裁决项仍开放。

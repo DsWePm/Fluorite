@@ -41,7 +41,7 @@ final class RtPathReservoirEstimatorTest {
         String rgen = code(source("shaders/world/path_reuse_trace.slang"));
         assertTrue(rgen.contains("if (recordPath) {"));
         assertTrue(rgen.contains("= produced;"), "every owned slot must be overwritten this frame (B05)");
-        assertTrue(rgen.contains("reuseFinishTree(dRecord, dTree)"));
+        assertTrue(rgen.contains("reuseFinishTree(selectedRecord, dTree)"));
         assertTrue(code(source("shaders/world/path_reuse_tree.slang")).contains("return emptyPathReservoir();"));
         String common = code(source("shaders/world/world_common.slang"));
         String body = common.substring(common.indexOf("public PackedPathReservoir emptyPathReservoir()"));

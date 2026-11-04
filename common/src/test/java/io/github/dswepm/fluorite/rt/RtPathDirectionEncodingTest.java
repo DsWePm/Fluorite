@@ -17,7 +17,7 @@ final class RtPathDirectionEncodingTest {
         return new PackedPathReservoirData(new PackedPathReservoirData.Float3(1, 2, 3), 17,
                 new PackedPathReservoirData.Float3(4, 5, 6), 19, 23, x,
                 Float.floatToRawIntBits(.7f), 2.5f, .2f, 1e-4f, 0x3c00, 0x1a125,
-                0x123, 0x34567890, Float.floatToRawIntBits(1e-10f), Float.floatToRawIntBits(1e10f), y, z);
+                0x123, 0x34567890, Float.floatToRawIntBits(1e-10f), Float.floatToRawIntBits(1e10f), y, z, 0f, 0f);
     }
 
     private static ByteBuffer write(int x, int y, int z) {

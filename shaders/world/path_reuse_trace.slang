@@ -695,6 +695,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     // The first accepted D pair is independent of which later solar endpoint WRS selects.
     // A separate unit-prefix tail preserves incident RGB even when the source prefix has zero channels.
     PackedPathReservoir dRecord = emptyPathReservoir();
+    PackedPathReservoir selectedRecord = emptyPathReservoir();
     ReusePathTree dTree = emptyReusePathTree();
     bool dReconChosen = false;
     bool dTailActive = false;
@@ -872,7 +873,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             L += throughput * sky; // escaped to sky
             if (dTailActive && dTailIndirect) {
                 float3 incident = dTailWeight * sky;
-                bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival,
+                bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
                         REUSE_D_ENDPOINT_SKY, reuseSeed);
                 if (identityCheck && candidate) {
                     reuseDiagnoseDEvent(dSourceWeight, incident, throughput * sky * rrSurvival,
@@ -1048,7 +1049,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             if (dTailActive) {
                 float3 incident = dTailWeight * diffAlb * rainBaseTransmission(bc, n)
                         * worldPush.mediumSkyRadiance.xyz;
-                bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival,
+                bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
                         REUSE_D_ENDPOINT_AMBIENT, reuseSeed);
                 if (identityCheck && candidate) {
                     float3 actual = throughput * diffAlb * rainBaseTransmission(bc, n)
@@ -1107,7 +1108,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             if (dTailActive && dTailIndirect) {
                 float3 incident = dTailWeight * albedo * emission * worldPush.emitterTint.xyz * emitterShare
                         * rainBaseExitTransmission(bc);
-                bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival,
+                bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
                         REUSE_D_ENDPOINT_EMITTER, reuseSeed);
                 if (identityCheck && candidate) {
                     float3 actual = throughput * albedo * emission * worldPush.emitterTint.xyz * emitterShare
@@ -1171,7 +1172,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 // The immediate BSDF emitter/sky hit is H; deeper terminal hits are added separately.
                 if (dTailActive) {
                     float3 incident = dTailWeight * brdf * sampledLightIrradiance * ndl * vis;
-                    bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival, REUSE_D_ENDPOINT_SOLAR, reuseSeed);
+                    bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival, REUSE_D_ENDPOINT_SOLAR, reuseSeed);
                     if (identityCheck && candidate) {
                         float3 actual = throughput * brdf * sampledLightIrradiance * ndl * vis * rrSurvival;
                         reuseDiagnoseDEvent(dSourceWeight, incident, actual, REUSE_D_ENDPOINT_SOLAR);
@@ -1233,7 +1234,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                     if (dTailActive) {
                         float3 incident = dTailWeight * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
                                 * rainBaseExitTransmission(bc) * sampledLightIrradiance * visB;
-                        bool candidate = reuseTreeUpdate(dTree, dSourceWeight, incident, rrSurvival,
+                        bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
                                 REUSE_D_ENDPOINT_THIN, reuseSeed);
                         if (identityCheck && candidate) {
                             float3 actual = throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
@@ -1304,6 +1305,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 dRecord = reuseStoreDirection(dRecord, rd);
                 dRecord.jacDenom = jacDenom;
                 dRecord.bits = reuseDRecordBits(uint(hitDepth + 1), continuation.lobe, activeMediumFlags);
+                dRecord = reuseRecordSampling(dRecord, footprintPreviousSample.lobe, 0u, continuation.pdf, 0.0);
                 dRecord.objectId = footprintPrimary.objectId;
                 dRecord.primaryUv = packHalf2(footprintPrimary.uv);
                 if (identityCheck) {
@@ -1404,7 +1406,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     }
     // Record-only: no temporal/spatial reads and no change to L. Empty trees overwrite stale slots.
     if (recordPath) {
-        PackedPathReservoir produced = reuseFinishTree(dRecord, dTree);
+        PackedPathReservoir produced = reuseFinishTree(selectedRecord, dTree);
         DevicePtr<PackedPathReservoir> store =
                 DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
         store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,
