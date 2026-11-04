@@ -834,3 +834,35 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 **清理**：见证shader/patch/SPIR-V、逐位JSON、double与真实生产evaluator的GPU输入输出/摘要、构建测试XML及日志/CSV/配置均保存在 `F:\MC\Shader\evidence\restir-rework-2026-10-31\` 的r2b11文件中。源码、stats及临时尺寸断言按备份逐字节恢复到 `bace2bd`，临时include/辅助文件移除，正式stats仍60 lanes/240 B。本片只归档诊断，**材质分叉根因及修复、旧0.148851%残差、完整源端/shift与其余R2任务继续开放**。下一次取证应在每个TraceRay刚返回、几何query及材质重建前后保存payload/packed-cone/ro/rd/hitT，定位第一个不一致边界。
 
 清理后重新完整构建4分13秒，65套/337项测试与52份shader校验通过；关档三个规整化模块再次与R2a逐字节一致。仓库内搜索临时tag/helper/include与233-lane尺寸无残留，代码及测试相对 `bace2bd` 无差异，仅本片文档更新；未因清理再启动游戏。
+
+## R2b-12（2026-11-04，D 编号待分配）：源重放的位置舍入与 payload 精度对齐
+
+沿R2b-11的三个假设继续定位：TraceRay返回已不同；query/返回边界影响payload；相同命中在位置或材质构建时分叉。临时645-lane/2580 B探针保存前三个顶点的输入射线/cone、查询前后与构建前的payload、hitPos、BSDF法线/F0及出射状态，每帧CAS保存首条numeric/geometry失败，限流前回读。没有改生产record、payload或segment的ABI。
+
+**现场与可复现原因**：取证会话保存61条见证（numeric=16、geometry=45），最大现场PDF相对差26.98907%、散射差3.79461%。其中164个源顶点的hitPos全部吻合分步FP32乘法/加法；164个重放顶点全部吻合融合乘加。在164个源顶点中，融合计算有63个位置与源端不同。独立有理数oracle逐步做round-to-nearest-even，再用无窗口GPU执行两种顺序，328组输入全部逐位符合各自oracle。源与重放的cone更新则均符合融合顺序（103组全符），没有顺手改cone。
+
+- 原始探针的packed-half辅助视图在部分native-half向量的分量顺序上未通过自洽检查，**这些字段不作为payload损坏的证据**。按可靠的射线/标量/float3数据重新排序，59例首先分叉于第一顶点hitPos，2例首先分叉于第一顶点构建F0；查询前后及原路径构建前未观察到这些可靠字段被改写。复制到half结构与直接用于float上下文的数值不同，也不能直接命名为内存被clobber。
+- 精度实例：原路径构建F0为0.035308837890625，重放构建为0.03529411926865578；前者恰为后者按binary16舍入再展开的结果。payload声明为half，重放内联后的更宽寄存器值不能当作原路径已经物化的half值使用。输入几何很近而材质/PDF明显变化的旧现场，由位置舍入差及上下文有效精度差共同解释；没有放宽原0.1%门限或修改纹理/roughness资格。
+
+**局部修复**：新增 `path_reuse_numerics.slang`，只由reuse variant包含。
+
+- `reuseReplayPosition`在SPIR-V内对乘法与加法分别标NoContraction，保持已捕获源端的分步FP32舍入。修改仅在replay内；原tracePathReuse的hitPos语句、共享采样器、随机流、原路径L与记录选择逻辑保持原代码。普通与SER的编译产物新增真实指令检查，避免把源级precise写上便假定它已生效。
+- 每个重放命中及目标材质重建前，显式物化payload.albedo/normal/f0的binary16精度，其余字段不动。实现以整数位运算完成ties-to-even舍入、保留符号零及全部half次正规数；正常值截去13个尾数位并处理进位，次正规值按2^-24的整数倍构造精确FP32结果，溢出/非有限值遵循binary16类别。这里没有能量floor、roughness平方、截断RGB或新采样策略。
+- 两个较短原型被实测否决：OpQuantizeToF16会在本机冲掉half次正规值；普通转换及PackHalf/UnpackHalf往返在有效启用shaderFloat16/shaderInt16的GPU探针中仍没有落实舍入。最终使用可验证的整数舍入，未将上述原型留在产品代码，也未用放松subnormal预期的办法让检查通过。
+- 不增加射线或每像素存储；额外整数运算仅在replay路径，真实GPU时间成本未测。正式stats仍60 lanes/240 B，record96 B、segment48 B、WorldPush与阴影payload均不增长。R2仍只记录并返回自己的完整L，尚未启用历史/邻居消费。
+
+**回归与GPU验证**：164个真实源位置作为float32可往返CSV纳入测试资源。初始4项测试中3项独立数值通过、生产接入失败；随后补上次正规/符号零/偶数舍入及普通/SER实际SPIR-V装饰检查，共新增6项。最终66套/343项测试全部通过，52份shader编译/spirv-val通过；最终生产源码完整构建3分29秒，追加编译产物测试后全量测试22秒。三个OFF模块规整后与R2a逐字节一致，严格tracer/sampler证明继续成立。
+
+无窗口compute直接include最终生产helper：5,339组（328组实际射线输入、5,000组随机输入、11组边界）的位置、half舍入及写回native payload后读取全部逐位通过；另以全部有限half值及相邻值中点/两侧构造正负两组，共126,974例，直接/写回payload两条路径均与独立NumPy binary16参考逐位一致。探针显式查询并启用shaderFloat16/shaderInt16；早期未启用所需能力的native-half尝试不作为结论依据。最终raygen确有2个受约束乘法及2个受约束加法，两个reuse变体均由单元测试核对，非仅源码字符串证明。
+
+**真实渲染闭环**：维持既有存档/配置，RTX2080、普通TraceRay、533×300→1600×900、DLSS-RR、1 spp、max-bounces=3、空间0、恒等诊断及验证层开。350个1 Hz日志frame snapshots：
+
+- 有效源记录299,472（k2=210,921、deep=88,551），fresh source散射/PDF/源分母全部通过；scope/miss/geometry/invalid/numeric各为0。最大散射误差0.0001868%、PDF0.00432646%、源分母0.00432771%。旧R2b-10实际摘要在同一无排除/原0.1%断言上失败，修复后的摘要通过。只声明本场景和测量集合的闭环，不推断所有未来输入为零误差。
+- prefix 2,448,174/2,448,174；metadata replay 2,445,157/2,445,157。源geometry query仍有3,175个ambiguous（missing/invalid=0），不把真实未决几何算作修复后全部唯一可解。
+- D候选334,607个源因式分解全过，非空树拒绝0；实际记录solar281,478、sky17,992、emitter2。全部299,472条packed贡献≤0.1%，最大0.000188986%；1,254,038次方向codec的位/PDF/weight误差及incident codec误差均0。
+- **旧cached-context残差仍开放**：1,254,038次selected-lobe求值的PDF全≤0.1%（最大0.0106224%），weight有1条越界、最大0.14885%；前缀组合最大0.148849%，>1%或invalid=0。该通道与本片fresh source输入重建不同，不能因后者全通过就把前者关闭，下一片优先捕获这条残差的原始sample/eval现场。
+- 会话8分49秒、Gradle exit0/BUILD SUCCESSFUL；助手自行关闭，日志确认保存全部维度及Stopping。VUID=0、无device lost，配置前后逐字节一致；CSV开档4,788帧、switch均1。前一取证会话9分1秒也已自行正常退出。没有移动机位、做视觉验收或报告跨会话性能比值。
+
+**工具链事实与文档冲突**：本机Gradle实际解析到PATH的SDK1.4.350.0/Slang2026.8。CLAUDE.md和开发指南前文写最低2026.14，开发指南后文却明确接受CI随SDK使用2026.8；不能继续把未核实的2026.14当作本机构建事实。本片使用既有CI基线验证局部修复，未更改系统/用户配置或静默切换全项目编译器。官方2026.14仅在证据目录独立下载并按release资产SHA256校验，其单模块试编译因现有volume.slang:801的skyOpen初始化诊断被warnings-as-errors阻断，未改volume或屏蔽诊断；版本声明/CI基线应后续统一。源级precise与早期SPIR-V后端的问题可参考[Slang #11933](https://github.com/shader-slang/slang/issues/11933)、[#12198](https://github.com/shader-slang/slang/issues/12198)；本片以本机实际产物和GPU结果为准，局部汇编用法参照[Slang interop文档](https://docs.shader-slang.org/en/stable/external/slang/docs/user-guide/a1-04-interop.html)，不将文档或外部issue代替本机证明。
+
+证据在 `F:\MC\Shader\evidence\restir-rework-2026-11-04\`：boundary原始shader/patch/SPIR-V/日志/CSV/配置/61条逐位JSON、可信字段校正与有理数/GPU位置复算、被否决的half原型、最终真实helper的GPU输入输出/摘要、unit red/XML、最终测试/构建/三OFF模块与运行摘要、source replay red/green脚本。临时645-lane探针和字段/日志/辅助include均已移除。**本片结案的是已复现的源重放位置/精度分叉；旧0.149%权重、transport、完整shift、其它D/S/L/H/T及R2后续仍未完成**，观感继续留给用户。

@@ -13,6 +13,7 @@
 #include "path_reuse_tree.slang"
 #include "path_reuse_fresnel.slang"
 #include "path_reuse_eval.slang"
+#include "path_reuse_numerics.slang"
 
 // ---- Vertex decisions, ONE spelling for the bounce loop below and the hybrid shift's replay (R1b).
 //
@@ -444,8 +445,9 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
         if (payload.hitT < 0.0) {
             break;
         }
+        reuseCanonicalizeReplayPayload();
         float3 n = payload.normal;
-        float3 hitPos = ro + rd * payload.hitT;
+        float3 hitPos = reuseReplayPosition(ro, rd, payload.hitT);
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
         uint material = payloadMaterial();
         int hitDepth = indirectDepth++;
@@ -524,6 +526,7 @@ void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, Pa
     }
     uint sssMode = (worldPush.flags >> 7u) & 3u;
     int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
+    reuseCanonicalizeReplayPayload();
     ReuseOpaqueVertex fresh = reuseOpaqueVertex(replayedPos,
             payload.normal, replay.incomingDirection, replay.rayConeWidth, replay.hitDepth, sssMode, sssMaxEvents);
     uint lobe = (record.bits >> REUSE_RECORD_LOBE_SHIFT) & 7u;
