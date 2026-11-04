@@ -273,6 +273,13 @@ final class RtPathReplayContractTest {
         assertEquals(2, reuseFile.split(java.util.regex.Pattern.quote(approvedFresnelPrefix), -1).length - 1);
         reuseFile = reuseFile.replace(approvedFresnelPrefix, "fresnelSchlick(max(0.0, dot(v, h)),");
 
+        // R2b-14: the user additionally approved one fixed normal-dot reduction in both callers.
+        // Keep its scope exact; all other shipped sampler statements still have to match verbatim.
+        assertEquals(2, reuseFile.split(java.util.regex.Pattern.quote("reuseOrderedNdot(n, l)"), -1).length - 1);
+        assertEquals(1, reuseFile.split(java.util.regex.Pattern.quote("reuseOrderedNdot(n, rd)"), -1).length - 1);
+        reuseFile = reuseFile.replace("reuseOrderedNdot(n, l)", "dot(n, l)")
+                .replace("reuseOrderedNdot(n, rd)", "dot(n, rd)");
+
         // 1. Every shared vertex function is a verbatim, in-order excerpt of the shipped loop, with
         //    only its random stream renamed and its exits turned into returns.
         String[][] functions = {

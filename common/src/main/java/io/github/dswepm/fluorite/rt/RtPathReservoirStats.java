@@ -34,6 +34,33 @@ public final class RtPathReservoirStats {
     private RtBuffer[] readback;
     private final boolean[] armed;
     private long loggedAt = Long.MIN_VALUE;
+    private final FrameTotals allFrames = new FrameTotals();
+
+    /** Preserve every completed readback, including failures between the periodic log frames. */
+    static final class FrameTotals {
+        private final long[] lanes = new long[LANES];
+        long frames;
+
+        void add(long mapped) {
+            frames++;
+            for (int lane = 0; lane < LANES; lane++) {
+                long value = Integer.toUnsignedLong(MemoryUtil.memGetInt(mapped + lane * 4L));
+                // Nonnegative float error maxima have the same ordering as their unsigned bits.
+                lanes[lane] = switch (lane) {
+                    case 24, 25, 31, 32, 34, 36, 38, 42, 43, 56, 57, 58 -> Math.max(lanes[lane], value);
+                    default -> lanes[lane] + value;
+                };
+            }
+        }
+
+        long count(int lane) { return lanes[lane]; }
+        float maximum(int lane) { return Float.intBitsToFloat((int) lanes[lane]); }
+
+        void clear() {
+            java.util.Arrays.fill(lanes, 0L);
+            frames = 0L;
+        }
+    }
 
     public RtPathReservoirStats(int ringSize) {
         this.armed = new boolean[ringSize];
@@ -176,6 +203,15 @@ public final class RtPathReservoirStats {
         float sourceReplayPdfMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 228L));
         float sourceReplayJacMax = Float.intBitsToFloat(MemoryUtil.memGetInt(src.mapped + 232L));
         long sourceReplayNumeric = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 236L));
+        allFrames.add(src.mapped);
+        if (lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
+                || sourceReplayScope + sourceReplayMiss + sourceReplayGeometry + sourceReplayInvalid + sourceReplayNumeric != 0L) {
+            FluoriteMod.LOGGER.warn("RT path reuse failed readback {}: lobe {} (invalid {}, pdf<=0.1% {}, weight<=0.1% {}, "
+                            + "max pdf {}, weight {}); fresh scope {}, miss {}, geometry {}, invalid {}, numeric {}",
+                    allFrames.frames, lobeAttempt, lobeInvalid, lobePdfLow, lobeWeightLow,
+                    relativePercentage(lobePdfMax), relativePercentage(lobeWeightMax), sourceReplayScope,
+                    sourceReplayMiss, sourceReplayGeometry, sourceReplayInvalid, sourceReplayNumeric);
+        }
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
         }
@@ -214,6 +250,23 @@ public final class RtPathReservoirStats {
                 sourceReplayScope, sourceReplayMiss, sourceReplayGeometry, sourceReplayInvalid, sourceReplayNumeric,
                 relativePercentage(sourceReplayScatterMax), relativePercentage(sourceReplayPdfMax),
                 relativePercentage(sourceReplayJacMax));
+        logCumulative();
+    }
+
+    private void logCumulative() {
+        if (allFrames.frames == 0L) return;
+        FluoriteMod.LOGGER.info("RT path reuse cumulative: readback frames {}, lobe {} (invalid {}, pdf<=0.1% {}, "
+                        + "weight<=0.1% {}, max pdf {}, weight {}); fresh k2 {}/{} deep {}/{} "
+                        + "(scope {}, miss {}, geometry {}, invalid {}, numeric {}); max scatter {}, pdf {}, jac {}; "
+                        + "direction codec {} (bits changed {}, max pdf {}, weight {}); incident max {}",
+                allFrames.frames, allFrames.count(20), allFrames.count(21), allFrames.count(22), allFrames.count(23),
+                relativePercentage(allFrames.maximum(24)), relativePercentage(allFrames.maximum(25)),
+                allFrames.count(54), allFrames.count(48), allFrames.count(55), allFrames.count(49),
+                allFrames.count(50), allFrames.count(51), allFrames.count(52), allFrames.count(53), allFrames.count(59),
+                relativePercentage(allFrames.maximum(56)), relativePercentage(allFrames.maximum(57)),
+                relativePercentage(allFrames.maximum(58)), allFrames.count(40), allFrames.count(41),
+                relativePercentage(allFrames.maximum(42)), relativePercentage(allFrames.maximum(43)),
+                relativePercentage(allFrames.maximum(38)));
     }
 
     private static String percentage(long passed, long attempted) {
@@ -225,6 +278,7 @@ public final class RtPathReservoirStats {
     }
 
     public void destroy() {
+        logCumulative();
         if (counters != null) {
             counters.destroy();
             counters = null;
@@ -239,5 +293,6 @@ public final class RtPathReservoirStats {
         }
         java.util.Arrays.fill(armed, false);
         loggedAt = Long.MIN_VALUE;
+        allFrames.clear();
     }
 }

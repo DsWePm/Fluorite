@@ -4,7 +4,7 @@
 ReuseContinuationSample reuseEvaluateContinuation(BsdfContext c, float pf, float ps, float walkSssShare,
                                                    uint lobe, float3 wi) {
     ReuseContinuationSample result = emptyReuseContinuationSample();
-    float ndl = dot(c.n, wi);
+    float ndl = reuseOrderedNdot(c.n, wi);
     if (!all(isfinite(wi)) || !(ndl > 0.0) || !isfinite(ndl)
             || !isfinite(pf) || pf < 0.0 || pf > 1.0
             || !isfinite(ps) || ps < 0.0 || ps > 1.0

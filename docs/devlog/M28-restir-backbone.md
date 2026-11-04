@@ -891,3 +891,36 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 两轮取证构建各66套/343项测试、52份shader校验及三个OFF模块对R2a逐字节比较通过。临时helper/include、debugNdl、125/127-lane日志和尺寸断言已移除，11个源/测试文件按取证前备份逐字节恢复，源码相对 `22732ce` 无差异；正式stats仍60 lanes/240 B，record96 B、segment48 B未变。证据目录 `F:\MC\Shader\evidence\restir-rework-2026-11-04\` 保存两轮r2b13日志/CSV/TOML/摘要、3条原始uint/float见证、FP32顺序枚举/double复算、独立GPU原型与输入输出、临时源码和清理manifest。**R2仍未完成；本片没有交付点积修复，也没有启用历史/邻居消费。**
 
 清理后重新完整构建3分52秒，66套/343项测试及52份shader校验通过；三个OFF模块再次与R2a规整化基线逐字节相同，严格tracer/sampler证明保持通过。仓库内无临时tag/helper/debugNdl或125/127-lane残留，仅更新本日志与DEVELOPMENT.md的当前进度/待裁定项；没有为清理后的同源码再启动游戏。
+
+## R2b-14（2026-11-05，D 编号待分配）：共享定序点积与逐帧回读累计回归
+
+用户已明确批准R2b-13的共享定序 `n·wi` 方案。本片接入并完成既有场景的原0.1%门限回归，结案的是已捕获的掠射点积累加顺序残差；不把有限场景的通过扩展为全部未来输入或完整shift恒等证明。
+
+- 新增reuse专属 `path_reuse_dot.slang`：先将x乘积按FP32舍入并显式标NoContraction，再依次用显式FMA加入y/z。采样器的film/base半球判定与Smith输入、diffuse PDF及selected-lobe重评入口共用这一实现。理论BSDF、线性roughness、随机流和生成出射方向的公式不变；开档权重及极贴半球边界的通过判定仍有已告知并获批的浮点微调。没有增加能量floor、近零角度例外或放宽原误差门限。
+- 原tracer逐行契约只追加用户批准的三个normal-dot调用点例外，精确要求film/base两处与diffuse一处，随后还原成原dot再做原有严格比较；R2b-8的两个Schlick例外继续单独计数。没有整段跳过采样器、PDF、权重、RNG或射线公式的比较。原OFF tracer、96 B record、48 B segment、WorldPush和阴影payload均未改。
+- 修复1 Hz汇总的观测盲区：CPU对每个完成的readback累计全部60 lanes，uint计数扩为unsigned long累加，非负float误差保留最大值，累加发生在日志限流与空检查之前。每秒输出累计结果，失败帧在限流前独立报警；buffer生命周期结束时输出最终累计并清零，避免下一次开档混入旧数据。沿用60 lanes/240 B GPU缓冲及原frame-ring所有权，不加同步等待、射线或GPU存储。新增CPU工作为每次readback读60个lane并更新一个480 B数组；真实CPU/GPU耗时未测。
+
+**回归与独立GPU复算**：两条直接记录过源/eval点积的真实掠射输入纳入CSV。接入前3项新dot测试中，现场数值复现通过，实际共享调用点与实际SPIR-V指令链两项失败；接入后通过。另3项测试验证两次日志之间的失败不会被后续正常帧覆盖、unsigned计数和buffer生命周期清零、累加/报警早于限流且ABI仍60/240。最终68套/349项测试全部通过，52份shader编译/spirv-val通过，完整构建3分23秒；普通/SER实际产物都保留受约束的首乘法及两次Fma指令链。三个OFF模块规整后与R2a逐字节一致。
+
+无窗口compute直接include最终生产dot helper，45,003组实际/随机/近正交输入与逐步FP32参考逐位一致，交换操作数也逐位一致。另以实际生产selected-lobe evaluator回放3条旧失败上下文，定序点积逐位吻合，权重/PDF对独立参考的最大相对误差分别3.953e-7/4.082e-8。这里没有复制一份简化求值器来代替生产实现；实际采样器与重评器的组合仍由下述真实raygen验证。工具链沿用R2b-12明确记录的SDK/Slang2026.8基线，未改变尚待统一的版本声明。
+
+**真实渲染闭环**：既有 `restir-r1-smoke`，RTX2080、普通TraceRay、533×300→1600×900、DLSS-RR、1 spp、max-bounces=3、空间0、恒等诊断及验证层开。累计日志257行，单一buffer生命周期，最终结果为：
+
+| 所有已完成回读帧的累计检查 | 实际结果 |
+| --- | --- |
+| readback帧 | 3,564 |
+| cached-context selected-lobe | 12,780,519次，invalid=0，PDF/weight全部≤0.1% |
+| 最大cached PDF / weight误差 | 0.0319349% / 0.00148790% |
+| fresh source k2 / deep | 2,106,719 / 892,551条，全部通过 |
+| fresh scope / miss / geometry / invalid / numeric | 各0，无排除失败 |
+| 最大fresh scatter / PDF / denominator误差 | 0.000184097% / 0.00610037% / 0.00610038% |
+| direction codec | 12,780,519次，位变化/PDF/weight误差均0 |
+| incident codec / 逐帧失败报警 / VUID | 均0 |
+
+原source-evaluation验证脚本对R2b-12摘要按原门槛失败（exit1），对本片1 Hz摘要通过（exit0）；新增累计解析器对所有已回读帧的原门槛也通过，未只选取日志帧或剔除小权重。累计解析器验证同一生命周期内各计数/最大值单调、不重复累加每秒的累计快照，生命周期重建则分别结算；本会话只有一个生命周期。诊断仍是每帧1/16像素，不是每个像素的全量保证；结束时尚未完成回读的帧也不在上述分母。
+
+保留的256个1 Hz快照另作生产事件/记录范围证据：915,392次cached检查全部通过，215,091条有效记录（k2=150,905、deep=64,186）fresh检查全部通过；239,580个候选源因式分解全部通过，非空树拒绝0。实际记录solar=202,128、sky=12,963、emitter=0，故本会话没有新增深发光端点覆盖。prefix为1,789,122/1,789,122，metadata replay为1,786,861/1,786,861；源几何query仍有2,366个ambiguous，missing/invalid=0，不称所有几何唯一可解。上述日志帧的计数不与全readback计数混用分母。
+
+会话7分4秒，助手通过正常关闭流程退出，日志确认保存全部维度，Gradle exit0/BUILD SUCCESSFUL；无device lost，前后TOML逐字节一致，CSV开档3,570帧、switch word均1。CSV与readback的统计边界不同，验收明确使用上表3,564个已回读帧。没有移动机位、做用户视觉验收或报告跨会话性能比值。
+
+证据归档在 `F:\MC\Shader\evidence\restir-rework-2026-11-04\` 的r2b14文件：unit red、68套测试XML/构建及三OFF模块、真实生产helper/evaluator的GPU输入输出/摘要、运行日志/CSV/TOML、原门槛red/green及累计解析器与摘要。没有重新引入临时见证字段、helper或125/127-lane缓冲。**已修复本次捕获的点积残差，R2仍未完成**：其余D贡献、S/L/H/T、完整源端/shift恒等、记录阶段A→B→A继续开放；transport种子仍按计划留给R3/G10，历史/邻居尚未消费，仍返回完整自己的L。GPU成本和观感按原计划后续验收。

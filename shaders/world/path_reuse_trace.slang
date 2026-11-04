@@ -12,6 +12,7 @@
 #include "path_reuse_sampling.slang"
 #include "path_reuse_tree.slang"
 #include "path_reuse_fresnel.slang"
+#include "path_reuse_dot.slang"
 #include "path_reuse_eval.slang"
 #include "path_reuse_numerics.slang"
 
@@ -281,7 +282,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         sampleInfo.alpha = alpha;
         float3 h = sampleGGXVNDF(n, v, alpha, stream);
         float3 l = reflect(rd, h);
-        float ndl2 = dot(n, l);
+        float ndl2 = reuseOrderedNdot(n, l);
         if (ndl2 <= 0.0) {
             return false;
         }
@@ -311,7 +312,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
             sampleInfo.alpha = vtx.rough;
             float3 h = sampleGGXVNDFAniso(n, bc.t, bc.b, v, bc.alphaX, bc.alphaY, stream);
             l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
-            float ndl2 = dot(n, l);
+            float ndl2 = reuseOrderedNdot(n, l);
             if (ndl2 <= 0.0) {
                 return false; // microfacet reflects below the surface: terminate this path
             }
@@ -371,7 +372,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         sampleInfo.weight = diffAlb * rainBaseTransmission(bc, l) / lobeProb;
         ro = p;
         rd = l;
-        bsdfPdf = lobeProb * max(0.0, dot(n, rd)) * INV_PI;
+        bsdfPdf = lobeProb * max(0.0, reuseOrderedNdot(n, rd)) * INV_PI;
         rayConeSpread = max(rayConeSpread, RAY_CONE_DIFFUSE_SPREAD);
         showCelestial = false; // diffuse lobe: sprite covered by NEE, hide it (anti-firefly)
     }
