@@ -866,3 +866,28 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 **工具链事实与文档冲突**：本机Gradle实际解析到PATH的SDK1.4.350.0/Slang2026.8。CLAUDE.md和开发指南前文写最低2026.14，开发指南后文却明确接受CI随SDK使用2026.8；不能继续把未核实的2026.14当作本机构建事实。本片使用既有CI基线验证局部修复，未更改系统/用户配置或静默切换全项目编译器。官方2026.14仅在证据目录独立下载并按release资产SHA256校验，其单模块试编译因现有volume.slang:801的skyOpen初始化诊断被warnings-as-errors阻断，未改volume或屏蔽诊断；版本声明/CI基线应后续统一。源级precise与早期SPIR-V后端的问题可参考[Slang #11933](https://github.com/shader-slang/slang/issues/11933)、[#12198](https://github.com/shader-slang/slang/issues/12198)；本片以本机实际产物和GPU结果为准，局部汇编用法参照[Slang interop文档](https://docs.shader-slang.org/en/stable/external/slang/docs/user-guide/a1-04-interop.html)，不将文档或外部issue代替本机证明。
 
 证据在 `F:\MC\Shader\evidence\restir-rework-2026-11-04\`：boundary原始shader/patch/SPIR-V/日志/CSV/配置/61条逐位JSON、可信字段校正与有理数/GPU位置复算、被否决的half原型、最终真实helper的GPU输入输出/摘要、unit red/XML、最终测试/构建/三OFF模块与运行摘要、source replay red/green脚本。临时645-lane探针和字段/日志/辅助include均已移除。**本片结案的是已复现的源重放位置/精度分叉；旧0.149%权重、transport、完整shift、其它D/S/L/H/T及R2后续仍未完成**，观感继续留给用户。
+
+## R2b-13（2026-11-05，D 编号待分配）：掠射 selected-lobe 权重残差的点积取证
+
+本片接续 `22732ce`，只结案已捕获残差的原因，不提前宣称修复。先按零F0的Fresnel放大、极小权重下溢/运算顺序、实际上下文不同三类假设取证。第一轮临时125-lane探针仅在旧cached-context的weight误差超过原0.1%时，用CAS保存每帧首条失败的原始uint位模式；不向采样器增加上下文字段。第二轮127 lanes再从采样器/重评器各自导出实际使用的 `n·wi`。回读在1 Hz日志限流之前；这不是每帧全部失败或全局最大值捕获，也没有新增生产记录字段或放宽门限。
+
+**现场与因果验证**：第一轮捕获1条0.1488505%失败，F0各通道为0.040008544921875，sample/eval的n、v、F0、diffAlb逐位相同，权重约6.4e-6。排除这条属于零F0或float32次正规下溢；独立double用实际上下文重算Fresnel/Smith/probability，再枚举FP32点积累加顺序，能够分别还原两侧权重。第二轮直接捕获2条，确认实际点积与两种FMA累加顺序逐位吻合：
+
+| 现场 | 采样器实际 n·wi | 重评器实际 n·wi | 采样权重（灰色RGB） | 重评权重（灰色RGB） | 相对权重差 |
+| --- | --- | --- | --- | --- | --- |
+| A | 5.436026185634546e-6 | 5.427935320767574e-6 | 8.46804596221773e-6 | 8.455441275145859e-6 | 0.1488500% |
+| B | 8.525106750312261e-6 | 8.515793524566106e-6 | 1.6872267224243842e-5 | 1.6853835404617712e-5 | 0.1092433% |
+
+两条的source均符合先舍入 `ny*wiy`、再FMA加入x、最后FMA加入z；eval均符合先x、再y、最后z。把各自实测点积代入独立double Smith公式，对实际weight的最大相对残差5.98e-7，远小于原0.1%门限。它们同为掠射且F0非零，原材质、方向和理论公式一致，点积中大项相消后的FP32舍入差经G1传播，解释了捕获的权重差。这里不是GPU内存损坏，也不把正常的浮点非结合性直接称为编译器缺陷。跨会话的diffAlb/ps可以不同，不声称两轮是完全相同的材质上下文；第二轮每条的两侧输入仍逐位一致。
+
+**不能只看1 Hz快照**：第一轮55个日志帧的192,968次cached-context检查全部在门限内，但逐帧见证实际捕获1条越界；第二轮78个日志帧的275,684次也全部在门限内，逐帧见证却捕获2条。两种采样集合不能混用分母或由前者推出全会话通过。摘要新增独立的 `per_frame_captured_weight_failures`、`per_frame_max_weight_error_pct`，两轮 `original_weight_gate_passed` 均为false；没有用小权重屏蔽、扩大容差或删掉失败来通过验证。
+
+**可供裁定的原型，尚未接入生产**：在证据目录实现固定x→y→z的FP32点积，首个乘法显式NoContraction，后两项显式FMA。Slang2026.8实际SPIR-V中的乘法装饰和Fma指令已核对，spirv-val通过。独立Vulkan/RTX2080执行45,003组（3条已捕获输入、25,000组近正交方向、20,000组一般方向），原型与逐步FP32参考逐位一致，交换两个向量操作数也逐位一致。原型解决的是两处使用同一种舍入顺序，不等于改用double或消灭所有掠射的FP32绝对误差；尚无真实raygen接入后的回归或GPU耗时结论，不能把这45,003组当作正式修复验收。
+
+建议经用户裁定后，在reuse采样器与selected-lobe重评器中共享上述 `n·wi` 定序点积，覆盖film/base的半球判定与Smith输入、diffuse PDF及重评入口。理论BSDF、线性roughness、随机数和生成的方向公式不变，但会进一步改变开档FP32权重，极贴半球边界时也可能改变通过判定；无新增射线/显存，局部指令顺序受约束的实际GPU代价待测。此选择超出R2b-8只替换Schlick表达式的已批例外，按§3.1先由用户决定。另一选项是保留当前算术及开放残差，再安排其它R2工作；不能把当前驱动的source累加顺序只硬编码到eval后当作跨编译器保证。
+
+**范围、运行与清理**：两轮仍为既有 `restir-r1-smoke`、533×300→1600×900、DLSS-RR、1 spp、max-bounces=3、空间0、恒等诊断和验证层开；分别3分43秒/4分20秒，均由助手正常关闭，exit0/BUILD SUCCESSFUL、保存全部维度、VUID=0、无device lost、前后TOML逐字节一致。日志抽样fresh source分别45,423条/64,484条全部通过，scope/miss/geometry/invalid/numeric均0；它们与本片cached-context见证不同，不替代后者。没有视觉验收或性能比值结论。
+
+两轮取证构建各66套/343项测试、52份shader校验及三个OFF模块对R2a逐字节比较通过。临时helper/include、debugNdl、125/127-lane日志和尺寸断言已移除，11个源/测试文件按取证前备份逐字节恢复，源码相对 `22732ce` 无差异；正式stats仍60 lanes/240 B，record96 B、segment48 B未变。证据目录 `F:\MC\Shader\evidence\restir-rework-2026-11-04\` 保存两轮r2b13日志/CSV/TOML/摘要、3条原始uint/float见证、FP32顺序枚举/double复算、独立GPU原型与输入输出、临时源码和清理manifest。**R2仍未完成；本片没有交付点积修复，也没有启用历史/邻居消费。**
+
+清理后重新完整构建3分52秒，66套/343项测试及52份shader校验通过；三个OFF模块再次与R2a规整化基线逐字节相同，严格tracer/sampler证明保持通过。仓库内无临时tag/helper/debugNdl或125/127-lane残留，仅更新本日志与DEVELOPMENT.md的当前进度/待裁定项；没有为清理后的同源码再启动游戏。
