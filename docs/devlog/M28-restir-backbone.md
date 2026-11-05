@@ -982,3 +982,15 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 72套/363项测试、52shader构建/校验与三OFF规整化字节对照通过。20,003组实际production事件/发光helper的Vulkan compute检查，H响应最大相对误差2.542e-7，PDF误差0；emitterShare对独立double参考最大2.011e-7。6,666组面积MIS中含952组竞争面积PDF为零，仍保留原保护项；690组负对照检出“直接转角度密度”错误，unlisted/proxy/delta分区均通过。源factor检查也接入每个readback失败报警和累计，不再仅看1Hz抽样。
 
 本片未再启动游戏，H/局部发光L、L/T定向夹具与R2b-18诊断修复的整场验证仍开放，不能据独立helper测试判R2完成。用户最新裁决改变后续G3/G10方向：拒绝TraceRay+补metadata query的正式接法，要求联合命中与共享传输内核重构，消除不必要重复计算；G6主开关默认关、时域/反向验证开启、Cap20作为初始优化基准已授权。具体边界更新到DEVELOPMENT §8.13；旧独立query当前仍在记录通路中，后续重构取代它，不将未实施的联合返回冒充完成。证据为同一11-05目录r2b19-*。
+
+## R2b-20（2026-11-05，D 编号待分配）：共享的完整照明/纯透射内核
+
+按用户要求，先审查“完整积分后只取透射”在编译后是否还做无用功，再重构而非新增一份透射近似。静态探针证明：旧integrateSegment仅取T仍保留8处OpTraceRayKHR代码点、33个loop和55处显式纹理采样；旧traceClouds仅取T保留4个loop、19处纹理采样。这里是编译后静态代码点，不是每条连接实际执行8条射线或某个耗时比值。
+
+新增三个各有唯一算法体的kernel：cloud_path_kernel（低云march/高云薄片/路径合成）、volume_ambient_kernel（异质区域步进及source adapter）、volume_segment_kernel（介质profile分派）。各在模块内静态实例化为完整照明与T-only入口，公开cloudPathTransmittance/segmentPathTransmittance。T-only只保留必要密度/消光/步进/mip/终止计算，不执行太阳光程、源照明、scatter-event归一化预遍历或可见性射线；原完整模式的估计量和调用接口不变。异质T保留逐步exp的原乘积顺序，没有以exp(-sum tau)替代；封闭介质闭式和高度雾解析式仍是原式，没有为了统一而退化成march。
+
+先尝试原生bool模板和运行时常量折叠：完整模式虽算术相同，规整化仍多两处私有OpLoad，不满足既定字节门。改为单一kernel源码的预处理静态实例化，完整模式展开的原语句/作用域保持原样；不是维护两份积分算法，也不在每个密度样本做运行时模式判断。正式源码的T-only编译后：介质OpTraceRay从8处降为0、loop33→3、纹理采样55→9；云loop4→3、纹理采样19→13。普通ternary只关闭最终RGB写回时仍保留旧19处采样，故未采用“只不返回in-scatter就会自动便宜”的假设。
+
+73套/364项测试和52shader通过，清理后的全量测试再次通过。新的独立compiler contract将正式T-only两个入口作为compute编译并spirv-val，确认密度loop/纹理工作实际存在、TraceRay/ray query均不存在。原source契约测试改为读取实际kernel的完整照明静态体，原断言保留。三个OFF模块与R2a逐字节相同；从b4578c6源快照重新编译的普通/SER ON模块，与重构后两个ON模块也规整化逐字节相同，未用“数学相同”替代字节比较。
+
+这一步没有加射线、GPU缓冲、WorldPush、48 B segment、96 B record或阴影payload，没有改变源随机流，也没有把T-only调用当作R3已经消费。完整源/shift的逐边可重放种子、T-only真实数值恒等、实际GPU时间及前片几何诊断残余仍待后续；本片未启动游戏。原始原型、反例、编译SPIR-V/反汇编/静态计数、R19源码快照、364项测试与五模块对照均在同一11-05证据目录r2b20/shared-edge/cloud/volume相关文件。

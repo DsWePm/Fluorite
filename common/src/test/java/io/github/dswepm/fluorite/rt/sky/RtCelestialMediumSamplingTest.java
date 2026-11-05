@@ -256,6 +256,6 @@ final class RtCelestialMediumSamplingTest {
         if (root == null) {
             throw new IOException("Could not locate repository root from " + System.getProperty("user.dir"));
         }
-        return Files.readString(root.resolve("shaders/world").resolve(name));
+        return io.github.dswepm.fluorite.rt.ShaderTestSources.read(root, "shaders/world/" + name);
     }
 }

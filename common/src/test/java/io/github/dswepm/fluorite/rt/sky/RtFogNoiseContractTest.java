@@ -243,6 +243,6 @@ final class RtFogNoiseContractTest {
         if (root == null) {
             throw new IOException("Could not locate repository root from " + System.getProperty("user.dir"));
         }
-        return Files.readString(root.resolve(path));
+        return io.github.dswepm.fluorite.rt.ShaderTestSources.read(root, path);
     }
 }

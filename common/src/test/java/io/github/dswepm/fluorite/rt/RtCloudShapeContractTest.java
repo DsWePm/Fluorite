@@ -166,6 +166,6 @@ final class RtCloudShapeContractTest {
         if (root == null) {
             throw new IOException("Could not locate repository root from " + System.getProperty("user.dir"));
         }
-        return Files.readString(root.resolve(relativePath));
+        return io.github.dswepm.fluorite.rt.ShaderTestSources.read(root, relativePath);
     }
 }
