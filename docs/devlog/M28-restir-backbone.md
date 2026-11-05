@@ -414,7 +414,7 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 | 32 | `uint reconNrm`、`uint dirK`（R2b-6起为方向X的float32位模式）、`uint radiance`（float32入射R位模式，R2b-5起）、`float W` |
 | 48 | `float jacDenom`、`float targetOwn`、`uint confPdf`（低半精度置信度，高半字保留零）、`uint bits`（k/技术/lobe/介质/主命中类型/valid；R2b-17增加前驱瓣与事件子类） |
 | 64 | `uint objectId`、`uint primaryUv`（决策7的LoD钩子）；`reserved0/1`在R2b-5起存float32入射G/B位模式，不再空闲 |
-| 80 | `uint dirY/dirZ`（方向Y/Z float32位模式）；R2b-17将原88–95尾padding用于`float neePdf/sourcePdf`，分别存独立竞争NEE PDF与源当前事件PDF；stride仍96 B |
+| 80 | `uint dirY/dirZ`（方向Y/Z float32位模式）；88/92为`float neePdf/sourcePdf`，通常存竞争NEE PDF与源当前事件PDF；R2b-19的H kind=2分别存NEE面积密度与固定出射端点G，以保留原面积MIS数值保护项，源采样密度仍在jacDenom及独立诊断参考中；stride仍96 B |
 
 1080p渲染分辨率下双份398,131,200 B（379.6875 MiB）；DLSS内部分辨率更小。原80 B的331,776,000 B预算已由R2b-6的用户裁决更新。结构、`PATH_RESERVOIR_BYTES`、生成记录与 `RtPathReservoirLayoutTest` 同步维护。
 
@@ -970,3 +970,15 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 **SSS覆盖勘误**：R2b-15当时仅将D-thin零计数归为机位覆盖不足，解释不充分。MAX_SSS_INDIRECT_DEPTH=1，而首个D锚点最早在hitDepth=1且局部thin发生在选择D锚点之前，更深D-thin在现有预算下不可达。当前可达的薄壳复用技术是局部T；测试应针对它，不通过擅自增加SSS深度制造D覆盖。
 
 游戏在8分25秒会话后由助手正常关闭，全部维度保存、BUILD SUCCESSFUL/exit0，VUID=0；配置前后字节一致，无视觉/性能结论。证据在同一11-05目录r2b18-*；R2完整源/shift恒等、局部发光L/H及L/T真实夹具、记录A→B→A和R3仍开放。用户要求先解释G3/G10/G11/G6的理由与代价再确认，三项尚未采用，不把“需要分项调整”当批准。
+
+## R2b-19（2026-11-05，D 编号待分配）：立即命中 H 与局部发光 L
+
+补齐已有记录模型中的H立即天空/发光命中和局部发光L。H保存未施加hit MIS的endpoint incident，源response和重新求值的response各自施加其命中MIS；基础天空与analytic celestial项分成两个候选，保持原atmosphere/environment分支、delta/显式NEE门的实际语义。H仅在D锚点之后的第一次BSDF命中产生，更深端点继续归D；局部发光L只在更早D锚点尚未选定时产生，current lobe=0、事件质量1，不重复计入原L。
+
+把原emitterShare的三路分区原样抽成共享函数，源着色与fresh L重新解码的材质/前驱PDF/showCelestial使用同一函数；unlisted、proxy、MIS off与delta规则不变。严格shipped-line证明纳入该helper，没有跳过发光数学或改旧采样行为。fresh replay额外导出原前驱celestial门，参考值依旧随选中record而不是全局D模板移动。
+
+**数值测度要点**：原powerHeuristic含1e-20保护项，不能简单把NEE面积密度除以G后改用角度PDF；那会把保护项放到另一测度。H kind=2保留NEE面积PDF，并将96 B记录offset92的sourcePdf辅助lane按标签用于固定出射端点G，重评仍做powerHeuristic(pdf*G,areaPdf)。源当前BSDF PDF由实际求值重建，其源分母仍在jacDenom中；其它技术/子类该lane仍为源当前事件PDF。没有挤占RGB/方向/object/UV，没有加record/segment或阴影payload。G由原端点着色法线与原距离计算，遵循当前发光MIS基线；不会拿这项当连接判据的几何法线替代。
+
+72套/363项测试、52shader构建/校验与三OFF规整化字节对照通过。20,003组实际production事件/发光helper的Vulkan compute检查，H响应最大相对误差2.542e-7，PDF误差0；emitterShare对独立double参考最大2.011e-7。6,666组面积MIS中含952组竞争面积PDF为零，仍保留原保护项；690组负对照检出“直接转角度密度”错误，unlisted/proxy/delta分区均通过。源factor检查也接入每个readback失败报警和累计，不再仅看1Hz抽样。
+
+本片未再启动游戏，H/局部发光L、L/T定向夹具与R2b-18诊断修复的整场验证仍开放，不能据独立helper测试判R2完成。用户最新裁决改变后续G3/G10方向：拒绝TraceRay+补metadata query的正式接法，要求联合命中与共享传输内核重构，消除不必要重复计算；G6主开关默认关、时域/反向验证开启、Cap20作为初始优化基准已授权。具体边界更新到DEVELOPMENT §8.13；旧独立query当前仍在记录通路中，后续重构取代它，不将未实施的联合返回冒充完成。证据为同一11-05目录r2b19-*。

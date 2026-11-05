@@ -35,7 +35,7 @@ final class RtPathLocalProducerTest {
         String s=source("shaders/world/path_reuse_trace.slang");
         assertTrue(s.contains("selectedReference.scatterWeight, selectedReference.sourcePdf, selectedReference.supported"));
         assertTrue(s.contains("reuseSelectReference(dTree, selectedReference, scatteringPrefix * response"));
-        assertTrue(s.contains("reuseEvaluateEvent(fresh, record)"));
+        assertTrue(s.contains("reuseEvaluateEvent(fresh, record, replay.rayOrigin"));
         String e=source("shaders/world/path_reuse_event.slang");
         for(String term:new String[]{"reuseLocalSunBrdf(vertex.bc", "reuseLocalAmbientWeight(vertex.bc)",
                 "reuseLocalThinWeight(vertex.bc", "reference.scatterWeight = scatterWeight;", "if (tree.lastSelected)"})

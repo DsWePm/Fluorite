@@ -382,6 +382,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
     return true;
 }
 
+#include "path_reuse_emission.slang"
 #include "path_reuse_event.slang"
 
 // ---- The hybrid shift's replay (R1b-3), and the self-check that proves it re-drives a path.
@@ -405,6 +406,7 @@ struct ReuseReplayState {
     float previousPdf;
     int hitDepth;
     bool opaquePrefix;
+    bool previousCelestial;
 };
 
 /**
@@ -426,6 +428,7 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
     state.previousPdf = -1.0;
     state.hitDepth = -1;
     state.opaquePrefix = true;
+    state.previousCelestial = seg.showCelestial;
     float3 ro = seg.ro;
     float3 rd = seg.rd;
     float3 throughput = seg.throughput;
@@ -464,6 +467,7 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
         state.rayConeWidth = rayConeWidth;
         state.hitDistance = payload.hitT;
         state.previousPdf = bsdfPdf;
+        state.previousCelestial = showCelestial;
         state.hitDepth = hitDepth;
         if (material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC || material == MATERIAL_PARTICLE) {
             state.opaquePrefix = false;
@@ -537,7 +541,8 @@ void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, Pa
     reuseCanonicalizeReplayPayload();
     ReuseOpaqueVertex fresh = reuseOpaqueVertex(replayedPos,
             payload.normal, replay.incomingDirection, replay.rayConeWidth, replay.hitDepth, sssMode, sssMaxEvents);
-    ReuseEventEvaluation evaluated = reuseEvaluateEvent(fresh, record);
+    ReuseEventEvaluation evaluated = reuseEvaluateEvent(fresh, record, replay.rayOrigin, replay.incomingDirection,
+            replay.previousPdf, replay.previousCelestial);
     float3 scatter = replay.scatterPrefix * evaluated.weight;
     float3 incident = reuseLoadIncident(record);
     float3 referenceEvent = referenceScatter * incident;
@@ -860,6 +865,9 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             // payload.albedo. The packed show-celestial flag decides whether this path segment may see
             // the sprite. All of it is reached one way only, so it takes the throughput unweighted.
             float3 sky = float3(payload.albedo);
+            float3 plainSky = sky;
+            float3 analyticEndpoint = float3(0.0, 0.0, 0.0);
+            float analyticEndpointPdf = 0.0;
             // The celestial light, if this ray landed inside it and its lobe had a density to weigh.
             // payload.f0 carries the light's irradiance; the solid angle is what turns it into the
             // radiance a ray arriving from that direction actually sees.
@@ -868,6 +876,10 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         ? squareLightDirectionalPdf(worldPush.lightDir.xyz, lightHalfAngle, rd)
                         : pdfLight;
                 float3 analyticLe = float3(payload.f0) * landedLightPdf;
+                if (worldPush.skyProvider == SKY_PROVIDER_ENVIRONMENT || (misActive && bsdfPdf >= 0.0)) {
+                    analyticEndpoint = analyticLe;
+                    analyticEndpointPdf = misActive && bsdfPdf >= 0.0 ? landedLightPdf : 0.0;
+                }
                 if (worldPush.skyProvider == SKY_PROVIDER_ENVIRONMENT) {
                     // Environment miss excludes disk Le from payload.albedo whenever the NEE proposal
                     // supports it. Primary/delta paths take Le once; finite glossy paths MIS-weight it.
@@ -880,6 +892,28 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             }
             // The throughput already carries what the clouds let through.
             L += throughput * sky; // escaped to sky
+            if (dTailActive && !dTailIndirect) {
+                PackedPathReservoir hitRecord = reuseHitEventRecord(dRecord, 0.0);
+                float3 incident = dTailWeight * plainSky;
+                bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, hitRecord, dSourceWeight,
+                        incident, rrSurvival, REUSE_D_ENDPOINT_SKY, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, dSourceScatterWeight,
+                        dSourceSamplePdf, dSourceScatterSupported);
+                if (identityCheck && candidate) {
+                    reuseDiagnoseEventFactor(dSourceWeight, incident, throughput * plainSky * rrSurvival);
+                }
+                float share = reuseLocalHitMis(bsdfPdf, analyticEndpointPdf);
+                hitRecord = reuseHitEventRecord(dRecord, analyticEndpointPdf);
+                incident = dTailWeight * analyticEndpoint;
+                candidate = reuseTreeUpdateRecord(dTree, selectedRecord, hitRecord, dSourceWeight * share,
+                        incident, rrSurvival, REUSE_D_ENDPOINT_SKY, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, dSourceScatterWeight * share,
+                        dSourceSamplePdf, dSourceScatterSupported);
+                if (identityCheck && candidate) {
+                    reuseDiagnoseEventFactor(dSourceWeight * share, incident,
+                            throughput * analyticEndpoint * share * rrSurvival);
+                }
+            }
             if (dTailActive && dTailIndirect) {
                 float3 incident = dTailWeight * sky;
                 bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
@@ -1117,27 +1151,51 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         //     densities meet and MIS weighs them. This is what replaces the gate for terrain, and it is
         //     what removes the double count on a specular bounce: RIS at the previous vertex estimated
         //     this emitter through the specular lobe too, and until now both were counted in full.
-        float emitterShare = 1.0;
-        if (risOn && payloadEmitterInList()) {
-            // The 1/0 gate is also what OFF means: FLAG_EMITTER_MIS_OFF sends the second case down the
-            // first one's path, which is bit for bit the gate that stood here before M24 S4b.
-            if (payloadEmitterProxied() || !emitterMisOn()) {
-                emitterShare = showCelestial ? 1.0 : 0.0;
-            } else {
-                // bsdfPdf is the density of the ray that arrived here; negative marks a DELTA lobe, which
-                // has no finite density for the emitter strategy to compete with and therefore takes all
-                // of it -- a mirror shows the emitter, and RIS's own specular term vanishes at alpha 0.
-                float cosAtEmitter = max(0.0, dot(n, -rd));
-                float travelled = max(dot(hitPos - ro, hitPos - ro), 1.0e-6);
-                float3 emitted = albedo * emission * worldPush.emitterTint.xyz;
-                emitterShare = bsdfPdf < 0.0 ? 1.0
-                        : powerHeuristic(bsdfAreaDensity(bsdfPdf, cosAtEmitter, travelled),
-                                         emitterAreaDensity(emitted));
-            }
-        }
+        float emitterShare = reuseLocalEmitterShare(risOn, showCelestial, bsdfPdf,
+                n, hitPos, ro, rd, albedo, emission);
         if (emission > 0.0 && emitterShare > 0.0) {
             L += throughput * albedo * emission * worldPush.emitterTint.xyz * emitterShare
                     * rainBaseExitTransmission(bc);
+            if (!pathReservoirEmpty(localRecord)) {
+                PackedPathReservoir eventRecord = reuseLocalEventRecord(localRecord, REUSE_TECHNIQUE_L,
+                        REUSE_LOCAL_EMISSION, float3(0.0, 0.0, 0.0), 1.0);
+                float3 response = albedo * emission * emitterShare * rainBaseExitTransmission(bc);
+                bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, eventRecord,
+                        throughput * rrSurvival * response, worldPush.emitterTint.xyz, rrSurvival,
+                        REUSE_D_ENDPOINT_EMITTER, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, scatteringPrefix * response, 1.0,
+                        scatteringPrefixSupported);
+                if (identityCheck && candidate) {
+                    reuseDiagnoseEventFactor(throughput * rrSurvival * response, worldPush.emitterTint.xyz,
+                            throughput * albedo * emission * worldPush.emitterTint.xyz * emitterShare
+                            * rainBaseExitTransmission(bc) * rrSurvival);
+                }
+            }
+            if (dTailActive && !dTailIndirect) {
+                float competingPdf = 0.0;
+                float endpointGeometry = 0.0;
+                if (risOn && payloadEmitterInList() && !payloadEmitterProxied() && emitterMisOn()) {
+                    float cosAtEmitter = max(0.0, dot(n, -rd));
+                    float travelled = max(dot(hitPos - ro, hitPos - ro), 1.0e-6);
+                    endpointGeometry = cosAtEmitter / travelled;
+                    competingPdf = emitterAreaDensity(albedo * emission * worldPush.emitterTint.xyz);
+                }
+                PackedPathReservoir hitRecord = reuseHitEventRecord(dRecord, competingPdf);
+                if (endpointGeometry > 0.0) {
+                    hitRecord = reuseHitAreaRecord(dRecord, competingPdf, endpointGeometry);
+                }
+                float3 incident = dTailWeight * albedo * emission * worldPush.emitterTint.xyz
+                        * rainBaseExitTransmission(bc);
+                bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, hitRecord,
+                        dSourceWeight * emitterShare, incident, rrSurvival, REUSE_D_ENDPOINT_EMITTER, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, dSourceScatterWeight * emitterShare,
+                        dSourceSamplePdf, dSourceScatterSupported);
+                if (identityCheck && candidate) {
+                    reuseDiagnoseEventFactor(dSourceWeight * emitterShare, incident,
+                            throughput * albedo * emission * worldPush.emitterTint.xyz * emitterShare
+                            * rainBaseExitTransmission(bc) * rrSurvival);
+                }
+            }
             if (dTailActive && dTailIndirect) {
                 float3 incident = dTailWeight * albedo * emission * worldPush.emitterTint.xyz * emitterShare
                         * rainBaseExitTransmission(bc);

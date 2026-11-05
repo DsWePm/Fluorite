@@ -1068,6 +1068,7 @@ public struct PackedPathReservoir {
     public uint   dirY;
     public uint   dirZ;
     public float  neePdf;
+    // Current event density, except H kind 2: fixed outgoing endpoint geometry for area-measure MIS.
     public float  sourcePdf;
 };
 

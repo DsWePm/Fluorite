@@ -216,12 +216,14 @@ public final class RtPathReservoirStats {
         long localT = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 268L));
         allFrames.add(src.mapped);
         if (lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
+                || sourceFactorPass != sourceFactorAttempt
                 || sourceReplayScope + sourceReplayMiss + sourceReplayGeometry + sourceReplayInvalid + sourceReplayNumeric != 0L) {
             FluoriteMod.LOGGER.warn("RT path reuse failed readback {}: lobe {} (invalid {}, pdf<=0.1% {}, weight<=0.1% {}, "
-                            + "max pdf {}, weight {}); fresh scope {}, miss {}, geometry {}, invalid {}, numeric {}",
+                            + "max pdf {}, weight {}); fresh scope {}, miss {}, geometry {}, invalid {}, numeric {}; factors {}/{}",
                     allFrames.frames, lobeAttempt, lobeInvalid, lobePdfLow, lobeWeightLow,
                     relativePercentage(lobePdfMax), relativePercentage(lobeWeightMax), sourceReplayScope,
-                    sourceReplayMiss, sourceReplayGeometry, sourceReplayInvalid, sourceReplayNumeric);
+                    sourceReplayMiss, sourceReplayGeometry, sourceReplayInvalid, sourceReplayNumeric,
+                    sourceFactorPass, sourceFactorAttempt);
         }
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;
@@ -273,7 +275,7 @@ public final class RtPathReservoirStats {
                         + "(scope {}, miss {}, geometry {}, invalid {}, numeric {}); max scatter {}, pdf {}, jac {}; "
                         + "direction codec {} (bits changed {}, max pdf {}, weight {}); incident max {}; "
                         + "D surface candidates ambient {} thin {}, records ambient {} thin {}; local records S {} L {} H {} T {}; "
-                        + "fresh geometry reasons missing {} ambiguous {} invalid {} position {}",
+                        + "fresh geometry reasons missing {} ambiguous {} invalid {} position {}; source factors {}/{}",
                 allFrames.frames, allFrames.count(20), allFrames.count(21), allFrames.count(22), allFrames.count(23),
                 relativePercentage(allFrames.maximum(24)), relativePercentage(allFrames.maximum(25)),
                 allFrames.count(54), allFrames.count(48), allFrames.count(55), allFrames.count(49),
@@ -284,7 +286,7 @@ public final class RtPathReservoirStats {
                 relativePercentage(allFrames.maximum(38)), allFrames.count(60), allFrames.count(61),
                 allFrames.count(62), allFrames.count(63), allFrames.count(64), allFrames.count(65),
                 allFrames.count(66), allFrames.count(67), allFrames.count(68), allFrames.count(69),
-                allFrames.count(70), allFrames.count(71));
+                allFrames.count(70), allFrames.count(71), allFrames.count(18), allFrames.count(17));
     }
 
     private static String percentage(long passed, long attempted) {

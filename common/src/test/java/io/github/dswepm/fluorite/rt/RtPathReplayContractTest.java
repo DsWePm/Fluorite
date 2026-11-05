@@ -268,6 +268,7 @@ final class RtPathReplayContractTest {
         String reuseFile = source("shaders/world/path_reuse_trace.slang");
         // R2b-16 extracts the existing local sun response verbatim, without dropping it from the proof.
         reuseFile += "\n" + source("shaders/world/path_reuse_local.slang");
+        reuseFile += "\n" + source("shaders/world/path_reuse_emission.slang");
 
         // R2b-8: the user approved this one algebraically equivalent Schlick substitution. Keep the
         // remainder of the strict shipped-line proof, including RNG, ray directions, PDF and weights.

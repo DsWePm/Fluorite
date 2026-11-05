@@ -5,21 +5,32 @@ struct ReuseEventEvaluation {
     bool valid;
 };
 
-ReuseEventEvaluation reuseEvaluateEvent(ReuseOpaqueVertex vertex, PackedPathReservoir record) {
+ReuseEventEvaluation reuseEvaluateEvent(ReuseOpaqueVertex vertex, PackedPathReservoir record,
+        float3 rayOrigin, float3 incomingDirection, float previousPdf, bool previousCelestial) {
     ReuseEventEvaluation event;
     event.weight = float3(0.0, 0.0, 0.0);
     event.pdf = 0.0;
     event.valid = false;
+    if (pathReservoirEmpty(record)) return event;
     uint technique = (record.bits >> REUSE_RECORD_TECHNIQUE_SHIFT) & 7u;
     uint kind = (record.bits >> REUSE_RECORD_EVENT_KIND_SHIFT) & 15u;
     uint lobe = (record.bits >> REUSE_RECORD_LOBE_SHIFT) & 7u;
     float3 direction = reuseLoadDirection(record);
     if (technique == REUSE_TECHNIQUE_D || technique == REUSE_TECHNIQUE_H) {
+        if ((technique == REUSE_TECHNIQUE_D && kind != 0u)
+                || (technique == REUSE_TECHNIQUE_H && kind > 2u)
+                || record.neePdf < 0.0 || !isfinite(record.neePdf)
+                || (kind == 2u && (!(record.sourcePdf > 0.0) || !isfinite(record.sourcePdf)))) return event;
         ReuseContinuationSample evaluated = reuseEvaluateContinuation(vertex.bc, vertex.pf, vertex.ps,
                 vertex.walkSssShare, lobe, direction);
         event.weight = evaluated.weight;
+        if (technique == REUSE_TECHNIQUE_H) {
+            // Emitter-hit MIS keeps the original area-measure epsilon, rather than moving it to angle measure.
+            event.weight *= kind == 2u ? powerHeuristic(evaluated.pdf * record.sourcePdf, record.neePdf)
+                    : reuseLocalHitMis(evaluated.pdf, record.neePdf);
+        }
         event.pdf = evaluated.pdf;
-        event.valid = reuseAnalyticContinuation(evaluated);
+        event.valid = reuseAnalyticContinuation(evaluated) && reuseNonnegativeFinite(event.weight);
         return event;
     }
     if (lobe != REUSE_LOBE_NONE) return event;
@@ -30,6 +41,13 @@ ReuseEventEvaluation reuseEvaluateEvent(ReuseOpaqueVertex vertex, PackedPathRese
     bool misActive = (worldPush.flags & 32u) != 0u && halfAngle > 0.0;
     if (technique == REUSE_TECHNIQUE_L && kind == REUSE_LOCAL_AMBIENT) {
         event.weight = reuseLocalAmbientWeight(vertex.bc);
+        event.pdf = 1.0;
+    } else if (technique == REUSE_TECHNIQUE_L && kind == REUSE_LOCAL_EMISSION) {
+        bool risOn = worldPush.risCandidates > 0u && worldPush.lightCount > 0u && pc.lightBufAddr != 0;
+        float emission = payloadEmission();
+        float share = reuseLocalEmitterShare(risOn, previousCelestial, previousPdf, vertex.n,
+                vertex.bc.hitPos, rayOrigin, incomingDirection, vertex.albedo, emission);
+        event.weight = vertex.albedo * emission * share * rainBaseExitTransmission(vertex.bc);
         event.pdf = 1.0;
     } else if (technique == REUSE_TECHNIQUE_S && celestialOn) {
         float ndl = max(0.0, dot(vertex.bc.n, direction));
@@ -104,4 +122,26 @@ PackedPathReservoir reuseLocalEventRecord(PackedPathReservoir record, uint techn
     record = reuseStoreDirection(record, direction);
     uint previousLobe = (record.bits >> REUSE_RECORD_PREVIOUS_LOBE_SHIFT) & 7u;
     return reuseRecordSampling(record, previousLobe, kind, pdf, 0.0);
+}
+
+// H retains the chosen analytic outgoing lobe, but never bakes its old hit MIS into incident RGB.
+PackedPathReservoir reuseHitEventRecord(PackedPathReservoir record, float competingPdf) {
+    if (pathReservoirEmpty(record)) return record;
+    record.bits = (record.bits & ~(7u << REUSE_RECORD_TECHNIQUE_SHIFT))
+            | (REUSE_TECHNIQUE_H << REUSE_RECORD_TECHNIQUE_SHIFT);
+    uint previousLobe = (record.bits >> REUSE_RECORD_PREVIOUS_LOBE_SHIFT) & 7u;
+    return reuseRecordSampling(record, previousLobe, competingPdf > 0.0 ? 1u : 0u,
+            record.sourcePdf, competingPdf);
+}
+
+// H kind 2 uses sourcePdf's tagged auxiliary lane for the fixed outgoing endpoint geometry.
+// The incoming connection density is reevaluated; its source value is already in jacDenom.
+PackedPathReservoir reuseHitAreaRecord(PackedPathReservoir record, float areaPdf, float geometry) {
+    if (!(geometry > 0.0) || !isfinite(geometry)) return emptyPathReservoir();
+    record = reuseHitEventRecord(record, areaPdf);
+    uint previousLobe = (record.bits >> REUSE_RECORD_PREVIOUS_LOBE_SHIFT) & 7u;
+    record = reuseRecordSampling(record, previousLobe, 2u, record.sourcePdf, areaPdf);
+    if (pathReservoirEmpty(record)) return record;
+    record.sourcePdf = geometry;
+    return record;
 }

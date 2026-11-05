@@ -26,7 +26,7 @@ final class RtPathSourceReplayTest {
         assertTrue(start>=0 && end>start);
         String function=s.substring(start,end);
         for(String term:new String[]{"record.pathSeed, depth", "reuseOpaqueVertex(",
-                "payload.normal, replay.incomingDirection, replay.rayConeWidth", "reuseEvaluateEvent(fresh, record)",
+                "payload.normal, replay.incomingDirection, replay.rayConeWidth", "reuseEvaluateEvent(fresh, record, replay.rayOrigin",
                 "replay.scatterPrefix * evaluated.weight", "replay.previousPdf * reuseRayGeometry(",
                 "replay.hitDistance, geometry.normal)", "record.jacDenom"}) assertTrue(function.contains(term),term);
         assertFalse(function.contains("BsdfContext original") || function.contains("scatter = referenceScatter"));
