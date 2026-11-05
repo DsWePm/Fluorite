@@ -44,13 +44,13 @@ float reuseRayGeometry(float3 direction, float distance, float3 destinationNorma
 
 // Parameterised Enhanced Eq. 5. Threshold policy is supplied by the caller, never inferred by squaring
 // stored roughness. Diffuse x_k skips the inverse test (paper footnote 6). No epsilon/energy clamp.
-bool reuseFootprintEligible(ReuseContinuationSample previous, ReuseContinuationSample current,
+bool reuseEventFootprintEligible(ReuseContinuationSample previous, float currentPdf, bool viewIndependent,
                             float3 edgeDirection, float edgeDistance,
                             float3 previousNormal, float3 reconNormal,
                             float primaryDistanceSq, float primaryCosine,
                             float alphaMin, float footprintScale, out float jacDenom) {
     jacDenom = 0.0;
-    if (!reuseAnalyticContinuation(previous) || !reuseAnalyticContinuation(current)
+    if (!reuseAnalyticContinuation(previous) || !(currentPdf > 0.0) || !isfinite(currentPdf)
             || !isfinite(previous.alpha) || previous.alpha < alphaMin
             || !(primaryDistanceSq > 0.0) || !isfinite(primaryDistanceSq)
             || !(primaryCosine > 0.0) || !isfinite(primaryCosine)
@@ -62,16 +62,16 @@ bool reuseFootprintEligible(ReuseContinuationSample previous, ReuseContinuationS
     float forwardDensity = previous.pdf * forwardG;
     float primaryFootprint = (footprintScale / 100.0) * (4.0 * PI)
             * primaryDistanceSq / primaryCosine;
-    float sourceDenominator = forwardDensity * current.pdf;
+    float sourceDenominator = forwardDensity * currentPdf;
     if (!(forwardDensity > 0.0) || !isfinite(forwardDensity)
             || !(primaryFootprint > 0.0) || !isfinite(primaryFootprint)
             || !(sourceDenominator > 0.0) || !isfinite(sourceDenominator)
             || forwardDensity * primaryFootprint > 1.0) {
         return false;
     }
-    if (current.lobe != REUSE_LOBE_DIFFUSE) {
+    if (!viewIndependent) {
         float reverseG = reuseRayGeometry(-edgeDirection, edgeDistance, previousNormal);
-        float reverseDensity = current.pdf * reverseG;
+        float reverseDensity = currentPdf * reverseG;
         if (!(reverseDensity > 0.0) || !isfinite(reverseDensity)
                 || reverseDensity * primaryFootprint > 1.0) {
             return false;
@@ -79,4 +79,18 @@ bool reuseFootprintEligible(ReuseContinuationSample previous, ReuseContinuationS
     }
     jacDenom = sourceDenominator;
     return true;
+}
+
+// A continuation carries a sampled analytic lobe; local NEE and terminal events have lobe index zero.
+// Their event density is independent of the incoming view, so only the forward footprint applies.
+bool reuseFootprintEligible(ReuseContinuationSample previous, ReuseContinuationSample current,
+                            float3 edgeDirection, float edgeDistance,
+                            float3 previousNormal, float3 reconNormal,
+                            float primaryDistanceSq, float primaryCosine,
+                            float alphaMin, float footprintScale, out float jacDenom) {
+    jacDenom = 0.0;
+    if (!reuseAnalyticContinuation(current)) return false;
+    return reuseEventFootprintEligible(previous, current.pdf, current.lobe == REUSE_LOBE_DIFFUSE,
+            edgeDirection, edgeDistance, previousNormal, reconNormal, primaryDistanceSq, primaryCosine,
+            alphaMin, footprintScale, jacDenom);
 }

@@ -14,6 +14,7 @@
 #include "path_reuse_fresnel.slang"
 #include "path_reuse_dot.slang"
 #include "path_reuse_eval.slang"
+#include "path_reuse_codec_eval.slang"
 #include "path_reuse_local.slang"
 #include "path_reuse_numerics.slang"
 
@@ -381,6 +382,8 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
     return true;
 }
 
+#include "path_reuse_event.slang"
+
 // ---- The hybrid shift's replay (R1b-3), and the self-check that proves it re-drives a path.
 //
 // A replay re-traces a recorded path from a pixel's first pass-B vertex with the record's seed: the same
@@ -524,6 +527,9 @@ void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, Pa
     float3 delta = geometry.position - record.reconPos;
     if (geometryStatus != REUSE_GEOMETRY_OK || dot(delta, delta) > tolerance * tolerance) {
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[52], 1u);
+        uint reason = geometryStatus >= REUSE_GEOMETRY_MISSING && geometryStatus <= REUSE_GEOMETRY_INVALID
+                ? 68u + geometryStatus - REUSE_GEOMETRY_MISSING : 71u;
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[reason], 1u);
         return;
     }
     uint sssMode = (worldPush.flags >> 7u) & 3u;
@@ -531,16 +537,14 @@ void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, Pa
     reuseCanonicalizeReplayPayload();
     ReuseOpaqueVertex fresh = reuseOpaqueVertex(replayedPos,
             payload.normal, replay.incomingDirection, replay.rayConeWidth, replay.hitDepth, sssMode, sssMaxEvents);
-    uint lobe = (record.bits >> REUSE_RECORD_LOBE_SHIFT) & 7u;
-    ReuseContinuationSample evaluated = reuseEvaluateContinuation(fresh.bc, fresh.pf, fresh.ps,
-            fresh.walkSssShare, lobe, reuseLoadDirection(record));
+    ReuseEventEvaluation evaluated = reuseEvaluateEvent(fresh, record);
     float3 scatter = replay.scatterPrefix * evaluated.weight;
     float3 incident = reuseLoadIncident(record);
     float3 referenceEvent = referenceScatter * incident;
     float3 replayedEvent = scatter * incident;
     float denominator = replay.previousPdf * reuseRayGeometry(
             replay.incomingDirection, replay.hitDistance, geometry.normal) * evaluated.pdf;
-    if (!reuseAnalyticContinuation(evaluated) || !reuseNonnegativeFinite(scatter)
+    if (!evaluated.valid || !reuseNonnegativeFinite(scatter)
             || !reuseNonnegativeFinite(incident) || !reuseNonnegativeFinite(referenceEvent)
             || !reuseNonnegativeFinite(replayedEvent)
             || !reuseNonnegativeFinite(referenceScatter) || !(referencePdf > 0.0) || !isfinite(referencePdf)
@@ -565,9 +569,18 @@ void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, Pa
 }
 
 // Diagnostics compare each accepted event to its original traced term with external RR removed.
+void reuseDiagnoseEventFactor(float3 sourceWeight, float3 incident, float3 actual) {
+    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[17], 1u);
+    float3 factored = sourceWeight * incident;
+    float scale = max(max(actual.r, actual.g), actual.b);
+    if (all(abs(factored - actual) <= 2.0e-5 * max(scale, 1.0e-30))) {
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[18], 1u);
+    }
+}
+
 void reuseDiagnoseDEvent(float3 sourceWeight, float3 incident, float3 actual, uint endpoint) {
     InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[13], 1u);
-    InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[17], 1u);
+    reuseDiagnoseEventFactor(sourceWeight, incident, actual);
     if (endpoint == REUSE_D_ENDPOINT_SKY) {
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[44], 1u);
     } else if (endpoint == REUSE_D_ENDPOINT_EMITTER) {
@@ -576,11 +589,6 @@ void reuseDiagnoseDEvent(float3 sourceWeight, float3 incident, float3 actual, ui
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[60], 1u);
     } else if (endpoint == REUSE_D_ENDPOINT_THIN) {
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[61], 1u);
-    }
-    float3 factored = sourceWeight * incident;
-    float scale = max(max(actual.r, actual.g), actual.b);
-    if (all(abs(factored - actual) <= 2.0e-5 * max(scale, 1.0e-30))) {
-        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[18], 1u);
     }
 }
 
@@ -697,6 +705,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     PackedPathReservoir dRecord = emptyPathReservoir();
     PackedPathReservoir selectedRecord = emptyPathReservoir();
     ReusePathTree dTree = emptyReusePathTree();
+    ReuseEventReference selectedReference = emptyReuseEventReference();
     bool dReconChosen = false;
     bool dTailActive = false;
     // H owns the first BSDF hit after x_k; D terminal hits need another analytic continuation.
@@ -875,6 +884,8 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 float3 incident = dTailWeight * sky;
                 bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
                         REUSE_D_ENDPOINT_SKY, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, dSourceScatterWeight,
+                        dSourceSamplePdf, dSourceScatterSupported);
                 if (identityCheck && candidate) {
                     reuseDiagnoseDEvent(dSourceWeight, incident, throughput * sky * rrSurvival,
                             REUSE_D_ENDPOINT_SKY);
@@ -1040,17 +1051,39 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         BsdfContext bc = vtx.bc;
         float pf = vtx.pf;
 
+        PackedPathReservoir localRecord = emptyPathReservoir();
+        if (recordPath && !dReconChosen && hitDepth >= 1 && footprintPrimaryValid
+                && footprintPreviousValid && !footprintPrefixWalk
+                && hitGeometryStatus == REUSE_GEOMETRY_OK) {
+            localRecord = reuseMakeLocalRecord(footprintPrimary, footprintPrevious, hitGeometry,
+                    footprintPreviousSample, footprintEdgeDirection, footprintEdgeDistance, seg.ro,
+                    pathSeedBase, uint(hitDepth + 1), activeMediumFlags);
+        }
+
         // Same D78A floor as particles. Diffuse only: inventing an all-direction specular environment
         // response would be a second, stronger approximation and was not approved. Metals therefore
         // still need an actual local emitter or traced environment path.
         if ((worldPush.environmentFlags & ENVIRONMENT_AMBIENT_UNOCCLUDED) != 0u) {
             L += throughput * diffAlb * rainBaseTransmission(bc, n)
                     * worldPush.mediumSkyRadiance.xyz;
+            if (!pathReservoirEmpty(localRecord)) {
+                float3 response = reuseLocalAmbientWeight(bc);
+                bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, localRecord, throughput * rrSurvival * response,
+                        worldPush.mediumSkyRadiance.xyz, rrSurvival, REUSE_D_ENDPOINT_AMBIENT, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, scatteringPrefix * response, 1.0,
+                        scatteringPrefixSupported);
+                if (identityCheck && candidate) {
+                    reuseDiagnoseEventFactor(throughput * rrSurvival * response, worldPush.mediumSkyRadiance.xyz,
+                            throughput * diffAlb * rainBaseTransmission(bc, n) * worldPush.mediumSkyRadiance.xyz * rrSurvival);
+                }
+            }
             if (dTailActive) {
                 float3 incident = dTailWeight * diffAlb * rainBaseTransmission(bc, n)
                         * worldPush.mediumSkyRadiance.xyz;
                 bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
                         REUSE_D_ENDPOINT_AMBIENT, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, dSourceScatterWeight,
+                        dSourceSamplePdf, dSourceScatterSupported);
                 if (identityCheck && candidate) {
                     float3 actual = throughput * diffAlb * rainBaseTransmission(bc, n)
                             * worldPush.mediumSkyRadiance.xyz * rrSurvival;
@@ -1110,6 +1143,8 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         * rainBaseExitTransmission(bc);
                 bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
                         REUSE_D_ENDPOINT_EMITTER, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, dSourceScatterWeight,
+                        dSourceSamplePdf, dSourceScatterSupported);
                 if (identityCheck && candidate) {
                     float3 actual = throughput * albedo * emission * worldPush.emitterTint.xyz * emitterShare
                             * rainBaseExitTransmission(bc) * rrSurvival;
@@ -1168,11 +1203,27 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 float3 brdf = reuseLocalSunBrdf(bc, ext, pf, ps, walkSssShare,
                         misActive, exactSpecular, pdfLight, lightDir, ndl);
                 L += throughput * brdf * sampledLightIrradiance * ndl * vis;
+                if (!pathReservoirEmpty(localRecord)) {
+                    float eventPdf = pdfLight > 0.0 ? pdfLight : 1.0;
+                    PackedPathReservoir eventRecord = reuseLocalEventRecord(localRecord, REUSE_TECHNIQUE_S,
+                            0u, lightDir, eventPdf);
+                    float3 response = brdf * ndl;
+                    bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, eventRecord, throughput * rrSurvival * response,
+                            sampledLightIrradiance * vis, rrSurvival, REUSE_D_ENDPOINT_SOLAR, reuseSeed);
+                    reuseSelectReference(dTree, selectedReference, scatteringPrefix * response, eventPdf,
+                            scatteringPrefixSupported);
+                    if (identityCheck && candidate) {
+                        reuseDiagnoseEventFactor(throughput * rrSurvival * response, sampledLightIrradiance * vis,
+                                throughput * brdf * sampledLightIrradiance * ndl * vis * rrSurvival);
+                    }
+                }
                 // One deeper solar endpoint is one D path-tree candidate, not a sum of suffix terms.
                 // The immediate BSDF emitter/sky hit is H; deeper terminal hits are added separately.
                 if (dTailActive) {
                     float3 incident = dTailWeight * brdf * sampledLightIrradiance * ndl * vis;
                     bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival, REUSE_D_ENDPOINT_SOLAR, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, dSourceScatterWeight,
+                        dSourceSamplePdf, dSourceScatterSupported);
                     if (identityCheck && candidate) {
                         float3 actual = throughput * brdf * sampledLightIrradiance * ndl * vis * rrSurvival;
                         reuseDiagnoseDEvent(dSourceWeight, incident, actual, REUSE_D_ENDPOINT_SOLAR);
@@ -1231,11 +1282,28 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                     L += throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
                             * rainBaseExitTransmission(bc)
                             * sampledLightIrradiance * visB;
+                    if (!pathReservoirEmpty(localRecord)) {
+                        float eventPdf = pdfLight > 0.0 ? pdfLight : 1.0;
+                        PackedPathReservoir eventRecord = reuseLocalEventRecord(localRecord, REUSE_TECHNIQUE_T,
+                                0u, lightDir, eventPdf);
+                        float3 response = reuseLocalThinWeight(bc, lightDir, sssStrength(), sssPhase(cosT));
+                        bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, eventRecord, throughput * rrSurvival * response,
+                                sampledLightIrradiance * visB, rrSurvival, REUSE_D_ENDPOINT_THIN, reuseSeed);
+                        reuseSelectReference(dTree, selectedReference, scatteringPrefix * response, eventPdf,
+                                scatteringPrefixSupported);
+                        if (identityCheck && candidate) {
+                            reuseDiagnoseEventFactor(throughput * rrSurvival * response, sampledLightIrradiance * visB,
+                                    throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
+                                    * rainBaseExitTransmission(bc) * sampledLightIrradiance * visB * rrSurvival);
+                        }
+                    }
                     if (dTailActive) {
                         float3 incident = dTailWeight * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
                                 * rainBaseExitTransmission(bc) * sampledLightIrradiance * visB;
                         bool candidate = reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival,
                                 REUSE_D_ENDPOINT_THIN, reuseSeed);
+                reuseSelectReference(dTree, selectedReference, dSourceScatterWeight,
+                        dSourceSamplePdf, dSourceScatterSupported);
                         if (identityCheck && candidate) {
                             float3 actual = throughput * diffAlb * sss * sssStrength() * sssPhase(cosT) * backNdl
                                     * rainBaseExitTransmission(bc) * sampledLightIrradiance * visB * rrSurvival;
@@ -1309,8 +1377,10 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 dRecord.objectId = footprintPrimary.objectId;
                 dRecord.primaryUv = packHalf2(footprintPrimary.uv);
                 if (identityCheck) {
-                    ReuseContinuationSample evaluated = reuseEvaluateContinuation(
-                            bc, pf, ps, walkSssShare, continuation.lobe, rd);
+                    ReuseContinuationSample evaluated;
+                    ReuseContinuationSample packedEval;
+                    reuseEvaluateDirectionPair(bc, pf, ps, walkSssShare, continuation.lobe,
+                            rd, reuseLoadDirection(dRecord), evaluated, packedEval);
                     InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[20], 1u);
                     bool sourceCompositionValid = false;
                     if (!reuseAnalyticContinuation(evaluated)) {
@@ -1340,8 +1410,6 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         }
                     }
                     float3 packedDirection = reuseLoadDirection(dRecord);
-                    ReuseContinuationSample packedEval = reuseEvaluateContinuation(
-                            bc, pf, ps, walkSssShare, continuation.lobe, packedDirection);
                     // Isolate serialization from sampled-vs-reconstructed half-vector roundoff.
                     // The older represented-contribution lanes below intentionally retain both.
                     InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[40], 1u);
@@ -1413,8 +1481,10 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                                 worldPush.frameIndex & 1u)] = produced;
         if (identityCheck && !pathReservoirEmpty(produced)) {
             reuseDiagnoseSourceScatter(seg, entryMediumFlags, produced,
-                    dSourceScatterWeight, dSourceSamplePdf, dSourceScatterSupported);
+                    selectedReference.scatterWeight, selectedReference.sourcePdf, selectedReference.supported);
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[14], 1u);
+            uint producedTechnique = (produced.bits >> REUSE_RECORD_TECHNIQUE_SHIFT) & 7u;
+            if (producedTechnique == REUSE_TECHNIQUE_D) {
             if (dTree.selectedEndpoint == REUSE_D_ENDPOINT_SKY) {
                 InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[46], 1u);
             } else if (dTree.selectedEndpoint == REUSE_D_ENDPOINT_EMITTER) {
@@ -1424,10 +1494,14 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             } else if (dTree.selectedEndpoint == REUSE_D_ENDPOINT_THIN) {
                 InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[63], 1u);
             }
+            } else if (producedTechnique >= REUSE_TECHNIQUE_S && producedTechnique <= REUSE_TECHNIQUE_T) {
+                InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[64u + producedTechnique - REUSE_TECHNIQUE_S], 1u);
+            }
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[
                     ((produced.bits >> REUSE_RECORD_DEPTH_SHIFT) & 15u) == 2u ? 15 : 16], 1u);
             // Compare the represented source contribution, including float32 direction and stored RGB.
             // Positions/normals/UV, prefix replay and connection visibility are not reevaluated here.
+            if (((produced.bits >> REUSE_RECORD_TECHNIQUE_SHIFT) & 7u) == REUSE_TECHNIQUE_D) {
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[26], 1u);
             if (!dPackedSourceValid) {
                 InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[27], 1u);
@@ -1459,6 +1533,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[39], 1u);
                     }
                 }
+            }
             }
         }
         if (identityCheck && dTree.weightSum > 0.0 && pathReservoirEmpty(produced)) {

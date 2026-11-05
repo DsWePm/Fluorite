@@ -111,8 +111,8 @@ class RtPathFootprintTest {
     void shaderFormulaAndItsConsumerUseTheSameParameters() throws Exception {
         String s = source("shaders/world/path_reuse_sampling.slang");
         for (String term : new String[] {"previous.alpha < alphaMin", "previous.pdf * forwardG",
-                "forwardDensity * current.pdf", "(footprintScale / 100.0) * (4.0 * PI)",
-                "primaryDistanceSq / primaryCosine", "current.lobe != REUSE_LOBE_DIFFUSE",
+                "forwardDensity * currentPdf", "(footprintScale / 100.0) * (4.0 * PI)",
+                "primaryDistanceSq / primaryCosine", "current.lobe == REUSE_LOBE_DIFFUSE", "if (!viewIndependent)",
                 "reuseRayGeometry(-edgeDirection, edgeDistance, previousNormal)",
                 "forwardDensity * primaryFootprint > 1.0", "reverseDensity * primaryFootprint > 1.0",
                 "jacDenom = sourceDenominator", "REUSE_MIN_ALPHA = 0.2", "REUSE_FOOTPRINT_SCALE = 0.02"})
@@ -140,7 +140,7 @@ class RtPathFootprintTest {
         assertTrue(loop.contains("pathReservoirStatsAddr)[10], 1u"));
         assertTrue(loop.contains("pathReservoirStatsAddr)[hitDepth == 1 ? 11 : 12], 1u"));
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
-        assertEquals(64, RtPathReservoirStats.LANES);
+        assertEquals(72, RtPathReservoirStats.LANES);
         for (int i = 9; i < 13; i++) assertTrue(stats.contains("memGetInt(src.mapped + " + i * 4 + "L)"));
         assertTrue(stats.contains("footprintAccepted, footprintAttempt"));
         assertTrue(stats.contains("footprintK2, footprintK3"));

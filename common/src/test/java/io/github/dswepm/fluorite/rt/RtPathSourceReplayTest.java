@@ -26,10 +26,13 @@ final class RtPathSourceReplayTest {
         assertTrue(start>=0 && end>start);
         String function=s.substring(start,end);
         for(String term:new String[]{"record.pathSeed, depth", "reuseOpaqueVertex(",
-                "payload.normal, replay.incomingDirection, replay.rayConeWidth", "reuseLoadDirection(record)",
+                "payload.normal, replay.incomingDirection, replay.rayConeWidth", "reuseEvaluateEvent(fresh, record)",
                 "replay.scatterPrefix * evaluated.weight", "replay.previousPdf * reuseRayGeometry(",
                 "replay.hitDistance, geometry.normal)", "record.jacDenom"}) assertTrue(function.contains(term),term);
         assertFalse(function.contains("BsdfContext original") || function.contains("scatter = referenceScatter"));
+        String evaluator=source("shaders/world/path_reuse_event.slang");
+        assertTrue(evaluator.contains("reuseLoadDirection(record)"));
+        assertTrue(evaluator.contains("reuseEvaluateContinuation(vertex.bc, vertex.pf, vertex.ps,"));
     }
     @Test void theReplayStateExportsScatteringButDoesNotInventUnapprovedTransportSeeds() throws Exception {
         String s=source("shaders/world/path_reuse_trace.slang");
@@ -49,7 +52,7 @@ final class RtPathSourceReplayTest {
         assertFalse(s.contains("scatteringPrefix /=") || s.contains("scatteringPrefix *= segIntegral") || s.contains("scatteringPrefix *= clouds"));
     }
     @Test void diagnosticsPartitionEveryAttemptAndKeepDepthBinsAndOriginalTolerance() throws Exception {
-        assertEquals(64,RtPathReservoirStats.LANES); assertEquals(256,RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(72,RtPathReservoirStats.LANES); assertEquals(288,RtPathReservoirStats.BYTE_SIZE);
         String s=source("shaders/world/path_reuse_trace.slang");
         assertTrue(s.contains("depth == 2 ? 48 : 49")); assertTrue(s.contains("depth == 2 ? 54 : 55"));
         for(int i:new int[]{50,51,52,53,59}) assertTrue(s.contains("pathReservoirStatsAddr)["+i+"], 1u"));

@@ -954,3 +954,19 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 96 B记录的原尾padding 88/92分别存完整float32 NEE竞争PDF和源当前事件PDF；既有字段offset及stride不变，confPdf高半字现保留零。bits19–21存实际前驱采样瓣，22–25存事件子类；非法PDF/瓣返回空记录。Slang reflection生成Java ABI，布局/serializer同步更新，无额外显存、射线或随机数。
 
 70套/357项测试、52份shader构建/校验通过（3分23秒）；三OFF模块规整化字节与R2a相同。独立Vulkan直接include正式tree/record helper，20,003组不同记录位置/种子/PDF候选中，选中元数据与incident位模式错误0；weightSum/覆盖RGB/W/选中RGB最大相对误差分别2.582e-7/2.255e-7/2.636e-7/5.911e-8，零target与非法前驱瓣保持空。证据为同一11-05目录r2b17-*。本片未启动游戏，后续局部事件集成后一起做真实源检查；R2完整恒等/A→B→A、R3与待裁决项仍开放。
+
+## R2b-18（2026-11-05，D 编号待分配）：局部 S/L/T 记录与按事件重评
+
+将双足迹计算抽成事件密度入口，解析continuation包装器仍按原规则检查当前瓣；局部NEE/终端的lobe index为0，使用正有限事件PDF与前驱解析瓣/alpha门、前向足迹，跳过不依赖incoming view的逆向密度检查。不将它们冒充diffuse continuation。共享local record在采样continuation之前构造，所以bounce cap的局部照明也能入树；x1 DI、walk前缀、特殊主命中保持排除。
+
+接入局部太阳S、环境底色L与薄壳T，record随WRS选择，独立incident保留光照与可见性，源response保留实际局部着色；外置RR逐事件补偿。早先已选D锚点之后的项继续归D，不与局部事件重复。选中参考散射/PDF同样跟随WRS，fresh源重放按技术重新求实际材质响应与分母，不再拿全局D参考去检查局部记录。原L累加语句保持，仍无历史/邻居消费。
+
+**构建与独立GPU**：初版71套/360项测试、52shader与三OFF规整化字节对照通过。20,003组正式事件/足迹/record helper的GPU检查，17,145组合法记录、2,858组高密度前驱被拒，技术/ℓ=0/前驱瓣/几何分母/方向位模式符合预期。太阳/ambient/thin相对误差最大5.362e-5/4.005e-6/5.259e-6；8,599组thin response非零，仍只属synthetic context验证。
+
+**真实运行与保留的red**：基线SSS off、环境底色off，2,234个完成readback帧中，局部S实际写出4,098,249条，L/H/T均0。本片没有宣称L/T真实覆盖通过。cached散射8,020,309次均过0.1%门限；fresh k2通过3,771,542/3,771,553，deep通过2,055,761/2,055,770，geometry失败20，scope/miss/invalid/numeric均0；最大scatter/PDF/denominator误差0.0980059%/0.00455365%/0.0219944%。source factor的1Hz抽样日志全部通过，不将其冒充逐readback累计证明。方向位变化0，但两次独立求值的PDF/weight隔离最大0.000299607%/0.00111975%，所以原严格累计解析器仍判red，没有删失败、放松0.1%门限或把几何失败径直归因到流送/共享边。
+
+**诊断修复与后续**：两个独立inline求值会选择不同的浮点融合上下文，不能把这种差异标成编码损失。仅诊断改为一个DontUnroll循环体依次求两组方向，原sampler/理论BSDF不改。正式helper的20,003组GPU检查，同位输入13,336组逐位一致；6,667组故意改动方向的负对照全部检出，SPIR-V保留DontUnroll循环。增加fresh geometry的missing/ambiguity/invalid/position四类计数，保留原总失败桶和报警；stats为72 lanes/288 B。该修复尚待实际场景复验，不以独立GPU检查提前覆盖运行时red。
+
+**SSS覆盖勘误**：R2b-15当时仅将D-thin零计数归为机位覆盖不足，解释不充分。MAX_SSS_INDIRECT_DEPTH=1，而首个D锚点最早在hitDepth=1且局部thin发生在选择D锚点之前，更深D-thin在现有预算下不可达。当前可达的薄壳复用技术是局部T；测试应针对它，不通过擅自增加SSS深度制造D覆盖。
+
+游戏在8分25秒会话后由助手正常关闭，全部维度保存、BUILD SUCCESSFUL/exit0，VUID=0；配置前后字节一致，无视觉/性能结论。证据在同一11-05目录r2b18-*；R2完整源/shift恒等、局部发光L/H及L/T真实夹具、记录A→B→A和R3仍开放。用户要求先解释G3/G10/G11/G6的理由与代价再确认，三项尚未采用，不把“需要分项调整”当批准。

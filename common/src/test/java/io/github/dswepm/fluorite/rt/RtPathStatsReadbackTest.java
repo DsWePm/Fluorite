@@ -45,7 +45,7 @@ final class RtPathStatsReadbackTest {
         int throttle = source.indexOf("long now = System.nanoTime();");
         assertTrue(accumulate > 0 && accumulate < failure && failure < throttle);
         assertTrue(source.substring(source.indexOf("public void destroy()")).contains("allFrames.clear();"));
-        assertEquals(64, RtPathReservoirStats.LANES);
-        assertEquals(256, RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(72, RtPathReservoirStats.LANES);
+        assertEquals(288, RtPathReservoirStats.BYTE_SIZE);
     }
 }

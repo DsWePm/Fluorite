@@ -235,8 +235,8 @@ final class RtPathLobeEvaluationTest {
             assertTrue(eval.contains(term), term);
         assertFalse(eval.contains("rndf(") || eval.contains("traceRadiance(") || eval.contains("bsdfContinuationPdf("));
         String loop = source("shaders/world/path_reuse_trace.slang");
-        assertTrue(loop.contains("bc, pf, ps, walkSssShare, continuation.lobe, rd)"));
-        assertTrue(loop.contains("bc, pf, ps, walkSssShare, continuation.lobe, packedDirection)"));
+        assertTrue(loop.contains("reuseEvaluateDirectionPair(bc, pf, ps, walkSssShare, continuation.lobe,"));
+        assertTrue(loop.contains("rd, reuseLoadDirection(dRecord), evaluated, packedEval)"));
         assertTrue(loop.contains("dPackedSourceWeight = sourceEvalPrefix * packedEval.weight;"));
         assertTrue(loop.contains("dPackedSourceWeight * reuseLoadIncident(produced)"));
         assertTrue(loop.contains("reuseRelativeScalarError(continuation.pdf, packedEval.pdf)"));
@@ -263,8 +263,8 @@ final class RtPathLobeEvaluationTest {
 
     @Test
     void allDiagnosticLanesHaveAConsumerAndPackedErrorBinsAreDisjoint() throws Exception {
-        assertEquals(64, RtPathReservoirStats.LANES);
-        assertEquals(256, RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(72, RtPathReservoirStats.LANES);
+        assertEquals(288, RtPathReservoirStats.BYTE_SIZE);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         for (int i = 20; i < 40; i++) assertTrue(stats.contains("memGetInt(src.mapped + " + 4 * i + "L)"));
         String loop = source("shaders/world/path_reuse_trace.slang");

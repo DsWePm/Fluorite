@@ -79,7 +79,7 @@ final class RtPathDTerminalEventTest {
         assertTrue(common.contains("PATH_RESERVOIR_BYTES = 96u"));
     }
     @Test void newCountersDistinguishCandidatesFromActualWrittenRecords() throws Exception {
-        assertEquals(64,RtPathReservoirStats.LANES); assertEquals(256,RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(72,RtPathReservoirStats.LANES); assertEquals(288,RtPathReservoirStats.BYTE_SIZE);
         String trace=source("shaders/world/path_reuse_trace.slang");
         for(int i:new int[]{44,45,46,47}) assertTrue(trace.contains("pathReservoirStatsAddr)["+i+"], 1u"));
         assertTrue(trace.contains("dTree.selectedEndpoint == REUSE_D_ENDPOINT_SKY"));

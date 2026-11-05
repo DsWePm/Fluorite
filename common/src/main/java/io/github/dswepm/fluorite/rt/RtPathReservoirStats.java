@@ -25,7 +25,9 @@ public final class RtPathReservoirStats {
     // 44-47 sky/emitter candidates and actual written sky/emitter records; solar is the remainder.
     // 48-59 fresh source scattering replay: depth attempts/passes, classified failures and maxima.
     // 60-63 deeper ambient/thin candidates and actual selected records.
-    public static final int LANES = 64;
+    // 64-67 actual selected S/L/H/T records, distinct from D endpoint provenance above.
+    // 68-71 fresh geometry failure reasons: missing, ambiguous, invalid, position mismatch.
+    public static final int LANES = 72;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -208,6 +210,10 @@ public final class RtPathReservoirStats {
         long thinCandidates = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 244L));
         long ambientRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 248L));
         long thinRecords = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 252L));
+        long localS = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 256L));
+        long localL = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 260L));
+        long localH = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 264L));
+        long localT = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 268L));
         allFrames.add(src.mapped);
         if (lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
                 || sourceReplayScope + sourceReplayMiss + sourceReplayGeometry + sourceReplayInvalid + sourceReplayNumeric != 0L) {
@@ -229,7 +235,7 @@ public final class RtPathReservoirStats {
         FluoriteMod.LOGGER.info("RT path reuse diagnostics (1/16 pixel sample): prefix {}/{} ({}); "
                         + "geometry {}/{} ({}; missing {}, ambiguous {}, invalid {}); geometry replay {}/{} ({}); "
                         + "D footprint {}/{} ({}; first k2 {}, k3 {}); "
-                        + "D events {} -> records {} (k2 {}, deep {}, rejected {}); source factors {}/{} ({}); "
+                        + "D candidates {}, all records {} (k2 {}, deep {}, rejected {}); source factors {}/{} ({}); "
                         + "lobe eval {} (invalid {}, pdf<=0.1% {}, weight<=0.1% {}, max pdf {}, weight {}); "
                         + "packed source {} (invalid {}, <=0.1% {}, <=1% {}, >1% {}, max {}, pdf>1% {}, max pdf {}); "
                         + "source composition max {} (>1% or invalid {}); packing isolation max dir {} (>1% {}), incident {} (>1% {}); "
@@ -237,7 +243,7 @@ public final class RtPathReservoirStats {
                         + "D endpoints candidates sky {} emitter {}, records sky {} emitter {}; "
                         + "D surface candidates ambient {} thin {}, records ambient {} thin {}; "
                         + "source scatter replay k2 {}/{} deep {}/{} (scope {}, miss {}, geometry {}, invalid {}, numeric {}); "
-                        + "max scatter {}, pdf {}, jac {}",
+                        + "max scatter {}, pdf {}, jac {}; local records S {} L {} H {} T {}",
                 identityPass, identityAttempt, percentage(identityPass, identityAttempt),
                 geometryResolved, geometryAttempt, percentage(geometryResolved, geometryAttempt),
                 geometryMissing, geometryAmbiguous, geometryInvalid,
@@ -256,7 +262,7 @@ public final class RtPathReservoirStats {
                 sourceReplayK2Pass, sourceReplayK2, sourceReplayDeepPass, sourceReplayDeep,
                 sourceReplayScope, sourceReplayMiss, sourceReplayGeometry, sourceReplayInvalid, sourceReplayNumeric,
                 relativePercentage(sourceReplayScatterMax), relativePercentage(sourceReplayPdfMax),
-                relativePercentage(sourceReplayJacMax));
+                relativePercentage(sourceReplayJacMax), localS, localL, localH, localT);
         logCumulative();
     }
 
@@ -266,7 +272,8 @@ public final class RtPathReservoirStats {
                         + "weight<=0.1% {}, max pdf {}, weight {}); fresh k2 {}/{} deep {}/{} "
                         + "(scope {}, miss {}, geometry {}, invalid {}, numeric {}); max scatter {}, pdf {}, jac {}; "
                         + "direction codec {} (bits changed {}, max pdf {}, weight {}); incident max {}; "
-                        + "D surface candidates ambient {} thin {}, records ambient {} thin {}",
+                        + "D surface candidates ambient {} thin {}, records ambient {} thin {}; local records S {} L {} H {} T {}; "
+                        + "fresh geometry reasons missing {} ambiguous {} invalid {} position {}",
                 allFrames.frames, allFrames.count(20), allFrames.count(21), allFrames.count(22), allFrames.count(23),
                 relativePercentage(allFrames.maximum(24)), relativePercentage(allFrames.maximum(25)),
                 allFrames.count(54), allFrames.count(48), allFrames.count(55), allFrames.count(49),
@@ -275,7 +282,9 @@ public final class RtPathReservoirStats {
                 relativePercentage(allFrames.maximum(58)), allFrames.count(40), allFrames.count(41),
                 relativePercentage(allFrames.maximum(42)), relativePercentage(allFrames.maximum(43)),
                 relativePercentage(allFrames.maximum(38)), allFrames.count(60), allFrames.count(61),
-                allFrames.count(62), allFrames.count(63));
+                allFrames.count(62), allFrames.count(63), allFrames.count(64), allFrames.count(65),
+                allFrames.count(66), allFrames.count(67), allFrames.count(68), allFrames.count(69),
+                allFrames.count(70), allFrames.count(71));
     }
 
     private static String percentage(long passed, long attempted) {

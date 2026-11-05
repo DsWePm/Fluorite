@@ -76,6 +76,7 @@ bool reuseTreeUpdate(inout ReusePathTree tree, float3 sourceWeight, float3 incid
 bool reuseTreeUpdateRecord(inout ReusePathTree tree, inout PackedPathReservoir selected,
                            PackedPathReservoir candidate, float3 sourceWeight, float3 incident,
                            float survival, uint endpoint, inout uint stream) {
+    tree.lastSelected = false;
     if (pathReservoirEmpty(candidate)) return false;
     bool accepted = reuseTreeUpdate(tree, sourceWeight, incident, survival, endpoint, stream);
     if (tree.lastSelected) selected = candidate;
@@ -85,6 +86,12 @@ bool reuseTreeUpdateRecord(inout ReusePathTree tree, inout PackedPathReservoir s
 // Produced D subset: deeper solar/ambient/thin shading, and emitter/sky hits after an analytic vertex.
 // The immediate emitter/sky hit is H; other endpoints and S/L/H/T/R remain in the own traced sum.
 static const uint REUSE_TECHNIQUE_D = 1u;
+static const uint REUSE_TECHNIQUE_S = 2u;
+static const uint REUSE_TECHNIQUE_L = 3u;
+static const uint REUSE_TECHNIQUE_H = 4u;
+static const uint REUSE_TECHNIQUE_T = 5u;
+static const uint REUSE_LOCAL_AMBIENT = 0u;
+static const uint REUSE_LOCAL_EMISSION = 1u;
 static const uint REUSE_RECORD_DEPTH_SHIFT = 1u;
 static const uint REUSE_RECORD_TECHNIQUE_SHIFT = 5u;
 static const uint REUSE_RECORD_LOBE_SHIFT = 8u;
@@ -105,6 +112,17 @@ uint reuseDRecordBits(uint depth, uint lobe, uint mediumFlags) {
     return PATH_RECORD_VALID | (depth << REUSE_RECORD_DEPTH_SHIFT)
             | (REUSE_TECHNIQUE_D << REUSE_RECORD_TECHNIQUE_SHIFT)
             | (lobe << REUSE_RECORD_LOBE_SHIFT)
+            | (activeCurrentMediumFlags(mediumFlags) << REUSE_RECORD_CURRENT_MEDIUM_SHIFT)
+            | (activeOuterMediumFlags(mediumFlags) << REUSE_RECORD_OUTER_MEDIUM_SHIFT)
+            | (REUSE_PRIMARY_OPAQUE << REUSE_RECORD_PRIMARY_SHIFT);
+}
+
+uint reuseLocalRecordBits(uint depth, uint technique, uint mediumFlags) {
+    if (depth < 2u || depth > 15u || (mediumFlags & ~0x00030003u) != 0u
+            || (technique != REUSE_TECHNIQUE_S && technique != REUSE_TECHNIQUE_L
+                && technique != REUSE_TECHNIQUE_T)) return 0u;
+    return PATH_RECORD_VALID | (depth << REUSE_RECORD_DEPTH_SHIFT)
+            | (technique << REUSE_RECORD_TECHNIQUE_SHIFT)
             | (activeCurrentMediumFlags(mediumFlags) << REUSE_RECORD_CURRENT_MEDIUM_SHIFT)
             | (activeOuterMediumFlags(mediumFlags) << REUSE_RECORD_OUTER_MEDIUM_SHIFT)
             | (REUSE_PRIMARY_OPAQUE << REUSE_RECORD_PRIMARY_SHIFT);
