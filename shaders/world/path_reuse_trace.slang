@@ -1,4 +1,5 @@
 import path_hit;
+import path_reuse_direction;
 import trace_path;
 #ifdef FLUORITE_ENABLE_EXT_SER
 import trace_path_ser;
@@ -91,7 +92,7 @@ bool reuseResolveDielectric(uint material, float3 hitPos, float3 n, float rayCon
     // singular. A second code path would be a second place for a push to go missing.
     float interfaceAlpha = clamp(payloadRoughness(), 0.0, 1.0);
     bool deltaInterface = isDeltaTransmission(interfaceAlpha);
-    float3 m = deltaInterface ? n : sampleGGXVNDF(n, -rd, interfaceAlpha, stream);
+    float3 m = deltaInterface ? n : reuseSampleGGXVNDF(n, -rd, interfaceAlpha, stream);
 
     float cosI = clamp(dot(-rd, m), 0.0, 1.0);
     float F = fresnelDielectric(cosI, etaI, etaT);
@@ -104,7 +105,7 @@ bool reuseResolveDielectric(uint material, float3 hitPos, float3 n, float rayCon
 
     bool chooseReflection = rndf(stream) < F;
     if (chooseReflection) {
-        rd = reflect(rd, m);
+        rd = reuseReflect(rd, m);
         // A microfacet can reflect back into the surface it sits on. The delta case cannot, so
         // this only ever fires for a rough interface.
         if (!deltaInterface && dot(rd, geometricNormal) <= 0.0) {
@@ -295,8 +296,8 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         float alpha = rain.filmAlpha;
         sampleInfo.lobe = REUSE_LOBE_FILM;
         sampleInfo.alpha = alpha;
-        float3 h = sampleGGXVNDF(n, v, alpha, stream);
-        float3 l = reflect(rd, h);
+        float3 h = reuseSampleGGXVNDF(n, v, alpha, stream);
+        float3 l = reuseReflect(rd, h);
         float ndl2 = reuseOrderedNdot(n, l);
         if (ndl2 <= 0.0) {
             return false;
@@ -317,7 +318,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
             sampleInfo.lobe = REUSE_LOBE_DELTA;
             // Authored zero is a delta distribution, not a narrow finite GGX lobe. This avoids the
             // degenerate VNDF at alpha=0 and preserves a genuinely sharp reflection without a floor.
-            l = reflect(rd, n);
+            l = reuseReflect(rd, n);
             throughput *= fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0)
                     * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
             sampleInfo.weight = fresnelSchlick(clamp(dot(n, v), 0.0, 1.0), F0) * rainBaseTransmission(bc, l) / ((1.0 - pf) * ps);
@@ -325,8 +326,8 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         } else {
             sampleInfo.lobe = REUSE_LOBE_SPECULAR;
             sampleInfo.alpha = vtx.rough;
-            float3 h = sampleGGXVNDFAniso(n, bc.t, bc.b, v, bc.alphaX, bc.alphaY, stream);
-            l = reflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
+            float3 h = reuseSampleGGXVNDFAniso(n, bc.t, bc.b, v, bc.alphaX, bc.alphaY, stream);
+            l = reuseReflect(rd, h); // rd = -v: reflect the incoming ray about the microfacet normal
             float ndl2 = reuseOrderedNdot(n, l);
             if (ndl2 <= 0.0) {
                 return false; // microfacet reflects below the surface: terminate this path

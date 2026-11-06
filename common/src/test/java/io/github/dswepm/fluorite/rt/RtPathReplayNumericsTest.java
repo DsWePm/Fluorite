@@ -88,6 +88,7 @@ final class RtPathReplayNumericsTest {
                 assertEquals(0x07230203, bytes.getInt(0));
                 Set<Integer> noContraction = new HashSet<>();
                 Map<Integer, Integer> arithmetic = new HashMap<>();
+                Map<Integer, List<Integer>> addInputs = new HashMap<>();
                 for (int at = 20; at < bytes.limit();) {
                     int header = bytes.getInt(at), size = header >>> 16, opcode = header & 0xffff;
                     assertTrue(size > 0 && at + size * 4 <= bytes.limit(), name);
@@ -95,12 +96,22 @@ final class RtPathReplayNumericsTest {
                     if (opcode == 71 && size >= 3 && bytes.getInt(at + 8) == 42)
                         noContraction.add(bytes.getInt(at + 4));
                     if (opcode == 129 || opcode == 142) arithmetic.put(bytes.getInt(at + 8), opcode);
+                    if (opcode == 129) addInputs.put(bytes.getInt(at + 8),
+                            List.of(bytes.getInt(at + 12), bytes.getInt(at + 16)));
                     at += size * 4;
                 }
-                long adds = noContraction.stream().filter(id -> arithmetic.getOrDefault(id, -1) == 129).count();
-                long multiplies = noContraction.stream().filter(id -> arithmetic.getOrDefault(id, -1) == 142).count();
-                assertTrue(adds > 0, name);
-                assertEquals(adds, multiplies, name);
+                // Direction sampling also uses rounded vector products and sums. Compare the actual
+                // multiply -> add edges, not unrelated instruction totals across the whole module.
+                int paired = 0;
+                for (int add : noContraction) {
+                    for (int operand : addInputs.getOrDefault(add, List.of())) {
+                        if (arithmetic.getOrDefault(operand, -1) == 142) {
+                            assertTrue(noContraction.contains(operand), name + ": unrounded product feeding a rounded add");
+                            paired++;
+                        }
+                    }
+                }
+                assertTrue(paired > 0, name);
             }
         }
     }

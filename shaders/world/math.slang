@@ -281,22 +281,19 @@ public float3 sampleGGXVNDF(float3 n, float3 ve, float alpha, inout uint s) {
  */
 public float3 sampleGGXVNDFAniso(float3 n, float3 t, float3 b, float3 ve,
                                  float ax, float ay, inout uint s) {
-    float3 Ve = float3(dot(ve, t), dot(ve, b), dot(ve, n)); // view in tangent space (z = n)
-    float3 Vh = normalize(float3(ax * Ve.x, ay * Ve.y, Ve.z));
-    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
-    float3 T1 = lensq > 0.0 ? float3(-Vh.y, Vh.x, 0.0) * rsqrt(lensq) : float3(1.0, 0.0, 0.0);
-    float3 T2 = cross(Vh, T1);
-    float u1 = rndf(s);
-    float u2 = rndf(s);
-    float r = sqrt(u1);
-    float phi = 6.2831853 * u2;
-    float p1 = r * cos(phi);
-    float p2 = r * sin(phi);
-    float ss = 0.5 * (1.0 + Vh.z);
-    p2 = (1.0 - ss) * sqrt(1.0 - p1 * p1) + ss * p2;
-    float3 Nh = p1 * T1 + p2 * T2 + sqrt(max(0.0, 1.0 - p1 * p1 - p2 * p2)) * Vh;
-    float3 Ne = normalize(float3(ax * Nh.x, ay * Nh.y, max(0.0, Nh.z))); // microfacet normal, tangent space
-    return normalize(Ne.x * t + Ne.y * b + Ne.z * n);                    // -> world space
+#define D_DOT(a,b) dot(a,b)
+#define D_NORMALIZE(a) normalize(a)
+#define D_CROSS(a,b) cross(a,b)
+#define D_MUL(a,b) ((a)*(b))
+#define D_ADD(a,b) ((a)+(b))
+#define D_SUB(a,b) ((a)-(b))
+#include "direction_ggx_kernel.slang"
+#undef D_DOT
+#undef D_NORMALIZE
+#undef D_CROSS
+#undef D_MUL
+#undef D_ADD
+#undef D_SUB
 }
 
 /** Quantise a surface tangent to the payload's azimuth field. Returns 0 for a degenerate tangent. */

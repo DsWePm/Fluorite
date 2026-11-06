@@ -1010,3 +1010,15 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 生产和fresh replay改为`reuseReadHitGeometry`读取联合结果。原query作为独立的1/16像素诊断oracle继续保留，唯一候选还须比较实际normal、UV、位置和完整key；missing/ambiguous/invalid仍进入旧状态分区，不影响生产记录。先前接线原型的真实会话1,569个回读帧中，cached 5,644,540条全过0.1%，codec方向位变化、PDF/weight差异与incident误差均为0；局部S/L/H记录分别2,708,240/120/239,009，T仍0。fresh k2 2,699,592/2,699,598、deep 1,471,457/1,471,464，13次均为位置偏差，scope/miss/invalid/numeric为0；max scatter/PDF/denom分别0.0979985%/0.0132431%/0.0219944%。严格累计仍RED，不能把这13条删掉或归因于共面查询歧义。游戏7分32秒后正常保存关闭、VUID=0，配置/options前后字节相同。
 
 该原型之后收紧了模块边界，当前ON模块与该会话不逐字节相同，因此上述会话是保留的故障与事件覆盖证据，不冒充最终模块运行时验收。下一步用独立失败见证区捕获原始射线/命中距离/key/坐标位模式，区分点运算舍入、前缀分叉与不同三角形，再作定点修复并移除临时取证。T定向夹具已准备但未激活；完整transport/shift恒等、记录A→B→A、R3时域消费、实际GPU成本和用户观感均继续开放。证据与比较器/负对照在F:\MC\Shader\evidence\restir-r2-r3-2026-11-05的r2b21文件，原始失败累计也保留。
+
+### R2b-22：同一VNDF公式的可重放方向算术（2026-11-07）
+
+用户确认上一轮0xCFFFFFFF退出是手动结束，并要求重新运行。重跑2601个已完成回读帧保留82次位置失败和1次数值失败，不能当通过；2484组方向见证的n/t/b/v、两个线性alpha轴、输入seed逐位一致，输出seed及所选瓣也一致，全部为specular。1798组全部上下文字段相同，其余686组仅ps末位不同，不能解释方向偏差。进一步取证374组实际采样微表面法线，全部在reflect前就已不同。更早的19组几何见证已证实主命中点/距离相同、重连三角形key相同，排除了把记录点回填、放宽几何门或额外重射线作为修复。
+
+原因是源路径与前缀重放虽然调用同一源码，GGX采样的浮点归约/收缩仍依赖编译上下文。现在把VNDF公式抽到唯一的direction_ggx_kernel.slang：math.slang原实例保持native算术，path_reuse_direction.slang实例使用显式NoContraction的乘/加/减和既有首乘法加两次FMA的点积，归一化与反射也明确其算术边界。所有复用端GGX和反射（含电介质）消费该接口，两端不再各写一套采样器。公式、线性GGX alpha、随机数消耗、射线数、96 B记录/48 B segment/阴影payload不变；ON档FP舍入有微调，禁用部分融合与新增标量运算的实际GPU成本未测。不改资格阈值或0.1%数值门。
+
+验证分两层。22,484组无窗口GPU对照包含2484组现场与20000组随机输入，alpha为线性1e-5..1、视角覆盖1e-7..1极掠射；正式helper与原型输出逐位相同、seed一致。对双精度独立参考，最大方向绝对误差native为8.8305e-5、固定算术为5.4866e-5，均无超过1e-4。这个简化compute没有复现原native跨上下文故障，故只证明公式与数值范围，不能冒充回归red到green；真正的回归seam是原场景RT源/重放累计。74套367项测试、55shader及全部spirv-val通过，三OFF raygen与R2a规整化字节相同。旧编译测试曾要求全模块受控add/multiply总数相等，新采样器增加合法算术后该假设失效；已改为检查真实受控vector multiply到add的依赖及其NoContraction标记，保留首轮失败日志，不删除测试。源码对照仅归一新增helper名，所有原采样参数与周边语句仍受检查。
+
+正式模块原场景累计2312个已完成回读帧：cached 2,591,605条全过原0.1%门；fresh k2为1,163,684/1,163,684、deep为27,258/27,258，scope/miss/geometry/invalid/numeric全0。最大scatter/PDF/denom误差分别0.00164413%/0.0140544%/0.0140525%；方向codec位变化及其PDF/weight误差、incident误差均0；source factors为1,258,030/1,258,030。实际局部记录S/L/H为1,080,404/2,799/67,658，T为0（SSS仍off）。这是每个已完成readback的累计，像素采样比例仍1/16，不是1 Hz抽样或全像素证明。VUID0，游戏正常保存关闭、exit0，配置/options字节不变。所有临时取证字段已移除，正式stats仍72 lanes/288 B。
+
+证据在F:\MC\Shader\evidence\restir-r2-r3-2026-11-05：r2b22-context-retry及half保留旧失败、原始hex和对应模块；r2b22-build-summary、r22-formal-direction-summary、r2b22-direction-run-summary、累计严格checker及CSV保存正式修复验证。没有修改规整化器。T实际覆盖、完整transport/shift恒等、记录模式A到B到A及R3时域消费仍未完成；观感最终验收留给用户，性能不能由本次1600×900诊断会话推断。

@@ -278,6 +278,15 @@ final class RtPathReplayContractTest {
         reuseFile = reuseFile.replace("tracePathRadiance(", "traceRadiance(")
                 .replace("tracePathRadianceReordered(", "traceRadianceReordered(");
 
+        // R2b-22 controls FP contraction in the shared VNDF formula and reflection. Keep every
+        // call argument, random stream and surrounding sampler statement in the shipped-line proof.
+        assertEquals(1, reuseFile.split(java.util.regex.Pattern.quote("reuseSampleGGXVNDFAniso("), -1).length - 1);
+        assertEquals(2, reuseFile.split(java.util.regex.Pattern.quote("reuseSampleGGXVNDF("), -1).length - 1);
+        assertEquals(4, reuseFile.split(java.util.regex.Pattern.quote("reuseReflect("), -1).length - 1);
+        reuseFile = reuseFile.replace("reuseSampleGGXVNDFAniso(", "sampleGGXVNDFAniso(")
+                .replace("reuseSampleGGXVNDF(", "sampleGGXVNDF(")
+                .replace("reuseReflect(", "reflect(");
+
         // R2b-8: the user approved this one algebraically equivalent Schlick substitution. Keep the
         // remainder of the strict shipped-line proof, including RNG, ray directions, PDF and weights.
         String approvedFresnelPrefix = "reuseFresnelSchlickDirections(v, l,";
