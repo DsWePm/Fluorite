@@ -9,6 +9,9 @@
 // disc isn't double-counted against the direct light → fireflies). The atmosphere gradient + stars are
 // added on every miss (any bounce): stars aren't a NEE light, so they never double-count.
 import world_common;
+#ifdef FLUORITE_PATH_HIT_RESULT
+import path_hit;
+#endif
 import atmosphere;
 import atmosphere_lut;
 import environment;
@@ -123,8 +126,12 @@ float3 stars(float3 dir, float starBrightness, float VdotS, float4 celestial) {
     return 0.2 * star * starCol * starBrightness;
 }
 
+#ifdef FLUORITE_PATH_HIT_RESULT
+void shadePathMiss(inout Payload payload) {
+#else
 [shader("miss")]
 void main(inout Payload payload) {
+#endif
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
     if (worldPush.skyProvider == SKY_PROVIDER_ENVIRONMENT) {
         float3 dir = normalize(WorldRayDirection());
@@ -297,3 +304,13 @@ void main(inout Payload payload) {
     payload.iorTransmission = packHalf2(float2(1.0, 0.0));
     payload.rayCone = 0u;
 }
+
+#ifdef FLUORITE_PATH_HIT_RESULT
+[shader("miss")]
+void main(inout PathHitPayload hit) {
+    Payload surface = hit.surface;
+    shadePathMiss(surface);
+    hit.surface = surface;
+    hit.geometry = emptyPathHitGeometry();
+}
+#endif

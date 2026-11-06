@@ -185,14 +185,19 @@ public final class RtPipeline {
 
     /**
      * Builds the VkPipeline and its shader binding table over an EXISTING layout. Shared by
-     * {@link #create} and {@link #createVariant}: a variant is this same construction with different
-     * raygen records, so its descriptor sets, push constants, miss table and hit table are the base
-     * pipeline's by construction rather than by a second spelling that has to be kept in step.
+     * {@link #create} and {@link #createVariant}: variants share descriptors and push constants while
+     * their complete shader interface and SBT remain explicit (radiance and shadow may differ).
      */
     private static Built buildPipeline(RtContext ctx, MemoryStack stack, long layout, String[] rgen,
                                        String[] rmiss, String rchit, String rahit, String label) {
+        return buildPipeline(ctx, stack, layout, rgen, rmiss, rchit, rahit, rahit, label);
+    }
+
+    private static Built buildPipeline(RtContext ctx, MemoryStack stack, long layout, String[] rgen,
+                                       String[] rmiss, String rchit, String rahit, String shadowAhit, String label) {
         VkDevice vk = ctx.vk();
         boolean hasAhit = rahit != null;
+        boolean separateShadow = !java.util.Objects.equals(rahit, shadowAhit);
         // Stages: one per rgen entry, one miss per rmiss entry, the closest-hit, then (optionally)
         // the any-hit. Groups are N raygen + M miss + the hit records selected by traceRayEXT's SBT
         // offset/stride. Multiple raygens share one pipeline and are selected at dispatch by pointing
@@ -200,12 +205,14 @@ public final class RtPipeline {
         // indirect pass coexist without duplicating the hit and miss tables.
         int raygenCount = rgen.length;
         int missCount = rmiss.length;
-        int hitGroupCount = hasAhit ? RtAccel.SBT_HIT_GROUP_COUNT : 1;
+        int hitGroupCount = hasAhit || shadowAhit != null ? RtAccel.SBT_HIT_GROUP_COUNT : 1;
         int groupCount = raygenCount + missCount + hitGroupCount;
         int hitGroupIdx = raygenCount + missCount;
         int chitStage = raygenCount + missCount;
         int ahitStage = chitStage + 1;
-        int stageCount = raygenCount + missCount + 1 + (hasAhit ? 1 : 0);
+        int shadowAhitStage = separateShadow && shadowAhit != null ? ahitStage + (hasAhit ? 1 : 0) : ahitStage;
+        int stageCount = raygenCount + missCount + 1 + (hasAhit ? 1 : 0)
+                + (separateShadow && shadowAhit != null ? 1 : 0);
         long[] mGen = new long[raygenCount];
         for (int g = 0; g < raygenCount; g++) {
             mGen[g] = RtShaderModules.load(vk, stack, rgen[g]);
@@ -222,6 +229,11 @@ public final class RtPipeline {
         if (hasAhit) {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, mAhit, label + " " + rahit);
         }
+        long mShadowAhit = separateShadow && shadowAhit != null
+                ? RtShaderModules.load(vk, stack, shadowAhit) : 0L;
+        if (mShadowAhit != 0L) {
+            RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, mShadowAhit, label + " " + shadowAhit);
+        }
         ByteBuffer entry = stack.UTF8("main");
         VkPipelineShaderStageCreateInfo.Buffer stages = VkPipelineShaderStageCreateInfo.calloc(stageCount, stack);
         for (int g = 0; g < raygenCount; g++) {
@@ -234,6 +246,9 @@ public final class RtPipeline {
         if (hasAhit) {
             stages.get(ahitStage).sType$Default().stage(VK_SHADER_STAGE_ANY_HIT_BIT_KHR).module(mAhit).pName(entry);
         }
+        if (mShadowAhit != 0L) {
+            stages.get(shadowAhitStage).sType$Default().stage(VK_SHADER_STAGE_ANY_HIT_BIT_KHR).module(mShadowAhit).pName(entry);
+        }
 
         VkRayTracingShaderGroupCreateInfoKHR.Buffer groups = VkRayTracingShaderGroupCreateInfoKHR.calloc(groupCount, stack);
         for (int g = 0; g < raygenCount; g++) {
@@ -245,9 +260,14 @@ public final class RtPipeline {
                     .generalShader(raygenCount + m).closestHitShader(VK_SHADER_UNUSED_KHR).anyHitShader(VK_SHADER_UNUSED_KHR).intersectionShader(VK_SHADER_UNUSED_KHR);
         }
         for (int h = 0; h < hitGroupCount; h++) {
+            boolean shadow = hitGroupIsShadow(h);
+            int selectedAhit = shadow && separateShadow
+                    ? (shadowAhit != null ? shadowAhitStage : VK_SHADER_UNUSED_KHR)
+                    : (hasAhit ? ahitStage : VK_SHADER_UNUSED_KHR);
             groups.get(hitGroupIdx + h).sType$Default().type(VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR)
-                    .generalShader(VK_SHADER_UNUSED_KHR).closestHitShader(chitStage)
-                    .anyHitShader(hasAhit && hitGroupUsesAnyHit(h) ? ahitStage : VK_SHADER_UNUSED_KHR)
+                    .generalShader(VK_SHADER_UNUSED_KHR)
+                    .closestHitShader(shadow && separateShadow ? VK_SHADER_UNUSED_KHR : chitStage)
+                    .anyHitShader(hitGroupUsesAnyHit(h) ? selectedAhit : VK_SHADER_UNUSED_KHR)
                     .intersectionShader(VK_SHADER_UNUSED_KHR);
         }
 
@@ -273,6 +293,9 @@ public final class RtPipeline {
         VK10.vkDestroyShaderModule(vk, mHit, null);
         if (hasAhit) {
             VK10.vkDestroyShaderModule(vk, mAhit, null);
+        }
+        if (mShadowAhit != 0L) {
+            VK10.vkDestroyShaderModule(vk, mShadowAhit, null);
         }
 
         // SBT: one record per group. Over-align the stride so every region start is base-aligned and
@@ -619,6 +642,12 @@ public final class RtPipeline {
         }
     }
 
+    static boolean hitGroupIsShadow(int relativeHitGroup) {
+        int localGroup = relativeHitGroup >= RtAccel.SBT_ENTITY_OFFSET
+                ? relativeHitGroup - RtAccel.SBT_ENTITY_OFFSET : relativeHitGroup;
+        return localGroup / RtAccel.TERRAIN_BUCKETS == RtAccel.SBT_RAY_SHADOW;
+    }
+
     private static boolean hitGroupUsesAnyHit(int relativeHitGroup) {
         if (relativeHitGroup < RtAccel.SBT_ENTITY_OFFSET) {
             int rayType = relativeHitGroup / RtAccel.TERRAIN_BUCKETS;
@@ -879,13 +908,13 @@ public final class RtPipeline {
      * hit regions are shared, so passes over the same scene differ only in this index.
      */
     public void trace(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants, int raygenIndex) {
-        traceWith(cmd, width, height, pushConstants, raygenIndex, pipeline, sbt, sbtStride, raygenCount);
+        traceWith(cmd, width, height, pushConstants, raygenIndex, pipeline, sbt, sbtStride,
+                raygenCount, missCount, hitGroupCount);
     }
 
     /**
      * As {@link #trace(VkCommandBuffer, int, int, java.nio.ByteBuffer, int)}, launching one of a
-     * {@link Variant}'s raygen records instead: same descriptor sets, push constants, miss and hit
-     * tables, a different pipeline object.
+     * {@link Variant}'s raygen records instead: shared descriptor sets and push constants, its own SBT.
      */
     public void trace(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants, int raygenIndex,
                       Variant variant) {
@@ -893,12 +922,13 @@ public final class RtPipeline {
             throw new IllegalArgumentException("variant does not belong to this live pipeline");
         }
         traceWith(cmd, width, height, pushConstants, raygenIndex,
-                variant.pipeline, variant.sbt, variant.sbtStride, variant.raygenCount);
+                variant.pipeline, variant.sbt, variant.sbtStride, variant.raygenCount,
+                variant.missCount, variant.hitGroupCount);
     }
 
     /**
-     * A second ray tracing pipeline over THIS pipeline's layout, descriptor sets, miss table and hit
-     * table, differing only in its raygen records (M28 D231, G15).
+     * A second ray tracing pipeline over THIS pipeline's layout and descriptor sets (M28 D231, G15).
+     * Each variant owns its complete SBT, including its miss/hit table sizes and payload interfaces.
      *
      * <p>Why a separate pipeline object rather than one more raygen group in this one: a ray tracing
      * pipeline's register allocation covers every shader in it, so a heavy raygen added as a group
@@ -911,13 +941,17 @@ public final class RtPipeline {
         private final RtBuffer sbt;
         private final long sbtStride;
         private final int raygenCount;
+        private final int missCount;
+        private final int hitGroupCount;
         private boolean destroyed;
 
-        private Variant(long pipeline, RtBuffer sbt, long sbtStride, int raygenCount) {
+        private Variant(long pipeline, RtBuffer sbt, long sbtStride, int raygenCount, int missCount, int hitGroupCount) {
             this.pipeline = pipeline;
             this.sbt = sbt;
             this.sbtStride = sbtStride;
             this.raygenCount = raygenCount;
+            this.missCount = missCount;
+            this.hitGroupCount = hitGroupCount;
         }
 
         private RtPipeline owner() {
@@ -940,20 +974,39 @@ public final class RtPipeline {
      * drops this pipeline.
      */
     public Variant createVariant(String[] rgen, String purpose) {
+        return createVariant(new VariantShaders(java.util.List.of(rgen), java.util.List.of(missShaders),
+                closestHitShader, anyHitShader, anyHitShader), purpose);
+    }
+
+    /** A complete shader interface over the parent's descriptor/push layout, including shadow isolation. */
+    public record VariantShaders(java.util.List<String> raygen, java.util.List<String> miss,
+                                 String closestHit, String radianceAnyHit, String shadowAnyHit) {
+        public VariantShaders {
+            raygen = java.util.List.copyOf(raygen);
+            miss = java.util.List.copyOf(miss);
+            if (raygen.isEmpty() || miss.isEmpty()) throw new IllegalArgumentException("empty shader table");
+            java.util.Objects.requireNonNull(closestHit);
+        }
+    }
+
+    public Variant createVariant(VariantShaders shaders, String purpose) {
         if (destroyed) {
             throw new IllegalStateException("cannot build a variant of a destroyed pipeline");
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            Built built = buildPipeline(ctx, stack, pipelineLayout, rgen, missShaders, closestHitShader,
-                    anyHitShader, label + " (" + purpose + ")");
-            Variant variant = new Variant(built.pipeline(), built.sbt(), built.stride(), rgen.length);
+            Built built = buildPipeline(ctx, stack, pipelineLayout, shaders.raygen().toArray(String[]::new),
+                    shaders.miss().toArray(String[]::new), shaders.closestHit(), shaders.radianceAnyHit(),
+                    shaders.shadowAnyHit(), label + " (" + purpose + ")");
+            Variant variant = new Variant(built.pipeline(), built.sbt(), built.stride(),
+                    shaders.raygen().size(), shaders.miss().size(), built.hitGroupCount());
             variants.add(variant);
             return variant;
         }
     }
 
     private void traceWith(VkCommandBuffer cmd, int width, int height, java.nio.ByteBuffer pushConstants,
-                           int raygenIndex, long pipeline, RtBuffer sbt, long sbtStride, int raygenCount) {
+                           int raygenIndex, long pipeline, RtBuffer sbt, long sbtStride, int raygenCount,
+                           int missCount, int hitGroupCount) {
         if (raygenIndex < 0 || raygenIndex >= raygenCount) {
             throw new IllegalArgumentException("raygen index " + raygenIndex + " out of range [0, " + raygenCount + ")");
         }

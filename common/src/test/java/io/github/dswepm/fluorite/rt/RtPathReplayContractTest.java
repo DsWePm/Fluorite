@@ -170,8 +170,10 @@ final class RtPathReplayContractTest {
                 "the variant is bound only while the path reservoir's store exists");
 
         String pipeline = source("common/src/main/java/io/github/dswepm/fluorite/rt/pipeline/RtPipeline.java");
-        assertTrue(pipeline.contains("buildPipeline(ctx, stack, pipelineLayout, rgen, missShaders, closestHitShader,"),
+        assertTrue(pipeline.contains("buildPipeline(ctx, stack, pipelineLayout, shaders.raygen().toArray(String[]::new),"),
                 "a variant is built over the SAME layout, so the base pipeline's descriptor sets bind to it");
+        assertTrue(pipeline.contains("variant.missCount, variant.hitGroupCount"),
+                "a third radiance-guide miss must not shift the hit table into a parent's two-miss region");
     }
 
     @Test
@@ -210,7 +212,7 @@ final class RtPathReplayContractTest {
         // Same rays as the loop: the trace call and the cone update are the loop's own lines.
         java.util.List<String> loop = body(reuse, "public float3 tracePathReuse(");
         for (String line : new String[] {
-                "traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,",
+                "tracePathRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,",
                 "rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);",
                 "int hitDepth = indirectDepth++;"}) {
             assertTrue(replay.contains(line), "the replay traces as the loop does: " + line);
@@ -269,6 +271,12 @@ final class RtPathReplayContractTest {
         // R2b-16 extracts the existing local sun response verbatim, without dropping it from the proof.
         reuseFile += "\n" + source("shaders/world/path_reuse_local.slang");
         reuseFile += "\n" + source("shaders/world/path_reuse_emission.slang");
+        // G3 changes the returned hit interface; the ray arguments and sampling statements stay exact.
+        assertEquals(3, reuseFile.split(java.util.regex.Pattern.quote("tracePathRadiance("), -1).length - 1,
+                "the two path loops and the entry's volume-debug adapter all use the joint interface");
+        assertEquals(1, reuseFile.split(java.util.regex.Pattern.quote("tracePathRadianceReordered("), -1).length - 1);
+        reuseFile = reuseFile.replace("tracePathRadiance(", "traceRadiance(")
+                .replace("tracePathRadianceReordered(", "traceRadianceReordered(");
 
         // R2b-8: the user approved this one algebraically equivalent Schlick substitution. Keep the
         // remainder of the strict shipped-line proof, including RNG, ray directions, PDF and weights.

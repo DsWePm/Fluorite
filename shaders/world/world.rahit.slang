@@ -12,6 +12,9 @@
 // a trace. Shadow traversal uses albedo.rgb as accumulated transmittance and hitT as the nearest-water
 // crossing; radiance cutout paths do not touch either field.
 import world_common;
+#ifdef FLUORITE_PATH_HIT_RESULT
+import path_hit;
+#endif
 import math;
 
 [[vk::push_constant]] WorldPushConstants pc;
@@ -48,8 +51,12 @@ float alphaDitherThreshold(uint salt) {
     return frac(base + float((pc.frameIndex + salt) & 255u) * 0.61803398875);
 }
 
+#ifdef FLUORITE_PATH_HIT_RESULT
+void shadePathAnyHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) {
+#else
 [shader("anyhit")]
 void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) {
+#endif
     uint pid = PrimitiveIndex();
     float2 attribs = attr.barycentrics;
     float3 bary = float3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
@@ -173,3 +180,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         IgnoreHit();
     }
 }
+
+#ifdef FLUORITE_PATH_HIT_RESULT
+[shader("anyhit")]
+void main(inout PathHitPayload hit, in BuiltInTriangleIntersectionAttributes attr) {
+    Payload surface = hit.surface;
+    shadePathAnyHit(surface, attr);
+    hit.surface = surface;
+}
+#endif

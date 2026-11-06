@@ -131,6 +131,7 @@ Fluorite 是面向 Minecraft 26.2 的客户端 Vulkan 硬件光线追踪 mod。�
 | 水 | `water.slang` / `water_wave.slang` | 水材质、波场、法线、焦散 |
 | 水仿真 | `water_sim.comp.slang` / `water_obstacle.comp.slang` / `water_deform.comp.slang` | 高度场、障碍、顶点位移与 refit 输入 |
 | 追踪 | `trace.slang` / `trace_ser.slang` / `segment.slang` | 普通/SER TraceRay、分段数据 |
+| 路径复用命中 | `path_hit.slang` / `trace_path.slang` / `trace_path_ser.slang` | ReSTIR辐射命中的材质/几何联合返回；源追踪、重放和既有体积诊断共用同一接口，阴影及Pass A保留原追踪模块 |
 
 `shaders/display/` 负责 HDR/SDR、直方图曝光和 UI composite；`shaders/overlay/` 负责方块轮廓、glow、名牌，以及 RR 后/曝光前的 HDR 雨丝。
 
@@ -336,7 +337,7 @@ M18 的已批准边界是“收集但不采样”：动态记录使用同一 32 
 
 - `PackedPathSegment`、WorldPush 和材质 ABI 任何改动都先跑对应 layout test。
 - SER 前后重建 payload，不把 72 B payload 跨 `ReorderThread` 保活。
-- radiance/shadow ray 共用 Payload ABI；新增 shadow 状态不能另起结构。
+- 基线 radiance/shadow 共用原 `Payload`；用户2026-11-05授权的联合命中重构为 ReSTIR 辐射线单独返回 `PathHitPayload`（原材质结果 + 32 B 逻辑几何元数据），所有可达辐射 SBT stage 必须同型。阴影仍使用原 `Payload`、原 any-hit/guide-miss；不得增长阴影 payload。逻辑字段字节数不能当作实际 GPU ABI/寄存器成本。
 - 段积分发生在天空 break 之前。
 - 水面/介质边界不能由 Pass A、Pass B 分摊一半能量。
 - 加速结构资源所有权显式记录，不从异步路径状态推断。
@@ -843,7 +844,7 @@ d0 的重投影已实现并实测（`projectPrevNdc` 移到 `world_core`，两�
 | S1 | 可见性网格 → 方向性天空场 + 出格雾段读钳制场（`volumetricSwitches` 专属字，D211 起） | **已关闭（2026-09-07）**：A/B 与 visBake 归档（D212）＋移动闪烁邻居播种修复（D213，用户复验通过）；D214 遗留的钳制暗区接棒给 S1.5 |
 | S1.5 | 第二级粗网格（远场结构，D214 用户裁决）：4 格/格 ±128 格、世界锚定、细网格钳制值自举、轮询刷新 | 落地并消除移动闪烁；**山体旁残余暗区未解决（4 格也无改善，坡旁偏差假设被否）**，已挂 [Issue #77](https://github.com/DsWePm/Fluorite/issues/77) 等真值探针取证后重启；默认关，开关状态逐帧入 frame.csv |
 | S2 | 统一路径 reservoir：初始采样（M26 池 + alias/RIS 出候选）+ temporal | 默认关；与 M24 并行期盯显存峰值 |
-| S3 | spatial 复用 + 决策 6 四项技术 | **判定重建**（D230）：按D231完整hybrid + 随机重放 + pairwise MIS重建，切片R0–R6。**进度（2026-11-05）**：R0–R1完成；R2已有96 B记录、实际几何与双足迹资格、稳定Schlick重评及D太阳NEE/深天空/深发光端点和外置RR/WRS。R2b-12修复重放位置/half精度分叉；用户批准后的R2b-14已接入共享定序n·wi，修复已捕获的0.149%掠射权重残差，并补上所有完成readback帧的CPU累计诊断。68套/349项测试、52份shader及三OFF模块逐字节对照通过；正式helper的45,003组GPU逐位检查通过。真实3,564个已回读帧中12,780,519次cached检查和2,999,270条fresh source全部通过原0.1%门限，失败警告/invalid/scope/miss/geometry/numeric均0，最大cached weight误差0.00148790%。游戏已自行正常保存退出，VUID=0；无临时见证字段或缓冲。**R2未完成**：D其余贡献、S/L/H/T、完整源端/shift恒等及记录A→B→A；transport种子仍按计划留给R3/G10。时域/空间尚未消费，仍返回完整自己的L，无复用效果或GPU成本结论。用户授权自主游戏检查，观感集中待验；objectId仍为本帧TLAS索引，D号段待分配。工具链最低版本声明与CI2026.8基线矛盾待统一，本片未切换全项目编译器。详见M28日志R2b-6至R2b-14。 |
+| S3 | spatial 复用 + 决策 6 四项技术 | **按D231重建，未完成（2026-11-06）**：R0–R1完成；R2已有96 B path-tree、D/S/L/H/T生产、双足迹资格和稳定解析重评，仍返回完整自身L。R2b-20共享完整照明/T-only内核，R2b-21以一次命中联合返回实际材质/几何/UV，正式记录和重放不再补metadata query。74套367项测试、55shader通过；三OFF raygen、any-hit及两个miss逐字节同基线，closest-hit全指令/操作数/常量完全同构（声明顺序/ID不同）。此前接线原型1,569个回读帧中4,171,062次fresh重放仍有13次位置偏差，严格累计保持RED；最终模块边界调整后的运行时复验、T真实覆盖、完整源/shift恒等和记录A→B→A继续开放。R3时域、R4空间尚未消费；主开关默认关，时域/反向检查开、Cap20初始基准已授权。实际GPU成本与用户观感未验收；objectId跨帧身份、D号段及工具链声明冲突仍开放。详见M28日志R2b-14至R2b-21及本节执行表。 |
 | S4 | 表面 DI 迁入统一链，M24 reservoir 退役 | 铁律 8 逐开关成立 |
 | S5 | 太阳/天体入池 | 定制物理逐项过契约测试 |
 | S6 | 雾照明接统一链路 + 方向场；**含 D210 的水闭式解拆段**（段跨开阔度遮挡边界时拆分，顺带消除浅顶暗/深顶亮的不一致） | 雾观感可调性是验收重点（M25 教训）；水拆段自备开关与验收 |
@@ -880,7 +881,7 @@ R2b-18已接入局部太阳S、环境底色L及薄壳T；局部事件使用ℓ=0
 
 | 项 | 建议接法与准确度边界 | 成本与另一选项 |
 | --- | --- | --- |
-| G3 联合命中数据（用户2026-11-05要求重构） | 用户否决“TraceRay取材质后再补query”的长期接法，要求检查整个命中数据流、一次命中同时取得实际材质/几何/UV，消除重复遍历与取数。closest-hit本已持有顶点/UV；正式生产不再把独立metadata query当必要第二遍。 | 正在审核联合返回结构、辐射/阴影payload及SBT边界；48 B segment、96 B record和阴影payload不得增长。返回通路的实际寄存器/数据传输成本须原型测量，不把省一次query直接宣传成零成本。旧query可作为独立诊断真值，不能掩盖成正式取数。 |
+| G3 联合命中数据（用户2026-11-05要求重构） | R2b-21已落地path_hit接口与独立trace_path/trace_path_ser：同一closest-hit利用已有顶点/UV返回完整材质和FP32几何元数据；正式生产与重放直接消费联合结果。独立query仅保留为抽样交叉诊断，歧义/失败不会改写生产资格。Pass A、指南与阴影继续原入口；变体显式绑定同型radiance阶段与原shadow阶段。 | 辐射命中增加32 B逻辑返回信息，实际寄存器/栈/GPU耗时未测；48 B segment、96 B record和原阴影payload不增长。74套367测试/55shader与关档对照通过；13次位置重放残余继续取证，不能据此宣布R2或完整移位完成。 |
 | G10/G11 共享传输内核（用户2026-11-05要求重构） | R2b-20已将云路径、异质雾区域及介质profile分派拆成各自唯一的共享kernel；静态完整照明/T-only两种入口。纯透射不运行光照、scatter-event归一化预遍历或可见性射线，保留原密度/步进/终止/透射数学及封闭介质闭式、解析高度雾和预算。 | 364项测试、52shader通过；三个OFF与R2a、两个ON与R2b-19均逐字节相同。新T-only入口可作为compute编译且没有TraceRay/ray query；实际GPU耗时和T-only运行时恒等仍待测。逐边可重放种子、正式连接消费及完整源/shift验收尚未接入；不擅自扩大透明/折射连接scope。 |
 | G6 与R3初始开关（用户2026-11-05授权自行定基准） | 主开关继续默认关；时域与反向可见性子开关初始开，Cap先20，作为正确性/后续优化基准，R6再校准；仅在R3实际消费时接入UI与位。 | 反向检查增加射线/求值，Cap影响历史响应、相关性和方差。用户认可先建立基准，不代表已通过性能/观感验收或20是最优值；不再重复请示同一初始选择。 |
 

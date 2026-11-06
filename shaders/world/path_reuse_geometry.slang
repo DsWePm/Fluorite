@@ -1,5 +1,5 @@
-// Included only by the path-reuse raygen variant. The radiance hit/payload ABI stays unchanged.
-// Resolve metadata for the hit TraceRay already chose; this is not a visibility/nearest-hit query.
+// Included only by the path-reuse raygen variant. Production consumes the radiance hit's joint result.
+// The independent query is a diagnostic oracle only; unresolved ties cannot invalidate that result.
 
 static const uint REUSE_GEOMETRY_OK = 0u;
 static const uint REUSE_GEOMETRY_MISSING = 1u;
@@ -24,6 +24,24 @@ ReuseHitGeometry emptyReuseHitGeometry() {
     hit.geometryIndex = 0u;
     hit.primitiveIndex = 0u;
     return hit;
+}
+
+uint reuseReadHitGeometry(float3 position, PathHitGeometry geometry, out ReuseHitGeometry hit) {
+    hit = emptyReuseHitGeometry();
+    if (geometry.objectId == PATH_OBJECT_UNAVAILABLE) return REUSE_GEOMETRY_MISSING;
+    bool entity = (geometry.objectId & ENTITY_BIT) != 0u;
+    float normalSq = dot(geometry.normal, geometry.normal);
+    if ((geometry.objectId & PARTICLE_BIT) != 0u
+            || geometry.geometryIndex >= (entity ? 2u : TERRAIN_BUCKETS)
+            || !all(isfinite(position)) || !all(isfinite(geometry.uv))
+            || !isfinite(normalSq) || abs(normalSq - 1.0) > 1.0e-5) return REUSE_GEOMETRY_INVALID;
+    hit.position = position;
+    hit.normal = geometry.normal;
+    hit.uv = geometry.uv;
+    hit.objectId = geometry.objectId;
+    hit.geometryIndex = geometry.geometryIndex;
+    hit.primitiveIndex = geometry.primitiveIndex;
+    return REUSE_GEOMETRY_OK;
 }
 
 // Eight float rounding units at the ray's coordinate/distance scale. A wider tolerance only rejects
@@ -155,6 +173,18 @@ bool reuseSameHitGeometry(ReuseHitGeometry source, ReuseHitGeometry replayed) {
             && dot(delta, delta) <= 1.0e-8 * (1.0 + dot(source.position, source.position))
             && dot(source.normal, replayed.normal) >= 1.0 - 1.0e-6
             && all(uvDelta <= 9.5367431640625e-7 * uvScale);
+}
+
+// Query failures remain visible in the original complete status partition (lanes 2..6). A unique
+// oracle hit must also match the actual hit's key, normal, UV and position; mismatch counts as invalid.
+// This diagnostic never supplies or changes the production hit metadata or eligibility.
+uint reuseCheckHitGeometry(uint cullMask, float3 ro, float3 rd, float hitT, ReuseHitGeometry actual) {
+    ReuseHitGeometry oracle;
+    uint status = reuseQueryHitGeometry(cullMask, ro, rd, hitT, oracle);
+    if (status == REUSE_GEOMETRY_OK && !reuseSameHitGeometry(actual, oracle)) {
+        status = REUSE_GEOMETRY_INVALID;
+    }
+    return status;
 }
 
 void reuseCountSourceGeometry(uint status) {

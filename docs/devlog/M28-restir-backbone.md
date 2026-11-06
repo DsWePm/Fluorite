@@ -441,7 +441,7 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 ### 编译期变体（G15，用户裁决）
 
 - `build.gradle` 对 `world.rgen` 再编两份带 `-DFLUORITE_PATH_REUSE` 的：`world_reuse.rgen.spv`、`world_ser_reuse.rgen.spv`。
-- `RtPipeline` 增加**变体管线**：共享同一管线布局、描述符集和 miss/hit 表，只换 raygen。它必须是另一条 `VkPipeline`，不能做成同一管线里的第三个 raygen 组，因为光追管线的寄存器分配按整条管线计，放在一起会把关档一起拖慢。
+- `RtPipeline` 增加**变体管线**：共享管线布局与描述符集。R0时只换raygen、共用miss/hit；R2b-21起显式传入完整阶段清单，辐射阶段使用联合命中接口、阴影阶段保留原接口，各自SBT尺寸跟随变体。它必须是另一条 `VkPipeline`，不能做成同一管线里的第三个 raygen 组，因为光追管线的寄存器分配按整条管线计，放在一起会把关档一起拖慢。
 - 主开关第一次打开时懒创建变体，此后常驻；pass B 只在路径 store 存在时绑定变体。
 - 基础管线里 `recordPath` 是编译期常量 `false`，路径复用代码整体被消除。
 
@@ -994,3 +994,19 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 73套/364项测试和52shader通过，清理后的全量测试再次通过。新的独立compiler contract将正式T-only两个入口作为compute编译并spirv-val，确认密度loop/纹理工作实际存在、TraceRay/ray query均不存在。原source契约测试改为读取实际kernel的完整照明静态体，原断言保留。三个OFF模块与R2a逐字节相同；从b4578c6源快照重新编译的普通/SER ON模块，与重构后两个ON模块也规整化逐字节相同，未用“数学相同”替代字节比较。
 
 这一步没有加射线、GPU缓冲、WorldPush、48 B segment、96 B record或阴影payload，没有改变源随机流，也没有把T-only调用当作R3已经消费。完整源/shift的逐边可重放种子、T-only真实数值恒等、实际GPU时间及前片几何诊断残余仍待后续；本片未启动游戏。原始原型、反例、编译SPIR-V/反汇编/静态计数、R19源码快照、364项测试与五模块对照均在同一11-05证据目录r2b20/shared-edge/cloud/volume相关文件。
+
+## R2b-21（2026-11-06，D 编号待分配）：一次命中的联合材质/几何接口
+
+落实用户要求的G3数据流重构。`path_hit`定义独立的辐射命中结果：原`Payload surface`加32 B逻辑的FP32几何法线/UV和对象、geometry、primitive标识。closest-hit在已有顶点/UV的同一段材质求值中写几何元数据，normal来自变换后的真实三角形边；实体非均匀/镜像变换按变换后边的叉积处理。没有再发一条正式metadata query，也没有拿着色法线或半精度UV冒充几何数据。G16排除的粒子不额外计算不会使用的几何结果。
+
+`trace_path`与`trace_path_ser`拥有联合返回的普通/SER入口；后者在ReorderThread后重建完整结果，不将返回表面或几何跨reorder保活。复用分支的入口局部绑定同时覆盖既有volumeDebug辐射调用，SPIR-V逐调用检查确认普通/SER变体内所有旧Payload的TraceRay都使用shadow SBT。Pass B不使用指南探针，因此没有新增无消费者的联合指南阶段；Pass A/指南、旧普通/SER追踪模块及公共ABI均保留原源文件。完整材质着色仍只有一套函数体，通过命中阶段的静态包装提供两种接口。
+
+`RtPipeline.VariantShaders`显式携带完整阶段表。新辐射closest/any-hit/miss与原阴影any-hit/guide-miss分别匹配payload，shadow hit group不绑定联合closest-hit。地形与实体的16个SBT记录均按各自ray-type分组，不能将entity radiance索引8..11错当shadow。变体的miss/hit区域按自己的计数定位，共享父布局/描述符与生命周期。48 B segment、96 B reservoir、MediumStack、WorldPush与原shadow payload没有增长；32 B是新增逻辑返回信息，不是实测寄存器、栈或GPU ABI成本。
+
+74套367项测试与55shader构建/spirv-val通过。实际编译模块的payload类型树检查覆盖所有可达stage和两个raygen后端；三份OFF raygen与R2a逐字节相同，any-hit及两个miss与R2b-20逐字节相同。closest-hit规整化字节不同，独立检查证明只涉及不可变常量声明顺序和ID：3,008条非恒定指令的完整顺序/操作数绑定、92个常量的精确位模式与多重集均相同，没有做算术重排或宽松数值比较。三个合法SPIR-V负对照分别改一个浮点常量位、加一次加载、将一次浮点加法换成乘法，均被检查拒绝。没有修改既有规整化器，也没有把closest-hit伪报为字节相同。引入独立模块和复用分支绑定，是为了让基线入口与通用追踪接口保持原样，而非在基线里增加运行时模式分支。
+
+正式几何构造器的20,003组GPU对照覆盖非均匀/镜像/剪切变换后的边，normal最大绝对误差8.3310522e-6，UV与整数标识逐bit保留；207组退化边、197组不可用标识、195组粒子排除分区正确，14,557组改错标识/UV/法线的负对照检出。初版cross(a,a)因FMA收缩产生微小残差再被归一化，已用显式NoContraction的乘、乘、减修正；固定SDK忽略源级precise，因此用真实SPIR-V装饰作永久回归闸门。该退化输入不会作为正常AS命中出现，但接口不能凭空返回有效法线。
+
+生产和fresh replay改为`reuseReadHitGeometry`读取联合结果。原query作为独立的1/16像素诊断oracle继续保留，唯一候选还须比较实际normal、UV、位置和完整key；missing/ambiguous/invalid仍进入旧状态分区，不影响生产记录。先前接线原型的真实会话1,569个回读帧中，cached 5,644,540条全过0.1%，codec方向位变化、PDF/weight差异与incident误差均为0；局部S/L/H记录分别2,708,240/120/239,009，T仍0。fresh k2 2,699,592/2,699,598、deep 1,471,457/1,471,464，13次均为位置偏差，scope/miss/invalid/numeric为0；max scatter/PDF/denom分别0.0979985%/0.0132431%/0.0219944%。严格累计仍RED，不能把这13条删掉或归因于共面查询歧义。游戏7分32秒后正常保存关闭、VUID=0，配置/options前后字节相同。
+
+该原型之后收紧了模块边界，当前ON模块与该会话不逐字节相同，因此上述会话是保留的故障与事件覆盖证据，不冒充最终模块运行时验收。下一步用独立失败见证区捕获原始射线/命中距离/key/坐标位模式，区分点运算舍入、前缀分叉与不同三角形，再作定点修复并移除临时取证。T定向夹具已准备但未激活；完整transport/shift恒等、记录A→B→A、R3时域消费、实际GPU成本和用户观感均继续开放。证据与比较器/负对照在F:\MC\Shader\evidence\restir-r2-r3-2026-11-05的r2b21文件，原始失败累计也保留。

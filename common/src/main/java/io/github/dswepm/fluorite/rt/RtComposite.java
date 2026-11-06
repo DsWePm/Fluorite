@@ -1511,7 +1511,10 @@ public final class RtComposite {
         }
         if (pathReuseVariant == null) {
             pathReuseVariant = active.createVariant(
-                    new String[]{RtDeviceBringup.worldReuseRaygenShader()}, "path reuse pass B");
+                    new RtPipeline.VariantShaders(java.util.List.of(RtDeviceBringup.worldReuseRaygenShader()),
+                            java.util.List.of("world_path.rmiss.spv", "world_guide.rmiss.spv"),
+                            "world_path.rchit.spv", "world_path.rahit.spv", "world.rahit.spv"),
+                    "path reuse pass B");
             FluoriteMod.LOGGER.info("RT path reuse pass B pipeline built ({})",
                     RtDeviceBringup.worldReuseRaygenShader());
         }

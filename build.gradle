@@ -157,6 +157,13 @@ abstract class CompileShaders extends DefaultTask {
 				} else {
 					// Pass A intentionally uses ordinary TraceRay.
 					compileOneSlang(src, spv, [])
+					// Radiance hit-result interface for the reuse pipeline. Its shadow stages keep
+					// the original Payload; all reachable radiance stages use the joint interface.
+					if (base in ["world.rchit", "world.rahit", "world.rmiss"]) {
+						def pathBase = base.replace("world", "world_path")
+						compileOneSlang(src, new File(scratchDir, "${pathBase}.spv"),
+								["-DFLUORITE_PATH_HIT_RESULT"])
+					}
 				}
 			} else {
 				compileOne(src, spv, [])

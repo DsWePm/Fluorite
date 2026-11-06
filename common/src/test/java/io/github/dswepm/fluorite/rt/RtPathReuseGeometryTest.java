@@ -5,6 +5,10 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -13,6 +17,28 @@ import static org.junit.jupiter.api.Assertions.*;
 class RtPathReuseGeometryTest {
     private static final int OK = 0, MISSING = 1, AMBIGUOUS = 2, INVALID = 3;
     private static final double FLOAT_UNITS = Math.scalb(1.0, -20);
+
+    @Test void compiledJointHitKeepsCrossProductsRoundedBeforeCancellation() throws IOException {
+        // The pinned compiler silently ignores source-level precise. A cross(a,a) manufactured
+        // tiny residuals on the real GPU, then normalized them into an apparently valid normal.
+        try (var in = getClass().getResourceAsStream("/fluorite/rt/world_path.rchit.spv")) {
+            assertNotNull(in);
+            ByteBuffer bytes = ByteBuffer.wrap(in.readAllBytes()).order(ByteOrder.LITTLE_ENDIAN);
+            assertEquals(0x07230203, bytes.getInt(0));
+            var decorated = new HashSet<Integer>();
+            var arithmetic = new HashMap<Integer, Integer>();
+            for (int at = 20; at < bytes.limit();) {
+                int header = bytes.getInt(at), count = header >>> 16, op = header & 0xffff;
+                assertTrue(count > 0 && at + count * 4 <= bytes.limit());
+                if (op == 71 && count >= 3 && bytes.getInt(at + 8) == 42) decorated.add(bytes.getInt(at + 4));
+                if (op == 131 || op == 133) arithmetic.put(bytes.getInt(at + 8), op);
+                at += count * 4;
+            }
+            long products = decorated.stream().filter(id -> arithmetic.getOrDefault(id, -1) == 133).count();
+            long differences = decorated.stream().filter(id -> arithmetic.getOrDefault(id, -1) == 131).count();
+            assertTrue(products >= 4 && differences >= 2, "both terrain and entity hit metadata must preserve the cross");
+        }
+    }
 
     private record V(double x, double y, double z) {
         V add(V b) { return new V(x + b.x, y + b.y, z + b.z); }
@@ -171,7 +197,7 @@ class RtPathReuseGeometryTest {
     }
 
     @Test
-    void shaderUsesActualPositionsWithoutGrowingOrMutatingThePayload() throws IOException {
+    void independentOracleUsesActualPositionsWithoutMutatingTheJointHit() throws IOException {
         String s = source("shaders/world/path_reuse_geometry.slang");
         for (String operation : List.of("RayQuery<RAY_FLAG_FORCE_NON_OPAQUE>",
                 "query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE",
@@ -205,17 +231,22 @@ class RtPathReuseGeometryTest {
     void metadataDiagnosticUsesTheActualRayAndComparesValuesNotSuccessFlags() throws IOException {
         String s = source("shaders/world/path_reuse_trace.slang");
         int capture = s.indexOf("// R2b geometry diagnostic:");
-        assertTrue(capture > s.indexOf("traceRadianceReordered(", s.indexOf("public float3 tracePathReuse(")));
+        assertTrue(capture > s.indexOf("tracePathRadianceReordered(", s.indexOf("public float3 tracePathReuse(")));
         assertTrue(capture < s.indexOf("SegmentIntegral segIntegral =", capture));
         assertTrue(s.contains("bool queryIdentityGeometry = identityCheck && indirectDepth < PATH_REUSE_IDENTITY_DEPTH;"));
         assertTrue(s.contains("if ((queryIdentityGeometry || queryRecordGeometry) && payload.hitT >= 0.0)"));
-        assertTrue(s.contains("ro, rd, payload.hitT, hitGeometry)"));
+        assertTrue(s.contains("reuseReadHitGeometry(hitPos, pathHitGeometry, hitGeometry)"));
+        assertTrue(s.contains("reuseCheckHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,"));
+        assertTrue(s.contains("reuseCountSourceGeometry(oracleStatus)"));
         assertTrue(s.contains("identityGeometry = hitGeometry;"));
-        assertTrue(s.contains("ro, rd, payload.hitT, lastGeometry)"));
+        assertTrue(s.contains("reuseReadHitGeometry(hitPos, pathHitGeometry, lastGeometry)"));
+        assertFalse(s.contains("reuseQueryHitGeometry("), "production and replay use the authoritative joint result");
         assertTrue(s.contains("if (queryGeometry && reached == vertices)"));
         assertTrue(s.contains("identityGeometryStatus == REUSE_GEOMETRY_OK"));
         assertTrue(s.contains("reuseSameHitGeometry(identityGeometry, replayedGeometry)"));
         String g = source("shaders/world/path_reuse_geometry.slang");
+        assertTrue(g.contains("reuseQueryHitGeometry(cullMask, ro, rd, hitT, oracle)"));
+        assertTrue(g.contains("status == REUSE_GEOMETRY_OK && !reuseSameHitGeometry(actual, oracle)"));
         for (String check : List.of("source.objectId == replayed.objectId",
                 "source.geometryIndex == replayed.geometryIndex", "source.primitiveIndex == replayed.primitiveIndex",
                 "dot(source.normal, replayed.normal) >= 1.0 - 1.0e-6",

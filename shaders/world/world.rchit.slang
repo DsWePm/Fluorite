@@ -7,6 +7,9 @@
 // through worldPushAddr first would cost an extra global-memory load just to find the address of the
 // load we actually want. The cold WorldPush struct is dereferenced only for the breaking overlay.
 import world_common;
+#ifdef FLUORITE_PATH_HIT_RESULT
+import path_hit;
+#endif
 import math;
 
 [[vk::push_constant]] WorldPushConstants pc;
@@ -257,8 +260,14 @@ float3 applyBreaking(float3 albedo, uint rayCone, float3 rayOrigin, float3 rayDi
     return albedo;
 }
 
+#ifdef FLUORITE_PATH_HIT_RESULT
+void shadePathHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr,
+                  out PathHitGeometry geometry) {
+    geometry = emptyPathHitGeometry();
+#else
 [shader("closesthit")]
 void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) {
+#endif
     float2 attribs = attr.barycentrics;
     uint rayCone = payload.rayCone;
 
@@ -350,6 +359,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float3 ep0 = mul(entityO2w, HitTriangleVertexPosition(0));
         float3 ep1 = mul(entityO2w, HitTriangleVertexPosition(1));
         float3 ep2 = mul(entityO2w, HitTriangleVertexPosition(2));
+#ifdef FLUORITE_PATH_HIT_RESULT
+        geometry = pathTriangleHitGeometry(ep1 - ep0, ep2 - ep0, euvCoord, WorldRayDirection(),
+                InstanceID(), GeometryIndex(), PrimitiveIndex());
+#endif
         float entityLod = rayConeTextureLod(rayCone, texSizePx(entityAlbedoTex[NonUniformResourceIndex(texSlot)]),
                 ep0, ep1, ep2, euv[e0], euv[e1], euv[e2]);
         float4 entityTexel = entityAlbedoTex[NonUniformResourceIndex(texSlot)].SampleLevel(euvCoord, entityLod);
@@ -467,6 +480,11 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     float3 tp0 = HitTriangleVertexPosition(0);
     float3 tp1 = HitTriangleVertexPosition(1);
     float3 tp2 = HitTriangleVertexPosition(2);
+#ifdef FLUORITE_PATH_HIT_RESULT
+    float3x3 hitTransform = (float3x3)ObjectToWorld3x4();
+    geometry = pathTriangleHitGeometry(mul(hitTransform, tp1 - tp0), mul(hitTransform, tp2 - tp0), uv,
+            WorldRayDirection(), InstanceID(), GeometryIndex(), PrimitiveIndex());
+#endif
     float blockLod = rayConeTextureLod(rayCone, texSizePx(blockAlbedoAtlas), tp0, tp1, tp2, uv0, uv1, uv2);
 
     // Orient the GEOMETRIC normal toward the viewer FIRST (double-sided geometry), so the normal-map TBN
@@ -548,3 +566,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         payload.flags |= PAYLOAD_EMITTER_IN_LIST;
     }
 }
+
+#ifdef FLUORITE_PATH_HIT_RESULT
+[shader("closesthit")]
+void main(inout PathHitPayload hit, in BuiltInTriangleIntersectionAttributes attr) {
+    Payload surface = hit.surface;
+    PathHitGeometry geometry;
+    shadePathHit(surface, attr, geometry);
+    hit.surface = surface;
+    hit.geometry = geometry;
+}
+#endif

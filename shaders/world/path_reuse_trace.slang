@@ -1,3 +1,16 @@
+import path_hit;
+import trace_path;
+#ifdef FLUORITE_ENABLE_EXT_SER
+import trace_path_ser;
+#endif
+
+// Entry-local binding also routes the existing volume diagnostics through the joint hit interface.
+// The imported baseline trace implementation remains the Pass A/shadow implementation.
+void traceRadiance(uint cullMask, float3 ro, float tmin, float3 rd, float tmax,
+        bool showCelestial, bool directView, float rayConeWidth, float rayConeSpread) {
+    tracePathRadiance(cullMask, ro, tmin, rd, tmax, showCelestial, directView, rayConeWidth, rayConeSpread);
+}
+
 // The path reuse's pass B tracer (M28 D231, G15/R1). Textually included into world.rgen.slang ONLY
 // when FLUORITE_PATH_REUSE is defined, so it exists only in world_reuse.rgen / world_ser_reuse.rgen --
 // the pipeline the path reservoir switch binds. The shipped pass B (world.rgen's tracePath) carries none
@@ -448,7 +461,7 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
     int indirectDepth = 0;
     int reached = 0;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
-        traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
+        tracePathRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
                       showCelestial, bounce == 0, rayConeWidth, rayConeSpread);
         if (payload.hitT < 0.0) {
             break;
@@ -474,8 +487,7 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
         }
         if (reached >= vertices || bounce >= maxBounces) {
             if (queryGeometry && reached == vertices) {
-                geometryStatus = reuseQueryHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,
-                                                       ro, rd, payload.hitT, lastGeometry);
+                geometryStatus = reuseReadHitGeometry(hitPos, pathHitGeometry, lastGeometry);
             }
             break;
         }
@@ -737,17 +749,18 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         // SER lifetime phase: keep paths that are not roulette-eligible, paths that may terminate via
         // roulette, and paths guaranteed to end at the bounce cap in separate coherence groups.
         uint pathPhaseHint = bounce >= maxBounces ? 2u : (bounce >= rrStart ? 1u : 0u);
-        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
+        tracePathRadianceReordered(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
                                showCelestial, bounce == 0,
                                rayConeWidth, rayConeSpread, pathPhaseHint);
 #else
-        traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
+        tracePathRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
                       showCelestial, bounce == 0, rayConeWidth, rayConeSpread);
 #endif
 
         float footprintEdgeDistance = payload.hitT;
         float3 footprintEdgeDirection = rd;
-        // R2b geometry diagnostic: capture metadata before lighting can touch the radiance payload.
+        float3 hitPos = ro + rd * payload.hitT;
+        // R2b geometry diagnostic: capture the joint hit before lighting can touch the payload.
         // Record production needs every source hit up to the first D pair, even with diagnostics off.
         bool queryIdentityGeometry = identityCheck && indirectDepth < PATH_REUSE_IDENTITY_DEPTH;
         bool queryRecordGeometry = recordPath && !dReconChosen && !footprintPrefixWalk
@@ -756,10 +769,11 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         uint hitGeometryStatus = REUSE_GEOMETRY_MISSING;
         if ((queryIdentityGeometry || queryRecordGeometry) && payload.hitT >= 0.0) {
             if (payloadMaterial() != MATERIAL_PARTICLE) {
-                hitGeometryStatus = reuseQueryHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,
-                                                          ro, rd, payload.hitT, hitGeometry);
+                hitGeometryStatus = reuseReadHitGeometry(hitPos, pathHitGeometry, hitGeometry);
                 if (queryIdentityGeometry) {
-                    reuseCountSourceGeometry(hitGeometryStatus);
+                    uint oracleStatus = reuseCheckHitGeometry(bounce == 0 ? CULL_PRIMARY : secondaryCull,
+                            ro, rd, payload.hitT, hitGeometry);
+                    reuseCountSourceGeometry(oracleStatus);
                 }
                 if (indirectDepth == 0 && seg.bounce == 0 && payloadMaterial() == MATERIAL_OPAQUE
                         && hitGeometryStatus == REUSE_GEOMETRY_OK) {
@@ -929,7 +943,6 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         }
 
         float3 n = payload.normal; // oriented toward the incoming ray by the closest-hit
-        float3 hitPos = ro + rd * payload.hitT;
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
         uint material = payloadMaterial();
         int hitDepth = indirectDepth++;
