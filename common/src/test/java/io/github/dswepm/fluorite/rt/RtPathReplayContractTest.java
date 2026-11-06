@@ -252,7 +252,7 @@ final class RtPathReplayContractTest {
         // R2a removed the unused merge lanes: identity now occupies lanes 0 and 1.
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u)"));
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u)"));
-        assertEquals(72, RtPathReservoirStats.LANES);
+        assertEquals(76, RtPathReservoirStats.LANES);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         assertTrue(stats.contains("memGetInt(src.mapped)") && stats.contains("src.mapped + 4L"));
         assertTrue(stats.contains("identityPass, identityAttempt, percentage(identityPass, identityAttempt)"));
@@ -277,6 +277,12 @@ final class RtPathReplayContractTest {
         assertEquals(1, reuseFile.split(java.util.regex.Pattern.quote("tracePathRadianceReordered("), -1).length - 1);
         reuseFile = reuseFile.replace("tracePathRadiance(", "traceRadiance(")
                 .replace("tracePathRadianceReordered(", "traceRadianceReordered(");
+
+        // G10: recorded medium/cloud edges use independent addressable seeds. Only the RNG source
+        // changes; retain the full source integrals and their original ordering in this proof.
+        assertEquals(2, reuseFile.split(java.util.regex.Pattern.quote("segmentTransportSeed"), -1).length - 1);
+        assertEquals(2, reuseFile.split(java.util.regex.Pattern.quote("cloudTransportSeed"), -1).length - 1);
+        reuseFile = reuseFile.replace("segmentTransportSeed", "seed").replace("cloudTransportSeed", "seed");
 
         // R2b-22 controls FP contraction in the shared VNDF formula and reflection. Keep every
         // call argument, random stream and surrounding sampler statement in the shipped-line proof.

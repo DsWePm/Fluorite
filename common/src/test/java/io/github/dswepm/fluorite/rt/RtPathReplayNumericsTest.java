@@ -66,7 +66,10 @@ final class RtPathReplayNumericsTest {
 
     @Test void theReplayEnforcesLocalArithmeticWithoutChangingTheSourceTracer() throws IOException {
         String trace = source("shaders/world/path_reuse_trace.slang");
-        String replay = trace.substring(trace.indexOf("int reuseReplayPrefix("), trace.indexOf("// Fresh source-material"));
+        int start = trace.indexOf("int reuseReplayPrefix(");
+        int end = trace.indexOf("\n}\n", start);
+        assertTrue(start >= 0 && end > start);
+        String replay = trace.substring(start, end);
         assertTrue(replay.contains("reuseReplayPosition(ro, rd, payload.hitT)"));
         assertTrue(replay.contains("reuseCanonicalizeReplayPayload();"));
         String sourceLoop = trace.substring(trace.indexOf("public float3 tracePathReuse("));

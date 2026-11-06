@@ -1024,3 +1024,28 @@ R2b-10已提交并推送为 `bace2bd`。继续沿diagnose流程对三个可证�
 证据在F:\MC\Shader\evidence\restir-r2-r3-2026-11-05：r2b22-context-retry及half保留旧失败、原始hex和对应模块；r2b22-build-summary、r22-formal-direction-summary、r2b22-direction-run-summary、累计严格checker及CSV保存正式修复验证。没有修改规整化器。T实际覆盖、完整transport/shift恒等、记录模式A到B到A及R3时域消费仍未完成；观感最终验收留给用户，性能不能由本次1600×900诊断会话推断。
 
 R2b-22后续薄壳覆盖：独立存档restir-r2-event-fixture和临时资源包把六块smooth quartz改为单面薄壳，并补两个粗糙glowstone；临时启用既有thin模式，不改代码或SSS深度。714个已完成回读帧实际写出S/L/H/T记录994,083/96,749/111,588/38,784条；未逐材质归因，因此不声称T全部来自定向屋顶。cached 2,670,053条与fresh k2 1,140,772次/deep 409,804次全过原0.1%门，scope/miss/geometry/invalid/numeric、codec位变化/误差及incident误差全0，source factors 1,787,470/1,787,470。最大scatter/PDF/denom为0.00788675%/0.00362071%/0.00361578%，cached PDF最大0.00746446%。D-thin仍0，原因仍是既有SSS深度预算，不冒充深层D-thin覆盖。游戏正常保存关闭，VUID0；配置和options逐字节恢复，仅移除本轮安装的临时包，原存档未被夹具改写。r2b22-thin-fixture-summary、原始日志、CSV、资源包与activation快照完整归档；这补齐局部T实际覆盖，仍不等于完整transport/shift恒等或R2完成。
+
+### R2b-23：逐边传输种子、纯透射前缀与完整源事件恒等（2026-11-07）
+
+按用户既有G10重构授权，把recorded路径的medium/cloud随机样本分别地址化为pathSeed与逻辑边index的函数，两个域使用独立盐，NEE/复用/roulette的顺序流不参与推导。源追踪仍调用完整integrateSegment与traceClouds；只有recordPath切换到新传输种子，未记录路径仍传原seed。ON源样本的浮点/随机表现变化属于该接线的预期，公式、密度场、步进预算及OFF行为保持。新path_reuse_transport只调用共享kernel的segmentPathTransmittance/cloudPathTransmittance，不执行整套照明后丢掉RGB，不加可见性或几何射线。
+
+fresh replay按需累计每条源前缀边的T；普通几何identity不请求它。源侧独立累计实际完整积分产生的T乘积，并随12个WRS选中reference同步局部或D锚点前缀；完整RGB直接以路径树实际selectedValue为ground truth。重放只用新命中材质/几何、record seed/lobe/direction/incident重建，不使用参考值求方向或补系数，不做RGB除法。原scatter/PDF/jac检查保留，再增加每个透射通道及完整事件RGB的0.001门，失败仍进原numeric分类。record96 B、segment48 B、阴影payload不变；stats增4个实际使用lane到76/304 B，72/73为T-prefix/full-event最大误差，74/75明确为source非unity medium/cloud边计数，不能把可能位于锚点后的source边计数当成每层T-only覆盖证明。FrameTotals回归覆盖新最大值在后续健康帧之后仍保留。
+
+首轮实际2451个readback的透射与RGB数值已过，但deep有1次referenceSupported=false，严格累计仍RED。源码旧门只持久记walk，dielectric仅清previousValid，后续两个opaque顶点又会恢复deep候选资格；这与当前不支持interface前缀的scope冲突。现在统一footprintPrefixUnsupported，在dielectric/particle分支入口置true并保留walk累计，所有候选前门使用它。该资格限制发生在WRS前，保留此前合法事件与完整自身L；不在选中后删除坏记录或放宽scope。首轮失败日志、模块与CSV独立保留为r2b23-first证据。未获取该次失败样本完整材质序列，因此具体界面种类是结合代码可达性的解释，不能伪称逐顶点现场见证。
+
+修后正式模块：74套367测试、55shader及全部spirv-val通过，三OFF与R2a规整化字节一致。一个旧数值测试依赖注释文字截取函数，因注释更新失效，已按函数结束边界截取并重跑；另新增source分支sticky barrier的契约检查。没有改规整化器或数值阈值。
+
+| 场景 | 已完成回读帧 | fresh k2 / deep（全部通过） | 最大T-prefix误差 | 最大完整RGB误差 |
+| --- | ---: | ---: | ---: | ---: |
+| 原场景，SSS off | 2100 | 1,045,018 / 24,638 | 0.0000398379% | 0.00166166% |
+| 云层内向下看，低密度云 | 3161 | 127,810 / 805 | 0.0000346639% | 0.00261758% |
+| 原场景，噪声雾启用 | 1143 | 553,274 / 13,082 | 0.0000788985% | 0.000964146% |
+| thin独立夹具 | 1222 | 1,953,112 / 702,445 | 0.0000260019% | 0.0123134% |
+
+合计7626个已完成readback、8,635,890条lobe检查、4,420,184次fresh检查；scope/miss/geometry/invalid/numeric、codec位变化/误差及incident误差全0，VUID全0。thin实际写出S/L/H/T为1,702,528/166,258/190,574/66,256条，新传输逻辑下重新验证了T完整事件；D-thin仍不扩大既有SSS深度。每帧仅1/16像素被诊断，不是全像素或1 Hz抽样证明。
+
+云场景复制独立存档，所有player数据改为feet y224、yaw-85/pitch80、creative flying；保存后的实际位置/姿态再次核对一致。临时coverage1/density0.05/extinction0.003/thickness128/weatherfalse，普通fog仍开，这是实际云层前缀场景的回归，不声称覆盖所有云预算/空间位置。噪声雾只临时启用既有开关，原contrast8在forcing中clamp4；未修改默认参数或校准。所有游戏已正常保存关闭，config/options逐字节恢复，thin临时资源包移除，原存档未被夹具改写。
+
+另以真实segmentPathTransmittance做20,003组无窗口GPU对照double Beer law（tau 0..80，含零吸收、零距离、混合RGB），两个seed输出逐位相同，最大相对误差7.3811865e-6。完整source函数因静态TraceRay capability不能用于compute，故这个结果只验证均质passive/glass的T-only，不冒充完整source或水照明试验。
+
+F:\MC\Shader\evidence\restir-r2-r3-2026-11-05的r2b23-scenes-summary聚合上述正式结果，各场景日志/严格checker/CSV、配置激活与恢复快照、原场景ON模块hash及closed probe输入输出保留。实际GPU代价未按同会话比值法测量，不从诊断帧时间推断性能。当前完成的是已有源前缀与选中事件的恒等；封闭水初始介质专测、新连接/shift、record-only A到B到A及R3时域/pairwise RGB own-split继续开放，R2/R3不能据此宣布完成。

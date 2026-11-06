@@ -65,6 +65,7 @@ ReuseEventEvaluation reuseEvaluateEvent(ReuseOpaqueVertex vertex, PackedPathRese
 
 // Reference values are captured when the event is selected, independently of the replay evaluator.
 struct ReuseEventReference {
+    float3 transportPrefix;
     float3 scatterWeight;
     float sourcePdf;
     bool supported;
@@ -72,6 +73,7 @@ struct ReuseEventReference {
 
 ReuseEventReference emptyReuseEventReference() {
     ReuseEventReference reference;
+    reference.transportPrefix = float3(1.0, 1.0, 1.0);
     reference.scatterWeight = float3(0.0, 0.0, 0.0);
     reference.sourcePdf = 0.0;
     reference.supported = false;
@@ -79,8 +81,9 @@ ReuseEventReference emptyReuseEventReference() {
 }
 
 void reuseSelectReference(ReusePathTree tree, inout ReuseEventReference reference,
-                          float3 scatterWeight, float sourcePdf, bool supported) {
+                          float3 scatterWeight, float sourcePdf, float3 transportPrefix, bool supported) {
     if (tree.lastSelected) {
+        reference.transportPrefix = transportPrefix;
         reference.scatterWeight = scatterWeight;
         reference.sourcePdf = sourcePdf;
         reference.supported = supported;

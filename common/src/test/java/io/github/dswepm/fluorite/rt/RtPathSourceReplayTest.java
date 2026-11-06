@@ -34,13 +34,16 @@ final class RtPathSourceReplayTest {
         assertTrue(evaluator.contains("reuseLoadDirection(record)"));
         assertTrue(evaluator.contains("reuseEvaluateContinuation(vertex.bc, vertex.pf, vertex.ps,"));
     }
-    @Test void theReplayStateExportsScatteringButDoesNotInventUnapprovedTransportSeeds() throws Exception {
+    @Test void theReplayStateExportsScatteringAndOptInPureTransport() throws Exception {
         String s=source("shaders/world/path_reuse_trace.slang");
         int start=s.indexOf("int reuseReplayPrefix("), end=s.indexOf("\n}\n",start);
         String function=s.substring(start,end);
         assertTrue(function.contains("state.scatterPrefix = throughput;"));
         assertTrue(function.contains("state.previousPdf = bsdfPdf;"));
         assertTrue(function.contains("state.opaquePrefix = false;"));
+        assertTrue(function.contains("if (withTransport)"));
+        assertTrue(function.contains("reuseAccumulateTransport(state.transportPrefix"));
+        assertTrue(function.contains("pathSeed, uint(indirectDepth), bounce > 0"));
         assertFalse(function.contains("integrateSegment(") || function.contains("traceClouds(") || function.contains("rrSurvival"));
     }
     @Test void originalScatteringGroundTruthIsAccumulatedWithoutDividingActualThroughput() throws Exception {
@@ -52,7 +55,7 @@ final class RtPathSourceReplayTest {
         assertFalse(s.contains("scatteringPrefix /=") || s.contains("scatteringPrefix *= segIntegral") || s.contains("scatteringPrefix *= clouds"));
     }
     @Test void diagnosticsPartitionEveryAttemptAndKeepDepthBinsAndOriginalTolerance() throws Exception {
-        assertEquals(72,RtPathReservoirStats.LANES); assertEquals(288,RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(76,RtPathReservoirStats.LANES); assertEquals(304,RtPathReservoirStats.BYTE_SIZE);
         String s=source("shaders/world/path_reuse_trace.slang");
         assertTrue(s.contains("depth == 2 ? 48 : 49")); assertTrue(s.contains("depth == 2 ? 54 : 55"));
         for(int i:new int[]{50,51,52,53,59}) assertTrue(s.contains("pathReservoirStatsAddr)["+i+"], 1u"));

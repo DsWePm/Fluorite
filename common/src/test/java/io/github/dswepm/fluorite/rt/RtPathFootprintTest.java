@@ -127,8 +127,17 @@ class RtPathFootprintTest {
         assertTrue(loop.contains("float3 footprintEdgeDirection = rd;"));
         assertTrue(loop.contains("indirectDepth == 0 && seg.bounce == 0 && payloadMaterial() == MATERIAL_OPAQUE"));
         assertTrue(loop.contains("!footprintFound && hitDepth >= 1"));
-        assertTrue(loop.contains("!footprintPrefixWalk"));
-        assertTrue(loop.contains("footprintPrefixWalk = footprintPrefixWalk || walked;"));
+        assertTrue(loop.contains("!footprintPrefixUnsupported"));
+        assertTrue(loop.contains("footprintPrefixUnsupported = footprintPrefixUnsupported || walked;"));
+        // An opaque vertex after an unsupported interface must not re-enter the candidate domain.
+        // Earlier supported endpoints stay in the tree; this only gates later candidate production.
+        String sourceLoop = loop.substring(loop.indexOf("public float3 tracePathReuse("));
+        for (String branch : new String[]{"if (material == MATERIAL_WATER || material == MATERIAL_DIELECTRIC) {",
+                "if (material == MATERIAL_PARTICLE) {"}) {
+            int at = sourceLoop.indexOf(branch);
+            assertTrue(at >= 0);
+            assertTrue(sourceLoop.substring(at + branch.length()).stripLeading().startsWith("footprintPrefixUnsupported = true;"));
+        }
         assertTrue(loop.contains("footprintPreviousValid = false;"));
         assertTrue(loop.contains("REUSE_MIN_ALPHA, REUSE_FOOTPRINT_SCALE, jacDenom"));
         assertFalse(source("shaders/world/world.rgen.slang").contains("path_reuse_sampling.slang"));
@@ -140,7 +149,7 @@ class RtPathFootprintTest {
         assertTrue(loop.contains("pathReservoirStatsAddr)[10], 1u"));
         assertTrue(loop.contains("pathReservoirStatsAddr)[hitDepth == 1 ? 11 : 12], 1u"));
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
-        assertEquals(72, RtPathReservoirStats.LANES);
+        assertEquals(76, RtPathReservoirStats.LANES);
         for (int i = 9; i < 13; i++) assertTrue(stats.contains("memGetInt(src.mapped + " + i * 4 + "L)"));
         assertTrue(stats.contains("footprintAccepted, footprintAttempt"));
         assertTrue(stats.contains("footprintK2, footprintK3"));

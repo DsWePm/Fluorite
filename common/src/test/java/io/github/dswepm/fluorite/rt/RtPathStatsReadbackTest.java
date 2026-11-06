@@ -11,13 +11,17 @@ final class RtPathStatsReadbackTest {
         ByteBuffer frame = ByteBuffer.allocateDirect((int) RtPathReservoirStats.BYTE_SIZE).order(ByteOrder.nativeOrder());
         var totals = new RtPathReservoirStats.FrameTotals();
         frame.putInt(20 * 4, 1).putInt(22 * 4, 1).putInt(23 * 4, 0).putFloat(25 * 4, .0014885f);
+        frame.putFloat(72 * 4, .003f).putFloat(73 * 4, .004f);
         totals.add(MemoryUtil.memAddress(frame));
         frame.putInt(20 * 4, 3).putInt(22 * 4, 3).putInt(23 * 4, 3).putFloat(25 * 4, 1e-8f);
+        frame.putFloat(72 * 4, .001f).putFloat(73 * 4, .002f);
         totals.add(MemoryUtil.memAddress(frame));
         assertEquals(2, totals.frames);
         assertEquals(4, totals.count(20));
         assertEquals(3, totals.count(23));
         assertEquals(.0014885f, totals.maximum(25));
+        assertEquals(.003f, totals.maximum(72));
+        assertEquals(.004f, totals.maximum(73));
     }
 
     @Test void countersAccumulateAsUnsignedAndResetWithTheBufferLifetime() {
@@ -45,7 +49,7 @@ final class RtPathStatsReadbackTest {
         int throttle = source.indexOf("long now = System.nanoTime();");
         assertTrue(accumulate > 0 && accumulate < failure && failure < throttle);
         assertTrue(source.substring(source.indexOf("public void destroy()")).contains("allFrames.clear();"));
-        assertEquals(72, RtPathReservoirStats.LANES);
-        assertEquals(288, RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(76, RtPathReservoirStats.LANES);
+        assertEquals(304, RtPathReservoirStats.BYTE_SIZE);
     }
 }

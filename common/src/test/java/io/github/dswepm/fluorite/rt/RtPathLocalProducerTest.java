@@ -24,7 +24,7 @@ final class RtPathLocalProducerTest {
         assertTrue(start>0 && cap>start);
         String local=s.substring(start,cap);
         assertTrue(local.contains("recordPath && !dReconChosen && hitDepth >= 1 && footprintPrimaryValid"));
-        assertTrue(local.contains("footprintPreviousValid && !footprintPrefixWalk"));
+        assertTrue(local.contains("footprintPreviousValid && !footprintPrefixUnsupported"));
         assertTrue(local.contains("REUSE_TECHNIQUE_S"));assertTrue(local.contains("REUSE_TECHNIQUE_T"));
         assertTrue(local.contains("sampledLightIrradiance * vis, rrSurvival"));
         assertTrue(local.contains("sampledLightIrradiance * visB, rrSurvival"));

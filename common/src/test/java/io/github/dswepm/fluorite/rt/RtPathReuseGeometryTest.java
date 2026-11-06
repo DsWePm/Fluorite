@@ -266,8 +266,8 @@ class RtPathReuseGeometryTest {
         String tracer = source("shaders/world/path_reuse_trace.slang");
         for (int lane : new int[] {7, 8}) assertTrue(tracer.contains("pathReservoirStatsAddr)[" + lane + "], 1u"));
         String java = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
-        assertEquals(72, RtPathReservoirStats.LANES);
-        assertEquals(288, RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(76, RtPathReservoirStats.LANES);
+        assertEquals(304, RtPathReservoirStats.BYTE_SIZE);
         for (int lane = 1; lane < 9; lane++) assertTrue(java.contains("memGetInt(src.mapped + " + (4 * lane) + "L)"));
         assertTrue(java.contains("geometryResolved, geometryAttempt"));
         assertTrue(java.contains("geometryMissing, geometryAmbiguous, geometryInvalid"));

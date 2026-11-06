@@ -27,7 +27,8 @@ public final class RtPathReservoirStats {
     // 60-63 deeper ambient/thin candidates and actual selected records.
     // 64-67 actual selected S/L/H/T records, distinct from D endpoint provenance above.
     // 68-71 fresh geometry failure reasons: missing, ambiguous, invalid, position mismatch.
-    public static final int LANES = 72;
+    // 72-73 independent prefix-transmittance/full-event error maxima; 74-75 nontrivial source medium/cloud edges.
+    public static final int LANES = 76;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
@@ -50,7 +51,7 @@ public final class RtPathReservoirStats {
                 long value = Integer.toUnsignedLong(MemoryUtil.memGetInt(mapped + lane * 4L));
                 // Nonnegative float error maxima have the same ordering as their unsigned bits.
                 lanes[lane] = switch (lane) {
-                    case 24, 25, 31, 32, 34, 36, 38, 42, 43, 56, 57, 58 -> Math.max(lanes[lane], value);
+                    case 24, 25, 31, 32, 34, 36, 38, 42, 43, 56, 57, 58, 72, 73 -> Math.max(lanes[lane], value);
                     default -> lanes[lane] + value;
                 };
             }
@@ -275,7 +276,8 @@ public final class RtPathReservoirStats {
                         + "(scope {}, miss {}, geometry {}, invalid {}, numeric {}); max scatter {}, pdf {}, jac {}; "
                         + "direction codec {} (bits changed {}, max pdf {}, weight {}); incident max {}; "
                         + "D surface candidates ambient {} thin {}, records ambient {} thin {}; local records S {} L {} H {} T {}; "
-                        + "fresh geometry reasons missing {} ambiguous {} invalid {} position {}; source factors {}/{}",
+                        + "fresh geometry reasons missing {} ambiguous {} invalid {} position {}; source factors {}/{}; "
+                        + "transport max {}, full event max {}, nontrivial source edges medium {} cloud {}",
                 allFrames.frames, allFrames.count(20), allFrames.count(21), allFrames.count(22), allFrames.count(23),
                 relativePercentage(allFrames.maximum(24)), relativePercentage(allFrames.maximum(25)),
                 allFrames.count(54), allFrames.count(48), allFrames.count(55), allFrames.count(49),
@@ -286,7 +288,9 @@ public final class RtPathReservoirStats {
                 relativePercentage(allFrames.maximum(38)), allFrames.count(60), allFrames.count(61),
                 allFrames.count(62), allFrames.count(63), allFrames.count(64), allFrames.count(65),
                 allFrames.count(66), allFrames.count(67), allFrames.count(68), allFrames.count(69),
-                allFrames.count(70), allFrames.count(71), allFrames.count(18), allFrames.count(17));
+                allFrames.count(70), allFrames.count(71), allFrames.count(18), allFrames.count(17),
+                relativePercentage(allFrames.maximum(72)), relativePercentage(allFrames.maximum(73)),
+                allFrames.count(74), allFrames.count(75));
     }
 
     private static String percentage(long passed, long attempted) {
