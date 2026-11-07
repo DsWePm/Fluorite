@@ -252,7 +252,7 @@ final class RtPathReplayContractTest {
         // R2a removed the unused merge lanes: identity now occupies lanes 0 and 1.
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u)"));
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u)"));
-        assertEquals(76, RtPathReservoirStats.LANES);
+        assertEquals(84, RtPathReservoirStats.LANES);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         assertTrue(stats.contains("memGetInt(src.mapped)") && stats.contains("src.mapped + 4L"));
         assertTrue(stats.contains("identityPass, identityAttempt, percentage(identityPass, identityAttempt)"));

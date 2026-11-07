@@ -12,9 +12,11 @@ final class RtPathStatsReadbackTest {
         var totals = new RtPathReservoirStats.FrameTotals();
         frame.putInt(20 * 4, 1).putInt(22 * 4, 1).putInt(23 * 4, 0).putFloat(25 * 4, .0014885f);
         frame.putFloat(72 * 4, .003f).putFloat(73 * 4, .004f);
+        frame.putFloat(82 * 4, .005f).putFloat(83 * 4, .006f).putInt(81 * 4, 2);
         totals.add(MemoryUtil.memAddress(frame));
         frame.putInt(20 * 4, 3).putInt(22 * 4, 3).putInt(23 * 4, 3).putFloat(25 * 4, 1e-8f);
         frame.putFloat(72 * 4, .001f).putFloat(73 * 4, .002f);
+        frame.putFloat(82 * 4, .001f).putFloat(83 * 4, .002f).putInt(81 * 4, 0);
         totals.add(MemoryUtil.memAddress(frame));
         assertEquals(2, totals.frames);
         assertEquals(4, totals.count(20));
@@ -22,6 +24,9 @@ final class RtPathStatsReadbackTest {
         assertEquals(.0014885f, totals.maximum(25));
         assertEquals(.003f, totals.maximum(72));
         assertEquals(.004f, totals.maximum(73));
+        assertEquals(.005f, totals.maximum(82));
+        assertEquals(.006f, totals.maximum(83));
+        assertEquals(2, totals.count(81));
     }
 
     @Test void countersAccumulateAsUnsignedAndResetWithTheBufferLifetime() {
@@ -49,7 +54,7 @@ final class RtPathStatsReadbackTest {
         int throttle = source.indexOf("long now = System.nanoTime();");
         assertTrue(accumulate > 0 && accumulate < failure && failure < throttle);
         assertTrue(source.substring(source.indexOf("public void destroy()")).contains("allFrames.clear();"));
-        assertEquals(76, RtPathReservoirStats.LANES);
-        assertEquals(304, RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(84, RtPathReservoirStats.LANES);
+        assertEquals(336, RtPathReservoirStats.BYTE_SIZE);
     }
 }

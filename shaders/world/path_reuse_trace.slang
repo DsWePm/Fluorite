@@ -528,6 +528,8 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
     return reached;
 }
 
+#include "path_reuse_connection.slang"
+
 // Fresh source replay rebuilds scattering and prefix transport from the record seed and new hits.
 // The R3 connection/terminal edge is separate. References are ground truth, never evaluation inputs.
 void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, PackedPathReservoir record,
@@ -1594,6 +1596,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             reuseDiagnoseSourceScatter(seg, entryMediumFlags, produced,
                     selectedReference.scatterWeight, selectedReference.sourcePdf, selectedReference.supported,
                     selectedReference.transportPrefix, dTree.selectedValue);
+            reuseDiagnoseK2Connection(seg, entryMediumFlags, produced, dTree.selectedValue);
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[14], 1u);
             uint producedTechnique = (produced.bits >> REUSE_RECORD_TECHNIQUE_SHIFT) & 7u;
             if (producedTechnique == REUSE_TECHNIQUE_D) {

@@ -1071,3 +1071,23 @@ B相对两A平均的RGB差为+0.1773%/+0.1323%/−0.01321%，对应z为0.02034/0
 此前aba-1/aba-2未arm、没有有效样本；aba-2因额度中断由用户手动关闭，记录保留。发现MC options里的overrideWidth/overrideHeight会覆盖启动width/height，首两次实际1600×900，不能据CLI声称640×360；本轮明确设置并从分配日志和样本元数据核对实际640×360。第三次独立目录保留所有288份grid、CSV、arm元数据与analysis，不覆盖旧失败/中断。游戏正常保存退出、BUILD SUCCESSFUL、VUID0；config/options恢复原始字节，临时资源包移除。原始frame stats、构建日志、测试结果汇总、shader hash、配置和分析器位于F:\MC\Shader\evidence\restir-r2-r3-2026-11-05的r24/r2b24文件。
 
 本片只补记录模式的初步A→B→A数值检查及可复用取证工具。封闭水初始介质专测、新连接shift恒等、R3的history/k2前后向移位/pairwise MIS/RGB own-split与用户观感仍待完成，不能宣告R2/R3完成。
+
+### R2b-25：实际k2连接的回归闸门、端点身份缺口与初始水介质
+
+新增`path_reuse_connection.slang`，首先取实际primary，再从tracer的biased receiver.p向记录的reconPos构造新连接。一条联合nearest TraceRay同时返回可见性命中、真实材质和几何；没有补metadata query，不把纯T-only变成完整照明。两端selected-lobe、ray cone、原双footprint、逐边T及Eq.2分母/Jacobian均独立重算，源参考只参与诊断。现阶段只在1/16像素identity诊断中调用，与旧source-seed重放检查并存，仍返回完整自身L，不读history。新增8个正式统计lane（76attempt/77pass/78scope/79hit/80footprint/81numeric/82RGBmax/83Jacmax），合计84 lanes/336 B，保留所有完成readback的失败和最大值，不在1 Hz日志前丢掉异常。
+
+正式模块76套375项测试、55shader与spirv-val、三OFF与R2a字节对照通过。首次全量测试有4处旧76-lane尺寸断言未更新，及一次替换脚本未匹配无空格断言，失败日志保留；只改当前尺寸期望，原数值门和检查不删。新增测试验证PSS Jacobian的双PDF抵消/互逆关系、实际shared hit/T-only调用约束和独立0.1%门，原FrameTotals回归覆盖新增最大值及失败计数跨健康帧保存。
+
+原场景实际3911个readback：lobe710,702条、fresh k2 320,848/deep7,332均全部过旧源门，方向/incident codec0、VUID0；新连接仅320,771/320,848通过，hit1/numeric76，最大RGB100%、Jac45.2115%。不能由旧源重放健康推断新连接健康，严格验收保持RED，不消费这些结果进入图像。固定显示640×360、保留原DLSS配置，实际trace213×120，不据此报告正式性能。
+
+临时[DEBUG-r25]探针为每帧第一个异常保存双端原始bit packet：frame/record bits、状态、RGB/Jac误差、真实source RGB、reconPos；两端incoming direction、hit position、UV、F0、normal、albedo、roughness、前驱/事件PDF、分母、alphaX/Y及完整triangle key。旧source检查直接输出自己的真实新命中字段，不为取证多追射线，不用参考值回填连接。临时stats148 lanes/592 B，64word包随既有readback回收；另一实际会话5653个readback，旧fresh k2 464,790/deep10,670均全过，连接464,677/464,790，hit1/numeric112，最大RGB100%、Jac89.7951%。因同帧最多一包，共保留112个见证，不冒充覆盖所有113个失败。
+
+111个numeric见证中101个实际triangle key不同（98个source terrain bucket1、3个bucket0），尽管部分world position逐bit相同、几何法线检查通过。不能只由bucket推断具体方块或所有共面原因。另10个key相同：4个实际材质字段变化，包含frame2985的UV相差一ULP、normal/roughness改变、RGB差30.72998%；6个已记录材质字段相同，仍有方向重建小残差（RGB最大约0.1609%或Jac约0.13735%），不由分类删除这些失败。已证明位置/法线不足以标识同一端点；完整LOD/调制与全部残差因果仍需分别验证。raw hex、decoded JSON、全部失败/编译模块和parser留档，不能把诊断版本当正式发布ABI。
+
+见证关闭后，以逐字节比对恢复正式3文件、移除唯一临时debug include。重新构建的375 tests/55shader通过，两ON原始SPIR-V与取证前正式候选逐字节相同（cde91b.../ff49ac...），不是用源代码相似替代运行时覆盖证明。
+
+独立存档restir-r2-water-room复制R24房间，封闭内部填1331个source-water方块，继续自制matte包，只临时开既有water-medium-trace、窗口640×360，其它renderer配置原样。实际5810个readback的lobe8,455,459条全过；fresh k2 11,316/deep22及新k2连接11,316次全过，scope/hit/footprint/numeric等失败0、codec/incident误差0，最大连接RGB0.00104366%、Jac0.00652075%，最大T-prefix0.000038239%、完整事件0.000133627%。389条中心probe中385条完整确认pathFlags current-water bit9、enclosed profile1及opaque first hit，首段T约(0.5628,0.6260,0.6533)。前10秒之后仍新增10,178个成功连接，不是只拿加载时数据凑覆盖。此测试验证封闭水初始介质和均匀材质场景，不测试穿越水界面/折射，也不能替复杂表面的端点错误放行。
+
+三次游戏均由助手正常保存退出，BUILD SUCCESSFUL、VUID0，原config/options逐字节恢复，水房临时包移除。观感仍留用户，GPU成本未按1080p同会话比值法测量。所有证据位于F:\MC\Shader\evidence\restir-r2-r3-2026-11-05的r25/r2b25文件：first-red、witness modules/decoded/restore、water-cumulative/water-summary及各日志/CSV/activation快照。
+
+128 B完整端点方案已独立compile/spirv-val验证std430 stride和offset：保留原96 B，加完整object/geometry/primitive key、float2 barycentrics及flags/padding。预计联合几何返回32→40 B逻辑（原shadow不增长），不加连接射线或独立query；1080p实际追踪双缓冲多126.5625 MiB（33.33%），实际GPU/寄存器/栈成本待测。拟不同key判shift失败保留自身，同key在共享着色函数中用原bary重建真实材质。它不自动消除所有源self-connection失败率或同材质方向残差，跨帧generation仍欠。**已依CLAUDE铁律1请用户裁决，尚未批准、未改产品ABI**；替代选择是96 B硬预算继续研究布局，不承诺无成本解决。详见`r25-endpoint-decision.md`及layout-prototype/summary。R2整体和R3 history/双向shift/pairwise RGB own-split仍未完成。
