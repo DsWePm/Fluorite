@@ -200,9 +200,7 @@ ReuseOpaqueVertex reuseOpaqueVertex(float3 hitPos, float3 n, float3 rd, float ra
     // Probability of continuing along the specular lobe rather than the diffuse one. Hoisted above
     // the NEE below, which needs it to know the density of the ray it is competing with — the
     // continuation is sampled from this mixture, so the mixture is what MIS has to weight against.
-    float ps = exactSpecular && luminance(diffAlb) <= 1.0e-6
-                   ? 1.0
-                   : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
+    float ps = reuseSpecularProbability(F0, diffAlb, exactSpecular);
     // One shading context for the whole vertex: the sun NEE, the emitter RIS and the continuation
     // all have to agree on the specular frame, and rebuilding it three times was how they could
     // quietly stop agreeing. It also carries the anisotropic tangent, decoded once here.
@@ -294,7 +292,8 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
     float walkSss = vtx.walkSssShare;
 
     float lobeChoice = rndf(stream);
-    if (lobeChoice < pf) {
+    uint lobeInterval = reuseContinuationInterval(lobeChoice, pf, ps);
+    if (lobeInterval == 0u) {
         float alpha = rain.filmAlpha;
         sampleInfo.lobe = REUSE_LOBE_FILM;
         sampleInfo.alpha = alpha;
@@ -314,7 +313,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         ro = p;
         rd = l;
         showCelestial = true;
-    } else if ((lobeChoice - pf) / max(1.0 - pf, 1.0e-6) < ps) {
+    } else if (lobeInterval == 1u) {
         float3 l;
         if (exactSpecular) {
             sampleInfo.lobe = REUSE_LOBE_DELTA;

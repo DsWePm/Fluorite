@@ -306,6 +306,21 @@ final class RtPathReplayContractTest {
         reuseFile = reuseFile.replace("reuseOrderedNdot(n, l)", "dot(n, l)")
                 .replace("reuseOrderedNdot(n, rd)", "dot(n, rd)");
 
+        // R3a-2: canonical mixture arithmetic preserves the shipped probability formula.
+        String stableProbability = "float ps = reuseSpecularProbability(F0, diffAlb, exactSpecular);";
+        assertEquals(1, reuseFile.split(java.util.regex.Pattern.quote(stableProbability), -1).length - 1);
+        reuseFile = reuseFile.replace(stableProbability,
+                "float ps = exactSpecular && luminance(diffAlb) <= 1.0e-6\n"
+                + "                   ? 1.0\n"
+                + "                   : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);");
+
+        // R3a-2: fixed CDF interval arithmetic replaces only the equivalent conditional comparison.
+        assertEquals(1, reuseFile.split(java.util.regex.Pattern.quote(
+                "uint lobeInterval = reuseContinuationInterval(lobeChoice, pf, ps);"), -1).length - 1);
+        reuseFile = reuseFile.replace("uint lobeInterval = reuseContinuationInterval(lobeChoice, pf, ps);", "")
+                .replace("if (lobeInterval == 0u)", "if (lobeChoice < pf)")
+                .replace("else if (lobeInterval == 1u)", "else if ((lobeChoice - pf) / max(1.0 - pf, 1.0e-6) < ps)");
+
         // 1. Every shared vertex function is a verbatim, in-order excerpt of the shipped loop, with
         //    only its random stream renamed and its exits turned into returns.
         String[][] functions = {

@@ -1120,3 +1120,18 @@ frame371中GPU RGB误差0.103722%；只换回原primary方向时误差归零，T
 长跑192,810个回读中primary scope0、direction/incident codec0，fresh k2 16,082,413/16,082,414、deep369,211/369,212；仍有1 numeric（readback133208，full-event与connection RGB66.0307%）及1 deep geometry-position失败（187923）。T-prefix最大0.0000402574%、scatter0.00388619%、PDF/Jac约0.027%，因此不是仅按最大scatter判健康。该轮日志21:06终止，无正常退出标记；恢复时已无MC进程，原因未知，不猜测为用户手动退出或故障。日志/CSV/failed outcomes完整保留，整体严格RED，需独立故障分解取证。
 
 新增RtPathProbeExit只受客户端JVM属性启用（Fabric -PbenchPathProbeReadbacks真实转发），普通启动limit0不会退出。启用后首次failed readback或累计上限先输出完整累计，再Minecraft.stop正常保存退出；stopOnFailure=false允许继续但仍受上限。4个测试覆盖禁用、上限边界/仅一次、首失败及显式持续模式，总79套387测试通过。正式shader字节未变。实际512回读、36,888新k2/deep900全部过原门，客户端自行LIMIT退出、所有维度保存、BUILD SUCCESSFUL，原config/options逐字节恢复。该短测不覆盖长跑罕见失败；后续取证必须有界运行并保持原0.1%门。R3 history/双向shift/pairwise/RGB own-split仍待实现。
+
+
+### R3a-2：概率阈值末位导致的源与重放分支分歧
+
+继续分解R3a-1长跑异常，全像素临时source witness在14,353回读、19,075,818次k2连接全部通过的会话中抓到一个source geometry失败。该见证实际reached2，并非旧长跑deep失败的逐条复现：源第二命中(44,-15.647005,88.788483)，重放约(50.242603,-15.688400,94)，incoming方向也明显不同。保存原primary origin、packed direction/cone及pathSeed，在临时pixel0夹具确定性重现，不能只归为末位位置误差。
+
+先前导出的primary材质、位置、法线、view、F0、diffuse、roughness、ndv、ps/pf与vertexSeed逐bit一致，却出现diffuse/specular分歧。原诊断在continuation提前失败时可能留下旧lobe，故补齐成功/失败两路快照。实际choice两端都是0x3e65f7e8、after-choice RNG state3320543143；原CDF改写仍失败。进一步把分类器实际使用的阈值接入同一数据流输出，source specularEnd0x3e65f7e8、replay0x3e65f7e9，filmEnd均0；早先导出的ps两端为0x3e65f7e9，不能用那个已舍入值代替真正比较阈值。已定位到概率数据流的一ULP分歧，没有证明驱动内部具体用了哪种优化；高24位uniform与全32位替代转换跨界只属敏感性对照，随机数差异假说由实际choice证据排除。
+
+在既有共享复用算术模块加入reuseSpecularProbability：F0/diffuse亮度用有序dot，分母两次有序加法，division显式NoContraction；沿用原亮度系数、1e-4正则项、[0.1,0.9]与delta/零diffuse规则。共享CDF固定pf+(1-pf)*ps的FP32运算边界，用非负IEEE位序比较；不增加RNG draw、射线、记录或shadow字段。源NEE、continuation和fresh evaluator仍从同一vertex的概率取值，有限精度边界分支可能变化，实际GPU耗时未测。没有把记录中的旧lobe强行回填重放。
+
+独立GPU20,003组概率对double最大绝对误差1.3205801929760952e-7、delta无diffuse精确1；原样本阈值0x3e65f7e8。另一20,003组CDF/599边界helper检查通过，但compute没有复现原raygen上下文，不能替代实际RT。修后同一captured-point夹具1024回读、952个匹配原primary输入（概率已按修复改变）的见证，source/replay均diffuse、阈值/choice/state一致，第二命中坐标及完整key逐bit相同；整轮1,261,779次k2、28,965次deep、2,830,173条lobe全部通过原门，最大full-event0.00110199%。kind5几何包的RGB为占位零，RGB结论只取独立累计gate，不把占位当 radiance 证明。游戏自动LIMIT正常保存退出，config/options恢复。
+
+正式源码按归档恢复五文件、删除临时helper，去掉扩展stats/forced point/CDF debug参数，仅保留共享概率与CDF。80套389测试、55shader/spirv-val、三OFF对R2a规整化字节及全部可达SBT joint40 B/原shadow接口检查通过。严格shipped-line proof仅对这两处数学等价替换做精确回译，其余采样体、PDF、权重与RNG调用继续钉住。
+
+正式原1/16诊断覆盖回归20000回读，k2连接1662464/1662464，scope/hit/footprint/numeric计数为[0, 0, 0, 0]，maxRGB 0.000251305%、Jac 0.0128865%；T-prefix 3.92933e-05%、完整事件 0.00119476%。旧源、codec、累计计数及原0.1%门通过，VUID日志0；自动LIMIT正常保存退出，原config/options逐字节恢复，实际五个ON模块与归档字节相同。完整raw packets/失败版本/parse/GPU/编译/恢复证据留在F:/MC/Shader/evidence/restir-r2-r3-2026-11-05的r3a2-*，不覆盖CDF-only失败。此片解决捕获的k2分支复现，不声称已逐个归因旧长跑66.0307% RGB或deep异常，也不证明跨帧shift、无偏或降方差。R2整体及R3 history/双向pairwise/RGB own-split、跨帧身份与失效仍未完成，观感留用户。

@@ -73,6 +73,35 @@ public float3 reuseDecodePrimaryDirection(uint packed) {
     return replayNormalize(n);
 }
 
+// The same material must define the same continuation mixture in every inlined RT context.
+// Native luminance/division lowering moved the captured threshold by one ulp, across its draw.
+// Keep the published probability formula, with fixed FP32 reductions and arithmetic boundaries.
+public float reuseSpecularProbability(float3 f0, float3 diffuse, bool exactSpecular) {
+    float specularEnergy = replayDot(f0, float3(0.2126, 0.7152, 0.0722));
+    float diffuseEnergy = replayDot(diffuse, float3(0.2126, 0.7152, 0.0722));
+    if (exactSpecular && diffuseEnergy <= 1.0e-6) return 1.0;
+    float denominator = replayAdd(replayAdd(specularEnergy, diffuseEnergy), 1.0e-4);
+    float probability = spirv_asm {
+        %v : $$float = OpFDiv $specularEnergy $denominator;
+        OpDecorate %v NoContraction;
+        result : $$float = OpCopyObject %v
+    };
+    return clamp(probability, 0.1, 0.9);
+}
+
+// The three intervals have widths pf, (1-pf)*ps and (1-pf)*(1-ps). Materialize a single
+// FP32 CDF from the vertex mixture and compare its positive IEEE bit order, so source/replay
+// use the same boundary arithmetic. No random draw here.
+// Return 0 for film, 1 for base specular, 2 for the remaining base component.
+public uint reuseContinuationInterval(float choice, float pf, float ps) {
+    float baseWidth = max(replaySub(1.0, pf), 1.0e-6);
+    float specularEnd = replayAdd(pf, replayMul(baseWidth, ps));
+    uint sampleBits = asuint(choice) & 0x7fffffffu;
+    if (sampleBits < (asuint(pf) & 0x7fffffffu)) return 0u;
+    if (sampleBits < (asuint(specularEnd) & 0x7fffffffu)) return 1u;
+    return 2u;
+}
+
 public float3 reuseReflect(float3 incident,float3 h) {
     return replaySub(incident,replayMul(h,replayMul(2.0,replayDot(incident,h))));
 }
