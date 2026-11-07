@@ -1,5 +1,7 @@
 // k=2 connection evaluator. The same nearest radiance hit supplies visibility, material and geometry.
 // It does not consume history, resample, perform roulette, or modify the source path's own radiance.
+#include "path_reuse_connection_geometry.slang"
+
 static const uint REUSE_CONNECTION_OK = 0u;
 static const uint REUSE_CONNECTION_SCOPE = 1u;
 static const uint REUSE_CONNECTION_HIT = 2u;
@@ -13,8 +15,30 @@ struct ReuseConnectionEvaluation {
     uint status;
 };
 
-ReuseConnectionEvaluation reuseEvaluateK2Connection(__ref PathSegment seg, uint entryMediumFlags,
-                                                   PackedPathReservoir record) {
+struct ReuseConnectionDomain {
+    ReuseOpaqueVertex vertex;
+    ReuseHitGeometry geometry;
+    ReuseReplayState prefix;
+};
+
+bool reuseReadK2Domain(__ref PathSegment seg, uint entryMediumFlags, uint pathSeed,
+                       out ReuseConnectionDomain domain) {
+    float3 position;
+    uint geometryStatus;
+    int reached = reuseReplayPrefix(seg, entryMediumFlags, pathSeed, 1, position,
+            true, true, domain.geometry, geometryStatus, domain.prefix);
+    if (reached != 1 || !domain.prefix.opaquePrefix || geometryStatus != REUSE_GEOMETRY_OK) return false;
+    uint sssMode = (worldPush.flags >> 7u) & 3u;
+    int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
+    reuseCanonicalizeReplayPayload();
+    domain.vertex = reuseOpaqueVertex(position, payload.normal, domain.prefix.incomingDirection,
+            domain.prefix.rayConeWidth, 0, sssMode, sssMaxEvents);
+    return true;
+}
+
+// Domains are decoded once by the caller, so forward/reverse evaluation can share real primary hits.
+ReuseConnectionEvaluation reuseEvaluateK2AtDomains(__ref PathSegment seg, uint entryMediumFlags,
+        ReuseConnectionDomain source, ReuseConnectionDomain destination, PackedPathReservoir record) {
     ReuseConnectionEvaluation result;
     result.value = float3(0.0, 0.0, 0.0);
     result.jacobian = 0.0;
@@ -22,31 +46,22 @@ ReuseConnectionEvaluation reuseEvaluateK2Connection(__ref PathSegment seg, uint 
     result.status = REUSE_CONNECTION_SCOPE;
     uint depth = (record.bits >> REUSE_RECORD_DEPTH_SHIFT) & 15u;
     if (pathReservoirEmpty(record) || depth != 2u || seg.bounce != 0
+            || !all(isfinite(record.reconBarycentrics))
             || ((record.bits >> REUSE_RECORD_PRIMARY_SHIFT) & 7u) != REUSE_PRIMARY_OPAQUE
             || ((record.bits >> REUSE_RECORD_CURRENT_MEDIUM_SHIFT) & 3u)
                 != activeCurrentMediumFlags(entryMediumFlags)
             || ((record.bits >> REUSE_RECORD_OUTER_MEDIUM_SHIFT) & 3u)
                 != activeOuterMediumFlags(entryMediumFlags)) return result;
-
-    float3 primaryPosition;
-    ReuseHitGeometry primary;
-    uint geometryStatus;
-    ReuseReplayState prefix;
-    int reached = reuseReplayPrefix(seg, entryMediumFlags, record.pathSeed, 1, primaryPosition,
-                                    true, true, primary, geometryStatus, prefix);
-    if (reached != 1 || !prefix.opaquePrefix || geometryStatus != REUSE_GEOMETRY_OK) return result;
+    ReuseOpaqueVertex receiver = destination.vertex;
+    ReuseHitGeometry primary = destination.geometry;
+    ReuseReplayState prefix = destination.prefix;
     uint sssMode = (worldPush.flags >> 7u) & 3u;
     int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
-    reuseCanonicalizeReplayPayload();
-    ReuseOpaqueVertex receiver = reuseOpaqueVertex(primaryPosition, payload.normal,
-            prefix.incomingDirection, prefix.rayConeWidth, 0, sssMode, sssMaxEvents);
     // Connect from the tracer's actual biased ray origin, not from an idealised unoffset surface.
-    float3 edge = record.reconPos - receiver.p;
-    float distanceSq = dot(edge, edge);
-    if (!(distanceSq > 0.0) || !isfinite(distanceSq)) return result;
-    float distance = sqrt(distanceSq);
-    if (!(distance < RAY_FAR)) return result;
-    float3 direction = edge / distance;
+    float3 direction;
+    float distance;
+    if (!reuseConnectionDirection(source.vertex.p, reuseLoadIncomingDirection(record), receiver.p,
+            record.reconPos, direction, distance) || !(distance < RAY_FAR)) return result;
     uint previousLobe = (record.bits >> REUSE_RECORD_PREVIOUS_LOBE_SHIFT) & 7u;
     ReuseContinuationSample connection = reuseEvaluateContinuation(receiver.bc, receiver.pf, receiver.ps,
             receiver.walkSssShare, previousLobe, direction);
@@ -63,10 +78,14 @@ ReuseConnectionEvaluation reuseEvaluateK2Connection(__ref PathSegment seg, uint 
     bool showCelestial = previousLobe != REUSE_LOBE_DIFFUSE;
     float tolerance = reuseGeometryTolerance(receiver.p, distance);
     result.status = REUSE_CONNECTION_HIT;
-    tracePathRadiance(secondaryCullMask(), receiver.p, 0.0, direction, min(RAY_FAR, distance + tolerance),
-            showCelestial, false, prefix.rayConeWidth, coneSpread);
+    tracePathEndpointRadiance(secondaryCullMask(), receiver.p, direction, min(RAY_FAR, distance + tolerance),
+            showCelestial, prefix.rayConeWidth, coneSpread, record.reconObjectId,
+            record.reconGeometryIndex, record.reconPrimitiveIndex, record.reconBarycentrics);
     // An intervening interface is a failed shift, not an extra transparent layer to march through.
     if (payload.hitT < 0.0 || payloadMaterial() != MATERIAL_OPAQUE
+            || pathHitGeometry.objectId != record.reconObjectId
+            || pathHitGeometry.geometryIndex != record.reconGeometryIndex
+            || pathHitGeometry.primitiveIndex != record.reconPrimitiveIndex
             || abs(payload.hitT - distance) > tolerance) return result;
     float3 hitPosition = reuseReplayPosition(receiver.p, direction, payload.hitT);
     ReuseHitGeometry recon;
@@ -111,6 +130,19 @@ ReuseConnectionEvaluation reuseEvaluateK2Connection(__ref PathSegment seg, uint 
             || !isfinite(result.jacobian)) return result;
     result.status = REUSE_CONNECTION_OK;
     return result;
+}
+
+ReuseConnectionEvaluation reuseEvaluateK2Connection(__ref PathSegment seg, uint entryMediumFlags,
+                                                   PackedPathReservoir record) {
+    ReuseConnectionDomain domain;
+    if (reuseReadK2Domain(seg, entryMediumFlags, record.pathSeed, domain))
+        return reuseEvaluateK2AtDomains(seg, entryMediumFlags, domain, domain, record);
+    ReuseConnectionEvaluation failed;
+    failed.value = float3(0.0, 0.0, 0.0);
+    failed.jacobian = 0.0;
+    failed.denominator = 0.0;
+    failed.status = REUSE_CONNECTION_SCOPE;
+    return failed;
 }
 
 // Keep the original source-seed replay and this genuinely reconstructed edge as separate checks.

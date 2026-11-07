@@ -19,7 +19,8 @@ final class RtPathIncidentEncodingTest {
                 new PackedPathReservoirData.Float3(4, 5, 6), 0x31415926, 0x27182818, 0x43214321,
                 Float.floatToRawIntBits(r), 2.5f, .2f, 1e-4f, 0x00003c00, 0x0001a125,
                 0x123, 0x34567890, Float.floatToRawIntBits(g), Float.floatToRawIntBits(b),
-                0xabcdef01, 0x12345678, 0f, 0f).write(bytes);
+                0xabcdef01, 0x12345678, 0f, 0f, 7, 13,
+                new PackedPathReservoirData.Float2(.25f, .5f), 1, 1, 0, 0).write(bytes);
         return bytes;
     }
     private static void roundtrip(float r, float g, float b) {
@@ -27,7 +28,7 @@ final class RtPathIncidentEncodingTest {
         assertEquals(Float.floatToRawIntBits(r), bytes.getInt(PackedPathReservoirData.RADIANCE_OFFSET));
         assertEquals(Float.floatToRawIntBits(g), bytes.getInt(PackedPathReservoirData.RESERVED0_OFFSET));
         assertEquals(Float.floatToRawIntBits(b), bytes.getInt(PackedPathReservoirData.RESERVED1_OFFSET));
-        assertEquals(96, bytes.capacity());
+        assertEquals(128, bytes.capacity());
     }
 
     @Test
@@ -67,7 +68,7 @@ final class RtPathIncidentEncodingTest {
         assertEquals(0x123, b.getInt(64));
         assertEquals(0x34567890, b.getInt(68));
         assertEquals(0x43214321, b.getInt(36));
-        assertEquals(398_131_200L, 1920L * 1080 * 2 * b.capacity());
+        assertEquals(530_841_600L, 1920L * 1080 * 2 * b.capacity());
     }
 
     @Test

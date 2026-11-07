@@ -17,7 +17,8 @@ final class RtPathDirectionEncodingTest {
         return new PackedPathReservoirData(new PackedPathReservoirData.Float3(1, 2, 3), 17,
                 new PackedPathReservoirData.Float3(4, 5, 6), 19, 23, x,
                 Float.floatToRawIntBits(.7f), 2.5f, .2f, 1e-4f, 0x3c00, 0x1a125,
-                0x123, 0x34567890, Float.floatToRawIntBits(1e-10f), Float.floatToRawIntBits(1e10f), y, z, 0f, 0f);
+                0x123, 0x34567890, Float.floatToRawIntBits(1e-10f), Float.floatToRawIntBits(1e10f), y, z, 0f, 0f,
+                7, 13, new PackedPathReservoirData.Float2(.25f, .5f), 1, 1, 0, 0);
     }
 
     private static ByteBuffer write(int x, int y, int z) {
@@ -49,14 +50,15 @@ final class RtPathDirectionEncodingTest {
             if (i >= 36 && i < 40 || i >= 80 && i < 88) continue;
             assertEquals(a.get(i), b.get(i), "unrelated byte " + i);
         }
-        ByteBuffer slots = ByteBuffer.allocate(192).order(ByteOrder.LITTLE_ENDIAN);
-        for (int i = 96; i < 192; i++) slots.put(i, (byte) 0x5a);
-        record(1, 2, 3).write(slots.slice(0, 96).order(ByteOrder.LITTLE_ENDIAN));
-        for (int i = 96; i < 192; i++) assertEquals((byte) 0x5a, slots.get(i));
-        record(4, 5, 6).write(slots.slice(96, 96).order(ByteOrder.LITTLE_ENDIAN));
+        int stride = PackedPathReservoirData.BYTE_SIZE;
+        ByteBuffer slots = ByteBuffer.allocate(2 * stride).order(ByteOrder.LITTLE_ENDIAN);
+        for (int i = stride; i < 2 * stride; i++) slots.put(i, (byte) 0x5a);
+        record(1, 2, 3).write(slots.slice(0, stride).order(ByteOrder.LITTLE_ENDIAN));
+        for (int i = stride; i < 2 * stride; i++) assertEquals((byte) 0x5a, slots.get(i));
+        record(4, 5, 6).write(slots.slice(stride, stride).order(ByteOrder.LITTLE_ENDIAN));
         assertEquals(1, slots.getInt(36));
-        assertEquals(4, slots.getInt(96 + 36));
-        assertEquals(6, slots.getInt(96 + 84));
+        assertEquals(4, slots.getInt(stride + 36));
+        assertEquals(6, slots.getInt(stride + 84));
         for (int i = 88; i < 96; i++) assertEquals(0, slots.get(i), "tail padding");
     }
 

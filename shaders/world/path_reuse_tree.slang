@@ -101,6 +101,26 @@ static const uint REUSE_RECORD_PRIMARY_SHIFT = 16u;
 static const uint REUSE_RECORD_PREVIOUS_LOBE_SHIFT = 19u;
 static const uint REUSE_RECORD_EVENT_KIND_SHIFT = 22u;
 static const uint REUSE_PRIMARY_OPAQUE = 1u;
+PackedPathReservoir reuseRecordEndpoint(PackedPathReservoir record, ReuseHitGeometry endpoint,
+                                        float3 incomingDirection) {
+    if (pathReservoirEmpty(record) || endpoint.objectId == PATH_OBJECT_UNAVAILABLE
+            || !all(isfinite(endpoint.barycentrics)) || !all(isfinite(incomingDirection))
+            || !(dot(incomingDirection, incomingDirection) > 0.0)) return emptyPathReservoir();
+    record.reconObjectId = endpoint.objectId;
+    record.reconGeometryIndex = endpoint.geometryIndex;
+    record.reconPrimitiveIndex = endpoint.primitiveIndex;
+    record.reconBarycentrics = endpoint.barycentrics;
+    // The record's existing valid bit covers the endpoint too. Keep the original ray in the last
+    // three scalar lanes: reconstructing it from rounded world positions loses grazing precision.
+    record.incomingDirX = asuint(incomingDirection.x);
+    record.incomingDirY = asuint(incomingDirection.y);
+    record.incomingDirZ = asuint(incomingDirection.z);
+    return record;
+}
+
+float3 reuseLoadIncomingDirection(PackedPathReservoir record) {
+    return float3(asfloat(record.incomingDirX), asfloat(record.incomingDirY), asfloat(record.incomingDirZ));
+}
 
 uint reuseDRecordBits(uint depth, uint lobe, uint mediumFlags) {
     // Reject unknown traits instead of truncating future medium flags into today's two-bit tags.

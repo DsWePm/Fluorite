@@ -13,6 +13,7 @@ struct ReuseHitGeometry {
     uint objectId;
     uint geometryIndex;
     uint primitiveIndex;
+    float2 barycentrics;
 };
 
 ReuseHitGeometry emptyReuseHitGeometry() {
@@ -23,6 +24,7 @@ ReuseHitGeometry emptyReuseHitGeometry() {
     hit.objectId = PATH_OBJECT_UNAVAILABLE;
     hit.geometryIndex = 0u;
     hit.primitiveIndex = 0u;
+    hit.barycentrics = float2(0.0, 0.0);
     return hit;
 }
 
@@ -33,7 +35,7 @@ uint reuseReadHitGeometry(float3 position, PathHitGeometry geometry, out ReuseHi
     float normalSq = dot(geometry.normal, geometry.normal);
     if ((geometry.objectId & PARTICLE_BIT) != 0u
             || geometry.geometryIndex >= (entity ? 2u : TERRAIN_BUCKETS)
-            || !all(isfinite(position)) || !all(isfinite(geometry.uv))
+            || !all(isfinite(position)) || !all(isfinite(geometry.uv)) || !all(isfinite(geometry.barycentrics))
             || !isfinite(normalSq) || abs(normalSq - 1.0) > 1.0e-5) return REUSE_GEOMETRY_INVALID;
     hit.position = position;
     hit.normal = geometry.normal;
@@ -41,6 +43,7 @@ uint reuseReadHitGeometry(float3 position, PathHitGeometry geometry, out ReuseHi
     hit.objectId = geometry.objectId;
     hit.geometryIndex = geometry.geometryIndex;
     hit.primitiveIndex = geometry.primitiveIndex;
+    hit.barycentrics = geometry.barycentrics;
     return REUSE_GEOMETRY_OK;
 }
 

@@ -10,6 +10,7 @@ public struct PathHitGeometry {
     public float2 uv;
     public uint geometryIndex;
     public uint primitiveIndex;
+    public float2 barycentrics;
 };
 
 // A separate radiance interface. Shadow rays continue to use the original Payload, with no growth.
@@ -25,7 +26,33 @@ public PathHitGeometry emptyPathHitGeometry() {
     hit.uv = float2(0.0, 0.0);
     hit.geometryIndex = 0u;
     hit.primitiveIndex = 0u;
+    hit.barycentrics = float2(0.0, 0.0);
     return hit;
+}
+
+// Ordinary rays carry an unavailable object id. Endpoint rays carry the expected key and canonical
+// barycentrics in the same exchange; the closest hit replaces them with the actual result.
+public PathHitGeometry makePathEndpointRequest(uint objectId, uint geometryIndex, uint primitiveIndex,
+                                             float2 barycentrics) {
+    PathHitGeometry request = emptyPathHitGeometry();
+    request.objectId = objectId;
+    request.geometryIndex = geometryIndex;
+    request.primitiveIndex = primitiveIndex;
+    request.barycentrics = barycentrics;
+    return request;
+}
+
+public bool pathEndpointRequestMatches(PathHitGeometry request, uint objectId,
+                                      uint geometryIndex, uint primitiveIndex) {
+    return request.objectId != 0xFFFFFFFFu && all(isfinite(request.barycentrics))
+            && request.objectId == objectId && request.geometryIndex == geometryIndex
+            && request.primitiveIndex == primitiveIndex;
+}
+
+public float2 pathHitShadingBarycentrics(PathHitGeometry request, float2 tracedBarycentrics,
+                                       uint objectId, uint geometryIndex, uint primitiveIndex) {
+    return pathEndpointRequestMatches(request, objectId, geometryIndex, primitiveIndex)
+            ? request.barycentrics : tracedBarycentrics;
 }
 
 public PathHitGeometry pathTriangleHitGeometry(float3 edge1, float3 edge2, float2 uv, float3 rayDirection,

@@ -32,6 +32,13 @@ public final class RtPathReservoirStats {
     public static final int LANES = 84;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
+    // A rejected shift leaves its contribution in the canonical estimator. It is an expected outcome,
+    // unlike numerical disagreement on a valid shift or a lost/duplicated diagnostic outcome.
+    static boolean connectionReadbackFailed(long attempts, long passed, long scope, long hit,
+                                            long footprint, long numeric) {
+        return numeric != 0L || attempts != passed + scope + hit + footprint + numeric;
+    }
+
     /** Slow enough that the log is readable while flying, fast enough to follow walking into a cave. */
     private static final long LOG_INTERVAL_NS = 1_000_000_000L;
 
@@ -218,9 +225,14 @@ public final class RtPathReservoirStats {
         long localT = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 268L));
         long connectionAttempt = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 304L));
         long connectionPass = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 308L));
+        long connectionScope = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 312L));
+        long connectionHit = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 316L));
+        long connectionFootprint = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 320L));
+        long connectionNumeric = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 324L));
         allFrames.add(src.mapped);
         if (lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
-                || connectionAttempt != connectionPass
+                || connectionReadbackFailed(connectionAttempt, connectionPass, connectionScope, connectionHit,
+                        connectionFootprint, connectionNumeric)
                 || sourceFactorPass != sourceFactorAttempt
                 || sourceReplayScope + sourceReplayMiss + sourceReplayGeometry + sourceReplayInvalid + sourceReplayNumeric != 0L) {
             FluoriteMod.LOGGER.warn("RT path reuse failed readback {}: lobe {} (invalid {}, pdf<=0.1% {}, weight<=0.1% {}, "

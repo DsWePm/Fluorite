@@ -76,7 +76,7 @@ final class RtPathDTerminalEventTest {
         String common=source("shaders/world/world_common.slang");
         String record=common.substring(common.indexOf("public struct PackedPathReservoir"),common.indexOf("/** Slot address:"));
         assertFalse(record.contains("selectedEndpoint"));
-        assertTrue(common.contains("PATH_RESERVOIR_BYTES = 96u"));
+        assertTrue(common.contains("PATH_RESERVOIR_BYTES = 128u"));
     }
     @Test void newCountersDistinguishCandidatesFromActualWrittenRecords() throws Exception {
         assertEquals(84,RtPathReservoirStats.LANES); assertEquals(336,RtPathReservoirStats.BYTE_SIZE);

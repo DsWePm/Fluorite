@@ -184,8 +184,11 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 #ifdef FLUORITE_PATH_HIT_RESULT
 [shader("anyhit")]
 void main(inout PathHitPayload hit, in BuiltInTriangleIntersectionAttributes attr) {
+    BuiltInTriangleIntersectionAttributes shadingAttributes = attr;
+    shadingAttributes.barycentrics = pathHitShadingBarycentrics(hit.geometry, attr.barycentrics,
+            InstanceID(), GeometryIndex(), PrimitiveIndex());
     Payload surface = hit.surface;
-    shadePathAnyHit(surface, attr);
+    shadePathAnyHit(surface, shadingAttributes);
     hit.surface = surface;
 }
 #endif

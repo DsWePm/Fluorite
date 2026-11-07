@@ -5,11 +5,11 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** R2b-6: the user approved 96 B to preserve float32 direction and the primary/LoD hooks. */
+/** R26: approved 128 B canonical endpoint, retaining all earlier direction/RGB/primary offsets. */
 final class RtPathReservoirLayoutTest {
     @Test
     void theHybridRecordHasTheApprovedStrideAndOffsets() {
-        assertEquals(96, PackedPathReservoirData.BYTE_SIZE);
+        assertEquals(128, PackedPathReservoirData.BYTE_SIZE);
         assertEquals(0, PackedPathReservoirData.RECON_POS_OFFSET);
         assertEquals(12, PackedPathReservoirData.PATH_SEED_OFFSET);
         assertEquals(16, PackedPathReservoirData.PRIMARY_POS_OFFSET);
@@ -30,6 +30,13 @@ final class RtPathReservoirLayoutTest {
         assertEquals(84, PackedPathReservoirData.DIR_Z_OFFSET);
         assertEquals(88, PackedPathReservoirData.NEE_PDF_OFFSET);
         assertEquals(92, PackedPathReservoirData.SOURCE_PDF_OFFSET);
-        assertEquals(398_131_200L, 1920L * 1080 * 2 * PackedPathReservoirData.BYTE_SIZE);
+        assertEquals(96, PackedPathReservoirData.RECON_OBJECT_ID_OFFSET);
+        assertEquals(100, PackedPathReservoirData.RECON_PRIMITIVE_INDEX_OFFSET);
+        assertEquals(104, PackedPathReservoirData.RECON_BARYCENTRICS_OFFSET);
+        assertEquals(112, PackedPathReservoirData.RECON_GEOMETRY_INDEX_OFFSET);
+        assertEquals(116, PackedPathReservoirData.INCOMING_DIR_X_OFFSET);
+        assertEquals(120, PackedPathReservoirData.INCOMING_DIR_Y_OFFSET);
+        assertEquals(124, PackedPathReservoirData.INCOMING_DIR_Z_OFFSET);
+        assertEquals(530_841_600L, 1920L * 1080 * 2 * PackedPathReservoirData.BYTE_SIZE);
     }
 }

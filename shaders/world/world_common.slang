@@ -1030,7 +1030,7 @@ public struct PackedPathSegment {
 
 /** Must match the RtComposite allocation, which takes the size from the generated record -- so this
  * declaration and the allocation cannot drift. */
-public static const uint PATH_RESERVOIR_BYTES = 96u;
+public static const uint PATH_RESERVOIR_BYTES = 128u;
 
 // D231: a tagged path-tree event for the hybrid shift, one record per pixel and parity.
 // The two float3 lanes lead their 16-byte groups: the Slang reflection probe owns the true
@@ -1070,6 +1070,14 @@ public struct PackedPathReservoir {
     public float  neePdf;
     // Current event density, except H kind 2: fixed outgoing endpoint geometry for area-measure MIS.
     public float  sourcePdf;
+    // Canonical reconnection surface. Preserve all earlier offsets and the primary/LoD hooks.
+    public uint   reconObjectId;
+    public uint   reconPrimitiveIndex;
+    public float2 reconBarycentrics;
+    public uint   reconGeometryIndex;
+    public uint   incomingDirX;
+    public uint   incomingDirY;
+    public uint   incomingDirZ;
 };
 
 /** Slot address: one reservoir per pixel per parity. No depth or path planes --
@@ -1106,5 +1114,12 @@ public PackedPathReservoir emptyPathReservoir() {
     r.dirZ = 0u;
     r.neePdf = 0.0;
     r.sourcePdf = 0.0;
+    r.reconObjectId = 0u;
+    r.reconPrimitiveIndex = 0u;
+    r.reconBarycentrics = float2(0.0, 0.0);
+    r.reconGeometryIndex = 0u;
+    r.incomingDirX = 0u;
+    r.incomingDirY = 0u;
+    r.incomingDirZ = 0u;
     return r;
 }

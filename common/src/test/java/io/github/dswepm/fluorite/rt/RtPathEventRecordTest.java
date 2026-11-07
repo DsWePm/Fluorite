@@ -14,7 +14,7 @@ final class RtPathEventRecordTest {
     @Test void independentSourceAndNeeDensitiesFitTheAlreadyApprovedTailPadding() throws Exception {
         String c=source("shaders/world/world_common.slang");
         assertTrue(c.contains("public float  neePdf;"));assertTrue(c.contains("public float  sourcePdf;"));
-        assertEquals(96,PackedPathReservoirData.BYTE_SIZE);
+        assertEquals(128,PackedPathReservoirData.BYTE_SIZE);
         assertEquals(88,PackedPathReservoirData.class.getField("NEE_PDF_OFFSET").getInt(null));
         assertEquals(92,PackedPathReservoirData.class.getField("SOURCE_PDF_OFFSET").getInt(null));
         assertTrue(c.contains("r.neePdf = 0.0;"));assertTrue(c.contains("r.sourcePdf = 0.0;"));

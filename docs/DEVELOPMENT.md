@@ -897,7 +897,9 @@ R2b-18已接入局部太阳S、环境底色L及薄壳T；局部事件使用ℓ=0
 
 独立封闭水房间已实际验证：5810个readback，8,455,459条lobe、fresh k2 11,316/deep22及新k2连接11,316次全部过原0.1%门；最大连接RGB/Jac误差0.00104366%/0.00652075%，T-prefix0.000038239%、完整事件0.000133627%。385条中心probe明确current-water bit9、enclosed profile1、opaque hit，T约(0.5628,0.6260,0.6533)；前10秒之后仍新增10,178次成功连接，非仅启动时的计数。此结果补初始水介质与均匀材质连接覆盖，不代表折射界面或复杂表面端点问题已解决。两轮取证及水测试均正常保存关闭，config/options字节恢复，临时包移除，VUID0；未作视觉或GPU性能结论。
 
-**端点预算待裁决**：为保存完整recon object/geometry/primitive key及float32 barycentrics，独立std430原型为128 B（原96 B全部保留），1080p实际追踪双缓冲增加126.5625 MiB/33.33%；联合几何返回拟32→40 B逻辑，不增加连接射线或独立query，实际GPU成本待测。原型已compile/spirv-val，**产品ABI尚未更改**；已依CLAUDE铁律1请用户选择扩容或坚持96 B另研布局。方案不同key判shift失败、同key共享原材质函数并用原bary重建，不保证消除所有self-connection失败/同材质方向残差，跨帧generation仍需R3处理。完整证据与待裁决说明在`F:\MC\Shader\evidence\restir-r2-r3-2026-11-05`的r25/r2b25文件；R2/R3不能宣布完成。
+**R2b-26完整端点（用户已批准，进行中）**：采用128 B记录，保留前96 B全部offset，追加完整recon object/geometry/primitive key及float32 barycentrics。联合几何逻辑返回40 B，阴影与48 B segment不增长，不加独立query/连接射线；1080p实际追踪双缓冲506.25 MiB，比96 B增加126.5625 MiB。实际nearest命中key不同则移位失败，同key用canonical bary调用唯一原材质函数，alpha与closest-hit共享同一坐标选择。初版77套379测试、55shader/spirv-val、三OFF对R2a字节相同，独立GPU helper 20,003组通过；实际复杂场景仍捕获有效连接数值残差，不能放行R3。
+
+剩余残差已以实际component witness定位：2,017,389连接中25 numeric失败（13 primary方向、5 Jacobian、7目标响应），源重放仍健康；掠射方向由两个rounded world position相减后改变，独立double评估确认该输入变化足以解释误差。现将记录末12 B保存原incoming FP32方向（有效性沿用既有record.bits），用共享source/receiver ray-anchored算术重连，记录仍128 B且不加射线。离线GPU 20,003组含5,001同起点bit-exact及15,002不同起点/往返检查通过；正式复杂场景26,053个readback中2,153,192次新连接全部通过，scope/hit/footprint/numeric全部0；最大RGB误差0.000317622%、Jac0.0128865%，原0.1%数值门不变。4,796,017条lobe及fresh k2 2,153,192/deep49,992均通过旧门，T-prefix最大0.0000381282%、完整事件0.00108430%，方向/incident codec误差0、VUID日志0。游戏正常保存关闭，配置/options逐字节恢复；同一正式模块初始水介质复测7,072个readback：13,781次新k2及10,286,430条lobe全部过原门，max连接RGB0.000190395%/Jac0.000101328%，469条完整探针确认water/opaque和非unity T；正常退出、配置/options逐字节恢复及临时包移除。stats保持84 lanes/336 B，当前仍完整返回自身L、不消费history。跨帧generation、R3前后向shift/pairwise MIS/RGB own-split、GPU成本及用户观感均未完成；证据在`F:\MC\Shader\evidence\restir-r2-r3-2026-11-05`的r26/r2b26文件。
 
 - **天空方向阴影线的遮挡口径**：默认与太阳项一致（仅地形遮挡、不含云 τ），维持「雾与云不互相投影」规则（§3.5/§8.10）；若要含云 τ 须重新请示。
 - 雾段照明噪声形态未知（一个错误天空样本影响整段 in-scatter），S1 的网格连续性正是对此的对冲；S6 验收重点观察。
@@ -948,3 +950,6 @@ R2b-18已接入局部太阳S、环境底色L及薄壳T；局部事件使用ℓ=0
 6. 只保证 `en_us`、`zh_cn`；其他语言不列入维护和验收承诺。
 
 代码注释中的 `M*`、`D*`、`F*`、`R*` 通过 [`docs/devlog/README.md`](devlog/README.md) 查找。外部 `.claude/plans` 已被本仓库文档取代，只允许考古，不继续追加。
+
+
+**R3 primary状态重构已批（2026-11-07，待实施）**：用户选择在128 B内重构既有primary字段，替换hit position/oct normal/half UV缓存为原始queue的FP32 ray origin、原packed direction与原packed ray cone；objectId保留。独立布局原型确认offset16/28/64/68及stride128，各20,003组实际GPU bit-copy通过，不加逐像素缓存；另加20 B sidecar/79.1015625 MiB双缓冲的备选不采用。此项改变旧primary字段语义已获明确批准，不再请示同一选择。primary真实位置/法线/UV/材质从一次共享命中重建，尚需实际RT回归；每帧相机/medium/rebase上下文、跨帧对象/网格失效、history/k2双向shift/pairwise/RGB own-split仍待实现。

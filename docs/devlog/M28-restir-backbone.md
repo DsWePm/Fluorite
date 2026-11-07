@@ -465,7 +465,7 @@ M28 合 main（合并前请示）→ M29/M30 rebase（改写他线分支历史�
 | --- | --- | --- |
 | R0 | 本条；G14 开关与 frame.csv 列；G15 变体管线；`RtPathReuseMathTest` | 构建与测试全绿；关档管线不含复用代码 |
 | R1 | 逐顶点随机流、顶点函数抽取、REPLAY CONTRACT 重写、前缀恒等 lane | 恒等 lane ≥ 99.9% |
-| R2 | 96 B记录（R2b-6用户已批扩容）、记录端判据、path-tree单事件、退役in-place估计量 | 完整恒等lane≈100%；约398 MB日志；仅记录的A→B→A |
+| R2 | 128 B记录（R2b-26用户已批完整端点）、记录端判据、path-tree单事件、退役in-place估计量 | 完整恒等lane≈100%；1080p双缓冲506.25 MiB日志；仅记录的A→B→A |
 | R3 | 时域 hybrid shift（k=2） | 关「DLSS 光线重建」固定机位 N 帧平均开≈关（2σ），且方差更低 |
 | R4 | 空间复用：Junkins Alg. 1、逐候选 Cap | RR 开下的静止视觉 GO/NO-GO；按邻居数的 A→B→A |
 | R5 | k ≥ 3 深链重放 | k≥3 恒等 lane；光泽地面与水边收敛 |
@@ -1091,3 +1091,19 @@ B相对两A平均的RGB差为+0.1773%/+0.1323%/−0.01321%，对应z为0.02034/0
 三次游戏均由助手正常保存退出，BUILD SUCCESSFUL、VUID0，原config/options逐字节恢复，水房临时包移除。观感仍留用户，GPU成本未按1080p同会话比值法测量。所有证据位于F:\MC\Shader\evidence\restir-r2-r3-2026-11-05的r25/r2b25文件：first-red、witness modules/decoded/restore、water-cumulative/water-summary及各日志/CSV/activation快照。
 
 128 B完整端点方案已独立compile/spirv-val验证std430 stride和offset：保留原96 B，加完整object/geometry/primitive key、float2 barycentrics及flags/padding。预计联合几何返回32→40 B逻辑（原shadow不增长），不加连接射线或独立query；1080p实际追踪双缓冲多126.5625 MiB（33.33%），实际GPU/寄存器/栈成本待测。拟不同key判shift失败保留自身，同key在共享着色函数中用原bary重建真实材质。它不自动消除所有源self-connection失败率或同材质方向残差，跨帧generation仍欠。**已依CLAUDE铁律1请用户裁决，尚未批准、未改产品ABI**；替代选择是96 B硬预算继续研究布局，不承诺无成本解决。详见`r25-endpoint-decision.md`及layout-prototype/summary。R2整体和R3 history/双向shift/pairwise RGB own-split仍未完成。
+
+
+### R2b-26：完整端点与原始连接方向
+
+用户已批准128 B完整端点、联合几何逻辑返回40 B：前96 B offset不变，追加object/geometry/primitive完整key与float32 barycentrics。实际nearest TraceRay必须先匹配key，错key直接失败、不对错误表面解码材质；同key由alpha/closest-hit共用canonical bary选择，调用原有唯一着色函数。未加生产geometry query/连接射线，阴影payload与48 B segment不增长。1080p实际追踪双缓冲506.25 MiB，较96 B多126.5625 MiB（33.33%），实际GPU/栈/寄存器成本未测。stats84 lanes/336 B保持；拒绝的mapping计账，numeric失败和计数遗漏仍报警，原0.1%门不动。
+
+初版77套379测试、55shader/spirv-val、三OFF与R2a规整化字节相同，可达SBT stages的payload形状检查通过。独立真实GPU request/matching/bary helper 20,003组bit-exact、4,004负例通过；unit-UV三角形的一ULP texel边界对照保留原texel，不冒充完整RT材质证明。正式复杂场景6,441个readback，connection 528,217/528,353（hit129/numeric7），maxRGB0.376184%、Jac0.137347%；旧源fresh k2 528,353/deep12,184全过。随后临时component witness扩stats至192 lanes取证，无额外ray/RNG；24,343个readback、connection 2,016,933/2,017,389（hit431/numeric25），maxRGB2.10905%、Jac0.551609%。25见证为13 primary角响应、5仅Jac、7目标响应；捕获通道系数均非零。临时源码/缓冲已恢复，游戏均正常保存关闭，config/options还原。
+
+frame371中GPU RGB误差0.103722%；只换回原primary方向时误差归零，T/目标方向对照均零。独立double实际BSDF计算得到真实权重变化0.103035%，远大于同输入GPU求值残差，说明是worldpoint舍入改变了几何方向，不能靠再次改Schlick或放宽门修复。现在128 B末12 B保存原incoming direction三个FP32原始bit（移除重复endpoint valid flag/两个padding，使用既有record.bits.valid），接入无同起点特判的source-ray-anchored重连；primary domain解码与连接求值分开，以便后续前后向共享真实命中。离线直接运行正式geometry helper的20,003组检查通过，5,001同起点方向逐bit相同、15,002不同起点对独立double最大绝对方向误差1.97943e-5、往返9.23872e-7；这不是完整RT/移位可逆性或无偏证明。正式版本再次77套379测试、55shader/spirv-val、三OFF对R2a字节对照及40 B joint/原shadow可达接口检查通过。
+
+修后实际复杂场景26,053个readback，connection **2,153,192/2,153,192**，scope/hit/footprint/numeric全部0；maxRGB **0.000317622%**、Jac **0.0128865%**。4,796,017条lobe、fresh k2 2,153,192/deep49,992均全部过旧0.1%门，source factors 2,300,107/2,300,107；最大T-prefix0.0000381282%、完整事件0.00108430%，方向/incident codec误差0、VUID日志0。原失败会话与25个component witness不覆盖。初次窗口激活超时由线程栈确认在驱动vkCreateRayTracingPipelinesKHR创建变体期间，首帧后窗口控制恢复；没有将加载时间当性能。助手正常AltF4退出、保存全部维度、BUILD SUCCESSFUL；config/options原始字节恢复，实际5个ON模块hash与归档相同。证据r2b26-anchored-cumulative-summary、r26-anchored-restoration、build/interface摘要及独立ray-anchor GPU输入输出均在既有evidence目录。此结果证明本轮实际source/self-connection门通过，不证明任意新视角shift完全可逆或降方差。当前模块的水起始介质复测、R3完整时域消费/双向pairwise RGB own-split与跨帧generation仍待完成，观感由用户检查。
+
+
+同一正式模块再测封闭水起始介质：7,072个readback，10,286,430条lobe、fresh k2 13,781/deep25及新连接13,781次均通过原门，所有scope/hit/footprint/numeric/codec失败0、VUID日志0；max连接RGB0.000190395%/Jac0.000101328%、T-prefix0.000038239%、完整事件0.000120641%。471条中心探针中469条完整确认water bit9/profile1/opaque，T约(0.5628,0.6260,0.6533)。助手正常保存关闭，config/options逐字节恢复、临时包删除，实际模块hash与anchored归档相同。证据r2b26-water-summary/CSV/log与activation快照；依旧不宣称折射界面、观感或GPU性能验收。
+
+用户随后明确选择R3重构已有primary字段、保持128 B：旧primaryPos/primaryNrm/primaryUv改存原queue的FP32 origin/raw packed direction/raw packed ray cone，objectId保留，其余offset不动。20,003组独立GPU bit-copy及std430 offset/stride原型通过，仅证明存储，不冒充primary材质或R3估计量验收。替代20 B/像素/半的sidecar需额外79.1015625 MiB@1080p double，未采用。每帧真实射线上下文/跨帧失效、双向k2/pairwise/RGB own-split继续实现，不重复请示此布局选择。

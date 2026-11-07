@@ -362,6 +362,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 #ifdef FLUORITE_PATH_HIT_RESULT
         geometry = pathTriangleHitGeometry(ep1 - ep0, ep2 - ep0, euvCoord, WorldRayDirection(),
                 InstanceID(), GeometryIndex(), PrimitiveIndex());
+        geometry.barycentrics = attribs;
 #endif
         float entityLod = rayConeTextureLod(rayCone, texSizePx(entityAlbedoTex[NonUniformResourceIndex(texSlot)]),
                 ep0, ep1, ep2, euv[e0], euv[e1], euv[e2]);
@@ -484,6 +485,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     float3x3 hitTransform = (float3x3)ObjectToWorld3x4();
     geometry = pathTriangleHitGeometry(mul(hitTransform, tp1 - tp0), mul(hitTransform, tp2 - tp0), uv,
             WorldRayDirection(), InstanceID(), GeometryIndex(), PrimitiveIndex());
+    geometry.barycentrics = attribs;
 #endif
     float blockLod = rayConeTextureLod(rayCone, texSizePx(blockAlbedoAtlas), tp0, tp1, tp2, uv0, uv1, uv2);
 
@@ -570,9 +572,20 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 #ifdef FLUORITE_PATH_HIT_RESULT
 [shader("closesthit")]
 void main(inout PathHitPayload hit, in BuiltInTriangleIntersectionAttributes attr) {
+    bool endpointRequest = hit.geometry.objectId != 0xFFFFFFFFu;
+    if (endpointRequest && !pathEndpointRequestMatches(hit.geometry, InstanceID(), GeometryIndex(), PrimitiveIndex())) {
+        // No material decode for a rejected endpoint. Return a miss with the actual key, so a
+        // caller cannot mistake the request metadata for a successful intersection.
+        hit.surface.hitT = -1.0;
+        hit.geometry = makePathEndpointRequest(InstanceID(), GeometryIndex(), PrimitiveIndex(), attr.barycentrics);
+        return;
+    }
+    BuiltInTriangleIntersectionAttributes shadingAttributes = attr;
+    shadingAttributes.barycentrics = pathHitShadingBarycentrics(hit.geometry, attr.barycentrics,
+            InstanceID(), GeometryIndex(), PrimitiveIndex());
     Payload surface = hit.surface;
     PathHitGeometry geometry;
-    shadePathHit(surface, attr, geometry);
+    shadePathHit(surface, shadingAttributes, geometry);
     hit.surface = surface;
     hit.geometry = geometry;
 }

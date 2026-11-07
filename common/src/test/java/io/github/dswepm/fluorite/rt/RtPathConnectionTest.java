@@ -25,8 +25,8 @@ final class RtPathConnectionTest {
     @Test void theConnectionUsesFreshNearestHitMaterialAndTransportRatherThanTheSourceReferences() throws Exception {
         String s = source("shaders/world/path_reuse_connection.slang");
         String evaluate = s.substring(0, s.indexOf("void reuseDiagnoseK2Connection("));
-        assertEquals(1, evaluate.split("tracePathRadiance\\(", -1).length - 1);
-        for (String term : new String[]{"record.reconPos - receiver.p", "connection.pdf, showCelestial",
+        assertEquals(1, evaluate.split("tracePathEndpointRadiance\\(", -1).length - 1);
+        for (String term : new String[]{"reuseConnectionDirection(source.vertex.p, reuseLoadIncomingDirection(record), receiver.p", "connection.pdf, showCelestial",
                 "payloadMaterial() != MATERIAL_OPAQUE", "reuseReadHitGeometry(hitPosition, pathHitGeometry, recon)",
                 "reuseEvaluateEvent(fresh, record", "reuseEventFootprintEligible(",
                 "result.denominator / record.jacDenom", "reuseAccumulateTransport(transport, seg.medium.current.extinction",
@@ -47,9 +47,18 @@ final class RtPathConnectionTest {
         int evaluatorEnd = s.indexOf("void reuseDiagnoseK2Connection(");
         assertFalse(s.substring(0, evaluatorEnd).contains("0.001"));
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
-        assertTrue(stats.contains("|| connectionAttempt != connectionPass"));
+        assertTrue(stats.contains("|| connectionReadbackFailed(connectionAttempt, connectionPass, connectionScope, connectionHit,"));
         assertTrue(stats.contains("allFrames.maximum(82)"));
         assertTrue(stats.contains("allFrames.maximum(83)"));
+    }
+
+    @Test void rejectedMappingsAreCountedButNumericFailuresAndLostOutcomesStillFail() {
+        assertFalse(RtPathReservoirStats.connectionReadbackFailed(100,90,0,10,0,0));
+        assertFalse(RtPathReservoirStats.connectionReadbackFailed(100,85,3,10,2,0));
+        assertFalse(RtPathReservoirStats.connectionReadbackFailed(0,0,0,0,0,0));
+        assertTrue(RtPathReservoirStats.connectionReadbackFailed(100,89,0,10,0,1));
+        assertTrue(RtPathReservoirStats.connectionReadbackFailed(100,90,0,9,0,0));
+        assertTrue(RtPathReservoirStats.connectionReadbackFailed(100,91,0,10,0,0));
     }
 
     private static String source(String relative) throws Exception {

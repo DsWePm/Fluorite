@@ -50,7 +50,7 @@ final class RtPathReplayContractTest {
         // RtPathReservoirLayoutTest against the generated record, and RtComposite takes its
         // allocation stride from that same generated constant -- the D220 hand-copy lesson.
         assertTrue(worldCommon.contains("public struct PackedPathReservoir"));
-        assertTrue(worldCommon.contains("PATH_RESERVOIR_BYTES = 96u"));
+        assertTrue(worldCommon.contains("PATH_RESERVOIR_BYTES = 128u"));
         assertTrue(worldCommon.contains("pathReservoirSlot"));
         // The float3 MUST lead: std430 gives float3 a 16-byte alignment, and a uint before it pads
         // the stride to 64 against the 48-byte allocation (the D220 GPU fault, verbatim).

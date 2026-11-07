@@ -1489,6 +1489,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 dRecord = reuseRecordSampling(dRecord, footprintPreviousSample.lobe, 0u, continuation.pdf, 0.0);
                 dRecord.objectId = footprintPrimary.objectId;
                 dRecord.primaryUv = packHalf2(footprintPrimary.uv);
+                dRecord = reuseRecordEndpoint(dRecord, hitGeometry, footprintEdgeDirection);
                 if (identityCheck) {
                     ReuseContinuationSample evaluated;
                     ReuseContinuationSample packedEval;

@@ -24,3 +24,20 @@ public void tracePathRadiance(uint cullMask, float3 ro, float tmin, float3 rd, f
     payload = hit.surface;
     pathHitGeometry = hit.geometry;
 }
+
+// A canonical endpoint is still checked by one nearest-hit ray. An intervening triangle makes this
+// request fail; it is never skipped to force the requested surface visible. Shadow ABI is untouched.
+public void tracePathEndpointRadiance(uint cullMask, float3 ro, float3 rd, float tmax,
+        bool showCelestial, float rayConeWidth, float rayConeSpread,
+        uint objectId, uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
+    uint flags = showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u;
+    PathHitPayload hit = makePathHitPayload(flags, packHalf2(float2(rayConeWidth, rayConeSpread)));
+    if (objectId != 0xFFFFFFFFu && all(isfinite(barycentrics))) {
+        hit.geometry = makePathEndpointRequest(objectId, geometryIndex, primitiveIndex, barycentrics);
+        TraceRay(topLevelAS, RAY_FLAG_NONE, cullMask,
+                SBT_RADIANCE, SBT_STRIDE_BUCKET, MISS_RADIANCE,
+                makeRay(ro, 0.0, rd, tmax), hit);
+    }
+    payload = hit.surface;
+    pathHitGeometry = hit.geometry;
+}
