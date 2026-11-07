@@ -41,6 +41,22 @@ Note that `compileShaders` passes `-warnings-as-errors all`, so a newer `slangc`
 build on diagnostics an older one never emitted — which is the other reason to match CI rather than
 chase the latest Slang release.
 
+## Shader 增量构建与路径诊断
+
+`compileShaders` 按变体缓存已通过 `spirv-val` 的产物。依赖来自 Slang/glslang 的 depfile，缓存同时核对依赖内容、完整编译参数、工具二进制及 Slang 相邻编译库、输出 SHA-256。修改复用专用模块只重编实际依赖它的两个 raygen；共享 ABI 改动会重编全部受影响项。新增或删除源文件保守地使全部变体失效。编译/校验失败不会发布半套产物。
+
+普通构建命令不变。需要检查每个缓存项时使用 `./gradlew compileShaders -PshaderCacheAudit`；`--rerun-tasks` 或 `-Pfluorite.shaderCache=false` 强制真实重编，仍执行原验证。缓存只省去未变化的编译工作，完整测试、OFF 字节对照和实际 RT 回归仍按改动范围执行。首次修改 buildSrc 可能触发其它生成资源重跑，这与日常 shader 增量构建分开记录。
+
+路径诊断可用一个有界命令启动、归档并恢复窗口参数（Python 3.11+）：
+
+```powershell
+python -B -X utf8 tools/path-probe.py --output F:/MC/Shader/evidence/new-path-run --world restir-r1-smoke --readbacks 20000
+```
+
+输出目录必须是新目录。脚本保存原 config/options、源码哈希与 diff、实际模块哈希、运行日志和本轮更新的 frame.csv；首个失败或回读上限触发客户端正常保存退出。它保持 renderer 配置，要求 master/identity-check 已开、debug-view 为 0，并显式编译 probes；不会用 `-x compileShaders` 跳过依赖检查。正常退出后恢复窗口参数，保留运行期间用户修改的其它选项。若仍有客户端存活，恢复会延后并写 `RESTORE_PENDING.txt`，退出后可执行 `python tools/path-probe.py --restore <输出目录>`。
+
+`result.json` 记录会话退出、模块匹配及失败日志，不代替累计数值门、论文估计量或视觉/性能验收。临时 shader 取证应由外层 `try/finally` 同时管理源码、产物与缓存回滚；不要在游戏或编译期间改源码。脚本的窗口恢复/启动前提测试为 `python -B -m unittest discover -s tools -p test_path_probe.py`，编译缓存测试为 `./gradlew :buildSrc:test`。
+
 ## Windows
 
 1. Install the Vulkan SDK from <https://vulkan.lunarg.com/sdk/home>.

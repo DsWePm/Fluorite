@@ -6,6 +6,7 @@ import io.github.dswepm.fluorite.build.EndEnvironmentAsset
 import io.github.dswepm.fluorite.build.FetchVerifiedAsset
 import io.github.dswepm.fluorite.build.GenerateHighCloudAssets
 import io.github.dswepm.fluorite.build.HighCloudAssets
+import io.github.dswepm.fluorite.build.ShaderCompileCache
 
 // Root project. Owns the three build steps that are identical for every mod loader — SPIR-V
 // compilation, the Slang-reflection Java record generator, and the NGX native bundle — and applies no
@@ -73,6 +74,20 @@ abstract class CompileShaders extends DefaultTask {
 	 * so the define gives up nothing real.
 	 */
 	@Input abstract Property<Boolean> getProbes()
+	@Input abstract Property<Boolean> getCacheEnabled()
+	@LocalState abstract DirectoryProperty getCacheDir()
+	private String toolchainFingerprint
+	@Input String getToolchainFingerprint() {
+		if (toolchainFingerprint == null) {
+			toolchainFingerprint = ShaderCompileCache.toolchainFingerprint(
+					[glslang.get(), slangc.get(), spirvVal.get()], project.projectDir.toPath())
+		}
+		toolchainFingerprint
+	}
+
+	@InputFiles org.gradle.api.file.FileCollection getPreviousDependencyFiles() {
+		project.files(ShaderCompileCache.dependencyFiles(cacheDir.get().asFile.toPath()).collect { it.toFile() })
+	}
 
 	@Inject abstract ExecOperations getExecOps()
 
@@ -84,39 +99,44 @@ abstract class CompileShaders extends DefaultTask {
 	@TaskAction
 	void compile() {
 		def outDirFile = outDir.get().asFile
+		def cache = new ShaderCompileCache(cacheDir.get().asFile.toPath(), project.projectDir.toPath())
+		// Added/removed files can change module resolution even when a previous dependency is unchanged.
+		def inventory = ShaderCompileCache.signature(srcDir.get().asFileTree.files
+				.collect { srcDir.get().asFile.toPath().relativize(it.toPath()).toString() }.sort())
+		def pending = [:]
+		int compiled = 0
+		int reused = 0
+		def compileVariant = { List<String> command, File spv, String dependencyOption ->
+			// Bump the schema tag if dependency interpretation or cache validation changes.
+			def signature = ShaderCompileCache.signature(["shader-cache-1", getToolchainFingerprint(), inventory] + command)
+			if (cacheEnabled.get() && !project.gradle.startParameter.rerunTasks
+					&& cache.copyIfValid(spv.name, signature, new File(outDirFile, spv.name).toPath(), spv.toPath())) {
+				reused++
+				return
+			}
+			def depfile = new File(spv.parentFile, spv.name + ".d")
+			execOps.exec { commandLine(command + [dependencyOption, depfile.absolutePath]) }
+			execOps.exec { commandLine spirvVal.get(), "--target-env", "vulkan1.2", spv.absolutePath }
+			pending[spv.name] = cache.compiled(signature, spv.toPath(), depfile.toPath())
+			compiled++
+		}
 		// Slang stages are named <name>.<stage>.slang (world.rahit.slang → world.rahit.spv); module files
 		// like world_common.slang match no stage glob and are picked up only via `import`.
 		def stageIncludes = ["rgen", "rchit", "rahit", "rmiss", "rcall", "comp", "vert", "frag"]
 				.collectMany { stage -> ["**/*.${stage}", "**/*.${stage}.slang"] }
-		def validate = { File spv ->
-			execOps.exec {
-				commandLine spirvVal.get(), "--target-env", "vulkan1.2", spv.absolutePath
-			}
-		}
 		def compileOne = { File src, File spv, List<String> defines ->
-			execOps.exec {
-				// -g (OpLine/OpSource debug info), not -gVS: the NonSemantic.Shader.DebugInfo form (-gVS)
-				// emits OpExtInstWithForwardRefsKHR (SPV_KHR_relaxed_extended_instruction), which trips a
-				// validation error unless the shaderRelaxedExtendedInstruction device feature is enabled.
-				// -g keeps source-level debug info for Nsight/RenderDoc without needing that extension.
-				commandLine([glslang.get(), "-V", "--target-env", "vulkan1.2", "-g"] + defines
-						+ [src.absolutePath, "-o", spv.absolutePath])
-			}
-			validate(spv)
+			// Keep source debugging without the NonSemantic extension required by -gVS.
+			compileVariant([glslang.get(), "-V", "--target-env", "vulkan1.2", "-g"] + defines
+					+ [src.absolutePath, "-o", spv.absolutePath], spv, "--depfile")
 		}
 		def compileOneSlang = { File src, File spv, List<String> extra ->
-			execOps.exec {
-				// Embed Slang source and line mappings in SPIR-V for RenderDoc/Nsight source debugging.
-				// Overlay Slang stages may consume the reflected world ABI (rain streaks do); expose the
-				// canonical module directory instead of duplicating a partial WorldPush definition.
-				commandLine([slangc.get(), src.absolutePath, "-target", "spirv",
+			// Preserve the exact compiler flags and shared world ABI search directory.
+			compileVariant([slangc.get(), src.absolutePath, "-target", "spirv",
 						"-profile", "spirv_1_5", "-matrix-layout-column-major",
 						"-warnings-as-errors", "all", "-warnings-disable", "41012", "-g",
 						"-I", new File(srcDir.get().asFile, "world").absolutePath]
 						+ (probes.get() ? ["-DFLUORITE_PROBES"] : []) + extra
-						+ ["-o", spv.absolutePath])
-			}
-			validate(spv)
+						+ ["-o", spv.absolutePath], spv, "-depfile")
 		}
 		def shaderFiles = srcDir.get().asFileTree.matching {
 			include stageIncludes
@@ -171,10 +191,12 @@ abstract class CompileShaders extends DefaultTask {
 		}
 		outDirFile.mkdirs()
 		outDirFile.listFiles().findAll { it.isFile() && it.name.endsWith(".spv") }.each { it.delete() }
-		scratchDir.listFiles().findAll { it.isFile() }.each { src ->
+		scratchDir.listFiles().findAll { it.isFile() && it.name.endsWith(".spv") }.each { src ->
 			java.nio.file.Files.move(src.toPath(), new File(outDirFile, src.name).toPath(),
 					java.nio.file.StandardCopyOption.REPLACE_EXISTING)
 		}
+		pending.each { name, entry -> cache.store(name, entry) }
+		logger.lifecycle("Shader variants: compiled ${compiled}, reused ${reused} (validated content cache)")
 	}
 }
 
@@ -189,6 +211,10 @@ def compileShaders = tasks.register("compileShaders", CompileShaders) {
 	// Default ON: an ordinary build stays exactly what shipped, and the stripped variant is something you
 	// ask for. Release artifacts are built with -Pfluorite.probes=false.
 	probes = providers.gradleProperty("fluorite.probes").map { it != "false" }.orElse(true)
+	cacheDir = layout.buildDirectory.dir("shader-compile-cache")
+	cacheEnabled = providers.gradleProperty("fluorite.shaderCache").map { it != "false" }.orElse(true)
+	// Inspect every cached result without forcing compilers; --rerun-tasks remains a true full rebuild.
+	outputs.upToDateWhen { !project.hasProperty("shaderCacheAudit") }
 }
 
 def generateShaderRecords = tasks.register("generateShaderRecords", GenerateShaderRecords) {
