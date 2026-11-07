@@ -1589,10 +1589,13 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             rrSurvival *= q;
         }
     }
-    // Record-only: no temporal/spatial reads and no change to L. Empty trees overwrite stale slots.
+    // Record-only: no temporal/spatial reads and no change to L. Empty events retain valid domains.
     if (recordPath) {
-        selectedRecord = reuseStorePrimaryRay(selectedRecord, seg.ro, primaryPackedDirection, primaryRayCone);
         PackedPathReservoir produced = reuseFinishTree(selectedRecord, dTree);
+        if (footprintPrimaryValid && dTree.valid) {
+            produced = reuseStorePrimaryDomain(produced, seg.ro, primaryPackedDirection, primaryRayCone,
+                    footprintPrimary.objectId, pathSeedBase, entryMediumFlags);
+        }
         DevicePtr<PackedPathReservoir> store =
                 DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
         store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,

@@ -1135,3 +1135,18 @@ frame371中GPU RGB误差0.103722%；只换回原primary方向时误差归零，T
 正式源码按归档恢复五文件、删除临时helper，去掉扩展stats/forced point/CDF debug参数，仅保留共享概率与CDF。80套389测试、55shader/spirv-val、三OFF对R2a规整化字节及全部可达SBT joint40 B/原shadow接口检查通过。严格shipped-line proof仅对这两处数学等价替换做精确回译，其余采样体、PDF、权重与RNG调用继续钉住。
 
 正式原1/16诊断覆盖回归20000回读，k2连接1662464/1662464，scope/hit/footprint/numeric计数为[0, 0, 0, 0]，maxRGB 0.000251305%、Jac 0.0128865%；T-prefix 3.92933e-05%、完整事件 0.00119476%。旧源、codec、累计计数及原0.1%门通过，VUID日志0；自动LIMIT正常保存退出，原config/options逐字节恢复，实际五个ON模块与归档字节相同。完整raw packets/失败版本/parse/GPU/编译/恢复证据留在F:/MC/Shader/evidence/restir-r2-r3-2026-11-05的r3a2-*，不覆盖CDF-only失败。此片解决捕获的k2分支复现，不声称已逐个归因旧长跑66.0307% RGB或deep异常，也不证明跨帧shift、无偏或降方差。R2整体及R3 history/双向pairwise/RGB own-split、跨帧身份与失效仍未完成，观感留用户。
+
+
+### R3a-3：空WRS树仍保留采样域；缩短开发循环
+
+`reuseFinishTree`以前把零权重树清成全空记录，连有效primary域及confidence一起丢掉。Enhanced的域MIS需要区分零候选与无效域：从一个域没抽中贡献，不代表其它样本在该域的密度可以删去。现用空闲bit26单独标识primary-domain valid，原bit0仍只标事件；先FinishTree，再仅在真实opaque primary且dTree.valid时stamp原queue ray、对象、pathSeed、entry medium标签与fresh confidence1。零树W/target保持0、event仍空；无效数字/未知medium/不可用object/非法ray被拒绝，不把无效树当零样本。record仍128 B，不增加射线、独立query或shadow字段，仍完整返回自身L，不读history。后续跨帧对象身份、相机/介质上下文、帧stamp等仍须独立验证，不能单凭此bit复用历史。
+
+真实生产helper的GPU20,003组验证：9502有效空域、9501有效事件域、1000无效输入，整个128 B和domain/event状态逐bit等于独立预期，含负零origin直传及原direction/cone word保存。仅验证存储/域语义，不冒充MIS正确性。80套390测试、55shader/spirv-val、三OFF对R2a规整化字节以及joint40 B/原shadow SBT形状通过；严格shipped-line与所有原0.1%门保留。旧source contract仍指before-Finish serializer而失败一次，已改为检查真实after-Finish域stamp；没有放松数值阈值。
+
+正式5000回读的k2连接411660/411660、deep 9537全部过门，scope/hit/footprint/numeric等失败0，max连接RGB 0.000251006%、Jac 0.0128865%，full event 0.0010843%。客户端自动LIMIT正常保存退出、config/options逐字节恢复，源码在运行期间未变、全部实际模块与generated字节同。证据为evidence/restir-r2-r3-2026-11-05/workflow/r3a3-domain*、EV根build/interface摘要。真正history、双向shift/pairwise/RGB own-split尚未实现。
+
+同轮收敛开发流程（2821376）：compileShaders用Slang/glslang真实depfile逐变体缓存，并验证源依赖SHA、工具exe/Slang库、完整参数和产物SHA；新增/删除文件保守全失效。编译/validator全成功后才发布结果，失败保留旧产物；--rerun-tasks或关闭shaderCache可真实全重编。7个buildSrc缓存测试、5个Python恢复/前置条件测试通过。首次55产物与改前逐字节同；强制warm审计0编译/55复用、含Gradle和buildSrc测试总7.58秒，这不是普通无改动构建的对照。损坏一个GLSL产物的真实负例1编译/54复用后恢复原字节。实际ReSTIR取证和R3a-3均为2编译/53复用。首次buildSrc改变还触发End HDR/Kerr资源重生成，冷full10m42与日常shader构建分开记录，不拿它计算加速比。
+
+`tools/path-probe.py`统一新目录快照、CLI回读上限/首失败正常退出、shader源码/模块/日志/当轮CSV归档、finally恢复窗口；master/identity未开或debug-view非0时拒绝启动，probes显式开，避免回读不推进。源码探针由外层finally恢复源码/产物/缓存，并重建正式Java类再跑测试。本轮旧专用parser的Windows路径/regex替换失败发生在全部恢复及测试之后；原始日志保留，用正确parser重解析，无需重跑游戏。使用方法见developer_guide。
+
+用该流程对当前概率修复做全像素尾部取证：20000回读，k2 26,495,467次、deep610,148次全部通过，所有scope/miss/geometry/invalid/numeric及VUID失败0；max连接RGB0.000755024%、Jac0.0444531%、full-event0.00473916%、T-prefix0.0000403328%。没有failure packet。原始actual source coefficient、独立T/scatter与完整ray/key的75word探针包含提前结束kind4，未增加随机数/查询；临时stats160，record仍128。自动正常保存退出后4正式源码、全部55 generated/runtime模块及缓存逐字节恢复，389 tests通过。范围是临时全像素诊断程序，不冒充最终R3a-3模块；旧长跑66.0307% RGB与deep尾例未逐条重现归因，保留追踪，不无限长跑阻塞独立开发。证据workflow/tail-probe-2821376/{runtime.log,cumulative-summary.json,decoded.json,restoration.json}及tail-fixture-backup、workflow-verification.json。观感仍留用户，GPU成本未按正式方法结算。

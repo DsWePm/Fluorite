@@ -31,18 +31,32 @@ final class RtPathPrimaryRayTest {
         }
     }
 
-    @Test void theProducerCopiesRawQueueWordsBeforeFinalisingTheWholeTree() throws Exception {
+    @Test void theProducerStoresTheDomainAfterFinalisingEvenAnEmptyTree() throws Exception {
         String caller=source("shaders/world/world.rgen.slang");
         assertTrue(caller.contains("tracePathReuse(segment, unpackActiveMediumFlags(packed.pathFlags), packed.rd, packed.rayCone,"));
         String tracer=source("shaders/world/path_reuse_trace.slang");
         String tail=tracer.substring(tracer.indexOf("// Record-only: no temporal/spatial reads"));
-        assertTrue(tail.indexOf("reuseStorePrimaryRay(selectedRecord, seg.ro, primaryPackedDirection, primaryRayCone)")
-                < tail.indexOf("reuseFinishTree(selectedRecord, dTree)"));
+        int finish=tail.indexOf("reuseFinishTree(selectedRecord, dTree)");
+        int stamp=tail.indexOf("reuseStorePrimaryDomain(produced, seg.ro, primaryPackedDirection, primaryRayCone");
+        assertTrue(finish>=0 && stamp>finish);
+        assertTrue(tail.contains("if (footprintPrimaryValid && dTree.valid)"));
         String primary=source("shaders/world/path_reuse_primary.slang");
         for (String term:new String[]{"record.primaryOrigin = origin;",
                 "record.primaryPackedDirection = packedDirection;","record.primaryRayCone = packedCone;"})
             assertTrue(primary.contains(term));
-        assertFalse(java.util.regex.Pattern.compile("\\b(?:octEncode|packHalf2)\\s*\\(").matcher(primary).find());
+        String serializer=primary.substring(primary.indexOf("PackedPathReservoir reuseStorePrimaryRay("),
+                primary.indexOf("PackedPathReservoir reuseStorePrimaryDomain("));
+        assertFalse(java.util.regex.Pattern.compile("\\b(?:octEncode|packHalf2)\\s*\\(").matcher(serializer).find());
+    }
+
+    @Test void domainValidityDoesNotAliasAnEventOrSamplingTag() throws Exception {
+        String primary=source("shaders/world/path_reuse_primary.slang");
+        assertTrue(primary.contains("REUSE_PRIMARY_DOMAIN_VALID = 1u << 26u"));
+        assertTrue(primary.contains("(record.bits & REUSE_PRIMARY_DOMAIN_VALID) != 0u"));
+        assertTrue(primary.contains("record.confPdf = packHalf2(float2(1.0, 0.0));"));
+        assertFalse(primary.contains("record.bits |= PATH_RECORD_VALID"),
+                "A valid empty domain must not invent an event");
+        assertTrue(source("shaders/world/world_common.slang").contains("(p.bits & PATH_RECORD_VALID) == 0u"));
     }
 
     @Test void sourceChecksActuallyTraceTheRecordedPrimaryAndRequireBitwiseIdentity() throws Exception {

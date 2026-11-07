@@ -159,7 +159,7 @@ final class RtPathTreeTest {
                 "dTailWeight *= continuation.weight;", "float3 incident = dTailWeight * brdf * sampledLightIrradiance * ndl * vis;",
                 "reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival, REUSE_D_ENDPOINT_SOLAR, reuseSeed)",
                 "dRecord.pathSeed = pathSeedBase;", "dRecord.objectId = footprintPrimary.objectId;",
-                "reuseStorePrimaryRay(selectedRecord, seg.ro, primaryPackedDirection, primaryRayCone)", "dRecord = reuseStoreDirection(dRecord, rd);",
+                "reuseStorePrimaryDomain(produced, seg.ro, primaryPackedDirection, primaryRayCone,", "dRecord = reuseStoreDirection(dRecord, rd);",
                 "dRecord.jacDenom = jacDenom;", "reuseDRecordBits(uint(hitDepth + 1), continuation.lobe, activeMediumFlags)",
                 "PackedPathReservoir produced = reuseFinishTree(selectedRecord, dTree);", "worldPush.frameIndex & 1u)] = produced;"})
             assertTrue(tracer.contains(term), term);
