@@ -96,7 +96,10 @@ public final class RtVideoOptions {
                 // menu.
                 case TRACING -> List.of(
                         Section.of(spp(), maxBounces(), restirReuseDepth(),
-                                restirSpatialNeighbours(), pathReservoir(), pathReuseSpatialNeighbours(),
+                                restirSpatialNeighbours(), pathReservoir(),
+                                bool("fluorite.options.rt.pathReuseTemporal", FluoriteConfig.Rt.Composite.PATH_REUSE_TEMPORAL),
+                                bool("fluorite.options.rt.pathReuseReverseVisibility", FluoriteConfig.Rt.Composite.PATH_REUSE_REVERSE_VISIBILITY),
+                                pathReuseHistoryCap(), pathReuseSpatialNeighbours(),
                                 dynamicRisCandidates(),
                                 emitterBrightness(), emitterTemperature(),
                                 sunSize(), entities(), particles(),
@@ -899,6 +902,13 @@ public final class RtVideoOptions {
      */
     private static OptionInstance<Boolean> pathReservoir() {
         return bool("fluorite.options.rt.pathReservoir", FluoriteConfig.Rt.Composite.PATH_RESERVOIR);
+    }
+
+    private static OptionInstance<Integer> pathReuseHistoryCap() {
+        IntSetting setting = FluoriteConfig.Rt.Composite.PATH_REUSE_HISTORY_CAP;
+        return new OptionInstance<>("fluorite.options.rt.pathReuseHistoryCap",
+                OptionInstance.cachedConstantTooltip(Component.translatable("fluorite.options.rt.pathReuseHistoryCap.tooltip")),
+                Options::genericValueLabel, new OptionInstance.IntRange(1, 100), setting.value(), setting::set);
     }
 
     /**

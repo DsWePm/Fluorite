@@ -1307,6 +1307,9 @@ void main() {
     }
 #endif
     uint spp = max(worldPush.spp, 1u);
+#ifdef FLUORITE_PATH_REUSE
+    reuseBeginPixel(uint2(pix), dimensions);
+#endif
     float3 frameRadiance = float3(0.0, 0.0, 0.0);
     uint recordIndex = pixelIndex;
     PathSegment firstQueuedSegment = unpackPathSegment(queue[pixelIndex]);
@@ -1353,6 +1356,9 @@ void main() {
         // boundary to say it.
         recordIndex = dimensions.x * dimensions.y + pixelIndex;
     }
+#ifdef FLUORITE_PATH_REUSE
+    reusePublishFrame(uint2(pix));
+#endif
     float3 leafRadiance = prefix.transmittance * (frameRadiance / float(spp));
     float3 compositeRadiance = prefix.inScatter + leafRadiance;
     if (compositePrefixDebug) {

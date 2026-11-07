@@ -88,7 +88,7 @@ final class RtPathReplayContractTest {
     }
 
     @Test
-    void theRecordOnlySliceReturnsTheWholeOwnPath() throws IOException {
+    void theTemporalSliceKeepsTheOwnFallbackAndReturnsTheComposedRadiance() throws IOException {
         String world = source("shaders/world/path_reuse_trace.slang");
         assertFalse(world.contains("L = reconLpre + applied"));
         assertFalse(world.contains("prevParity"));
@@ -124,9 +124,13 @@ final class RtPathReplayContractTest {
     }
 
     @Test
-    void theRecordOnlySliceDoesNotReadHistory() throws IOException {
+    void theTemporalSliceReadsOnlyTheValidatedPreviousParity() throws IOException {
         String world = source("shaders/world/path_reuse_trace.slang");
-        assertFalse(world.contains("restirPreviousPixel("));
+        assertTrue(world.contains("L = reuseTemporal("));
+        String temporal = source("shaders/world/path_reuse_temporal.slang");
+        assertTrue(temporal.contains("reuseHistoryReady(root)"));
+        assertTrue(temporal.contains("restirPreviousPixel("));
+        assertTrue(temporal.contains("(worldPush.frameIndex ^ 1u) & 1u"));
         assertFalse(world.contains("stored.reconIndex"));
         assertFalse(world.contains("neighbourSlot"));
     }
@@ -252,7 +256,7 @@ final class RtPathReplayContractTest {
         // R2a removed the unused merge lanes: identity now occupies lanes 0 and 1.
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u)"));
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u)"));
-        assertEquals(84, RtPathReservoirStats.LANES);
+        assertEquals(110, RtPathReservoirStats.LANES);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         assertTrue(stats.contains("memGetInt(src.mapped)") && stats.contains("src.mapped + 4L"));
         assertTrue(stats.contains("identityPass, identityAttempt, percentage(identityPass, identityAttempt)"));
@@ -320,6 +324,12 @@ final class RtPathReplayContractTest {
         reuseFile = reuseFile.replace("uint lobeInterval = reuseContinuationInterval(lobeChoice, pf, ps);", "")
                 .replace("if (lobeInterval == 0u)", "if (lobeChoice < pf)")
                 .replace("else if (lobeInterval == 1u)", "else if ((lobeChoice - pf) / max(1.0 - pf, 1.0e-6) < ps)");
+
+        // Source and restored primaries use the same algebraically equivalent FP32 position.
+        assertEquals(2, reuseFile.split(java.util.regex.Pattern.quote(
+                "float3 hitPos = reuseReplayPosition(ro, rd, payload.hitT);"), -1).length - 1);
+        reuseFile = reuseFile.replace("float3 hitPos = reuseReplayPosition(ro, rd, payload.hitT);",
+                "float3 hitPos = ro + rd * payload.hitT;");
 
         // 1. Every shared vertex function is a verbatim, in-order excerpt of the shipped loop, with
         //    only its random stream renamed and its exits turned into returns.

@@ -55,7 +55,7 @@ final class RtPathSourceReplayTest {
         assertFalse(s.contains("scatteringPrefix /=") || s.contains("scatteringPrefix *= segIntegral") || s.contains("scatteringPrefix *= clouds"));
     }
     @Test void diagnosticsPartitionEveryAttemptAndKeepDepthBinsAndOriginalTolerance() throws Exception {
-        assertEquals(84,RtPathReservoirStats.LANES); assertEquals(336,RtPathReservoirStats.BYTE_SIZE);
+        assertEquals(110,RtPathReservoirStats.LANES); assertEquals(440,RtPathReservoirStats.BYTE_SIZE);
         String s=source("shaders/world/path_reuse_trace.slang");
         assertTrue(s.contains("depth == 2 ? 48 : 49")); assertTrue(s.contains("depth == 2 ? 54 : 55"));
         for(int i:new int[]{50,51,52,53,59}) assertTrue(s.contains("pathReservoirStatsAddr)["+i+"], 1u"));

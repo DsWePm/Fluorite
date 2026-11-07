@@ -494,6 +494,16 @@ public final class RtTerrain {
                 wantX, wantY, wantZ, reach);
     }
 
+    /** Snapshot proven stable table-slot owners; deformation invalidates correspondence. */
+    public Object[] pathSurfaceOwners() {
+        Object[] owners = new Object[table.slots.size()];
+        for (int i = 0; i < owners.length; i++) {
+            SectionGeom geometry = table.slots.get(i);
+            if (geometry != null && !geometry.deformable()) owners[i] = geometry;
+        }
+        return owners;
+    }
+
     /**
      * Displace every deformable section's water and refit its BLAS, for this frame.
      *

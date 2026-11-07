@@ -58,7 +58,9 @@ final class RtPathEndpointRecordTest {
         String dispatch = source("shaders/world/trace_path.slang");
         String endpoint = dispatch.substring(dispatch.indexOf("public void tracePathEndpointRadiance("));
         assertEquals(1, endpoint.split("TraceRay\\(",-1).length-1);
-        assertFalse(endpoint.contains("RayQuery") || endpoint.contains("RAY_FLAG_FORCE_NON_OPAQUE"));
+        assertFalse(endpoint.contains("RayQuery"));
+        assertTrue(endpoint.contains("visibility ? RAY_FLAG_NONE : RAY_FLAG_FORCE_NON_OPAQUE"));
+        assertTrue(endpoint.contains("visibility ? 0u : PATH_ENDPOINT_NO_VISIBILITY"));
         assertTrue(dispatch.contains("makePathEndpointRequest(objectId, geometryIndex, primitiveIndex, barycentrics)"));
     }
 

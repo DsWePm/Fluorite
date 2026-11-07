@@ -1530,7 +1530,7 @@ public final class RtComposite {
     /**
      * The path reuse's switch word (D231, G14): one uint at WorldPush offset 1296, a bitfield whose
      * fields arrive with the slices that consume them, so no sub-switch exists before it does anything
-     * (D211's lesson). Today: bit 0 = the prefix identity self-check, bits 8-11 = the spatial neighbour
+     * (D211's lesson). Today: bit 0 = the prefix identity self-check, bit 1 = reverse visibility, bits 8-11 = the spatial neighbour
      * count. restir_pt.slang spells the same bits; RtPathReplayContractTest pins the two spellings
      * together.
      */
@@ -1540,6 +1540,7 @@ public final class RtComposite {
         if (FluoriteConfig.Rt.Diagnostics.PATH_REUSE_IDENTITY_CHECK.value()) {
             word |= PATH_REUSE_IDENTITY_BIT;
         }
+        if (FluoriteConfig.Rt.Composite.PATH_REUSE_REVERSE_VISIBILITY.value()) word |= 2;
         return word;
     }
     /** Smallest patch an entity disturbs, in BLOCKS — so the size of a splash does not follow the grid. */
@@ -1769,6 +1770,7 @@ public final class RtComposite {
      * 8 GB card's real risk — the peak is why this allocates only under its own switch.
      */
     private RtBuffer pathReservoirStore;
+    private final RtPathHistory pathHistory = new RtPathHistory(PUSH_RING);
     private boolean pathReservoirStoreNeedsClear;
     /**
      * M26's presampled emitter pool. Null whenever the switch sits at its published position, so the off
@@ -2666,6 +2668,7 @@ public final class RtComposite {
         if (pathReservoirStore != null) {
             pathReservoirStore.destroy();
             pathReservoirStore = null;
+            pathHistory.destroy();
         }
         destroyGuideImages();
 
@@ -3311,6 +3314,15 @@ public final class RtComposite {
             // not a block-atlas sprite — see ModelBakery.BREAKING_LOCATIONS/DESTROY_TYPES), so any newly
             // resolved slot rides along with the uploadPending() call right below.
             BreakEntry[] breaking = breakingEntries(terrain);
+            long pathHistoryAddress = 0L;
+            if (pathReservoirStore != null) {
+                pathHistoryAddress = pathHistory.prepare(ctx, pushSlot, pathReservoirStore.deviceAddress,
+                        frameCounter, pathHistory.context(level, renderW, renderH,
+                                terrain.blockX, terrain.blockY, terrain.blockZ, flags, wtr, wtg, wtb),
+                        terrain.pathSurfaceOwners(), fe.pathSurfaces(),
+                        debugView == 0 && FluoriteConfig.Rt.Composite.PATH_REUSE_TEMPORAL.value(),
+                        FluoriteConfig.Rt.Composite.PATH_REUSE_HISTORY_CAP.value());
+            }
             // One immutable weather/time read for every medium. The shader receives only the resolved
             // physical values, so this does not grow WorldPush or add a weather branch to any hot path.
             RtEnvironmentForcing.Frame environment = skyPreset.weatherEnabled()
@@ -3460,7 +3472,7 @@ public final class RtComposite {
                                     && skyPreset.fog().ambientVisibility() != RtSkyPreset.AmbientVisibility.UNOCCLUDED),
                     // M28 S2's path reservoir address, at the struct tail. The shader reads 0 as "the
                     // switch is off" and never touches the store; there is no separate flag to agree with.
-                    pathReservoirStore != null ? pathReservoirStore.deviceAddress : 0L,
+                    pathHistoryAddress,
                     // And its acceptance counters, under the same diagnostics.restir-stats checkbox as
                     // the M24 store's -- one "ReSTIR stats" switch, two stores measured.
                     pathReservoirStatsAddress(ctx),
@@ -3785,6 +3797,7 @@ public final class RtComposite {
             }
             restirStats.recordReset(cmd, pushSlot, reservoirStore != null ? reservoirDepth : 0);
             pathStats.recordReset(cmd, pushSlot, pathReservoirStore != null);
+            if (pathReservoirStore != null) pathHistory.recordReset(cmd);
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // bakes visible to the trace's sampling
 
             // Push the BDA ring slot's address plus the small hot subset used directly by the shaders.
@@ -4024,6 +4037,7 @@ public final class RtComposite {
             throw new IllegalStateException("vkEndCommandBuffer(rt composite) failed");
         }
         encoder.execute(cmd); // deferred into the frame's submission — correct for per-frame work
+        pathHistory.publish();
         // Do not attach a merely reserved token: failed recording may never signal it. Once execute succeeds,
         // every owner in this frame's manifest is protected through the final overlay consumer.
         RtEntities.INSTANCE.markGraphicsUse(frameEntities, graphicsUse);
@@ -4296,6 +4310,7 @@ public final class RtComposite {
         if (pathReservoirStore != null) {
             pathReservoirStore.destroy();
             pathReservoirStore = null;
+            pathHistory.destroy();
         }
         if (lightPool != null) {
             lightPool.destroy();

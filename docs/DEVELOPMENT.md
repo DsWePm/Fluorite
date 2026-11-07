@@ -846,7 +846,7 @@ d0 的重投影已实现并实测（`projectPrevNdc` 移到 `world_core`，两�
 | S1 | 可见性网格 → 方向性天空场 + 出格雾段读钳制场（`volumetricSwitches` 专属字，D211 起） | **已关闭（2026-09-07）**：A/B 与 visBake 归档（D212）＋移动闪烁邻居播种修复（D213，用户复验通过）；D214 遗留的钳制暗区接棒给 S1.5 |
 | S1.5 | 第二级粗网格（远场结构，D214 用户裁决）：4 格/格 ±128 格、世界锚定、细网格钳制值自举、轮询刷新 | 落地并消除移动闪烁；**山体旁残余暗区未解决（4 格也无改善，坡旁偏差假设被否）**，已挂 [Issue #77](https://github.com/DsWePm/Fluorite/issues/77) 等真值探针取证后重启；默认关，开关状态逐帧入 frame.csv |
 | S2 | 统一路径 reservoir：初始采样（M26 池 + alias/RIS 出候选）+ temporal | 默认关；与 M24 并行期盯显存峰值 |
-| S3 | spatial 复用 + 决策 6 四项技术 | **按D231重建，未完成（2026-11-08）**：R0–R1完成；R2为128 B path-tree/完整端点和原始方向，D/S/L/H/T生产与source/self数值门已接，仍返回完整自身L。概率末位修复后全像素26,495,467次k2/610,148次deep全过，旧长跑RGB/deep异常未逐条归因。R3a-1保存真实primary输入，R3a-3已让零WRS树保留有效域及fresh confidence1；80套390测试、55shader/OFF检查、20,003组GPU域验证及正式回归通过。R3历史读取/跨帧失效/双向MIS/RGB own-split、R4空间、GPU成本与用户观感仍未完成；主OFF、时域/反向ON及Cap20初始基准已授权。详见M28日志R2b-26、R3a-1至R3a-3。 |
+| S3 | spatial 复用 + 决策 6 四项技术 | **按 D231 重建，整体未完成（2026-11-08）**：R0–R1 完成；R2 为 128 B 完整端点/path-tree 与源重评基础；R3 的 k=2 时域基准、跨帧失效、双向移位、pairwise MIS 与 RGB own-split 已落地并通过数值验收：81 套395测试、55 shader/OFF检查，pre-RR A/B/A均值在2σ内、该静态场景时间方差比0.861。R4空间、R5深链、R6校准/正式GPU成本及用户观感仍未完成；旧长跑尾例未逐条归因，历史风险保留。详见M28日志R3b。 |
 | S4 | 表面 DI 迁入统一链，M24 reservoir 退役 | 铁律 8 逐开关成立 |
 | S5 | 太阳/天体入池 | 定制物理逐项过契约测试 |
 | S6 | 雾照明接统一链路 + 方向场；**含 D210 的水闭式解拆段**（段跨开阔度遮挡边界时拆分，顺带消除浅顶暗/深顶亮的不一致） | 雾观感可调性是验收重点（M25 教训）；水拆段自备开关与验收 |
@@ -883,9 +883,9 @@ R2b-18已接入局部太阳S、环境底色L及薄壳T；局部事件使用ℓ=0
 
 | 项 | 建议接法与准确度边界 | 成本与另一选项 |
 | --- | --- | --- |
-| G3 联合命中数据（用户2026-11-05要求重构） | R2b-21已落地path_hit接口与独立trace_path/trace_path_ser：同一closest-hit利用已有顶点/UV返回完整材质和FP32几何元数据；正式生产与重放直接消费联合结果。独立query仅保留为抽样交叉诊断，歧义/失败不会改写生产资格。Pass A、指南与阴影继续原入口；变体显式绑定同型radiance阶段与原shadow阶段。 | 实际辐射命中仍增加32 B逻辑返回信息，48 B segment、96 B record和原shadow不增长。R22已修旧源重放；R25实际连接仍RED，因记录未保存recon triangle key/bary，位置/法线不足以确认同一端点。128 B记录及40 B逻辑几何返回仅独立原型，待用户裁决；GPU/栈成本未测，不代表R2/R3完成。 |
-| G10/G11 共享传输内核（用户2026-11-05要求重构） | R2b-20保留唯一的云/异质雾/profile内核，静态完整照明/T-only两种入口；R2b-23新增逐边medium/cloud独立种子，源端继续完整积分，fresh重放只重建T-prefix，再与独立源透射积及路径树实际选中RGB对照。纯透射不运行完整照明、scatter-event归一化预遍历或可见性射线。 | R23四场景4,420,184次fresh检查全过；仅recordPath的ON传输随机样本变化，未记录路径保留原seed。R24有初步记录A→B→A；R25补初始封闭水5810个readback/11,316次连接全过，实际current-water/profile1/T由385条probe确认，stats正式84 lanes/336 B。GPU耗时和新连接通用端点正确性仍待做，不把source非unity边计数冒充每层T-only覆盖。 |
-| G6 与R3初始开关（用户2026-11-05授权自行定基准） | 主开关继续默认关；时域与反向可见性子开关初始开，Cap先20，作为正确性/后续优化基准，R6再校准；仅在R3实际消费时接入UI与位。 | 反向检查增加射线/求值，Cap影响历史响应、相关性和方差。用户认可先建立基准，不代表已通过性能/观感验收或20是最优值；不再重复请示同一初始选择。 |
+| G3 联合命中数据（用户要求重构，128 B已批） | 同一次 typed TraceRay 返回实际材质和40 B逻辑几何元数据，完整triangle key/FP32 barycentrics调用原着色函数；当前primary直接捕获源命中，旧primary只追踪一次，前后向连接共享两个真实primary域。生产不加独立metadata query。 | record128 B、1080p追踪双缓冲506.25 MiB；WorldPush/48 B segment/原shadow不增长。R3静态数值闸门已通过，实际GPU/寄存器/栈成本待R6。 |
+| G10/G11 共享传输内核（用户要求重构，已落地） | 唯一水/雾/云内核分别提供完整积分及T-only入口。连接两向各按该候选pathSeed的逻辑边0/1重算primary/connection T；共享材质不借用其它候选的随机透射。接口/粒子/walk失败保留自身项。 | 不运行多余完整照明、归一化预遍历或可见性射线；R2传输与R3真实RT回归通过，GPU耗时待R6。静态缓存suffix Lo基准不证明任意动态照明/材质时序已精确重评。 |
+| G6 与R3初始开关（用户已授权） | 主开关默认关；时域/反向可见性默认开，历史CI先Cap20再纳入fresh1，写出最大21。UI、位字段及真实开关测试已接；reverse visibility OFF明确为近似对照。 | Cap响应与方差、GPU代价留R6校准；不是20已最优或观感已验收，不重复请示同一初始选择。 |
 
 **R2b-22方向重放回归（2026-11-07）**：原始射线位模式取证排除了主命中点舍入和不同三角形；374组同输入/同seed的源与重放样本，实际GGX微表面法线全部不同。现在两端从同一VNDF公式静态实例化固定FP32运算边界，复用端反射也共用受控算术；不增加射线或记录，线性alpha和随机数消耗不变，开档浮点舍入有微调、GPU代价待测。74套367测试、55shader校验和三OFF与R2a字节对照通过；正式模块2312个已完成回读帧中，cached 2,591,605条、fresh k2 1,163,684次和deep 27,258次全部通过原0.1%门，几何/数值等失败均0，方向codec及incident误差0，VUID0。此检查仅抽样1/16像素；简化compute未复现原上下文故障，原场景RT累计是实际回归闸门。随后独立存档/临时资源包的thin夹具写出38,784条局部T记录，714个回读帧中cached 2,670,053条、fresh k2 1,140,772次/deep 409,804次全过原门，全部失败计数0，source factors 1,787,470/1,787,470。游戏已关闭，配置/options逐字节恢复，临时包移除；没有扩大SSS深度，深层D-thin仍不可达。完整transport/shift恒等、记录A→B→A和R3消费仍待完成；观感留给用户。证据、旧失败与取证局限见M28日志R2b-22。
 
@@ -903,6 +903,8 @@ R2b-18已接入局部太阳S、环境底色L及薄壳T；局部事件使用ℓ=0
 
 - **天空方向阴影线的遮挡口径**：默认与太阳项一致（仅地形遮挡、不含云 τ），维持「雾与云不互相投影」规则（§3.5/§8.10）；若要含云 τ 须重新请示。
 - 雾段照明噪声形态未知（一个错误天空样本影响整段 in-scatter），S1 的网格连续性正是对此的对冲；S6 验收重点观察。
+
+**R3b 当前状态（2026-11-08）**：k=2 时域基准的编码与原定数值门完成。原始primary ray在128 B内；48 B per-slot root、GPU帧stamp与精确owner/token/transform对应验证历史；支持实心/opaque primary，裁切主命中、形变对象、透明/折射接口及不支持移位保留自身贡献。RGB只替换path-tree子域，空候选域仍计入MIS。复杂场景5000回读实际应用4,547,345个历史域、源k2 408,728/deep9,487全过原0.1%门；正式pre-RR A/B/A各512样本，RGB最大z1.395、固定像素亮度时间方差比0.86055。配置/窗口均恢复、游戏自行正常退出。该均值实验2SE约基线的8%，不宣称<1%图像偏差证明或任意动态后缀精确性；旧长跑RGB/deep尾例仍未逐条归因。R4/R5/R6与用户观感保持开放，完整公式、失效门、射线归属及证据见[M28 R3b记录](devlog/M28-restir-backbone.md#r3b时域-k2-基准闭环2026-11-08)。
 
 **S2 设计（定稿 2026-09-09，用户裁决 B：完整 hybrid + 随机重放）**：
 
@@ -950,14 +952,3 @@ R2b-18已接入局部太阳S、环境底色L及薄壳T；局部事件使用ℓ=0
 6. 只保证 `en_us`、`zh_cn`；其他语言不列入维护和验收承诺。
 
 代码注释中的 `M*`、`D*`、`F*`、`R*` 通过 [`docs/devlog/README.md`](devlog/README.md) 查找。外部 `.claude/plans` 已被本仓库文档取代，只允许考古，不继续追加。
-
-
-**R3 primary状态重构已批并落地（2026-11-07，整体仍在验收）**：用户选择在128 B内重构既有primary字段，替换hit position/oct normal/half UV缓存为原始queue的FP32 ray origin、原packed direction与原packed ray cone；objectId保留。独立布局原型确认offset16/28/64/68及stride128，各20,003组实际GPU bit-copy通过，不加逐像素缓存；另加20 B sidecar/79.1015625 MiB双缓冲的备选不采用。此项改变旧primary字段语义已获明确批准，不再请示同一选择。primary真实位置/法线/UV/材质从一次共享命中重建，尚需实际RT回归；每帧相机/medium/rebase上下文、跨帧对象/网格失效、history/k2双向shift/pairwise/RGB own-split仍待实现。
-
-R3a-1已将primary字段改为原始queue的origin/direction/cone，仍128 B、object64和完整recon端点不变。初版真实回归发现约4.7%的原packed word解码后末位不一致；临时探针1,300个见证全部仅方向差异，record与queue原word、origin/cone均相同。两端现共用复用端固定FP32 oct解码（原编码和公式不变），ON方向末位会变化，OFF保留原decoder；不加射线、VRAM或RNG，耗时未测。79套387测试、55shader及三OFF字节检查通过，独立GPU20,003组含1,300失败方向对double最大绝对误差2.23902e-7。长跑192,810回读、约16,082,414个新k2中primary scope已归零，但仍有1次fullRGB/connection误差66.0307%及1次deep位置失败，严格保持RED；该轮无正常退出标记，终止原因未知，原配置已还原。不能只凭primary恒等宣布R2/R3完成。
-
-新增仅CLI启用的数值测试自动退出：`-PbenchPathProbeReadbacks=512`转发真实客户端vmArg，默认首个failed readback或达到上限时先flush cumulative，再调用Minecraft正常保存退出；`-PbenchPathProbeStopOnFailure=false`只保留上限。普通启动默认0，完全不触发退出。实际512回读短测36,888新连接/deep900全过，自动LIMIT退出、保存全部维度与BUILD SUCCESSFUL确认，配置/options字节恢复。后续罕见故障取证必须使用有界自动退出，避免代理中断后空跑。证据r3a1-autostop-summary、decoder-long记录及witness/GPU/build文件留在既有evidence目录；真正history/双向pairwise/RGB own-split与跨帧失效仍未接。
-
-**R3a-2 概率重放一致性（2026-11-08）**：实际相同随机数`0x3e65f7e8`遇到source阈值`0x3e65f7e8`、replay阈值`0x3e65f7e9`，使源diffuse/重放specular；只改CDF比较仍失败。现共享固定FP32亮度归约/加法/除法与CDF分类，保留原概率公式、范围、delta规则和一次RNG消耗；边界样本有限精度分支会微调，耗时未测。20,003组GPU对double最大绝对概率误差1.32058e-7，952个原样本见证的概率/分支/第二命中坐标及key均逐bit一致。临时208-lane/forced-pixel探针已移除，正式stats84/record128；80套389测试、55shader/spirv-val、三OFF对R2a字节及joint40 B/shadow接口检查通过。正式20000次回读中connection 1662464/1662464，max RGB 0.000251305%、Jac 0.0128865%；T-prefix 3.92933e-05%、完整事件 0.00119476%，原0.1%门不变，VUID0。游戏正常保存退出，config/options恢复。该结果未逐个复现旧长跑RGB/deep异常，不能宣告R2/R3完成；history接线及观感/性能仍待完成。证据为既有evidence目录的r3a2-probability*。
-
-**R3a-3 空树采样域（2026-11-08）**：独立bit26表示primary域有效，event bit0继续独立。先完成WRS，再仅对真实opaque primary与数值有效树保存原ray/object/pathSeed/medium标签和fresh confidence1；空树不虚构候选，invalid树不冒充零域。记录仍128 B，不加射线/独立query，仍完整返回自身L。实际GPU20,003组（有效空域9502/有效事件9501/无效1000）全记录及状态逐bit通过；80套390测试、55shader、三OFF字节与SBT接口检查通过。正式5000回读，k2 411660次、deep 9537次全部过原门，正常保存退出、原config/options恢复。域标记不替代跨帧身份与上下文验证，历史/MIS仍未消费；详见M28日志及evidence/workflow/r3a3-domain*。开发循环已改为真实depfile逐变体缓存与有界自动归档/恢复，使用方法见[构建指南](developer_guide.md#shader-增量构建与路径诊断)。

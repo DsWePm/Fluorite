@@ -434,5 +434,12 @@
   "fluorite.options.rt.rainSlantDegrees": "降水傾角",
   "fluorite.options.rt.rainSlantDegrees.tooltip": "降水沿風向偏離垂直方向的角度。雨與雪共用；它同時也是遮蔽圖追蹤的方向，因此決定了什麼算「在屋簷下」。",
   "fluorite.options.rt.rainExposureQuality": "降水遮蔽圖",
-  "fluorite.options.rt.rainExposureQuality.tooltip": "判斷何處暴露在天氣中的貼圖解析度。共用：它遮蔽雪花與遮蔽雨滴是同一件事，也是屋簷下的表面保持乾燥的原因。"
+  "fluorite.options.rt.rainExposureQuality.tooltip": "判斷何處暴露在天氣中的貼圖解析度。共用：它遮蔽雪花與遮蔽雨滴是同一件事，也是屋簷下的表面保持乾燥的原因。",
+  "fluorite.options.rt.pathReuseTemporal": "路徑時域複用",
+  "fluorite.options.rt.pathReuseTemporal.tooltip": "對前一幀路徑域進行雙向移位與成對 MIS。需要啟用路徑 reservoir 主開關。",
+  "fluorite.options.rt.pathReuseReverseVisibility": "反向可見性檢查",
+  "fluorite.options.rt.pathReuseReverseVisibility.tooltip": "計算自身樣本權重時檢查反向連接。關閉僅供近似對照，遮擋區域可能變暗。",
+  "fluorite.options.rt.pathReuseHistoryCap": "路徑歷史上限",
+  "fluorite.options.rt.pathReuseHistoryCap.tooltip": "成對 MIS 前限制歷史域置信度。初始基準為 20。",
+  "fluorite.options.rt.pathReservoir.tooltip": "啟用雙向 k=2 連接及成對 MIS 的時域路徑複用。預設關閉，關檔不配置路徑歷史。每筆記錄 128 B，追蹤解析度 1920×1080 時雙緩衝使用 506.25 MiB（升採樣時更少）。時域及反向可見性初始開啟，歷史置信度在複用前封頂 20。空間複用及更深移位仍在開發，GPU 成本及觀感待驗收。"
 }

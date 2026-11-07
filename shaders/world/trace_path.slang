@@ -25,16 +25,17 @@ public void tracePathRadiance(uint cullMask, float3 ro, float tmin, float3 rd, f
     pathHitGeometry = hit.geometry;
 }
 
-// A canonical endpoint is still checked by one nearest-hit ray. An intervening triangle makes this
-// request fail; it is never skipped to force the requested surface visible. Shadow ABI is untouched.
+// By default a canonical endpoint is checked by one nearest-hit ray; intervening geometry rejects it.
+// The explicit reverse-visibility approximation uses typed any-hit to ignore other keys. No second ray.
 public void tracePathEndpointRadiance(uint cullMask, float3 ro, float3 rd, float tmax,
         bool showCelestial, float rayConeWidth, float rayConeSpread,
-        uint objectId, uint geometryIndex, uint primitiveIndex, float2 barycentrics) {
-    uint flags = showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u;
+        uint objectId, uint geometryIndex, uint primitiveIndex, float2 barycentrics, bool visibility = true) {
+    uint flags = (showCelestial ? PAYLOAD_SHOW_CELESTIAL : 0u)
+            | (visibility ? 0u : PATH_ENDPOINT_NO_VISIBILITY);
     PathHitPayload hit = makePathHitPayload(flags, packHalf2(float2(rayConeWidth, rayConeSpread)));
     if (objectId != 0xFFFFFFFFu && all(isfinite(barycentrics))) {
         hit.geometry = makePathEndpointRequest(objectId, geometryIndex, primitiveIndex, barycentrics);
-        TraceRay(topLevelAS, RAY_FLAG_NONE, cullMask,
+        TraceRay(topLevelAS, visibility ? RAY_FLAG_NONE : RAY_FLAG_FORCE_NON_OPAQUE, cullMask,
                 SBT_RADIANCE, SBT_STRIDE_BUCKET, MISS_RADIANCE,
                 makeRay(ro, 0.0, rd, tmax), hit);
     }

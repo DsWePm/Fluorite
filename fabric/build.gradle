@@ -64,6 +64,8 @@ loom {
 			}
 			if (project.hasProperty("benchRawHdrProbe")) {
 				vmArg "-Dfluorite.rt.rawHdrProbe=${project.benchRawHdrProbe}"
+                if (project.hasProperty("benchRawHdrAuto")) vmArg "-Dfluorite.rt.rawHdrProbeAuto=true"
+                if (project.hasProperty("benchRawHdrSamples")) vmArg "-Dfluorite.rt.rawHdrProbeSamples=${project.benchRawHdrSamples}"
 			}
 			if (project.hasProperty("benchPathProbeReadbacks")) {
 				vmArg "-Dfluorite.rt.pathProbeReadbacks=${project.benchPathProbeReadbacks}"

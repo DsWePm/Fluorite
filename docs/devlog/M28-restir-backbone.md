@@ -1150,3 +1150,47 @@ frame371中GPU RGB误差0.103722%；只换回原primary方向时误差归零，T
 `tools/path-probe.py`统一新目录快照、CLI回读上限/首失败正常退出、shader源码/模块/日志/当轮CSV归档、finally恢复窗口；master/identity未开或debug-view非0时拒绝启动，probes显式开，避免回读不推进。源码探针由外层finally恢复源码/产物/缓存，并重建正式Java类再跑测试。本轮旧专用parser的Windows路径/regex替换失败发生在全部恢复及测试之后；原始日志保留，用正确parser重解析，无需重跑游戏。使用方法见developer_guide。
 
 用该流程对当前概率修复做全像素尾部取证：20000回读，k2 26,495,467次、deep610,148次全部通过，所有scope/miss/geometry/invalid/numeric及VUID失败0；max连接RGB0.000755024%、Jac0.0444531%、full-event0.00473916%、T-prefix0.0000403328%。没有failure packet。原始actual source coefficient、独立T/scatter与完整ray/key的75word探针包含提前结束kind4，未增加随机数/查询；临时stats160，record仍128。自动正常保存退出后4正式源码、全部55 generated/runtime模块及缓存逐字节恢复，389 tests通过。范围是临时全像素诊断程序，不冒充最终R3a-3模块；旧长跑66.0307% RGB与deep尾例未逐条重现归因，保留追踪，不无限长跑阻塞独立开发。证据workflow/tail-probe-2821376/{runtime.log,cumulative-summary.json,decoded.json,restoration.json}及tail-fixture-backup、workflow-verification.json。观感仍留用户，GPU成本未按正式方法结算。
+
+### R3b：时域 k=2 基准闭环（2026-11-08）
+
+本轮按用户要求完成 R3 时域切片，主开关仍默认关闭；空间复用 R4、深前缀移位 R5、校准/正式 GPU 比值与用户观感 R6 仍另列，不能将 R3 等同整篇论文完成。
+
+#### 实现与公式
+
+- 当前自身路径仍完整生成 R2 的 D/S/L/H/T path tree，首个真实 primary 材质/几何在源追踪时捕获一次，共享给前后向求值。
+- 原始 primary queue ray/完整 recon key+barycentrics/FP32 入射出射方向和 RGB 保持 128 B；没有新增逐像素 sidecar，48 B segment、WorldPush、阴影 payload 不增长。
+- 原 pathReservoirAddr 改指向 48 B 每 push slot 根：四个 BDA、两类表容量、有效标志与 Cap。退役 slot 后才更新 host root；GPU parity stamp 与 CPU 连续帧事务共同验证历史可见性。
+- 同世界、尺寸、rebase、设置与起始介质输入才可接历史。表项用不可复用的 owner reference / entity token 与逐位 transform+mask 对应，拒绝地址重用、表重排、更新/形变的对象。
+- 保存 zero-WRS 有效域及 confidence1，独立于 event-valid bit；选择失败/候选为空仍参与域计数与 reverse own support。
+- 旧 primary 一次真实 TraceRay；连接各一次 typed TraceRay 联合给出可见性、实际材质、几何 key，canonical barycentrics 共享原着色核。没有生产 metadata ray query。
+- primary 仅支持 geometry index0 的实心/opaque 几何；旧射线若当前先命中裁切、介质界面或不同对象，历史域无效。旧射线仍命中同一不变对象的实心首面，才证明原 primary。alpha 对象的其它实心区域可以复用，不整块排除含 cutout 的 section。
+- 两个方向共享 primary 材质，但各自用候选 pathSeed 重算 primary/connection T，保持原水/雾/云共享积分核与边随机数；中途透明/折射界面使移位失败，自身贡献保留。
+- 正向为历史→当前，反向为自身→旧域；J=D_dest/D_source。默认反向可见性开启；关闭仅为近似对照，同一 typed ray 通过 any-hit 忽略其它 key，仍求真实端点材质，不新增射线。
+- RGB 为 ownL−sourceSum + mc·Wown·FownSelected + mh·Whist·Jforward·Fshifted；WRS 仅选下帧代表。历史 confidence 先 Cap20，再加 fresh1，因此写出最大21。无有效历史严格返回完整自身 L。
+
+#### 数值与运行验收
+
+81 套 / 395 项测试；55 SPIR-V Vulkan1.2 校验；三关档模块对 R2a 规整化逐字节一致；actual reachable joint40 B metadata/shadow 原接口与 SBT offset0/4 一致。实际 SPIR-V 根 offset 为0/8/16/24/32/36/40/44。
+
+GPU 数学核20,172组（20,003随机+169种精确彩色WRS枚举），含非单位Jac、zero/null域与失败shift，对double最大归一化误差2.63e−7；精确积分RGB约[3,4.6,6.1]。primary资格/128 B全记录GPU20,003组逐bit一致，含有效空域2,159和有效事件域2,160。
+
+首轮自然场景5,000回读：fresh k2 409,519 / deep9,437全过原0.1%门；连接RGB最大0.000278377%、Jac0.0128865%；无VUID，正常保存退出及config/options恢复。但是域接受为0，因此这一轮不作为时域生效证据。
+
+#### 失败版本、范围与剩余项
+
+早期 CPU opacity gate 错将静态地形没有保留的 bucketTris 当作拒绝依据，造成全部静态地形不接历史。已移除该门，改用已有真实命中的 geometryIndex 验证 primary 对应；保留逐级运行门计数。修复后静态房间500回读：诊断接受797,400个历史域、forward成功322,943/322,949、reverse成功1,810/1,816、历史选中322,294、应用797,400、numeric0、最大confidence21。
+
+正式640×360、DLSS-RR关闭的静态室内A1/B/A2各512个pre-RR样本，interval4、warmup96，固定3,600个网格像素，32样本/块共16块估算标准误差。RGB差分别−0.000708604/−0.000477443/−0.000271140；对应2SE为0.001016284/0.000688017/0.000397157，z=1.395/1.388/1.365；A1/A2漂移z≤0.366。固定像素亮度时间方差比0.860551861（该场景观察下降13.9448%）。达到原R3约定的2σ均值与降方差基准；误差界仍约基线RGB的8%，不把它宣称为<1%图像偏差证明或任意场景收益。
+
+B段诊断2139回读：接受/应用30,787,200个历史域，其中8,256,765个历史空候选域；forward成功22,530,338/22,530,435，reverse成功57,482/57,579；两向scope各97，hit/footprint/numeric0；历史选中22,488,771，confidence最大21。整轮含预热的两段ON共2375回读，31,360,565条lobe、fresh k2 63,956/deep88全过原0.1%门，max连接RGB0.000239677%、Jac0.000101328%，codec误差0、VUID0。全部1536幅采样无invalid pixel，同一tick/pose，正常保存退出，config/options及临时资源包恢复。
+
+子开关各500回读：时域OFF时ready/domain/application全0；reverse visibility OFF的typed force-nonopaque路径真实执行，forward成功306,436/306,444、reverse成功1,749/1,757、历史选中305,811，numeric0，confidence21。此开关明确为近似对照，没有用它的图像声称无偏。两次均正常保存退出、config/options恢复。
+
+最终复杂场景5000回读：history接受/应用4,547,345，empty1,657,034；forward成功2,847,178/2,890,311（scope28,881/hit12,820/footprint1,432），reverse成功317,195/355,912（scope28,113/hit9,645/footprint959）；history选中2,773,423，numeric0、confidence21。源k2 408,728/deep9,487及910,998条lobe全过原0.1%门，max连接RGB0.000278896%/Jac0.0128865%，完整事件0.0010843%，T-prefix0.0000365615%，codec0、VUID0。此轮含真实遮挡/足迹拒绝，区别于封闭房间全可见。正常LIMIT保存退出、config/options恢复，55实际模块匹配generated，运行时源码未变。
+
+Fabric最终81套395测试及NeoForge编译均已通过，日志为r3-final-checks.log；shader最终ON哈希21af0783…/a482422d…保持R3正式数值会话的模块不变。
+
+缓存 incident Lo 的时域基准不证明任意动态后缀光照已做完整重追踪；alpha primary、变形对象及不支持的移位退回自身路径。旧长跑未逐条归因的RGB/deep异常仍保留历史记录，后续有限回归不声称数学上证明它们永不再现。正式1080p GPU成本、动态场景覆盖和用户观感不能从本次低分辨率数值测试推断。
+
+
+证据根目录：`F:/MC/Shader/evidence/restir-r2-r3-2026-11-05`。主文件：`r3-temporal-v2-build-summary.json`、`r3-temporal-v2-interface-summary.json`、`r3-temporal-gpu-summary.json`、`workflow/r3-temporal-primary-gpu-summary.json`；正式会话为`r3-temporal-room-v2`、`r3-temporal-aba-1`（含capture/analysis.json与temporal-summary.json）、`r3-temporal-off`、`r3-reverse-off`、`r3-temporal-complex-final`。每次保留完整原始日志/config/options/源码差异与模块匹配证据，失败的v1及CPU gate旧版本单独保留。

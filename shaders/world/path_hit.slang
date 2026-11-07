@@ -1,6 +1,8 @@
 // Joint radiance-hit interface; imported only by the path-reuse stages.
 // The original material/shadow Payload stays in world_common with its published ABI.
 import world_common;
+// Input-only radiance request bit. Closest hit replaces the material flags; shadow uses its old ABI.
+public static const uint PATH_ENDPOINT_NO_VISIBILITY = 2u;
 
 // Authoritative geometry of the SAME intersection used to shade a radiance hit. No second traversal.
 // Keep geometric normals and UV at float32; the ordinary shading-normal channel remains unchanged.

@@ -35,11 +35,11 @@ final class RtPathPrimaryRayTest {
         String caller=source("shaders/world/world.rgen.slang");
         assertTrue(caller.contains("tracePathReuse(segment, unpackActiveMediumFlags(packed.pathFlags), packed.rd, packed.rayCone,"));
         String tracer=source("shaders/world/path_reuse_trace.slang");
-        String tail=tracer.substring(tracer.indexOf("// Record-only: no temporal/spatial reads"));
+        String tail=tracer.substring(tracer.indexOf("// Finalize the canonical tree before diagnostics and temporal reuse."));
         int finish=tail.indexOf("reuseFinishTree(selectedRecord, dTree)");
         int stamp=tail.indexOf("reuseStorePrimaryDomain(produced, seg.ro, primaryPackedDirection, primaryRayCone");
         assertTrue(finish>=0 && stamp>finish);
-        assertTrue(tail.contains("if (footprintPrimaryValid && dTree.valid)"));
+        assertTrue(tail.contains("if (footprintPrimaryValid && dTree.valid\n                && (!(dTree.weightSum > 0.0) || !pathReservoirEmpty(produced)))"));
         String primary=source("shaders/world/path_reuse_primary.slang");
         for (String term:new String[]{"record.primaryOrigin = origin;",
                 "record.primaryPackedDirection = packedDirection;","record.primaryRayCone = packedCone;"})

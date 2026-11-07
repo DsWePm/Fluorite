@@ -26,6 +26,7 @@ void traceRadiance(uint cullMask, float3 ro, float tmin, float3 rd, float tmax,
 #include "path_reuse_sampling.slang"
 #include "path_reuse_tree.slang"
 #include "path_reuse_primary.slang"
+#include "path_reuse_history.slang"
 #include "path_reuse_fresnel.slang"
 #include "path_reuse_dot.slang"
 #include "path_reuse_eval.slang"
@@ -529,6 +530,7 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
 }
 
 #include "path_reuse_connection.slang"
+#include "path_reuse_temporal.slang"
 
 // Fresh source replay rebuilds scattering and prefix transport from the record seed and new hits.
 // The R3 connection/terminal edge is separate. References are ground truth, never evaluation inputs.
@@ -743,6 +745,8 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     ReuseHitGeometry footprintPrevious = emptyReuseHitGeometry();
     ReuseContinuationSample footprintPreviousSample = emptyReuseContinuationSample();
     bool footprintPrimaryValid = false;
+    ReuseConnectionDomain currentDomain = {};
+    bool currentDomainValid = false;
     bool footprintPreviousValid = false;
     bool footprintPrefixUnsupported = false;
     bool footprintFound = false;
@@ -790,7 +794,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
 
         float footprintEdgeDistance = payload.hitT;
         float3 footprintEdgeDirection = rd;
-        float3 hitPos = ro + rd * payload.hitT;
+        float3 hitPos = reuseReplayPosition(ro, rd, payload.hitT);
         // R2b geometry diagnostic: capture the joint hit before lighting can touch the payload.
         // Record production needs every source hit up to the first D pair, even with diagnostics off.
         bool queryIdentityGeometry = identityCheck && indirectDepth < PATH_REUSE_IDENTITY_DEPTH;
@@ -1125,6 +1129,22 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         // The material decode is the shared vertex decision the replay re-drives (reuseOpaqueVertex,
         // above); the names below are the ones the shading that follows has always used.
         ReuseOpaqueVertex vtx = reuseOpaqueVertex(hitPos, n, rd, rayConeWidth, hitDepth, sssMode, sssMaxEvents);
+        if (recordPath && hitDepth == 0 && seg.bounce == 0 && footprintPrimaryValid) {
+            currentDomain.vertex = vtx;
+            currentDomain.geometry = footprintPrimary;
+            currentDomain.prefix.transportPrefix = float3(1.0, 1.0, 1.0);
+            currentDomain.prefix.scatterPrefix = seg.throughput;
+            currentDomain.prefix.rayOrigin = seg.ro;
+            currentDomain.prefix.incomingDirection = seg.rd;
+            currentDomain.prefix.rayConeWidth = rayConeWidth;
+            currentDomain.prefix.hitDistance = footprintEdgeDistance;
+            currentDomain.prefix.previousPdf = -1.0;
+            currentDomain.prefix.previousCelestial = seg.showCelestial;
+            currentDomain.prefix.opaquePrefix = true;
+            currentDomain.prefix.hitDepth = 0;
+            currentDomain.coneSpread = seg.rayConeSpread;
+            currentDomainValid = true;
+        }
         float3 albedo = vtx.albedo;
         float sss = vtx.sss;
         float3 v = vtx.v;
@@ -1589,17 +1609,16 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
             rrSurvival *= q;
         }
     }
-    // Record-only: no temporal/spatial reads and no change to L. Empty events retain valid domains.
+    // Finalize the canonical tree before diagnostics and temporal reuse. Empty events retain valid domains.
     if (recordPath) {
         PackedPathReservoir produced = reuseFinishTree(selectedRecord, dTree);
-        if (footprintPrimaryValid && dTree.valid) {
+        if (footprintPrimaryValid && dTree.valid
+                && (!(dTree.weightSum > 0.0) || !pathReservoirEmpty(produced))) {
             produced = reuseStorePrimaryDomain(produced, seg.ro, primaryPackedDirection, primaryRayCone,
                     footprintPrimary.objectId, pathSeedBase, entryMediumFlags);
+            if (!reuseStablePrimaryHit(footprintPrimary.objectId, footprintPrimary.geometryIndex))
+                produced.bits &= ~REUSE_PRIMARY_DOMAIN_VALID;
         }
-        DevicePtr<PackedPathReservoir> store =
-                DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);
-        store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,
-                                worldPush.frameIndex & 1u)] = produced;
         if (identityCheck && !pathReservoirEmpty(produced)) {
             reuseDiagnoseSourceScatter(seg, entryMediumFlags, produced,
                     selectedReference.scatterWeight, selectedReference.sourcePdf, selectedReference.supported,
@@ -1662,6 +1681,12 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
         if (identityCheck && dTree.weightSum > 0.0 && pathReservoirEmpty(produced)) {
             InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[19], 1u);
         }
+        L = reuseTemporal(seg, entryMediumFlags, pix, renderSize, currentDomain, currentDomainValid,
+                dTree, L, produced, reuseSeed);
+        DevicePtr<PackedPathReservoir> store =
+                DevicePtr<PackedPathReservoir>(reusePathStoreAddress());
+        store[pathReservoirSlot(pix.y * renderSize.x + pix.x, renderSize.x * renderSize.y,
+                                worldPush.frameIndex & 1u)] = produced;
     }
     // Two vertices at least: the first one is the segment's own ray and involves no decision, so a
     // one-vertex replay would pass whatever the streams did and only dilute the rate.

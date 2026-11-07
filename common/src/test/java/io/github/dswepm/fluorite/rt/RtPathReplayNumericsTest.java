@@ -64,7 +64,7 @@ final class RtPathReplayNumericsTest {
         assertEquals(2, Float.floatToFloat16(3.0f * Math.scalb(1.0f, -25)));
     }
 
-    @Test void theReplayEnforcesLocalArithmeticWithoutChangingTheSourceTracer() throws IOException {
+    @Test void sourceAndReplayShareControlledPositionArithmetic() throws IOException {
         String trace = source("shaders/world/path_reuse_trace.slang");
         int start = trace.indexOf("int reuseReplayPrefix(");
         int end = trace.indexOf("\n}\n", start);
@@ -73,8 +73,8 @@ final class RtPathReplayNumericsTest {
         assertTrue(replay.contains("reuseReplayPosition(ro, rd, payload.hitT)"));
         assertTrue(replay.contains("reuseCanonicalizeReplayPayload();"));
         String sourceLoop = trace.substring(trace.indexOf("public float3 tracePathReuse("));
-        assertTrue(sourceLoop.contains("float3 hitPos = ro + rd * payload.hitT;"));
-        assertFalse(sourceLoop.contains("reuseReplayPosition(") || sourceLoop.contains("reuseCanonicalizeReplayPayload();"));
+        assertTrue(sourceLoop.contains("float3 hitPos = reuseReplayPosition(ro, rd, payload.hitT);"));
+        assertFalse(sourceLoop.contains("reuseCanonicalizeReplayPayload();"));
         String numerics = source("shaders/world/path_reuse_numerics.slang");
         assertTrue(numerics.contains("OpDecorate %product NoContraction;"));
         assertTrue(numerics.contains("OpDecorate %point NoContraction;"));

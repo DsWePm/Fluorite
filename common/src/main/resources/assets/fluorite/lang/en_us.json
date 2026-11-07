@@ -209,7 +209,7 @@
   "fluorite.options.rt.restirSpatialNeighbours": "ReSTIR Spatial Neighbours",
   "fluorite.options.rt.restirSpatialNeighbours.tooltip": "How many nearby pixels each vertex borrows a light reservoir from. 0 is off. Costs no video memory at all - a neighbour is read from storage the reuse-depth dial already paid for - but each one costs arithmetic. Neighbours come from the previous frame, so a borrowed sample is a frame old. Does nothing unless ReSTIR Reuse Depth is above 0. The path reservoir has its own dial, Path Reuse Spatial Neighbours.",
   "fluorite.options.rt.pathReservoir": "Path Reservoir (M28 S2)",
-  "fluorite.options.rt.pathReservoir.tooltip": "Per-pixel store of traced indirect-light paths for ReSTIR PT reuse (M28 S2/S3 substrate). Off (default) allocates nothing. On allocates about 200 MB at 1080p and records/validates reusable path suffixes every frame; merged values reach the picture once a pixel's history carries at least two independent candidates - the Path Reuse Spatial Neighbours dial drives how many are gathered (under DLSS-RR a single-sample history measurably loses to the denoiser, so it is not applied). Acceptance: diagnostics > ReSTIR Stats logs the temporal/spatial reuse rates. Note: the 2026-09-26 audit found the current spatial-reuse estimator biased (D230); it is being rebuilt to the paper, so the on-state picture is not the final result.",
+  "fluorite.options.rt.pathReservoir.tooltip": "Temporal path reuse with bidirectional k=2 connections and pairwise MIS. Off (default) allocates no path history. Each record is 128 B; two buffers use 506.25 MiB at a tracing resolution of 1920×1080 (less when upscaled). Temporal and reverse visibility are enabled initially, with history confidence capped at 20 before reuse. Spatial reuse and deeper shifts are still under development. GPU cost and appearance await acceptance.",
   "fluorite.options.rt.pathReuseSpatialNeighbours": "Path Reuse Spatial Neighbours",
   "fluorite.options.rt.pathReuseSpatialNeighbours.tooltip": "How many nearby pixels the path reservoir borrows a path sample from each frame (M28). 0 is off. Only does anything with Path Reservoir (M28 S2) on; separate from ReSTIR Spatial Neighbours, which now drives the light reservoirs only. Neighbours come from the previous frame. Note: the current spatial-reuse estimator is biased and being rebuilt to the paper (D230), so the on-state picture is not the final result.",
   "fluorite.options.rt.dynamicRisCandidates": "Dynamic Light Candidates",
@@ -702,5 +702,11 @@
   "fluorite.options.rt.cloudEvolutionSpeed": "Cloud Evolution",
   "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "How fast a cloud's shape changes, separately from how fast it drifts. Clouds are reshaped by convection rather than by wind -- a cumulus on a still afternoon billows and dissolves without going anywhere -- so this does not follow the wind speed, and setting the wind to zero no longer freezes the sky. Higher makes lobes grow and dissolve faster; too high and the cloud boils instead of growing.",
   "fluorite.options.rt.section.weatherPrecipitationParticles": "Precipitation Particles (Rain and Snow)",
-  "fluorite.options.rt.section.weatherSnow": "Snow Only"
+  "fluorite.options.rt.section.weatherSnow": "Snow Only",
+  "fluorite.options.rt.pathReuseTemporal": "Path temporal reuse",
+  "fluorite.options.rt.pathReuseTemporal.tooltip": "Reuse the previous path domain with bidirectional pairwise MIS. The path reservoir master switch must be enabled.",
+  "fluorite.options.rt.pathReuseReverseVisibility": "Reverse visibility check",
+  "fluorite.options.rt.pathReuseReverseVisibility.tooltip": "Check the reverse connection when weighting the own sample. Disable only for an approximate comparison; occluded paths may darken.",
+  "fluorite.options.rt.pathReuseHistoryCap": "Path history cap",
+  "fluorite.options.rt.pathReuseHistoryCap.tooltip": "Limit previous-domain confidence before pairwise MIS. Initial baseline: 20."
 }

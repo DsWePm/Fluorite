@@ -209,7 +209,7 @@
   "fluorite.options.rt.restirSpatialNeighbours": "ReSTIR 空间邻居数",
   "fluorite.options.rt.restirSpatialNeighbours.tooltip": "每个顶点向多少个邻近像素借用光源 reservoir。0 表示关闭。不额外占显存——邻居读的是复用深度那个旋钮已经付过钱的存储——但每个邻居有算力开销。邻居取自上一帧，所以借来的样本也是一帧前的。复用深度为 0 时此项无效。路径 reservoir 的邻居数由「路径复用空间邻居数」单独控制。",
   "fluorite.options.rt.pathReservoir": "路径 Reservoir（M28 S2）",
-  "fluorite.options.rt.pathReservoir.tooltip": "逐像素存储追踪到的间接光路径，供 ReSTIR PT 复用（M28 S2/S3 基础设施）。关（默认）不分配资源。开 = 1080p 下约分配 200 MB 显存，每帧记录并校验可复用的路径后缀；当某像素的历史累积到至少两个独立候选后，合并值才会进入画面——「路径复用空间邻居数」旋钮决定每帧收集多少个候选（实测单样本历史在 DLSS-RR 下不敌降噪器本身，故不应用）。验收：诊断 > ReSTIR 统计 日志可看时域/空间复用率。注意：2026-09-26 审计判定当前的空间复用估计量有偏（D230），正在按论文重建，开档画面不代表最终效果。",
+  "fluorite.options.rt.pathReservoir.tooltip": "启用双向 k=2 连接及成对 MIS 的时域路径复用。默认关闭，关档不分配路径历史。每条记录 128 B，追踪分辨率 1920×1080 时双缓冲使用 506.25 MiB（升采样时更少）。时域及反向可见性初始开启，历史置信度在复用前封顶 20。空间复用和更深移位仍在开发，GPU 成本及观感待验收。",
   "fluorite.options.rt.pathReuseSpatialNeighbours": "路径复用空间邻居数",
   "fluorite.options.rt.pathReuseSpatialNeighbours.tooltip": "路径 reservoir 每帧向多少个邻近像素借用路径样本（M28）。0 表示关闭。只在「路径 Reservoir（M28 S2）」开启时生效；与「ReSTIR 空间邻居数」分开，后者现在只管光源 reservoir。邻居取自上一帧。注意：当前的空间复用估计量有偏、正在按论文重建（D230），开档画面不代表最终效果。",
   "fluorite.options.rt.dynamicRisCandidates": "动态光候选数",
@@ -702,5 +702,11 @@
   "fluorite.options.rt.cloudEvolutionSpeed": "云的演变",
   "fluorite.options.rt.cloudEvolutionSpeed.tooltip": "云的**形状**变化有多快，与它飘得多快是两回事。云是被**对流**重塑的而不是被风——无风的午后积云照样鼓起又消散、并不去往任何地方——所以这一项**不跟随风速**，把风速调到 0 也不会让天空冻住。数值越大瓣状结构生长与消散越快；过高则云会「沸腾」而不是生长。",
   "fluorite.options.rt.section.weatherPrecipitationParticles": "降水粒子（雨与雪共用）",
-  "fluorite.options.rt.section.weatherSnow": "仅雪"
+  "fluorite.options.rt.section.weatherSnow": "仅雪",
+  "fluorite.options.rt.pathReuseTemporal": "路径时域复用",
+  "fluorite.options.rt.pathReuseTemporal.tooltip": "对前一帧路径域进行双向移位和成对 MIS。需要启用路径 reservoir 主开关。",
+  "fluorite.options.rt.pathReuseReverseVisibility": "反向可见性检查",
+  "fluorite.options.rt.pathReuseReverseVisibility.tooltip": "计算自身样本的权重时检查反向连接。关闭仅供近似对照，遮挡区域可能变暗。",
+  "fluorite.options.rt.pathReuseHistoryCap": "路径历史上限",
+  "fluorite.options.rt.pathReuseHistoryCap.tooltip": "成对 MIS 前限制历史域置信度。初始基准为 20。"
 }

@@ -913,11 +913,17 @@ public final class FluoriteConfig {
              *
              * <p>Off (default) allocates nothing and leaves every code path untouched: the reservoir
              * buffer is created under this switch, so the off state costs neither VRAM nor a branch in
-             * the hot loop. On allocates about 200 MB at 1080p (48 B x pixels x 2 parities) and turns
+             * the hot loop. On allocates 506.25 MiB at 1080p tracing resolution (128 B x pixels x 2 parities) and turns
              * on the experimental suffix reservoir reuse at the primary hit.
              */
             public static final BooleanSetting PATH_RESERVOIR =
                     bool("fluorite.rt.composite.pathReservoir", "composite.path-reservoir", false);
+            public static final BooleanSetting PATH_REUSE_TEMPORAL =
+                    bool("fluorite.rt.pathReuseTemporal", "composite.path-reuse-temporal", true);
+            public static final BooleanSetting PATH_REUSE_REVERSE_VISIBILITY =
+                    bool("fluorite.rt.pathReuseReverseVisibility", "composite.path-reuse-reverse-visibility", true);
+            public static final IntSetting PATH_REUSE_HISTORY_CAP =
+                    clampedInt("fluorite.rt.pathReuseHistoryCap", "composite.path-reuse-history-cap", 20, 1, 100);
             /**
              * M28 D231 (G14): how many screen-space neighbours the PATH reuse borrows from, its own dial.
              *

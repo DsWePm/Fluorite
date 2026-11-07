@@ -13,12 +13,15 @@ struct ReuseConnectionEvaluation {
     float jacobian;
     float denominator;
     uint status;
+    float3 direction;
+    float eventPdf;
 };
 
 struct ReuseConnectionDomain {
     ReuseOpaqueVertex vertex;
     ReuseHitGeometry geometry;
     ReuseReplayState prefix;
+    float coneSpread;
 };
 
 bool reuseReadK2Domain(__ref PathSegment seg, uint entryMediumFlags, uint pathSeed,
@@ -26,20 +29,22 @@ bool reuseReadK2Domain(__ref PathSegment seg, uint entryMediumFlags, uint pathSe
     float3 position;
     uint geometryStatus;
     int reached = reuseReplayPrefix(seg, entryMediumFlags, pathSeed, 1, position,
-            true, true, domain.geometry, geometryStatus, domain.prefix);
+            false, true, domain.geometry, geometryStatus, domain.prefix);
     if (reached != 1 || !domain.prefix.opaquePrefix || geometryStatus != REUSE_GEOMETRY_OK) return false;
     uint sssMode = (worldPush.flags >> 7u) & 3u;
     int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
     reuseCanonicalizeReplayPayload();
     domain.vertex = reuseOpaqueVertex(position, payload.normal, domain.prefix.incomingDirection,
             domain.prefix.rayConeWidth, 0, sssMode, sssMaxEvents);
+    domain.coneSpread = seg.rayConeSpread;
     return true;
 }
 
 // Domains are decoded once by the caller, so forward/reverse evaluation can share real primary hits.
 ReuseConnectionEvaluation reuseEvaluateK2AtDomains(__ref PathSegment seg, uint entryMediumFlags,
-        ReuseConnectionDomain source, ReuseConnectionDomain destination, PackedPathReservoir record) {
-    ReuseConnectionEvaluation result;
+        ReuseConnectionDomain source, ReuseConnectionDomain destination, PackedPathReservoir record,
+        bool visibility = true) {
+    ReuseConnectionEvaluation result = {};
     result.value = float3(0.0, 0.0, 0.0);
     result.jacobian = 0.0;
     result.denominator = 0.0;
@@ -66,7 +71,7 @@ ReuseConnectionEvaluation reuseEvaluateK2AtDomains(__ref PathSegment seg, uint e
     ReuseContinuationSample connection = reuseEvaluateContinuation(receiver.bc, receiver.pf, receiver.ps,
             receiver.walkSssShare, previousLobe, direction);
     if (!reuseAnalyticContinuation(connection)) return result;
-    float coneSpread = max(seg.rayConeSpread, RAY_CONE_MIN_SPREAD);
+    float coneSpread = max(destination.coneSpread, RAY_CONE_MIN_SPREAD);
     if (previousLobe == REUSE_LOBE_DIFFUSE) {
         coneSpread = max(coneSpread, RAY_CONE_DIFFUSE_SPREAD);
     } else if (previousLobe == REUSE_LOBE_FILM) {
@@ -80,7 +85,7 @@ ReuseConnectionEvaluation reuseEvaluateK2AtDomains(__ref PathSegment seg, uint e
     result.status = REUSE_CONNECTION_HIT;
     tracePathEndpointRadiance(secondaryCullMask(), receiver.p, direction, min(RAY_FAR, distance + tolerance),
             showCelestial, prefix.rayConeWidth, coneSpread, record.reconObjectId,
-            record.reconGeometryIndex, record.reconPrimitiveIndex, record.reconBarycentrics);
+            record.reconGeometryIndex, record.reconPrimitiveIndex, record.reconBarycentrics, visibility);
     // An intervening interface is a failed shift, not an extra transparent layer to march through.
     if (payload.hitT < 0.0 || payloadMaterial() != MATERIAL_OPAQUE
             || pathHitGeometry.objectId != record.reconObjectId
@@ -104,12 +109,17 @@ ReuseConnectionEvaluation reuseEvaluateK2AtDomains(__ref PathSegment seg, uint e
     ReuseEventEvaluation event = reuseEvaluateEvent(fresh, record, receiver.p, direction,
             connection.pdf, showCelestial);
     result.status = REUSE_CONNECTION_NUMERIC;
-    if (!event.valid) return result;
+    if (!event.valid) {
+        // A changed view can remove an analytic event's support. This is a failed mapping,
+        // distinct from NaN/Inf arithmetic on a supported mapping.
+        if (isfinite(event.pdf) && all(isfinite(event.weight))) result.status = REUSE_CONNECTION_SCOPE;
+        return result;
+    }
     uint technique = (record.bits >> REUSE_RECORD_TECHNIQUE_SHIFT) & 7u;
     uint lobe = (record.bits >> REUSE_RECORD_LOBE_SHIFT) & 7u;
     bool viewIndependent = (technique != REUSE_TECHNIQUE_D && technique != REUSE_TECHNIQUE_H)
             || lobe == REUSE_LOBE_DIFFUSE;
-    float3 toCamera = seg.ro - primary.position;
+    float3 toCamera = prefix.rayOrigin - primary.position;
     float primaryDistanceSq = dot(toCamera, toCamera);
     float primaryCosine = primaryDistanceSq > 0.0
             ? dot(primary.normal, toCamera * rsqrt(primaryDistanceSq)) : 0.0;
@@ -120,12 +130,19 @@ ReuseConnectionEvaluation reuseEvaluateK2AtDomains(__ref PathSegment seg, uint e
     result.status = REUSE_CONNECTION_NUMERIC;
     if (!(record.jacDenom > 0.0) || !isfinite(record.jacDenom)) return result;
     result.jacobian = result.denominator / record.jacDenom;
-    float3 transport = prefix.transportPrefix;
+    // The edge seed belongs to the candidate, including reverse evaluation of the own sample.
+    // A shared material domain must never borrow another candidate's stochastic primary T.
+    float3 transport = float3(1.0, 1.0, 1.0);
+    reuseAccumulateTransport(transport, seg.medium.current.extinction,
+            activeCurrentMediumFlags(entryMediumFlags), prefix.rayOrigin, prefix.incomingDirection,
+            prefix.hitDistance, record.pathSeed, 0u, false);
     reuseAccumulateTransport(transport, seg.medium.current.extinction,
             activeCurrentMediumFlags(entryMediumFlags), receiver.p, direction, hitDistance,
             record.pathSeed, 1u, true);
     float3 scatter = (prefix.scatterPrefix * connection.weight) * event.weight;
     result.value = (transport * scatter) * reuseLoadIncident(record);
+    result.direction = direction;
+    result.eventPdf = event.pdf;
     if (!reuseNonnegativeFinite(result.value) || !(result.jacobian > 0.0)
             || !isfinite(result.jacobian)) return result;
     result.status = REUSE_CONNECTION_OK;

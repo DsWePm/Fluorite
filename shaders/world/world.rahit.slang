@@ -184,6 +184,16 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 #ifdef FLUORITE_PATH_HIT_RESULT
 [shader("anyhit")]
 void main(inout PathHitPayload hit, in BuiltInTriangleIntersectionAttributes attr) {
+    if ((hit.surface.flags & PATH_ENDPOINT_NO_VISIBILITY) != 0u
+            && !pathEndpointRequestMatches(hit.geometry, InstanceID(), GeometryIndex(), PrimitiveIndex())) {
+        IgnoreHit();
+        return;
+    }
+    // Extra typed groups support force-nonopaque endpoint requests. Ordinary radiance keeps the
+    // old closest-hit-only behavior for solid/water/translucent and opaque entity geometries.
+    bool entity = (InstanceID() & (ENTITY_BIT | PARTICLE_BIT)) != 0u;
+    if ((!entity && GeometryIndex() != BUCKET_CUTOUT)
+            || (entity && GeometryIndex() != 1u)) return;
     BuiltInTriangleIntersectionAttributes shadingAttributes = attr;
     shadingAttributes.barycentrics = pathHitShadingBarycentrics(hit.geometry, attr.barycentrics,
             InstanceID(), GeometryIndex(), PrimitiveIndex());

@@ -1,3 +1,9 @@
+// Solid terrain and opaque entity geometry both use index zero. An any-hit primary can change
+// layers within the same object between frames, so its raw ray alone cannot prove correspondence.
+bool reuseStablePrimaryHit(uint objectId, uint geometryIndex) {
+    return objectId != PATH_OBJECT_UNAVAILABLE && (objectId & PARTICLE_BIT) == 0u && geometryIndex == 0u;
+}
+
 // R3 primary domain: retain the exact input queue ray, then decode real geometry/material once.
 // These fields replace the old hit-position/normal/UV caches; the record remains 128 B.
 static const uint REUSE_PRIMARY_DOMAIN_VALID = 1u << 26u;

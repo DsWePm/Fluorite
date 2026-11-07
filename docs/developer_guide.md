@@ -57,6 +57,8 @@ python -B -X utf8 tools/path-probe.py --output F:/MC/Shader/evidence/new-path-ru
 
 `result.json` 记录会话退出、模块匹配及失败日志，不代替累计数值门、论文估计量或视觉/性能验收。临时 shader 取证应由外层 `try/finally` 同时管理源码、产物与缓存回滚；不要在游戏或编译期间改源码。脚本的窗口恢复/启动前提测试为 `python -B -m unittest discover -s tools -p test_path_probe.py`，编译缓存测试为 `./gradlew :buildSrc:test`。
 
+固定场景的 pre-RR HDR A/B/A 另有 opt-in 自动模式：在已有静态测试世界与配置下，使用 `-PbenchRawHdrProbe=<新采样目录> -PbenchRawHdrAuto -PbenchRawHdrSamples=512`。自动模式仅在单人测试中冻结时间、施加隐身，等候240次绘制后启动三段实验，完成后正常保存退出；不会自动配置资源包、关闭RR/体积或恢复这些测试配置，须由外层finally管理。普通启动不启用冻结或退出。固定机位/tick、输出尺寸、每段样本数、分块标准误差与实际历史应用计数必须共同核对，不能把启动成功或source/self通过当作历史复用生效。
+
 ## Windows
 
 1. Install the Vulkan SDK from <https://vulkan.lunarg.com/sdk/home>.

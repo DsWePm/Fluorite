@@ -29,7 +29,9 @@ public final class RtPathReservoirStats {
     // 68-71 fresh geometry failure reasons: missing, ambiguous, invalid, position mismatch.
     // 72-73 independent prefix-transmittance/full-event error maxima; 74-75 nontrivial source medium/cloud edges.
     // 76-81 k2 connection attempts/pass and scope/hit/footprint/numeric failures; 82-83 RGB/Jacobian maxima.
-    public static final int LANES = 84;
+    // 84-103 temporal eligibility, domains, classified shifts, selection, application and confidence.
+    // 104-109 history gates: projection, saved domain, surface, confidence, true hit, stable primary.
+    public static final int LANES = 110;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     // A rejected shift leaves its contribution in the canonical estimator. It is an expected outcome,
@@ -60,7 +62,7 @@ public final class RtPathReservoirStats {
                 long value = Integer.toUnsignedLong(MemoryUtil.memGetInt(mapped + lane * 4L));
                 // Nonnegative float error maxima have the same ordering as their unsigned bits.
                 lanes[lane] = switch (lane) {
-                    case 24, 25, 31, 32, 34, 36, 38, 42, 43, 56, 57, 58, 72, 73, 82, 83 -> Math.max(lanes[lane], value);
+                    case 24, 25, 31, 32, 34, 36, 38, 42, 43, 56, 57, 58, 72, 73, 82, 83, 103 -> Math.max(lanes[lane], value);
                     default -> lanes[lane] + value;
                 };
             }
@@ -231,7 +233,9 @@ public final class RtPathReservoirStats {
         long connectionFootprint = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 320L));
         long connectionNumeric = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 324L));
         allFrames.add(src.mapped);
-        boolean failed = lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
+        boolean temporalFailed = temporalReadbackFailed(src.mapped);
+        if (temporalFailed) FluoriteMod.LOGGER.warn("RT path temporal failed readback {}", allFrames.frames);
+        boolean failed = temporalFailed || lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
                 || connectionReadbackFailed(connectionAttempt, connectionPass, connectionScope, connectionHit,
                         connectionFootprint, connectionNumeric)
                 || sourceFactorPass != sourceFactorAttempt
@@ -296,8 +300,26 @@ public final class RtPathReservoirStats {
         logCumulative();
     }
 
+    static boolean temporalReadbackFailed(long mapped) {
+        long[] c = new long[LANES];
+        for (int i = 84; i < LANES; i++) c[i] = Integer.toUnsignedLong(MemoryUtil.memGetInt(mapped + 4L * i));
+        return c[93] != 0 || c[99] != 0 || c[102] != 0
+                || c[88] != c[89]+c[90]+c[91]+c[92]+c[93]
+                || c[94] != c[95]+c[96]+c[97]+c[98]+c[99];
+    }
+
     private void logCumulative() {
         if (allFrames.frames == 0L) return;
+        FluoriteMod.LOGGER.info("RT path temporal cumulative: frames {}, eligible {}, ready {}, domains {}, empty {}; "
+                        + "forward {} (ok {}, scope {}, hit {}, footprint {}, numeric {}); "
+                        + "reverse {} (ok {}, scope {}, hit {}, footprint {}, numeric {}); "
+                        + "selected {}, applied {}, numeric {}, max confidence {}; gates projection {}, domain {}, surface {}, confidence {}, hit {}, solid {}",
+                allFrames.frames, allFrames.count(84), allFrames.count(85), allFrames.count(86), allFrames.count(87),
+                allFrames.count(88), allFrames.count(89), allFrames.count(90), allFrames.count(91), allFrames.count(92), allFrames.count(93),
+                allFrames.count(94), allFrames.count(95), allFrames.count(96), allFrames.count(97), allFrames.count(98), allFrames.count(99),
+                allFrames.count(100), allFrames.count(101), allFrames.count(102), allFrames.maximum(103),
+                allFrames.count(104), allFrames.count(105), allFrames.count(106),
+                allFrames.count(107), allFrames.count(108), allFrames.count(109));
         FluoriteMod.LOGGER.info("RT path reuse cumulative: readback frames {}, lobe {} (invalid {}, pdf<=0.1% {}, "
                         + "weight<=0.1% {}, max pdf {}, weight {}); fresh k2 {}/{} deep {}/{} "
                         + "(scope {}, miss {}, geometry {}, invalid {}, numeric {}); max scatter {}, pdf {}, jac {}; "

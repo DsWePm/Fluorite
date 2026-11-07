@@ -43,6 +43,7 @@ import org.joml.Quaternionf;
 import org.lwjgl.system.MemoryUtil;
 
 import io.github.dswepm.fluorite.rt.RtComposite;
+import io.github.dswepm.fluorite.rt.RtPathSurfaceIdentity;
 import io.github.dswepm.fluorite.platform.Platform;
 import io.github.dswepm.fluorite.rt.RtContext;
 import io.github.dswepm.fluorite.rt.RtFrameStats;
@@ -401,6 +402,7 @@ public final class RtEntities {
      *  reference: the entity-local mesh contents of the most recently written AS and the
      *  cache-owned shading buffers the geometry table points at on reuse frames. */
     private static final class EntityAccel {
+        Object pathSurfaceToken;
         final EntitySlot[] ring = new EntitySlot[REFIT_RING];
         int cursor;
         long lastSeen;
@@ -426,6 +428,11 @@ public final class RtEntities {
     public record FrameEntities(List<RtAccel.Instance> baseInstances, List<RtAccel.Instance> dynamicInstances,
                                 List<RtAccel.PreparedBlas> blas, long geomTableAddr,
                                 long dynamicLightAddr, int dynamicLightCount, FrameUse use) {
+        public RtPathSurfaceIdentity[] pathSurfaces() {
+            return use == null || use.lists.pathSurfaces == null
+                    ? new RtPathSurfaceIdentity[0]
+                    : use.lists.pathSurfaces.toArray(RtPathSurfaceIdentity[]::new);
+        }
     }
 
     private record FrameUse(FrameLists lists, TableSlot table) {
@@ -598,6 +605,7 @@ public final class RtEntities {
 
     /** Reused per-frame lists; one slot is retired before it can be selected again. */
     private static final class FrameLists {
+        ArrayList<RtPathSurfaceIdentity> pathSurfaces;
         final ArrayList<RtAccel.Instance> instances = new ArrayList<>(entityListCapacity());
         final ArrayList<RtAccel.PreparedBlas> blas = new ArrayList<>(entityListCapacity());
         final ArrayList<RtAccel.PreparedBlas> pooledBlas = new ArrayList<>(entityListCapacity());
@@ -609,6 +617,7 @@ public final class RtEntities {
         final TrackedGraphicsUse graphicsUse = new TrackedGraphicsUse();
 
         void reset() {
+            if (pathSurfaces != null) pathSurfaces.clear();
             instances.clear();
             blas.clear();
             pooledBlas.clear();
@@ -645,6 +654,7 @@ public final class RtEntities {
 
     /** Mutable per-frame build state shared by the entity + block-entity capture passes. */
     private final class FrameBuild {
+        final boolean trackPathSurfaces;
         final List<RtAccel.Instance> base;
         FrameLists lists;
         List<RtAccel.Instance> instances;
@@ -666,6 +676,7 @@ public final class RtEntities {
 
         FrameBuild(List<RtAccel.Instance> base, RtGpuExecutor gpuExecutor) {
             this.base = base;
+            this.trackPathSurfaces = FluoriteConfig.Rt.Composite.PATH_RESERVOIR.value();
             this.graphicsUseWaiter = gpuExecutor.graphicsUseWaiter();
         }
 
@@ -1667,6 +1678,7 @@ public final class RtEntities {
         float[] xform = {1, 0, 0, e.bx - rbx, 0, 1, 0, e.by - rby, 0, 0, 1, e.bz - rbz};
         build.instances.add(new RtAccel.Instance(xform, e.accel.deviceAddress,
                 ENTITY_BIT | (build.count & 0x7FFFFF), 0xFF, RtAccel.SBT_ENTITY_OFFSET));
+        pathSurface(build, e, xform, 0xFF);
         build.count++;
         build.lists.usedBlockEntities.add(e);
         build.logicalCount++;
@@ -1794,6 +1806,7 @@ public final class RtEntities {
         lists.releaseDeferred();
         lists.reset();
         build.lists = lists;
+        if (build.trackPathSurfaces && lists.pathSurfaces == null) lists.pathSurfaces = new ArrayList<>();
         build.instances = lists.instances;
         build.blas = lists.blas;
         build.pooledBlas = lists.pooledBlas;
@@ -1880,9 +1893,14 @@ public final class RtEntities {
         build.lists.usedEntitySlots.add(ea.refSlot);
         writeTableEntry(build, ea.refPrimAddr, ea.refIndexAddr, ea.refUvAddr,
                 motion.dispAddr, motion.rigidX, motion.rigidY, motion.rigidZ, ea.refBucketTris);
-        build.instances.add(new RtAccel.Instance(placeTransform(localTransform, placeX, placeY, placeZ),
+        float[] placedTransform = placeTransform(localTransform, placeX, placeY, placeZ);
+        build.instances.add(new RtAccel.Instance(placedTransform,
                 ea.refAccel.deviceAddress,
                 ENTITY_BIT | (build.count & 0x3FFFFF), mask, RtAccel.SBT_ENTITY_OFFSET));
+        if (build.trackPathSurfaces) {
+            if (ea.pathSurfaceToken == null) ea.pathSurfaceToken = new Object();
+            pathSurface(build, ea.pathSurfaceToken, placedTransform, mask);
+        }
         build.count++;
         RtFrameStats.FRAME.count("entityReuse", 1);
         return true;
@@ -2117,6 +2135,10 @@ public final class RtEntities {
 
         EntityAccel ea = slot.owner;
         clearRefGeometry(ea);
+        if (build.trackPathSurfaces && instanceBit == ENTITY_BIT) {
+            ea.pathSurfaceToken = new Object();
+            pathSurface(build, ea.pathSurfaceToken, instanceTransform, mask);
+        }
         ea.refAccel = accel;
         ea.refSlot = slot;
         ea.refIndexAddr = indexAddr;
@@ -2136,6 +2158,7 @@ public final class RtEntities {
 
     /** Clear the latest rigid-reuse view; the backing remains owned by its retired ring slot. */
     private void clearRefGeometry(EntityAccel ea) {
+        ea.pathSurfaceToken = null;
         ea.refAccel = null;
         ea.refSlot = null;
         ea.refIndexAddr = 0L;
@@ -2175,6 +2198,9 @@ public final class RtEntities {
     /** Write one std430 EntityGeom entry, including bases for the two packed BLAS geometries. */
     private void writeTableEntry(FrameBuild build, long primAddr, long idxAddr, long uvAddr, long dispAddr,
                                  float rigidX, float rigidY, float rigidZ, int[] bucketTris) {
+        if (build.trackPathSurfaces) {
+            while (build.lists.pathSurfaces.size() <= build.count) build.lists.pathSurfaces.add(null);
+        }
         if (bucketTris == null || bucketTris.length != RtAccel.ENTITY_BUCKETS) {
             throw new IllegalArgumentException("Missing entity BLAS bucket counts");
         }
@@ -2191,6 +2217,12 @@ public final class RtEntities {
         MemoryUtil.memPutInt(entry + 52, bucketTris[RtAccel.ENTITY_BUCKET_OPAQUE]);
         MemoryUtil.memPutInt(entry + 56, 0);
         MemoryUtil.memPutInt(entry + 60, 0);
+    }
+
+    private static void pathSurface(FrameBuild build, Object owner, float[] transform, int mask) {
+        if (build.trackPathSurfaces) {
+            build.lists.pathSurfaces.set(build.count, RtPathSurfaceIdentity.of(owner, transform, mask));
+        }
     }
 
     /** Select the next per-entity slot, waiting on its exact last graphics use before mutable reuse. */

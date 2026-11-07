@@ -267,7 +267,8 @@ public final class RtPipeline {
             groups.get(hitGroupIdx + h).sType$Default().type(VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR)
                     .generalShader(VK_SHADER_UNUSED_KHR)
                     .closestHitShader(shadow && separateShadow ? VK_SHADER_UNUSED_KHR : chitStage)
-                    .anyHitShader(hitGroupUsesAnyHit(h) ? selectedAhit : VK_SHADER_UNUSED_KHR)
+                    .anyHitShader(hitGroupUsesAnyHit(h) || (separateShadow && !shadow)
+                            ? selectedAhit : VK_SHADER_UNUSED_KHR)
                     .intersectionShader(VK_SHADER_UNUSED_KHR);
         }
 

@@ -45,6 +45,11 @@ public final class RtRawHdrProbe {
     private record Capture(long frame, long draw, int phase, int sample, boolean pathOn, int width, int height,
                            double x, double y, double z, int pose, long tick, boolean rr, int spp, int bounces) {}
 
+    private final Plan plan = new Plan(DEFAULT_PLAN.warmup, DEFAULT_PLAN.interval,
+            Integer.getInteger("fluorite.rt.rawHdrProbeSamples", DEFAULT_PLAN.samples));
+    private final boolean autonomous = Boolean.getBoolean("fluorite.rt.rawHdrProbeAuto");
+    private boolean autoRequested;
+    private volatile boolean autoReady;
     private final Path directory;
     private final RtBuffer[] readbacks;
     private final Capture[] pending;
@@ -66,11 +71,24 @@ public final class RtRawHdrProbe {
     public boolean pathEnabled(boolean configured) {
         if (directory == null) return configured;
         if (!announced) {
-            FluoriteMod.LOGGER.info("RT raw HDR probe waiting for {}/arm; plan {}", directory, DEFAULT_PLAN);
+            FluoriteMod.LOGGER.info("RT raw HDR probe waiting for {}/arm; plan {}", directory, plan);
             announced = true;
         }
-        if (startDraw < 0 && Files.isRegularFile(directory.resolve("arm"))) startDraw = draws;
-        int phase = startDraw < 0 ? -1 : DEFAULT_PLAN.phase(draws - startDraw);
+        if (autonomous && startDraw < 0 && draws >= 240 && !autoRequested) {
+            var server = net.minecraft.client.Minecraft.getInstance().getSingleplayerServer();
+            if (server != null) {
+                autoRequested = true;
+                server.execute(() -> {
+                    var source = server.createCommandSourceStack();
+                    server.getCommands().performPrefixedCommand(source, "tick freeze");
+                    server.getCommands().performPrefixedCommand(source,
+                            "effect give @p minecraft:invisibility infinite 0 true");
+                    autoReady = true;
+                });
+            }
+        }
+        if (startDraw < 0 && (autoReady || Files.isRegularFile(directory.resolve("arm")))) startDraw = draws;
+        int phase = startDraw < 0 ? -1 : plan.phase(draws - startDraw);
         return phase < 0 ? configured : phase == 1;
     }
 
@@ -103,12 +121,13 @@ public final class RtRawHdrProbe {
             invalidPixels += m.invalid;
             written++;
             if (written % 24 == 0) FluoriteMod.LOGGER.info("RT raw HDR probe {}/{} samples, phase {}, invalid pixels {}",
-                    written, 3 * DEFAULT_PLAN.samples, PHASES[capture.phase], invalidPixels);
-            if (written == 3 * DEFAULT_PLAN.samples) {
+                    written, 3 * plan.samples, PHASES[capture.phase], invalidPixels);
+            if (written == 3 * plan.samples) {
                 Files.writeString(directory.resolve("complete.json"), String.format(Locale.ROOT,
                         "{\"samples\":%d,\"grid_stride\":%d,\"invalid_pixels\":%d,\"format\":\"RGB16F little endian\",\"source\":\"pre-RR trace color\"}%n",
                         written, GRID_STRIDE, invalidPixels), StandardOpenOption.CREATE_NEW);
                 FluoriteMod.LOGGER.info("RT raw HDR probe complete: {} samples in {}", written, directory);
+                if (autonomous) net.minecraft.client.Minecraft.getInstance().stop();
             }
         } catch (IOException e) {
             throw new IllegalStateException("Writing raw HDR experiment", e);
@@ -123,7 +142,7 @@ public final class RtRawHdrProbe {
         long draw = draws++;
         if (startDraw < 0) return;
         long relative = draw - startDraw;
-        int phase = DEFAULT_PLAN.phase(relative), sample = DEFAULT_PLAN.sample(relative);
+        int phase = plan.phase(relative), sample = plan.sample(relative);
         if (sample < 0) return;
         if (pathOn != (phase == 1)) throw new IllegalStateException("Raw HDR phase does not match the actual path pipeline");
         if (pending[slot] != null) throw new IllegalStateException("Raw HDR slot was not recycled");

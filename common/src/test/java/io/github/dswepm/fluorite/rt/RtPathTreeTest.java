@@ -184,7 +184,7 @@ final class RtPathTreeTest {
 
     @Test
     void everyNewDiagnosticLaneIsWrittenAndReadWithRecordDepthsPartitioned() throws Exception {
-        assertEquals(84, RtPathReservoirStats.LANES);
+        assertEquals(110, RtPathReservoirStats.LANES);
         String tracer = source("shaders/world/path_reuse_trace.slang");
         for (int i : new int[]{13, 14, 17, 18, 19})
             assertTrue(tracer.contains("pathReservoirStatsAddr)[" + i + "], 1u"));
