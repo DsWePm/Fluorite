@@ -55,6 +55,24 @@ float3 replayCross(float3 a,float3 b) {
             replaySub(replayMul(a.x,b.y),replayMul(a.y,b.x)));
 }
 float3 replayNormalize(float3 a) { return replayMul(a,rsqrt(replayDot(a,a))); }
+
+// Decode the original queue word identically at initial tracing and primary-domain restoration.
+// Native octDecode's normalize was reduced differently in the two live raygen contexts. Keep the
+// same octahedral formula and 16-bit coordinates, with the existing reuse-only rounding controls.
+public float3 reuseDecodePrimaryDirection(uint packed) {
+    float x = float(packed & 0xffffu) / 65535.0;
+    float y = float(packed >> 16u) / 65535.0;
+    x = replaySub(replayMul(x, 2.0), 1.0);
+    y = replaySub(replayMul(y, 2.0), 1.0);
+    float z = replaySub(replaySub(1.0, abs(x)), abs(y));
+    float3 n = float3(x, y, z);
+    if (z < 0.0) {
+        n.x = replayMul(replaySub(1.0, abs(y)), x >= 0.0 ? 1.0 : -1.0);
+        n.y = replayMul(replaySub(1.0, abs(x)), y >= 0.0 ? 1.0 : -1.0);
+    }
+    return replayNormalize(n);
+}
+
 public float3 reuseReflect(float3 incident,float3 h) {
     return replaySub(incident,replayMul(h,replayMul(2.0,replayDot(incident,h))));
 }

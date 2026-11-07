@@ -1037,22 +1037,23 @@ public static const uint PATH_RESERVOIR_BYTES = 128u;
 // std430 stride, and RtComposite allocates from that generated record (D220).
 // radiance is relative incident radiance, without prefix throughput or reconnection scattering.
 // R2b-5: radiance/reserved0/reserved1 hold R/G/B float32 bits. Their original offsets stay fixed;
-// the former spare lanes are occupied. Primary objectId/UV remain the independent LoD hooks.
+// the former spare lanes are occupied. R3 retains the original primary ray for real material replay.
 // R2b-6 (user-approved): dirK/dirY/dirZ hold the full float32 outgoing direction, without oct encoding.
 // Appended Y/Z occupy offsets 80/84; R2b-17 uses the existing tail padding for PDFs at 88/92.
 // W includes initial tree resampling and external roulette; jacDenom stores the Eq. 2 denominator.
 // confPdf stores confidence in its low half; the high half stays zero. Competing PDF is full FP32.
 // bits carries validity and the event's discrete path parameters; zero is always empty.
-// LoD hooks are reserved here. objectId == 0xffffffff means unavailable, not object zero;
-// primaryUv must not be interpreted without a valid object hook. No payload growth is implied.
+// R3, user-approved: primaryOrigin/primaryPackedDirection/primaryRayCone replace the approximate
+// primary hit/normal/UV caches without growth. Direction/cone copy the original 48 B queue words;
+// objectId still identifies the primary object. Real hit coordinates and LoD come from one TraceRay.
 public static const uint PATH_RECORD_VALID = 1u;
 public static const uint PATH_OBJECT_UNAVAILABLE = 0xffffffffu;
 
 public struct PackedPathReservoir {
     public float3 reconPos;
     public uint   pathSeed;
-    public float3 primaryPos;
-    public uint   primaryNrm;
+    public float3 primaryOrigin;
+    public uint   primaryPackedDirection;
     public uint   reconNrm;
     public uint   dirK;
     public uint   radiance;
@@ -1062,7 +1063,7 @@ public struct PackedPathReservoir {
     public uint   confPdf;
     public uint   bits;
     public uint   objectId;
-    public uint   primaryUv;
+    public uint   primaryRayCone;
     public uint   reserved0;
     public uint   reserved1;
     public uint   dirY;
@@ -1096,8 +1097,8 @@ public PackedPathReservoir emptyPathReservoir() {
     PackedPathReservoir r;
     r.reconPos = float3(0.0, 0.0, 0.0);
     r.pathSeed = 0u;
-    r.primaryPos = float3(0.0, 0.0, 0.0);
-    r.primaryNrm = 0u;
+    r.primaryOrigin = float3(0.0, 0.0, 0.0);
+    r.primaryPackedDirection = 0u;
     r.reconNrm = 0u;
     r.dirK = 0u;
     r.radiance = 0u;
@@ -1107,7 +1108,7 @@ public PackedPathReservoir emptyPathReservoir() {
     r.confPdf = 0u;
     r.bits = 0u;
     r.objectId = PATH_OBJECT_UNAVAILABLE;
-    r.primaryUv = 0u;
+    r.primaryRayCone = 0u;
     r.reserved0 = 0u;
     r.reserved1 = 0u;
     r.dirY = 0u;

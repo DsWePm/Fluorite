@@ -135,7 +135,9 @@ ReuseConnectionEvaluation reuseEvaluateK2AtDomains(__ref PathSegment seg, uint e
 ReuseConnectionEvaluation reuseEvaluateK2Connection(__ref PathSegment seg, uint entryMediumFlags,
                                                    PackedPathReservoir record) {
     ReuseConnectionDomain domain;
-    if (reuseReadK2Domain(seg, entryMediumFlags, record.pathSeed, domain))
+    PathSegment recordedSegment = reuseRestorePrimaryRay(seg, record);
+    if (reusePrimaryRayMatchesSegment(recordedSegment, seg)
+            && reuseReadK2Domain(recordedSegment, entryMediumFlags, record.pathSeed, domain))
         return reuseEvaluateK2AtDomains(seg, entryMediumFlags, domain, domain, record);
     ReuseConnectionEvaluation failed;
     failed.value = float3(0.0, 0.0, 0.0);

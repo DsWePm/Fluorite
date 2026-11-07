@@ -25,6 +25,7 @@ void traceRadiance(uint cullMask, float3 ro, float tmin, float3 rd, float tmax,
 #include "path_reuse_geometry.slang"
 #include "path_reuse_sampling.slang"
 #include "path_reuse_tree.slang"
+#include "path_reuse_primary.slang"
 #include "path_reuse_fresnel.slang"
 #include "path_reuse_dot.slang"
 #include "path_reuse_eval.slang"
@@ -545,7 +546,12 @@ void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, Pa
     ReuseHitGeometry geometry;
     uint geometryStatus;
     ReuseReplayState replay;
-    int reached = reuseReplayPrefix(seg, entryMediumFlags, record.pathSeed, depth, replayedPos,
+    PathSegment recordedSegment = reuseRestorePrimaryRay(seg, record);
+    if (!reusePrimaryRayMatchesSegment(recordedSegment, seg)) {
+        InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[50], 1u);
+        return;
+    }
+    int reached = reuseReplayPrefix(recordedSegment, entryMediumFlags, record.pathSeed, depth, replayedPos,
                                     true, true, geometry, geometryStatus, replay);
     if (reached != depth || !replay.opaquePrefix) {
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[51], 1u);
@@ -633,6 +639,7 @@ void reuseDiagnoseDEvent(float3 sourceWeight, float3 incident, float3 actual, ui
 }
 
 public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
+                        uint primaryPackedDirection, uint primaryRayCone,
                         uint2 pix, uint sampleIndex, uint2 renderSize,
                         bool captureFirst, out FirstSegmentTrace firstTrace,
                         inout uint4 reuseCounts) {
@@ -1480,15 +1487,12 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 dSourceScatterSupported = scatteringPrefixSupported;
                 dRecord.reconPos = hitGeometry.position;
                 dRecord.pathSeed = pathSeedBase;
-                dRecord.primaryPos = footprintPrimary.position;
-                dRecord.primaryNrm = packUnorm16x2(octEncode(footprintPrimary.normal));
                 dRecord.reconNrm = packUnorm16x2(octEncode(hitGeometry.normal));
                 dRecord = reuseStoreDirection(dRecord, rd);
                 dRecord.jacDenom = jacDenom;
                 dRecord.bits = reuseDRecordBits(uint(hitDepth + 1), continuation.lobe, activeMediumFlags);
                 dRecord = reuseRecordSampling(dRecord, footprintPreviousSample.lobe, 0u, continuation.pdf, 0.0);
                 dRecord.objectId = footprintPrimary.objectId;
-                dRecord.primaryUv = packHalf2(footprintPrimary.uv);
                 dRecord = reuseRecordEndpoint(dRecord, hitGeometry, footprintEdgeDirection);
                 if (identityCheck) {
                     ReuseContinuationSample evaluated;
@@ -1588,6 +1592,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
     }
     // Record-only: no temporal/spatial reads and no change to L. Empty trees overwrite stale slots.
     if (recordPath) {
+        selectedRecord = reuseStorePrimaryRay(selectedRecord, seg.ro, primaryPackedDirection, primaryRayCone);
         PackedPathReservoir produced = reuseFinishTree(selectedRecord, dTree);
         DevicePtr<PackedPathReservoir> store =
                 DevicePtr<PackedPathReservoir>(worldPush.pathReservoirAddr);

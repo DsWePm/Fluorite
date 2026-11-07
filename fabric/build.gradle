@@ -65,6 +65,10 @@ loom {
 			if (project.hasProperty("benchRawHdrProbe")) {
 				vmArg "-Dfluorite.rt.rawHdrProbe=${project.benchRawHdrProbe}"
 			}
+			if (project.hasProperty("benchPathProbeReadbacks")) {
+				vmArg "-Dfluorite.rt.pathProbeReadbacks=${project.benchPathProbeReadbacks}"
+				vmArg "-Dfluorite.rt.pathProbeStopOnFailure=${project.hasProperty('benchPathProbeStopOnFailure') ? project.benchPathProbeStopOnFailure : 'true'}"
+			}
 			// Vulkan validation, opt-in:
 			//   ./gradlew :fabric:runClient -PvkValidation
 			// Minecraft's VulkanInstance takes a `validation` flag but nothing here can reach it, so this

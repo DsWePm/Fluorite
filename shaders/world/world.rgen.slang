@@ -1326,12 +1326,15 @@ void main() {
         // tracePath owns primitive active state and leaves this transport record unchanged, so all SPP
         // can share one unpack without inheriting a previous sample's dielectric transitions.
         PathSegment segment = unpackPathSegment(packed);
+#ifdef FLUORITE_PATH_REUSE
+        segment.rd = reuseDecodePrimaryDirection(packed.rd);
+#endif
         for (uint s = 0u; s < spp; ++s) {
             bool captureFirst = captureProbe && leaf == 0u && s == 0u;
             FirstSegmentTrace tracedFirst;
             frameRadiance +=
 #ifdef FLUORITE_PATH_REUSE
-                    tracePathReuse(segment, unpackActiveMediumFlags(packed.pathFlags),
+                    tracePathReuse(segment, unpackActiveMediumFlags(packed.pathFlags), packed.rd, packed.rayCone,
 #else
                     tracePath(segment, unpackActiveMediumFlags(packed.pathFlags),
 #endif

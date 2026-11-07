@@ -47,6 +47,7 @@ public final class RtPathReservoirStats {
     private final boolean[] armed;
     private long loggedAt = Long.MIN_VALUE;
     private final FrameTotals allFrames = new FrameTotals();
+    private final RtPathProbeExit probeExit = RtPathProbeExit.fromSystemProperties();
 
     /** Preserve every completed readback, including failures between the periodic log frames. */
     static final class FrameTotals {
@@ -230,17 +231,27 @@ public final class RtPathReservoirStats {
         long connectionFootprint = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 320L));
         long connectionNumeric = Integer.toUnsignedLong(MemoryUtil.memGetInt(src.mapped + 324L));
         allFrames.add(src.mapped);
-        if (lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
+        boolean failed = lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
                 || connectionReadbackFailed(connectionAttempt, connectionPass, connectionScope, connectionHit,
                         connectionFootprint, connectionNumeric)
                 || sourceFactorPass != sourceFactorAttempt
-                || sourceReplayScope + sourceReplayMiss + sourceReplayGeometry + sourceReplayInvalid + sourceReplayNumeric != 0L) {
+                || sourceReplayScope + sourceReplayMiss + sourceReplayGeometry + sourceReplayInvalid + sourceReplayNumeric != 0L;
+        if (failed) {
             FluoriteMod.LOGGER.warn("RT path reuse failed readback {}: lobe {} (invalid {}, pdf<=0.1% {}, weight<=0.1% {}, "
                             + "max pdf {}, weight {}); fresh scope {}, miss {}, geometry {}, invalid {}, numeric {}; factors {}/{}; connection {}/{}",
                     allFrames.frames, lobeAttempt, lobeInvalid, lobePdfLow, lobeWeightLow,
                     relativePercentage(lobePdfMax), relativePercentage(lobeWeightMax), sourceReplayScope,
                     sourceReplayMiss, sourceReplayGeometry, sourceReplayInvalid, sourceReplayNumeric,
                     sourceFactorPass, sourceFactorAttempt, connectionPass, connectionAttempt);
+        }
+        RtPathProbeExit.Reason exitReason = probeExit.poll(allFrames.frames, failed);
+        if (exitReason != RtPathProbeExit.Reason.NONE) {
+            // Flush cumulative evidence before asking Minecraft to save and stop its normal main loop.
+            logCumulative();
+            FluoriteMod.LOGGER.info("RT path probe requesting normal exit: {} after {} readbacks",
+                    exitReason, allFrames.frames);
+            net.minecraft.client.Minecraft.getInstance().stop();
+            return;
         }
         if (identityAttempt == 0L && geometryAttempt == 0L) {
             return;

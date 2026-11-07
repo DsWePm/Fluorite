@@ -12,8 +12,8 @@ final class RtPathReservoirLayoutTest {
         assertEquals(128, PackedPathReservoirData.BYTE_SIZE);
         assertEquals(0, PackedPathReservoirData.RECON_POS_OFFSET);
         assertEquals(12, PackedPathReservoirData.PATH_SEED_OFFSET);
-        assertEquals(16, PackedPathReservoirData.PRIMARY_POS_OFFSET);
-        assertEquals(28, PackedPathReservoirData.PRIMARY_NRM_OFFSET);
+        assertEquals(16, PackedPathReservoirData.PRIMARY_ORIGIN_OFFSET);
+        assertEquals(28, PackedPathReservoirData.PRIMARY_PACKED_DIRECTION_OFFSET);
         assertEquals(32, PackedPathReservoirData.RECON_NRM_OFFSET);
         assertEquals(36, PackedPathReservoirData.DIR_K_OFFSET);
         assertEquals(40, PackedPathReservoirData.RADIANCE_OFFSET);
@@ -23,7 +23,7 @@ final class RtPathReservoirLayoutTest {
         assertEquals(56, PackedPathReservoirData.CONF_PDF_OFFSET);
         assertEquals(60, PackedPathReservoirData.BITS_OFFSET);
         assertEquals(64, PackedPathReservoirData.OBJECT_ID_OFFSET);
-        assertEquals(68, PackedPathReservoirData.PRIMARY_UV_OFFSET);
+        assertEquals(68, PackedPathReservoirData.PRIMARY_RAY_CONE_OFFSET);
         assertEquals(72, PackedPathReservoirData.RESERVED0_OFFSET);
         assertEquals(76, PackedPathReservoirData.RESERVED1_OFFSET);
         assertEquals(80, PackedPathReservoirData.DIR_Y_OFFSET);

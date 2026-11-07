@@ -1107,3 +1107,16 @@ frame371中GPU RGB误差0.103722%；只换回原primary方向时误差归零，T
 同一正式模块再测封闭水起始介质：7,072个readback，10,286,430条lobe、fresh k2 13,781/deep25及新连接13,781次均通过原门，所有scope/hit/footprint/numeric/codec失败0、VUID日志0；max连接RGB0.000190395%/Jac0.000101328%、T-prefix0.000038239%、完整事件0.000120641%。471条中心探针中469条完整确认water bit9/profile1/opaque，T约(0.5628,0.6260,0.6533)。助手正常保存关闭，config/options逐字节恢复、临时包删除，实际模块hash与anchored归档相同。证据r2b26-water-summary/CSV/log与activation快照；依旧不宣称折射界面、观感或GPU性能验收。
 
 用户随后明确选择R3重构已有primary字段、保持128 B：旧primaryPos/primaryNrm/primaryUv改存原queue的FP32 origin/raw packed direction/raw packed ray cone，objectId保留，其余offset不动。20,003组独立GPU bit-copy及std430 offset/stride原型通过，仅证明存储，不冒充primary材质或R3估计量验收。替代20 B/像素/半的sidecar需额外79.1015625 MiB@1080p double，未采用。每帧真实射线上下文/跨帧失效、双向k2/pairwise/RGB own-split继续实现，不重复请示此布局选择。
+
+
+### R3a-1：在128 B内保存真实primary输入与有界测试退出
+
+按用户已批方案，offset16/28/68分别改为FP32 primaryOrigin、原队列packed direction及原packed ray cone；object64、recon端点和两组三FP32方向保持。Pass B把原packed.rd/rayCone直接传入，所有path-tree事件选择后统一写入。source重放和self-connection实际从record恢复ray，并以逐bit原输入检查为硬门；尚不消费history，仍返回完整自身L。4个新增测试验证真实serializer 10,000组（含负零/小值）、原word直传、实际消费记录及复用端共享decoder。
+
+初版78套382测试/OFF/接口全过，实际却有约4.7% primary bit-match scope失败。临时112-lane探针只记录每帧第一个失败，不加ray/RNG；1,300组全部mask2，仅解码direction末位不同，原record direction/cone word与真实queue逐bit相同，ro/cone也相同。故障不是缓存位损坏，而是native octDecode在不同上下文的FP32运算。探针游戏正常退出，配置恢复，正式源码按归档字节恢复、临时helper删除。
+
+修复在既有path_reuse_direction模块复用受控Mul/Sub/ordered dot/normalize，source初次decode仅在FLUORITE_PATH_REUSE下替换，record恢复用同一函数。oct16编码/数学公式、射线数、记录大小及RNG不变；ON浮点方向末位会变，OFF三个模块与R2a规整化字节相同。离线真实GPU20,003组含全部1,300失败word，最大abs对double2.2390172e-7、单位长误差1.6815521e-7。55shader/spirv-val及SBT joint40 B/shadow原接口检查通过。
+
+长跑192,810个回读中primary scope0、direction/incident codec0，fresh k2 16,082,413/16,082,414、deep369,211/369,212；仍有1 numeric（readback133208，full-event与connection RGB66.0307%）及1 deep geometry-position失败（187923）。T-prefix最大0.0000402574%、scatter0.00388619%、PDF/Jac约0.027%，因此不是仅按最大scatter判健康。该轮日志21:06终止，无正常退出标记；恢复时已无MC进程，原因未知，不猜测为用户手动退出或故障。日志/CSV/failed outcomes完整保留，整体严格RED，需独立故障分解取证。
+
+新增RtPathProbeExit只受客户端JVM属性启用（Fabric -PbenchPathProbeReadbacks真实转发），普通启动limit0不会退出。启用后首次failed readback或累计上限先输出完整累计，再Minecraft.stop正常保存退出；stopOnFailure=false允许继续但仍受上限。4个测试覆盖禁用、上限边界/仅一次、首失败及显式持续模式，总79套387测试通过。正式shader字节未变。实际512回读、36,888新k2/deep900全部过原门，客户端自行LIMIT退出、所有维度保存、BUILD SUCCESSFUL，原config/options逐字节恢复。该短测不覆盖长跑罕见失败；后续取证必须有界运行并保持原0.1%门。R3 history/双向shift/pairwise/RGB own-split仍待实现。

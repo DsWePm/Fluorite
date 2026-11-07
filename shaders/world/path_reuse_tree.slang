@@ -173,7 +173,7 @@ float3 reuseLoadDirection(PackedPathReservoir record) {
 }
 
 // Full float32 incident RGB in the record. The ABI keeps its original field names:
-// radiance stores R, and the former spare lanes store G/B. Primary object/UV hooks are independent.
+// radiance stores R, and the former spare lanes store G/B. Primary ray metadata is independent.
 PackedPathReservoir reuseStoreIncident(PackedPathReservoir record, float3 incident) {
     record.radiance = asuint(incident.r);
     record.reserved0 = asuint(incident.g);
@@ -198,7 +198,8 @@ PackedPathReservoir reuseFinishTree(PackedPathReservoir record, ReusePathTree tr
     // Fresh source confidence 1; D has no competing local NEE technique at x_k.
     record.confPdf = packHalf2(float2(1.0, 0.0));
     if (!(record.W > 0.0) || !isfinite(record.W) || !any(reuseLoadIncident(record) > 0.0)
-            || !all(isfinite(unpackHalf2(record.primaryUv)))) {
+            || !all(isfinite(record.primaryOrigin))
+            || !all(isfinite(unpackHalf2(record.primaryRayCone)))) {
         return emptyPathReservoir();
     }
     return record;

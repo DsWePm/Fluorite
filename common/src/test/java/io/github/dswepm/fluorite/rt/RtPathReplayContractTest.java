@@ -409,7 +409,7 @@ final class RtPathReplayContractTest {
     @Test
     void theHybridRecordReservesPrimaryAndSourceDensityState() throws IOException {
         String common = source("shaders/world/world_common.slang");
-        for (String field : new String[] {"primaryPos", "primaryNrm", "jacDenom", "confPdf", "bits"}) {
+        for (String field : new String[] {"primaryOrigin", "primaryPackedDirection", "jacDenom", "confPdf", "bits"}) {
             assertTrue(common.contains(field));
         }
         assertTrue(common.contains("PATH_OBJECT_UNAVAILABLE = 0xffffffffu"));

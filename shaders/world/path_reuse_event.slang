@@ -105,13 +105,10 @@ PackedPathReservoir reuseMakeLocalRecord(ReuseHitGeometry primary, ReuseHitGeome
             REUSE_MIN_ALPHA, REUSE_FOOTPRINT_SCALE, denominator)) return record;
     record.reconPos = recon.position;
     record.pathSeed = pathSeed;
-    record.primaryPos = primary.position;
-    record.primaryNrm = packUnorm16x2(octEncode(primary.normal));
     record.reconNrm = packUnorm16x2(octEncode(recon.normal));
     record.jacDenom = denominator;
     record.bits = reuseLocalRecordBits(depth, REUSE_TECHNIQUE_L, mediumFlags);
     record.objectId = primary.objectId;
-    record.primaryUv = packHalf2(primary.uv);
     record = reuseRecordEndpoint(record, recon, edgeDirection);
     record = reuseStoreDirection(record, float3(0.0, 0.0, 0.0));
     return reuseRecordSampling(record, previousSample.lobe, REUSE_LOCAL_AMBIENT, 1.0, 0.0);

@@ -150,7 +150,7 @@ final class RtPathTreeTest {
                 "rndf(stream) * total < weight", "tree.selectedIncident = incident;",
                 "record.W = tree.weightSum / tree.selectedTarget;", "record.targetOwn = tree.selectedTarget;",
                 "record = reuseStoreIncident(record, tree.selectedIncident);", "!reuseNonnegativeFinite(tree.selectedIncident)",
-                "(mediumFlags & ~0x00030003u) != 0u", "!all(isfinite(unpackHalf2(record.primaryUv)))"})
+                "(mediumFlags & ~0x00030003u) != 0u", "!all(isfinite(unpackHalf2(record.primaryRayCone)))"})
             assertTrue(tree.contains(term), term);
         assertFalse(tree.contains("clamp("));
         String tracer = source("shaders/world/path_reuse_trace.slang");
@@ -159,7 +159,7 @@ final class RtPathTreeTest {
                 "dTailWeight *= continuation.weight;", "float3 incident = dTailWeight * brdf * sampledLightIrradiance * ndl * vis;",
                 "reuseTreeUpdateRecord(dTree, selectedRecord, dRecord, dSourceWeight, incident, rrSurvival, REUSE_D_ENDPOINT_SOLAR, reuseSeed)",
                 "dRecord.pathSeed = pathSeedBase;", "dRecord.objectId = footprintPrimary.objectId;",
-                "dRecord.primaryUv = packHalf2(footprintPrimary.uv);", "dRecord = reuseStoreDirection(dRecord, rd);",
+                "reuseStorePrimaryRay(selectedRecord, seg.ro, primaryPackedDirection, primaryRayCone)", "dRecord = reuseStoreDirection(dRecord, rd);",
                 "dRecord.jacDenom = jacDenom;", "reuseDRecordBits(uint(hitDepth + 1), continuation.lobe, activeMediumFlags)",
                 "PackedPathReservoir produced = reuseFinishTree(selectedRecord, dTree);", "worldPush.frameIndex & 1u)] = produced;"})
             assertTrue(tracer.contains(term), term);

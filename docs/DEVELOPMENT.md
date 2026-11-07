@@ -952,4 +952,8 @@ R2b-18已接入局部太阳S、环境底色L及薄壳T；局部事件使用ℓ=0
 代码注释中的 `M*`、`D*`、`F*`、`R*` 通过 [`docs/devlog/README.md`](devlog/README.md) 查找。外部 `.claude/plans` 已被本仓库文档取代，只允许考古，不继续追加。
 
 
-**R3 primary状态重构已批（2026-11-07，待实施）**：用户选择在128 B内重构既有primary字段，替换hit position/oct normal/half UV缓存为原始queue的FP32 ray origin、原packed direction与原packed ray cone；objectId保留。独立布局原型确认offset16/28/64/68及stride128，各20,003组实际GPU bit-copy通过，不加逐像素缓存；另加20 B sidecar/79.1015625 MiB双缓冲的备选不采用。此项改变旧primary字段语义已获明确批准，不再请示同一选择。primary真实位置/法线/UV/材质从一次共享命中重建，尚需实际RT回归；每帧相机/medium/rebase上下文、跨帧对象/网格失效、history/k2双向shift/pairwise/RGB own-split仍待实现。
+**R3 primary状态重构已批并落地（2026-11-07，整体仍在验收）**：用户选择在128 B内重构既有primary字段，替换hit position/oct normal/half UV缓存为原始queue的FP32 ray origin、原packed direction与原packed ray cone；objectId保留。独立布局原型确认offset16/28/64/68及stride128，各20,003组实际GPU bit-copy通过，不加逐像素缓存；另加20 B sidecar/79.1015625 MiB双缓冲的备选不采用。此项改变旧primary字段语义已获明确批准，不再请示同一选择。primary真实位置/法线/UV/材质从一次共享命中重建，尚需实际RT回归；每帧相机/medium/rebase上下文、跨帧对象/网格失效、history/k2双向shift/pairwise/RGB own-split仍待实现。
+
+R3a-1已将primary字段改为原始queue的origin/direction/cone，仍128 B、object64和完整recon端点不变。初版真实回归发现约4.7%的原packed word解码后末位不一致；临时探针1,300个见证全部仅方向差异，record与queue原word、origin/cone均相同。两端现共用复用端固定FP32 oct解码（原编码和公式不变），ON方向末位会变化，OFF保留原decoder；不加射线、VRAM或RNG，耗时未测。79套387测试、55shader及三OFF字节检查通过，独立GPU20,003组含1,300失败方向对double最大绝对误差2.23902e-7。长跑192,810回读、约16,082,414个新k2中primary scope已归零，但仍有1次fullRGB/connection误差66.0307%及1次deep位置失败，严格保持RED；该轮无正常退出标记，终止原因未知，原配置已还原。不能只凭primary恒等宣布R2/R3完成。
+
+新增仅CLI启用的数值测试自动退出：`-PbenchPathProbeReadbacks=512`转发真实客户端vmArg，默认首个failed readback或达到上限时先flush cumulative，再调用Minecraft正常保存退出；`-PbenchPathProbeStopOnFailure=false`只保留上限。普通启动默认0，完全不触发退出。实际512回读短测36,888新连接/deep900全过，自动LIMIT退出、保存全部维度与BUILD SUCCESSFUL确认，配置/options字节恢复。后续罕见故障取证必须使用有界自动退出，避免代理中断后空跑。证据r3a1-autostop-summary、decoder-long记录及witness/GPU/build文件留在既有evidence目录；真正history/双向pairwise/RGB own-split与跨帧失效仍未接。
