@@ -1049,3 +1049,25 @@ fresh replay按需累计每条源前缀边的T；普通几何identity不请求�
 另以真实segmentPathTransmittance做20,003组无窗口GPU对照double Beer law（tau 0..80，含零吸收、零距离、混合RGB），两个seed输出逐位相同，最大相对误差7.3811865e-6。完整source函数因静态TraceRay capability不能用于compute，故这个结果只验证均质passive/glass的T-only，不冒充完整source或水照明试验。
 
 F:\MC\Shader\evidence\restir-r2-r3-2026-11-05的r2b23-scenes-summary聚合上述正式结果，各场景日志/严格checker/CSV、配置激活与恢复快照、原场景ON模块hash及closed probe输入输出保留。实际GPU代价未按同会话比值法测量，不从诊断帧时间推断性能。当前完成的是已有源前缀与选中事件的恒等；封闭水初始介质专测、新连接/shift、record-only A到B到A及R3时域/pairwise RGB own-split继续开放，R2/R3不能据此宣布完成。
+
+### R2b-24：记录模式的同会话原始HDR A→B→A（2026-11-07）
+
+落实记录功能的能量检查，增加独立`RtRawHdrProbe`，仅通过直接客户端JVM属性`fluorite.rt.rawHdrProbe`启用。Fabric提供`-PbenchRawHdrProbe=<绝对目录>`转发vmArg；未启用时没有GPU分配/命令或pipeline切换。读取位置在pass B结束的既有barrier和stats copy之后、DLSS-RR之前，图像是完整camera-prefix+leaf的RGBA16F noisy composite，不使用post-RR曝光统计。每pushSlot一个按需host-visible buffer，copy后恢复GENERAL布局、发布host可见性，在既有graphics-use等待之后invalidate并以CPU double计算线性RGB moments；不增加fence、射线或shader。NaN/Inf像素独立计错并使帧均值NaN，不能静默丢弃。每8像素记录一个原始RGB half像素，共3600个固定像素，方差按各像素随时间计算，不能以空间方差代替噪声。
+
+手动arm之前和实验结束之后均保留配置master值；实验内按成功recorded draw序号驱动真实reservoir分配及pass B选择，CSV保存copy当时的实际模式而非回读时开关。每阶段96 draw预热，每4 draw采一次，共96样本；OFF/ON/OFF三阶段288样本。每个样本记录尺寸、camera、矩阵pose hash、server tick、DLSS-RR、SPP和bounce预算。结束有complete.json，既有文件CREATE_NEW防覆盖。新增5个测试覆盖half subnormal/有符号moments、非有限值、固定像素bit、阶段边界及插入位置/等待关系；总75套372项测试、55shader及spirv-val通过。三个OFF与R2a规整化字节相同，两个ON与R23原始SPIR-V逐字节相同。
+
+独立复制存档建立封闭白墙/蓝墙房间和自制平坦材质包，原存档不改。临时关DLSS-RR、volumetrics、重复identity诊断及bobView；Russian roulette、SPP1、maxBounces3和既有M24 DI不改。客户端命令给玩家隐身、冻结server tick，并留下未发送的命令栏防止镜头意外移动，再写arm文件。实际288个样本均为640×360、tick744765、camera(40.5,−61.38000011444092,23.5)、同一pose hash。没有无效像素。
+
+事先在activation manifest固定判据：每8捕获样本一个batch（每阶段12个batch），比较B与(A1+A2)/2，差值须在2个合成标准误内；另检验A1/A2平稳性。原始RGB均值如下：
+
+| 阶段 | R | G | B |
+| --- | ---: | ---: | ---: |
+| A1 OFF | 0.0127074495753 | 0.00865585153148 | 0.00508829484488 |
+| B ON | 0.0128620388535 | 0.00874794388685 | 0.00511839995925 |
+| A2 OFF | 0.0129710948023 | 0.00881692171566 | 0.00514986117735 |
+
+B相对两A平均的RGB差为+0.1773%/+0.1323%/−0.01321%，对应z为0.02034/0.01519/0.001525；A1/A2漂移z为0.1596/0.1431/0.09305，均通过预设门。固定像素亮度时间方差比为0.988220743。**这个实验未检出均值变化，不是严格无偏证明，也不证明降低方差**：只有96样本/阶段，均值2SE约为基线的17.44%/17.42%/17.37%，小偏差仍可能藏在置信区间内。没有消费history，且旧DI仍启用，不能冒充纯PT对照、R3收益或性能基准。
+
+此前aba-1/aba-2未arm、没有有效样本；aba-2因额度中断由用户手动关闭，记录保留。发现MC options里的overrideWidth/overrideHeight会覆盖启动width/height，首两次实际1600×900，不能据CLI声称640×360；本轮明确设置并从分配日志和样本元数据核对实际640×360。第三次独立目录保留所有288份grid、CSV、arm元数据与analysis，不覆盖旧失败/中断。游戏正常保存退出、BUILD SUCCESSFUL、VUID0；config/options恢复原始字节，临时资源包移除。原始frame stats、构建日志、测试结果汇总、shader hash、配置和分析器位于F:\MC\Shader\evidence\restir-r2-r3-2026-11-05的r24/r2b24文件。
+
+本片只补记录模式的初步A→B→A数值检查及可复用取证工具。封闭水初始介质专测、新连接shift恒等、R3的history/k2前后向移位/pairwise MIS/RGB own-split与用户观感仍待完成，不能宣告R2/R3完成。

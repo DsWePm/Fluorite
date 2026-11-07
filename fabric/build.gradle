@@ -62,6 +62,9 @@ loom {
 			if (project.hasProperty("benchWidth") && project.hasProperty("benchHeight")) {
 				programArgs "--width", project.benchWidth, "--height", project.benchHeight
 			}
+			if (project.hasProperty("benchRawHdrProbe")) {
+				vmArg "-Dfluorite.rt.rawHdrProbe=${project.benchRawHdrProbe}"
+			}
 			// Vulkan validation, opt-in:
 			//   ./gradlew :fabric:runClient -PvkValidation
 			// Minecraft's VulkanInstance takes a `validation` flag but nothing here can reach it, so this

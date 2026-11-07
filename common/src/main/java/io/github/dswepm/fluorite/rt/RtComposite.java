@@ -1806,6 +1806,7 @@ public final class RtComposite {
     private final RtRestirStats restirStats = new RtRestirStats(PUSH_RING);
     /** The path reservoir's own acceptance counters -- the D211 rule applied to S2's acceptance run. */
     private final RtPathReservoirStats pathStats = new RtPathReservoirStats(PUSH_RING);
+    private final RtRawHdrProbe rawHdrProbe = new RtRawHdrProbe(PUSH_RING);
     private RtImage displayImage;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
     // enabled. When the PQ swapchain is active, the combined UI overlay is composited over this image, then
@@ -2630,7 +2631,7 @@ public final class RtComposite {
         // The path-reservoir switch belongs in this condition for the reason the reuse depth does: a
         // toggle that only reallocates on the next resize would sit there doing nothing, and the A/B
         // it exists for would compare a tree against itself.
-        boolean wantPathReservoir = FluoriteConfig.Rt.Composite.PATH_RESERVOIR.value();
+        boolean wantPathReservoir = rawHdrProbe.pathEnabled(FluoriteConfig.Rt.Composite.PATH_RESERVOIR.value());
         boolean havePathReservoir = pathReservoirStore != null;
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null && exposure.ready()
@@ -3059,6 +3060,7 @@ public final class RtComposite {
             logWaterMediumProbe(selectedPushSlot);
             restirStats.reportRecycledSlot(pushSlot);
             pathStats.reportRecycledSlot(pushSlot);
+            rawHdrProbe.reportRecycledSlot(pushSlot);
             if (gpuTimers != null) {
                 // The await above is what makes this safe: this slot's timestamps are from PUSH_RING frames
                 // ago and the GPU has finished with them, so reading costs nothing and resetting cannot
@@ -3210,10 +3212,9 @@ public final class RtComposite {
             RtFrameStats.FRAME.count("fogBeyondGridClamp",
                     FluoriteConfig.Rt.Volumetrics.FOG_BEYOND_GRID_USES_CLAMP.value() ? 1 : 0);
             // M28 S2: the path reservoir's own attribution column, same rule as the two above -- the
-            // capture reads the very value that gates the allocation, so an A/B never argues about
-            // what a frame was told to do.
+            // capture reads the actual backing store that gates pass B, including an opt-in HDR probe.
             RtFrameStats.FRAME.count("pathReservoir",
-                    FluoriteConfig.Rt.Composite.PATH_RESERVOIR.value() ? 1 : 0);
+                    pathReservoirStore != null ? 1 : 0);
             // D231 (G14): the path reuse's packed switch word, from the same function that fills its
             // WorldPush lane -- every sub-switch a slice adds is captured with no new column.
             RtFrameStats.FRAME.count("pathReuseSwitches", pathReuseSwitchWord());
@@ -3840,6 +3841,9 @@ public final class RtComposite {
             // is a reader of them like every other consumer this barrier exists for.
             restirStats.recordCopy(cmd, stack, pushSlot);
             pathStats.recordCopy(cmd, stack, pushSlot);
+            rawHdrProbe.record(ctx, cmd, stack, pushSlot, output, frameCounter, pathReservoirStore != null,
+                    camX, camY, camZ, 31 * frameProjection.hashCode() + frameViewRotation.hashCode(),
+                    level == null ? -1L : level.getGameTime(), rrPath, spp(), maxBounces());
             // DLSS-RR denoise + upscale. The RT pass wrote noisy color (render res) + guides;
             // RR reads them and writes the display-res denoised result straight into rrOutput.
             if (rrPath && RtDlssRr.INSTANCE.ensureFeature(cmd.address(), renderW, renderH, displayW, displayH)) {
@@ -4306,6 +4310,7 @@ public final class RtComposite {
         }
         restirStats.destroy();
         pathStats.destroy();
+        rawHdrProbe.destroy();
         destroyGuideImages();
         exposure.destroy();
         if (displayPipeline != null) {
