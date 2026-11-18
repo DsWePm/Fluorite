@@ -1526,13 +1526,14 @@ public final class RtComposite {
     static final int PATH_REUSE_NEIGHBOURS_MASK = 0xF;
     /** Bit 0: the prefix identity self-check (R1b-3). */
     static final int PATH_REUSE_IDENTITY_BIT = 1;
+    static final int PATH_REUSE_TEMPORAL_DISABLED = 4;
 
     /**
      * The path reuse's switch word (D231, G14): one uint at WorldPush offset 1296, a bitfield whose
      * fields arrive with the slices that consume them, so no sub-switch exists before it does anything
-     * (D211's lesson). Today: bit 0 = the prefix identity self-check, bit 1 = reverse visibility, bits 8-11 = the spatial neighbour
-     * count. restir_pt.slang spells the same bits; RtPathReplayContractTest pins the two spellings
-     * together.
+     * (D211's lesson). Bit 0 is the prefix identity self-check, bit 1 is reverse visibility,
+     * bit 2 disables temporal reuse, and bits 8-11 hold the spatial neighbour count.
+     * RtPathReplayContractTest pins the matching constants in restir_pt.slang.
      */
     static int pathReuseSwitchWord() {
         int neighbours = FluoriteConfig.Rt.Composite.PATH_REUSE_SPATIAL_NEIGHBOURS.value();
@@ -1541,6 +1542,7 @@ public final class RtComposite {
             word |= PATH_REUSE_IDENTITY_BIT;
         }
         if (FluoriteConfig.Rt.Composite.PATH_REUSE_REVERSE_VISIBILITY.value()) word |= 2;
+        if (!FluoriteConfig.Rt.Composite.PATH_REUSE_TEMPORAL.value()) word |= PATH_REUSE_TEMPORAL_DISABLED;
         return word;
     }
     /** Smallest patch an entity disturbs, in BLOCKS — so the size of a splash does not follow the grid. */
@@ -3320,7 +3322,8 @@ public final class RtComposite {
                         frameCounter, pathHistory.context(level, renderW, renderH,
                                 terrain.blockX, terrain.blockY, terrain.blockZ, flags, wtr, wtg, wtb),
                         terrain.pathSurfaceOwners(), fe.pathSurfaces(),
-                        debugView == 0 && FluoriteConfig.Rt.Composite.PATH_REUSE_TEMPORAL.value(),
+                        debugView == 0 && (FluoriteConfig.Rt.Composite.PATH_REUSE_TEMPORAL.value()
+                                || FluoriteConfig.Rt.Composite.PATH_REUSE_SPATIAL_NEIGHBOURS.value() > 0),
                         FluoriteConfig.Rt.Composite.PATH_REUSE_HISTORY_CAP.value());
             }
             // One immutable weather/time read for every medium. The shader receives only the resolved

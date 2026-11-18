@@ -16,3 +16,10 @@ public static const uint PATH_REUSE_IDENTITY_BIT = 1u;
 public uint pathReuseSpatialNeighbours() {
     return (worldPush.pathReplayEnabled >> PATH_REUSE_NEIGHBOURS_SHIFT) & PATH_REUSE_NEIGHBOURS_MASK;
 }
+
+public static const uint PATH_REUSE_TEMPORAL_DISABLED = 4u;
+
+/** Spatial reuse can read the previous frame even with temporal reuse disabled. */
+public bool pathReuseTemporalEnabled() {
+    return (worldPush.pathReplayEnabled & PATH_REUSE_TEMPORAL_DISABLED) == 0u;
+}

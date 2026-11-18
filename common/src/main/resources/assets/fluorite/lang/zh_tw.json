@@ -39,7 +39,7 @@
   "fluorite.options.rt.restirSpatialNeighbours": "ReSTIR 空間鄰居數",
   "fluorite.options.rt.restirSpatialNeighbours.tooltip": "每個頂點向多少個鄰近像素借用光源 reservoir。0 表示關閉。不額外佔用顯示記憶體——鄰居讀取的是重用深度那個旋鈕已經付過的儲存空間——但每個鄰居有運算開銷。鄰居取自上一個影格，所以借來的樣本也是一個影格前的。重用深度為 0 時此項無效。路徑 reservoir 的鄰居數由「路徑重用空間鄰居數」單獨控制。",
   "fluorite.options.rt.pathReuseSpatialNeighbours": "路徑重用空間鄰居數",
-  "fluorite.options.rt.pathReuseSpatialNeighbours.tooltip": "路徑 reservoir 每個影格向多少個鄰近像素借用路徑樣本（M28）。0 表示關閉。只在「路徑 Reservoir（M28 S2）」開啟時生效；與「ReSTIR 空間鄰居數」分開，後者現在只管光源 reservoir。鄰居取自上一個影格。注意：目前的空間重用估計量有偏差、正依論文重建（D230），開啟時的畫面不代表最終效果。",
+  "fluorite.options.rt.pathReuseSpatialNeighbours.tooltip": "每個像素最多重用多少個鄰近路徑域，範圍為 0 至 8。用當幀法線和深度選鄰居，從上一幀取路徑。需要開啟路徑 Reservoir。設為 0 時關閉空間重用。",
   "fluorite.options.rt.dynamicRisCandidates": "動態光候選數",
   "fluorite.options.rt.dynamicRisCandidates.tooltip": "每個表面的光源取樣中，有多少個給實體、手持方塊和火焰粒子，而不是給世界本身的光源。0 表示關閉，關閉時就是現在的畫面——這些發光體從 M18 起就被收集上傳、卻沒有任何地方取樣它們，所以舉著火把的生物只照亮自己、照不亮周圍。它們分到的份額是固定的、不按亮度加權，所以一個生物和一屋子火把拿到同樣多的取樣。",
   "fluorite.options.rt.emitterBrightness": "發光體亮度",
@@ -441,5 +441,5 @@
   "fluorite.options.rt.pathReuseReverseVisibility.tooltip": "計算自身樣本權重時檢查反向連接。關閉僅供近似對照，遮擋區域可能變暗。",
   "fluorite.options.rt.pathReuseHistoryCap": "路徑歷史上限",
   "fluorite.options.rt.pathReuseHistoryCap.tooltip": "成對 MIS 前限制歷史域置信度。初始基準為 20。",
-  "fluorite.options.rt.pathReservoir.tooltip": "啟用雙向 k=2 連接及成對 MIS 的時域路徑複用。預設關閉，關檔不配置路徑歷史。每筆記錄 128 B，追蹤解析度 1920×1080 時雙緩衝使用 506.25 MiB（升採樣時更少）。時域及反向可見性初始開啟，歷史置信度在複用前封頂 20。空間複用及更深移位仍在開發，GPU 成本及觀感待驗收。"
+  "fluorite.options.rt.pathReservoir.tooltip": "啟用雙向 k=2 連接和成對 MIS 的路徑重用。追蹤解析度為 1920×1080 時，每像素兩份 128 B 路徑記錄共佔 506.25 MiB。時域重用和反向可見性預設開啟，空間鄰居數預設為 0。"
 }

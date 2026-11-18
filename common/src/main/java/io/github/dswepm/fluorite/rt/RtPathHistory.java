@@ -36,7 +36,7 @@ final class RtPathHistory {
 
     /** Caller has awaited this exact push slot's graphics use before allocating or writing it. */
     long prepare(RtContext ctx, int slot, long store, long frame, RtPathHistoryState.Context context,
-                 Object[] terrain, RtPathSurfaceIdentity[] entities, boolean temporal, int cap) {
+                 Object[] terrain, RtPathSurfaceIdentity[] entities, boolean reuseEnabled, int cap) {
         if (stamps == null) {
             stamps = ctx.createBuffer(8, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
                     | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, "Path history frame stamps");
@@ -59,7 +59,7 @@ final class RtPathHistory {
         MemoryUtil.memPutLong(address + 24, root.deviceAddress + entityOffset);
         MemoryUtil.memPutInt(address + 32, terrain.length);
         MemoryUtil.memPutInt(address + 36, entities.length);
-        MemoryUtil.memPutInt(address + 40, temporal && pending.previousValid ? 1 : 0);
+        MemoryUtil.memPutInt(address + 40, reuseEnabled && pending.previousValid ? 1 : 0);
         MemoryUtil.memPutInt(address + 44, cap);
         for (int i = 0; i < pending.terrainWords.length; i++)
             MemoryUtil.memPutInt(address + terrainOffset + i * 4L, pending.terrainWords[i]);

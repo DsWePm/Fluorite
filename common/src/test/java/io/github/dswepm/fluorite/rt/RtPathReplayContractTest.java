@@ -256,7 +256,7 @@ final class RtPathReplayContractTest {
         // R2a removed the unused merge lanes: identity now occupies lanes 0 and 1.
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[0], 1u)"));
         assertTrue(loopJoined.contains("DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[1], 1u)"));
-        assertEquals(110, RtPathReservoirStats.LANES);
+        assertEquals(122, RtPathReservoirStats.LANES);
         String stats = source("common/src/main/java/io/github/dswepm/fluorite/rt/RtPathReservoirStats.java");
         assertTrue(stats.contains("memGetInt(src.mapped)") && stats.contains("src.mapped + 4L"));
         assertTrue(stats.contains("identityPass, identityAttempt, percentage(identityPass, identityAttempt)"));
@@ -415,6 +415,8 @@ final class RtPathReplayContractTest {
                 + RtComposite.PATH_REUSE_NEIGHBOURS_MASK + "u;"));
         assertTrue(restirPt.contains(
                 "(worldPush.pathReplayEnabled >> PATH_REUSE_NEIGHBOURS_SHIFT) & PATH_REUSE_NEIGHBOURS_MASK"));
+        assertTrue(restirPt.contains("PATH_REUSE_TEMPORAL_DISABLED = "
+                + RtComposite.PATH_REUSE_TEMPORAL_DISABLED + "u;"));
         assertTrue(RtComposite.PATH_REUSE_NEIGHBOURS_MASK >= 8,
                 "the field must hold the dial's whole range");
 

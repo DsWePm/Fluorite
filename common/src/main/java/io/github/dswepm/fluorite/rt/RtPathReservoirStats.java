@@ -31,7 +31,8 @@ public final class RtPathReservoirStats {
     // 76-81 k2 connection attempts/pass and scope/hit/footprint/numeric failures; 82-83 RGB/Jacobian maxima.
     // 84-103 temporal eligibility, domains, classified shifts, selection, application and confidence.
     // 104-109 history gates: projection, saved domain, surface, confidence, true hit, stable primary.
-    public static final int LANES = 110;
+    // 110-118 spatial proposals, shifts and application; 119/121 attempts, 120 non-finite shifts.
+    public static final int LANES = 122;
     public static final long BYTE_SIZE = (long) LANES * Integer.BYTES;
 
     // A rejected shift leaves its contribution in the canonical estimator. It is an expected outcome,
@@ -235,7 +236,9 @@ public final class RtPathReservoirStats {
         allFrames.add(src.mapped);
         boolean temporalFailed = temporalReadbackFailed(src.mapped);
         if (temporalFailed) FluoriteMod.LOGGER.warn("RT path temporal failed readback {}", allFrames.frames);
-        boolean failed = temporalFailed || lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
+        boolean spatialFailed = spatialReadbackFailed(src.mapped);
+        if (spatialFailed) FluoriteMod.LOGGER.warn("RT path spatial failed readback {}", allFrames.frames);
+        boolean failed = temporalFailed || spatialFailed || lobeInvalid != 0L || lobeAttempt != lobePdfLow || lobeAttempt != lobeWeightLow
                 || connectionReadbackFailed(connectionAttempt, connectionPass, connectionScope, connectionHit,
                         connectionFootprint, connectionNumeric)
                 || sourceFactorPass != sourceFactorAttempt
@@ -302,10 +305,18 @@ public final class RtPathReservoirStats {
 
     static boolean temporalReadbackFailed(long mapped) {
         long[] c = new long[LANES];
-        for (int i = 84; i < LANES; i++) c[i] = Integer.toUnsignedLong(MemoryUtil.memGetInt(mapped + 4L * i));
+        for (int i = 84; i < 104; i++) c[i] = Integer.toUnsignedLong(MemoryUtil.memGetInt(mapped + 4L * i));
         return c[93] != 0 || c[99] != 0 || c[102] != 0
                 || c[88] != c[89]+c[90]+c[91]+c[92]+c[93]
                 || c[94] != c[95]+c[96]+c[97]+c[98]+c[99];
+    }
+
+    static boolean spatialReadbackFailed(long mapped) {
+        long[] c = new long[12];
+        for (int i = 0; i < c.length; i++) c[i] = Integer.toUnsignedLong(MemoryUtil.memGetInt(mapped + 4L * (110 + i)));
+        return c[10] != 0 || c[8] > c[0] || c[7] > c[8]
+                || c[2] > c[1] || c[3] > c[2] || c[4] > c[3]
+                || c[5] > c[9] || c[9] > c[4] || c[6] > c[11] || c[11] > c[4];
     }
 
     private void logCumulative() {
@@ -320,6 +331,12 @@ public final class RtPathReservoirStats {
                 allFrames.count(100), allFrames.count(101), allFrames.count(102), allFrames.maximum(103),
                 allFrames.count(104), allFrames.count(105), allFrames.count(106),
                 allFrames.count(107), allFrames.count(108), allFrames.count(109));
+        FluoriteMod.LOGGER.info("RT path spatial cumulative: frames {}, pixels {}, positive taps {}, selected taps {}, "
+                        + "distinct history {}, accepted {}, forward ok {}, reverse ok {}, selected history {}, "
+                        + "applied pixels {}, numeric {}, max confidence {}",
+                allFrames.frames, allFrames.count(110), allFrames.count(111), allFrames.count(112),
+                allFrames.count(113), allFrames.count(114), allFrames.count(115), allFrames.count(116),
+                allFrames.count(117), allFrames.count(118), allFrames.count(120), allFrames.maximum(103));
         FluoriteMod.LOGGER.info("RT path reuse cumulative: readback frames {}, lobe {} (invalid {}, pdf<=0.1% {}, "
                         + "weight<=0.1% {}, max pdf {}, weight {}); fresh k2 {}/{} deep {}/{} "
                         + "(scope {}, miss {}, geometry {}, invalid {}, numeric {}); max scatter {}, pdf {}, jac {}; "
