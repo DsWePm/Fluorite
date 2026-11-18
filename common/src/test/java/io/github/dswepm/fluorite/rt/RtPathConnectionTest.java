@@ -35,7 +35,7 @@ final class RtPathConnectionTest {
         assertFalse(evaluate.contains("reference") || evaluate.contains("RayQuery") || evaluate.contains("traceShadow"));
         assertFalse(evaluate.contains("integrateSegment(") || evaluate.contains("traceClouds("));
         String trace = source("shaders/world/path_reuse_trace.slang");
-        assertTrue(trace.contains("reuseDiagnoseSourceScatter(seg, entryMediumFlags, produced,"));
+        assertTrue(trace.contains("reuseDiagnoseSourceScatter(seg, entryMediumFlags, currentDomain, produced,"));
         assertTrue(trace.contains("reuseDiagnoseK2Connection(seg, entryMediumFlags, produced, dTree.selectedValue);"));
         assertTrue(trace.contains("return L;"));
     }

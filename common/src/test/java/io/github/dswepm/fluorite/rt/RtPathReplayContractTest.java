@@ -339,7 +339,7 @@ final class RtPathReplayContractTest {
             {"bool reuseSampleContinuation(", "return true;|walked = (false|true);.*"
                     + "|float3 (n|v|p|F0|diffAlb) = vtx\\.\\w+;|(RainSurface rain|BsdfContext bc) = vtx\\.\\w+;"
                     + "|float (pf|ps) = vtx\\.\\w+;|bool exactSpecular = vtx\\.exactSpecular;"
-                    + "|sampleInfo(?:\\.\\w+)? = .*;"},
+                    + "|sampleInfo(?:\\.\\w+)? = .*;|if \\(!allowWalk\\) break;"},
         };
         for (String[] f : functions) {
             java.util.List<String> lines = new java.util.ArrayList<>();

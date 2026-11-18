@@ -40,6 +40,47 @@ bool reuseReadK2Domain(__ref PathSegment seg, uint entryMediumFlags, uint pathSe
     return true;
 }
 
+// Resume the absolute vertex stream at the outgoing ray from an already decoded opaque primary.
+int reuseReplayAfterPrimary(__ref PathSegment seg, uint entryMediumFlags, uint pathSeed,
+        ReuseConnectionDomain primary, int vertices, bool withTransport, out float3 lastPos,
+        out ReuseHitGeometry geometry, out uint geometryStatus, out ReuseReplayState replay) {
+    lastPos = float3(0.0, 0.0, 0.0);
+    geometry = emptyReuseHitGeometry();
+    geometryStatus = REUSE_GEOMETRY_MISSING;
+    replay = primary.prefix;
+    if (seg.bounce != 0 || primary.prefix.hitDepth != 0 || !primary.prefix.opaquePrefix
+            || vertices < 2 || worldPush.maxBounces < 1u) return 0;
+
+    PathSegment next = seg;
+    next.ro = primary.prefix.rayOrigin;
+    next.rd = primary.prefix.incomingDirection;
+    next.throughput = primary.prefix.scatterPrefix;
+    next.rayConeWidth = primary.prefix.rayConeWidth;
+    next.rayConeSpread = max(primary.coneSpread, RAY_CONE_MIN_SPREAD);
+    next.showCelestial = primary.prefix.previousCelestial;
+    next.bounce = 1;
+    float priorPdf = primary.prefix.previousPdf;
+    uint vertexSeed = vertexStream(pathSeed, 0u);
+    int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
+    float3 hitPos = reuseReplayPosition(primary.prefix.rayOrigin, primary.prefix.incomingDirection,
+            primary.prefix.hitDistance);
+    bool walked;
+    ReuseContinuationSample continuation;
+    if (!reuseSampleContinuation(primary.vertex, hitPos, sssMaxEvents, next.ro, next.rd,
+            next.throughput, priorPdf, next.rayConeSpread, next.showCelestial,
+            vertexSeed, walked, continuation, false)) return 1;
+
+    // Transport is evaluated with the candidate's seed, even when the primary material is shared.
+    float3 transport = float3(1.0, 1.0, 1.0);
+    if (withTransport) {
+        reuseAccumulateTransport(transport, seg.medium.current.extinction,
+                activeCurrentMediumFlags(entryMediumFlags), primary.prefix.rayOrigin,
+                primary.prefix.incomingDirection, primary.prefix.hitDistance, pathSeed, 0u, false);
+    }
+    return reuseReplayPrefix(next, entryMediumFlags, pathSeed, vertices, lastPos, withTransport,
+            true, geometry, geometryStatus, replay, 1, priorPdf, transport);
+}
+
 // Domains are decoded once by the caller, so forward/reverse evaluation can share real primary hits.
 ReuseConnectionEvaluation reuseEvaluateK2AtDomains(__ref PathSegment seg, uint entryMediumFlags,
         ReuseConnectionDomain source, ReuseConnectionDomain destination, PackedPathReservoir record,

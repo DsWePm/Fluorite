@@ -46,6 +46,23 @@ final class RtPathSourceReplayTest {
         assertTrue(function.contains("pathSeed, uint(indirectDepth), bounce > 0"));
         assertFalse(function.contains("integrateSegment(") || function.contains("traceClouds(") || function.contains("rrSurvival"));
     }
+    @Test void deepSourceReplayResumesTheAbsoluteVertexAndEdgeStreams() throws Exception {
+        String trace = source("shaders/world/path_reuse_trace.slang");
+        String connection = source("shaders/world/path_reuse_connection.slang");
+        int start = connection.indexOf("int reuseReplayAfterPrimary(");
+        String resume = connection.substring(start, connection.indexOf("\n}\n", start));
+        assertTrue(resume.contains("vertexStream(pathSeed, 0u)"));
+        assertTrue(resume.contains("next.bounce = 1;"));
+        assertTrue(resume.contains("replay, 1, priorPdf, transport"));
+        assertTrue(resume.contains("primary.prefix.hitDistance, pathSeed, 0u, false"));
+        assertFalse(resume.contains("tracePathRadiance("));
+        int sampler = trace.indexOf("bool reuseSampleContinuation(");
+        int guard = trace.indexOf("if (!allowWalk) return false;", sampler);
+        int walk = trace.indexOf("randomWalkSubsurface(", sampler);
+        assertTrue(sampler >= 0 && guard > sampler && guard < walk);
+        assertTrue(trace.contains("int indirectDepth = firstHitDepth;"));
+        assertTrue(trace.contains("reuseReplayAfterPrimary(recordedSegment, entryMediumFlags, record.pathSeed, primary,"));
+    }
     @Test void originalScatteringGroundTruthIsAccumulatedWithoutDividingActualThroughput() throws Exception {
         String s=source("shaders/world/path_reuse_trace.slang");
         for(String term:new String[]{"scatteringPrefix = identityCheck ? seg.throughput", "scatteringPrefix *= continuation.weight;",

@@ -270,7 +270,8 @@ ReuseOpaqueVertex reuseOpaqueVertex(float3 hitPos, float3 n, float3 rd, float ra
 bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sssMaxEvents,
                              inout float3 ro, inout float3 rd, inout float3 throughput,
                              inout float bsdfPdf, inout float rayConeSpread, inout bool showCelestial,
-                             inout uint stream, out bool walked, out ReuseContinuationSample sampleInfo) {
+                             inout uint stream, out bool walked, out ReuseContinuationSample sampleInfo,
+                             bool allowWalk = true) {
     walked = false;
     sampleInfo = emptyReuseContinuationSample();
     float3 n = vtx.n;
@@ -357,6 +358,7 @@ bool reuseSampleContinuation(__ref ReuseOpaqueVertex vtx, float3 hitPos, int sss
         // continuation record or the pass boundary.
         walked = true; // the walk's exit direction has no analytic density to reconnect on
         sampleInfo.lobe = REUSE_LOBE_WALK;
+        if (!allowWalk) return false;
         float lobeProb = (1.0 - pf) * (1.0 - ps) * walkSss;
         WalkResult walk = randomWalkSubsurface(hitPos, n, diffAlb, vtx.sssRadius, vtx.ext.specular.w,
                                                sssMaxEvents, stream);
@@ -428,23 +430,27 @@ struct ReuseReplayState {
 
 /**
  * Replay a recorded path's first {@code vertices} vertices from {@code seg} with {@code pathSeed}.
- * Returns how many it reached; {@code lastPos} is the last one's position. A particle vertex stops the
+ * Returns the absolute number of vertices reached; {@code lastPos} is the last one's position.
+ * A nonzero firstHitDepth resumes an opaque prefix at an already sampled incoming ray.
+ * A particle vertex stops the
  * replay: a billboard's continuation draws from the path's sequential stream, not a vertex stream.
  */
 int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSeed, int vertices,
                       out float3 lastPos, bool withTransport, bool queryGeometry, out ReuseHitGeometry lastGeometry,
-                      out uint geometryStatus, out ReuseReplayState state) {
+                      out uint geometryStatus, out ReuseReplayState state,
+                      int firstHitDepth = 0, float initialPdf = -1.0,
+                      float3 initialTransport = float3(1.0, 1.0, 1.0)) {
     lastPos = float3(0.0, 0.0, 0.0);
     lastGeometry = emptyReuseHitGeometry();
     geometryStatus = REUSE_GEOMETRY_MISSING;
-    state.transportPrefix = float3(1.0, 1.0, 1.0);
+    state.transportPrefix = initialTransport;
     state.scatterPrefix = seg.throughput;
     state.rayOrigin = seg.ro;
     state.incomingDirection = seg.rd;
     state.rayConeWidth = seg.rayConeWidth;
     state.hitDistance = 0.0;
-    state.previousPdf = -1.0;
-    state.hitDepth = -1;
+    state.previousPdf = initialPdf;
+    state.hitDepth = firstHitDepth - 1;
     state.opaquePrefix = true;
     state.previousCelestial = seg.showCelestial;
     float3 ro = seg.ro;
@@ -460,15 +466,19 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
     uint secondaryCull = secondaryCullMask();
     bool waterWaves = (worldPush.flags & 16u) != 0u;
     bool showCelestial = seg.showCelestial;
-    float bsdfPdf = -1.0;
+    float bsdfPdf = initialPdf;
     uint sssMode = (worldPush.flags >> 7u) & 3u;
     int sssMaxEvents = int((worldPush.flags >> 9u) & 7u);
-    int indirectDepth = 0;
-    int reached = 0;
+    int indirectDepth = firstHitDepth;
+    int reached = firstHitDepth;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         tracePathRadiance(bounce == 0 ? CULL_PRIMARY : secondaryCull, ro, 0.0, rd, RAY_FAR,
                       showCelestial, bounce == 0, rayConeWidth, rayConeSpread);
         if (payload.hitT < 0.0) {
+            break;
+        }
+        if (firstHitDepth > 0 && payloadMaterial() != MATERIAL_OPAQUE) {
+            state.opaquePrefix = false;
             break;
         }
         if (withTransport) {
@@ -519,7 +529,7 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
         bool walked;
         ReuseContinuationSample continuation;
         if (!reuseSampleContinuation(vtx, hitPos, sssMaxEvents, ro, rd, throughput, bsdfPdf,
-                                     rayConeSpread, showCelestial, vertexSeed, walked, continuation)) {
+                                     rayConeSpread, showCelestial, vertexSeed, walked, continuation, firstHitDepth == 0)) {
             break;
         }
         if (walked) {
@@ -534,7 +544,8 @@ int reuseReplayPrefix(__ref PathSegment seg, uint activeMediumFlags, uint pathSe
 
 // Fresh source replay rebuilds scattering and prefix transport from the record seed and new hits.
 // The R3 connection/terminal edge is separate. References are ground truth, never evaluation inputs.
-void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, PackedPathReservoir record,
+void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags,
+                               ReuseConnectionDomain primary, PackedPathReservoir record,
                                float3 referenceScatter, float referencePdf, bool referenceSupported,
                                float3 referenceTransport, float3 referenceValue) {
     int depth = int((record.bits >> REUSE_RECORD_DEPTH_SHIFT) & 15u);
@@ -552,8 +563,14 @@ void reuseDiagnoseSourceScatter(__ref PathSegment seg, uint entryMediumFlags, Pa
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[50], 1u);
         return;
     }
-    int reached = reuseReplayPrefix(recordedSegment, entryMediumFlags, record.pathSeed, depth, replayedPos,
-                                    true, true, geometry, geometryStatus, replay);
+    int reached;
+    if (depth > 2) {
+        reached = reuseReplayAfterPrimary(recordedSegment, entryMediumFlags, record.pathSeed, primary,
+                depth, true, replayedPos, geometry, geometryStatus, replay);
+    } else {
+        reached = reuseReplayPrefix(recordedSegment, entryMediumFlags, record.pathSeed, depth, replayedPos,
+                true, true, geometry, geometryStatus, replay);
+    }
     if (reached != depth || !replay.opaquePrefix) {
         InterlockedAdd(DevicePtr<uint>(worldPush.pathReservoirStatsAddr)[51], 1u);
         return;
@@ -1620,7 +1637,7 @@ public float3 tracePathReuse(__ref PathSegment seg, uint activeMediumFlags,
                 produced.bits &= ~REUSE_PRIMARY_DOMAIN_VALID;
         }
         if (identityCheck && !pathReservoirEmpty(produced)) {
-            reuseDiagnoseSourceScatter(seg, entryMediumFlags, produced,
+            reuseDiagnoseSourceScatter(seg, entryMediumFlags, currentDomain, produced,
                     selectedReference.scatterWeight, selectedReference.sourcePdf, selectedReference.supported,
                     selectedReference.transportPrefix, dTree.selectedValue);
             reuseDiagnoseK2Connection(seg, entryMediumFlags, produced, dTree.selectedValue);
