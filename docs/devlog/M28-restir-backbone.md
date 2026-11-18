@@ -1194,3 +1194,24 @@ Fabric最终81套395测试及NeoForge编译均已通过，日志为r3-final-chec
 
 
 证据根目录：`F:/MC/Shader/evidence/restir-r2-r3-2026-11-05`。主文件：`r3-temporal-v2-build-summary.json`、`r3-temporal-v2-interface-summary.json`、`r3-temporal-gpu-summary.json`、`workflow/r3-temporal-primary-gpu-summary.json`；正式会话为`r3-temporal-room-v2`、`r3-temporal-aba-1`（含capture/analysis.json与temporal-summary.json）、`r3-temporal-off`、`r3-reverse-off`、`r3-temporal-complex-final`。每次保留完整原始日志/config/options/源码差异与模块匹配证据，失败的v1及CPU gate旧版本单独保留。
+
+
+### R4 当帧 guide 空间复用（2026-11-18）
+
+用户认可 RR 开启下的同帧转向对照观感，选 A。实现 `9d52926` 使用当帧 gNormal/gDepth 按 Junkins Eq.14–15 计算兼容度，在 30 追踪像素内生成最多 32 个唯一 tap，M=1 用 A-Chao，M>1 用 A-ES。缓存选中点用于一次性历史重投影，剔除重复旧域和已使用的时域中心。每个通过域检查的旧像素共用一次真实 primary，继续走 R3 的前后向连接、逐域 Cap 与 RGB pairwise MIS。只对有效提议域取平均，保留可接受的空候选域，path-tree 外贡献只加一次。零空间候选时直接沿用 R3 单域估计和随机抽样。配置仍为主开关默认关，时域默认开，M 默认 0。
+
+产品复用现有 guide 绑定、Pass A → B 屏障、48 B 历史头和 128 B 路径记录。两套 shader 实际历史头偏移为 0/8/16/24/32/36/40/44。三个主开关关档 shader 规整后与 R3 逐字节一致。B 的历史图快照只用于旋转对照。新增工作按 OP-013、OP-015、OP-018 登记。
+
+RTX 2080、驱动 617.42、复制的 `restir-r2-hdr-room`，640×360、1 spp、最大 3 bounce、关闭 RR 与体积效果。实机检查 0、1、2、8 个空间邻居，其中 M=2 关闭时域。只统计过设置切换和退休槽后的稳定窗口。M=0 时域应用增加 864,000，空间增加 0。M=2 空间单开时前移位成功 1,582,351，时域应用增量 0。M=8 与时域并用时最大 confidence 181。源重评、空间、时域的失败回读与 VUID 均为 0。
+
+同会话 0→2→0 的冻结机位、世界 tick、分辨率及 RR/采样配置均一致。每段 864 帧，从中段取 324 个非 HDR 拷贝帧的 GPU 时间戳。根据现有 6 槽退休延迟对齐，诊断计数只在功能检查时开启。线性 HDR 另采每段 192 份，共 576 份，非有限像素 0。RGB 均值相对差 −1.82%、−1.88%、−2.06%，最大 0.290 个标准误，A1/A2 漂移 1.67 个标准误。两倍标准误约为基线的 14%，结果用于发现大偏差和建立成本基准。
+
+| 指标 | A1 0 邻居 | B 2 邻居 | A2 0 邻居 |
+| --- | ---: | ---: | ---: |
+| `gpu.tracePrimaryMs` 中位数 | 0.461 | 0.463 | 0.4615 |
+| `gpu.traceIndirectMs` 中位数 | 180.362 | 242.518 | 180.678 |
+| 固定像素亮度时间方差 | 0.00157650 | 0.00141093 | 0.00143441 |
+
+两邻居相对两段零邻居的平均中位数，pass B 增加 62.0 ms（34.3%），亮度时间方差下降 6.3%。这是同一房间的空间开/关增量，主开关保持开，RR 关闭，无法外推到其他场景或估计正式 B 图像轮换的成本。保持 M=0 初始默认值，收益和成本合并到 R6 的多场景调参。180° 转向残影的归因仍开放。
+
+证据目录 `F:/MC/Shader/evidence/restir-r4-2026-11-08/product-aba-1`，包括 `analysis.json`、`smoke-summary.json`、`frame.csv`、HDR 源数据与完整配置。测试只用复制的存档。Minecraft 正常保存退出，临时设置、纹理包和测试驱动已复原。
